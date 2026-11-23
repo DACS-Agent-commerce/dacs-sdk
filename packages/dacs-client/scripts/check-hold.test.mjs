@@ -154,9 +154,33 @@ test('missing HEAD and malformed record fail closed', t => {
   const s=scratch(t);rmSync(join(s.repo,'.git'),{recursive:true,force:true});refuses(s,/not a git repository|not the Git worktree root/);
   const other=scratch(t);writeFileSync(join(other.dir,'HOLD.json'),'{');refuses(other,/^FAIL HOLD\.json is not valid JSON: /m);
 });
-test('an unrecorded README change after its latest record is refused by the derived rule', t => {
+test('an unrecorded DELTA-NOTES.md change is refused by the derived rule', t => {
+  const s=scratch(t); appendFileSync(join(s.dir,'DELTA-NOTES.md'),'\nTEST unrecorded line\n');
+  refuses(s, fail('DELTA-NOTES.md', `working file differs from ${ANCHORED}`));
+  git(s.repo,'add','--',P+'DELTA-NOTES.md'); commit(s.repo,'docs(client): TEST unrecorded notes change');
+  refuses(s, fail('DELTA-NOTES.md', `HEAD, index, working file differ from ${ANCHORED}`));
+});
+test('a README change needs no record: committed it passes, uncommitted only the clean checkout rule refuses it', t => {
   const s=scratch(t); appendFileSync(join(s.dir,'README.md'),'\nTEST unrecorded line\n');
-  refuses(s, fail('README.md', 'working file differs from its newest record \\([0-9a-f]{40}\\)'));
+  const r=gate(s); assert.equal(r.status, 1, r.text);
+  assert.deepEqual([...r.text.matchAll(/^FAIL (.*)$/gm)].map(match => match[1]), [`${P}README.md: working file differs from HEAD (bytes or mode)`]);
+  git(s.repo,'add','--',P+'README.md'); commit(s.repo,'docs(client): TEST unrecorded README change');
+  passes(s);
+});
+test('an unrecorded package.json change is still refused once committed', t => {
+  const s=scratch(t), file=join(s.dir,'package.json');
+  // The same keys and values in other bytes: only the derived rule can see it.
+  writeFileSync(file, JSON.stringify(readJson(file)) + '\n');
+  git(s.repo,'add','--',P+'package.json'); commit(s.repo,'docs(client): TEST unrecorded manifest change');
+  refuses(s, fail('package.json', `HEAD, index, working file differ from ${ANCHORED}`));
+});
+test('paths that only look like the README are not exempt', t => {
+  const s=scratch(t), paths=['README.md.bak', 'readme.md', 'docs/README.md', 'src/README.md'];
+  for (const path of paths) put(join(s.dir, path), 'TEST look-alike\n');
+  git(s.repo,'add','--',...paths.map(path => P + path)); commit(s.repo,'docs(client): TEST README look-alikes');
+  refuses(s,
+    ...['README.md.bak', 'readme.md', 'docs/README.md'].map(path => fail(path, 'not a core path, a record file or a record-named path')),
+    fail('src/README.md', 'HEAD, index, working file differ from the baseline \\(no file\\)'));
 });
 test('a file the anchor does not name is refused, and a deleted baseline script cannot come back', t => {
   const s=scratch(t);

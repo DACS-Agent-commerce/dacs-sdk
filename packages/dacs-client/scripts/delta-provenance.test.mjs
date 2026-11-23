@@ -39,21 +39,30 @@ function checkCallbackHistory(dir) {
   assert.match(notes, /SQL callbacks remain allowed inside a leased transaction/);
   const lease = changes.find(change => change.subject === replacement);
   assert.ok(lease, 'the write-lease implementation must retain its own delta record');
-  // The committed tree keeps the write-lease source and test blobs; the two
-  // retired commits contribute historical evidence, not runtime code.
+  // The committed tree keeps the write-lease source and test blobs, except for
+  // a file that a later record deletes: that file must be gone. The two
+  // retired commits contribute historical evidence, not runtime code, and are
+  // compared with the lease's recorded blob.
+  const later = changes.slice(changes.indexOf(lease) + 1);
   for (const file of lease.files) {
-    const committed = execFileSync('git', ['-C', dir, 'rev-parse', `HEAD:${file.path}`], { encoding: 'utf8' }).trim();
-    assert.equal(committed, file.after, `${file.path} must retain the write-lease implementation`);
+    const deleted = later.some(change => change.files.some(entry => entry.path === file.path && entry.after === null));
+    if (deleted) {
+      const listing = execFileSync('git', ['-C', dir, 'ls-tree', '--name-only', 'HEAD', '--', file.path], { encoding: 'utf8' });
+      assert.equal(listing.trim(), '', `${file.path} is deleted by a later record and must be absent`);
+    } else {
+      const committed = execFileSync('git', ['-C', dir, 'rev-parse', `HEAD:${file.path}`], { encoding: 'utf8' }).trim();
+      assert.equal(committed, file.after, `${file.path} must retain the write-lease implementation`);
+    }
     for (const subject of retired) {
       const record = changes.find(change => change.subject === subject);
       assert.ok(record, `the superseded commit must remain recorded: ${subject}`);
       const retiredFile = record.files.find(entry => entry.path === file.path);
       assert.ok(retiredFile, `${subject} must record ${file.path}`);
-      assert.notEqual(retiredFile.after, committed);
+      assert.notEqual(retiredFile.after, file.after);
     }
   }
 }
-test('callback history explains the superseded guard and preserves the write-lease tree', () => checkCallbackHistory(root));
+test('callback history explains the superseded guard and matches the recorded write-lease files', () => checkCallbackHistory(root));
 test('callback history check needs no ancestry beyond the checked-out commit', t => {
   const dir = mkdtempSync(join(tmpdir(), 'delta-provenance-shallow-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -331,7 +340,7 @@ const RECORD_FAULTS = [
  { name: 'a changed parent blob', edit: value => { value.files[0].before = '0'.repeat(40); } },
  { name: 'an ordinary record with no changed blob', edit: value => { value.files[0].after = value.files[0].before; } },
  { name: 'an empty file list', edit: value => { value.files = []; } },
- { name: 'an inventory row naming another file', edit: value => { value.commitFiles = ['packages/dacs-client/README.md']; } },
+ { name: 'an inventory row naming another file', edit: value => { value.commitFiles = ['packages/dacs-client/DELTA-NOTES.md']; } },
  { name: 'an unqualified repeated subject', duplicate: true },
 ];
 for (const fault of RECORD_FAULTS) test(`immutable record files refuse ${fault.name}`, t => {

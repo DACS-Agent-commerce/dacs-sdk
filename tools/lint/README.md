@@ -62,7 +62,7 @@ The file size and shared helper checks also have a `--write-baseline` flag that 
 
 ## Error code check
 
-`error-codes.mjs` checks how errors are built in the files and folders that `error-codes.json` lists under `migrated`. The list is empty until a folder moves to error codes; a folder is listed with a trailing slash. The catalog is the `codeCategory` table in `src/errors.ts`. Each code is lower case, shaped `domain.reason`, and has one category. `sdk.unclassified` is reserved for this check and never goes in the table.
+`error-codes.mjs` checks how errors are built in the files and folders that `error-codes.json` lists under `migrated`. A file is listed by its path and a folder with a trailing slash. The catalog is the `codeCategory` table in `src/errors.ts`. Each code is lower case, shaped `domain.reason`, and has one category. `sdk.unclassified` is reserved for this check and never goes in the table.
 
 In a migrated file the check refuses:
 

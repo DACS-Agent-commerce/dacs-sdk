@@ -48,9 +48,9 @@ Existing trackers already cover the following delivery slices:
 Gaps identified by this audit (subsequently tracked):
 
 1. Normative Listing fidelity and engagement, including `seller.publicEndpoint`,
-   current-only writes, and exact Listing pins. This focused
-   PR is the implementation vehicle; a tracker is still useful for any reader
-   validation left after merge.
+   current-only writes, and exact Listing pins. This focused PR is the
+   implementation vehicle; a tracker is still useful for any reader validation
+   left after merge.
 2. Transport-independent seller-side payment-intake verification shared by
    pay-DEM and x402 is now #113. #24 is specifically an HTTP x402 paywall and
    #102 is buyer rail-receipt production; neither owns the generic seller gate.
@@ -60,7 +60,9 @@ Gaps identified by this audit (subsequently tracked):
 
 ## Focused Listing PR boundary
 
-The first PR implements only the DACS-1 artifact boundary:
+The first PR also shipped a read path for the earlier Listing shape, which the
+SDK no longer has. Apart from that, it implements only the DACS-1 artifact
+boundary:
 
 - normative Listing and nested public types from DACS-1 §6.3.2–§6.3.4 and
   DACS-4 §9.3;

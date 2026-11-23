@@ -14,6 +14,7 @@ installPurchaseAdmissionHook();
 export const { setPurchaseAdmission } = await loadAdmissionDouble();
 export const { createEffectBoundary } = await import('../../src/wallet/effect-boundary.mjs');
 export const flush = () => new Promise(resolve => setImmediate(resolve));
+export const settleUntil = async condition => { for (let tries = 0; tries < 50 && !condition(); tries++) await flush(); assert.ok(condition(), 'the expected state was not reached'); };
 export const code = expected => error => error.code === expected;
 export const digest = value => createHash('sha256').update(canonicalize(value)).digest('hex');
 export const signedBytes = Buffer.from('TEST-exact-signed-artifact');
@@ -61,6 +62,16 @@ export function cutAppend(world, state, { after = false, mutate, error = new Err
     throw error;
   };
   return error;
+}
+// Runs `run()` with the transport's next getContext call after `arm`'s trigger held (once), applies `change`, releases it, and returns the outcome.
+export async function refusedAfterContext(world, arm, run, change) {
+  let held;
+  arm(() => { held ??= world.gate.hold(); });
+  const outcome = run().then(value => ({ value }), error => ({ error }));
+  await settleUntil(() => held?.reached === true);
+  change();
+  held.release();
+  return outcome;
 }
 export async function noEffects(world, promise, expected) {
   await assert.rejects(promise, code(expected));

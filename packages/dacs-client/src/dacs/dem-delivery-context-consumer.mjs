@@ -11,7 +11,10 @@ import { claimForAddress } from '../signatures.mjs';
 import { DEM_RAIL } from './listing.mjs';
 import { agreementContextScope } from './agreement-context-consumer.mjs';
 import { listingPin, protocolSupport } from './purchase-protocol.mjs';
+import { heldContextMembers, refusalAnswer } from './bootstrap-outcome.mjs';
 import { cutText } from '../util/text.mjs';
+import { isTp1AuthorityLabel } from './tp1-authority-label.mjs';
+import { authorityLabel } from './tp1-authority-token.mjs';
 
 export const DEM_DELIVERY_CONTEXT_SOURCE = 'dacs-chatgpt-plugin/dem-delivery-context/v1';
 // A buyer resolver may publish seller Vet records. Only an absent capability,
@@ -31,26 +34,28 @@ const held = (disposition, reason) => ({ disposition: HELD.includes(disposition)
 // Provider refusal codes the purchase may name as its own error code.
 const HELD_CODES = new Set(['legacy_party_vet_state_missing']);
 // A resolver's answer is read only inside a try, each of its fields once, and
-// its thrown value only through failureText(): nothing it returns or throws can
+// a classified refusal retains its cause; other throws use failureText(). Nothing can
 // escape as a server error with no attempt recorded for a possible write.
 const failureText = (error) => { try { return String(error?.message ?? error); } catch { return 'unreadable error'; } };
 
-// The capability's authority label: one `TEST-` line of at most 120 characters (an
-// operator run authority `TEST-RUN-…` fits). The purchase receipt accepts a stored
-// resolution marker only with this label.
-export const isDemDeliveryContextAuthority = (value) => typeof value === 'string' && /^TEST-[A-Za-z0-9._:-]{1,115}$/.test(value);
+// A fixture label: one `TEST-` line of at most 120 characters (an operator run authority `TEST-RUN-…` fits).
+const isFixtureLabel = (value) => typeof value === 'string' && /^TEST-[A-Za-z0-9._:-]{1,115}$/.test(value);
+
+/** Returns true for a canonical `TEST-` or `TP1-` label string, the labels a capability can declare, and false for a token or any other value. Never throws. It grants nothing: only a constructor given a token admits one. */
+export const isDemDeliveryContextAuthority = (value) => isFixtureLabel(value) || isTp1AuthorityLabel(value);
 
 // release (optional): told when a job's plan is saved or its purchase ended,
 // so the provider can drop that job's entries. usage (optional): the
 // provider's store capacity, for the health report. readBack (optional):
 // reads a job's retained seller Vet record writes back, and signs or sends
 // nothing ({jobId, buyer} -> {disposition, reason}).
-export function createDemDeliveryContext({ authority, resolveBuyer, resolveSeller, release = null, usage = null, readBack = null }) {
-  if (!isDemDeliveryContextAuthority(authority) || typeof resolveBuyer !== 'function' || typeof resolveSeller !== 'function' || [release, usage, readBack].some((hook) => hook !== null && typeof hook !== 'function')) {
-    throw new TypeError('DEM delivery context requires explicit TEST authority and buyer/seller resolvers');
+export function createDemDeliveryContext({ authority, binding, resolveBuyer, resolveSeller, release = null, usage = null, readBack = null }) {
+  const label = authorityLabel(authority, binding, isFixtureLabel, 'DEM delivery context requires a TEST authority or an authority token');
+  if (typeof resolveBuyer !== 'function' || typeof resolveSeller !== 'function' || [release, usage, readBack].some((hook) => hook !== null && typeof hook !== 'function')) {
+    throw new TypeError('DEM delivery context requires buyer/seller resolvers');
   }
-  const capability = Object.freeze({ source: DEM_DELIVERY_CONTEXT_SOURCE, authority });
-  capabilities.set(capability, { authority, resolveBuyer, resolveSeller, release, usage, readBack });
+  const capability = Object.freeze({ source: DEM_DELIVERY_CONTEXT_SOURCE, authority: label });
+  capabilities.set(capability, { authority: label, resolveBuyer, resolveSeller, release, usage, readBack });
   return capability;
 }
 
@@ -122,8 +127,9 @@ function captureAnswer(answer, { scope, listing, buyerBundle }) {
   // Read once: a getter cannot pass a check with one value and reach the result with another.
   const disposition = answer.disposition;
   if (HELD.includes(disposition)) {
-    const code = answer.code;
-    return { ...held(disposition, answer.reason ?? 'context unavailable'), ...(HELD_CODES.has(code) ? { code } : {}) };
+    const code = answer.code, members = heldContextMembers(answer);
+    if (code === 'party_vet_non_pass' && !members.errorClass) return held('indeterminate', 'DEM delivery Vet refusal is malformed');
+    return { ...held(disposition, answer.reason ?? 'context unavailable'), ...members, ...(HELD_CODES.has(code) ? { code } : {}) };
   }
   const value = disposition === 'present' ? answer.value : undefined;
   if (!exactKeys(value, ['input', 'scope'])) return held('indeterminate', 'DEM_DELIVERY_CONTEXT_FAILED: malformed result');
@@ -143,7 +149,7 @@ export async function resolveDemDeliveryBuyerContext(capability, { operation, li
   const scope = agreementContextScope({ operation, buyerBundle, generatedAt });
   let answer;
   try { answer = await configured.resolveBuyer(structuredClone({ scope, buyerIdentityBundle: buyerBundle }), ...(writable ? [{ writable }] : [])); }
-  catch (error) { return held('indeterminate', `DEM delivery context failed: ${failureText(error)}`); }
+  catch (error) { answer = refusalAnswer(error); if (!answer) return held('indeterminate', `DEM delivery context failed: ${failureText(error)}`); }
   let captured;
   try { captured = captureAnswer(answer, { scope, listing, buyerBundle }); }
   catch { return held('indeterminate', 'DEM_DELIVERY_CONTEXT_FAILED: unreadable answer'); }

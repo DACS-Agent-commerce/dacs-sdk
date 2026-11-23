@@ -5,7 +5,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { assertPurchaseRuntime } from '../src/public-admission.mjs';
-import { createProtocolPurchases, createPurchaseService, createListingVerifier, createSqlitePurchaseStore, createCoordinateStore } from '../src/index.mjs';
+import { createProtocolPurchases, createPurchaseService, createListingVerifier, createPublicSellerClient, createSqlitePurchaseStore, createCoordinateStore } from '../src/index.mjs';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
@@ -73,6 +73,23 @@ test('under every ADMITTED version each public purchase factory gets past the ru
       const built = factory({ ...realOptions(t, name), admission: { binding, currentLocal } });
       assert.equal(typeof built, 'object', `${name} ${version}`);
     }
+  }
+});
+
+test('the public seller client refuses every REFUSED process.version with runtime_unsupported before reading its options, and constructs under every ADMITTED version', async (t) => {
+  const { binding, currentLocal } = await bindFixture();
+  restoreProcessVersionAfter(t);
+  const { count, options } = countingStandIns();
+  for (const version of REFUSED) {
+    setProcessVersion(version);
+    assert.throws(() => createPublicSellerClient({ admission: { binding, currentLocal }, publicEndpoint: 'https://seller.example.test', authentication: options.signer }), isUnsupported(version), version);
+  }
+  assert.equal(count.reads, 0);
+  const authentication = { request: async () => assert.fail('nothing is signed at construction'), verifyResponse: async () => assert.fail('nothing is verified at construction') };
+  for (const version of ADMITTED) {
+    setProcessVersion(version);
+    const client = createPublicSellerClient({ admission: { binding, currentLocal }, publicEndpoint: 'https://seller.example.test', authentication });
+    assert.equal(client.origin, 'https://seller.example.test', version);
   }
 });
 

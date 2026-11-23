@@ -3,6 +3,8 @@
 //   anchor:<cut>   anchors one payment evidence inside an effect pass, killed at the cut: `signed` (the inner signature made,
 //                  nothing stored), `bound` (the adapter stored the signed bytes, the journal has not kept them), `kept` (the
 //                  journal kept them, nothing sent) or `sent` (the broadcast applied, before its answer).
+//   guarded:<n>    sends one artifact CREATE whose authorize is killed during its n-th call (1: as the approval answer returns,
+//                  2: at the signature), after writing `killed.json` with the call and the node reads so far.
 //   hold-locks     holds the signer's reservation lock and an artifact-journal lane lock, prints `ready`, and waits.
 //   recovery:<n>   is killed at the n-th check of the state lock while the wallet is built (2: as the artifact journal's lock
 //                  rows are recovered, 3: as the composition journal's are).
@@ -13,8 +15,8 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
-import { COMPOSITION_JOURNAL, createSellerNodeWallet, evidenceInput, inWalletPass, nodeConnection, persistedApproval, replayNode, sellerApproval,
-  setPurchaseAdmission, spyTransactionSignatures, walletOptions } from './seller-node-wallet-world.mjs';
+import { api, COMPOSITION_JOURNAL, createSellerNodeWallet, evidenceInput, inWalletPass, nodeConnection, persistedApproval, preparedWrite, replayNode,
+  sellerApproval, setPurchaseAdmission, spyTransactionSignatures, walletOptions } from './seller-node-wallet-world.mjs';
 
 const { acquireSellerStateLock } = await import('../../src/devnet-demo/seller-state-lock.mjs');
 const { openDurableWalletJournal } = await import('@kynesyslabs/dacs-client/wallet/durable-journal');
@@ -54,8 +56,21 @@ if (mode === 'anchor:sent') {
   };
 }
 const wallet = await createSellerNodeWallet(await walletOptions({ connection, directory, stateLock, journalMode, approve: sellerApproval(approval) }));
-const world = { owner: connection.owner, wallet };
+const world = { owner: connection.owner, wallet, node };
 if (action === 'anchor') await inWalletPass(world, () => wallet.paymentEvidence.anchorEvidence(evidenceInput(world)));
+if (action === 'guarded') {
+  const write = await preparedWrite(world);
+  let calls = 0;
+  const authorize = () => {
+    if (++calls === Number(cut)) {
+      writeFileSync(join(stateDirectory, 'killed.json'), JSON.stringify({ call: calls, reads: node.reads }));
+      process.kill(process.pid, 'SIGKILL');
+    }
+    return true;
+  };
+  await inWalletPass(world, () => write.wallet.request(write.request, { authorize }),
+    { context: api.passContext({ operationClass: 'job-create', currentAuthorization: () => true }) });
+}
 if (action === 'hold-locks') {
   const second = openDurableWalletJournal({ path: join(directory, COMPOSITION_JOURNAL), mode: 'open' });
   await new Promise(held => { second.withWalletLock(signerReservationKey(TP1_APPROVED_IDENTITY_RECORD, wallet.address), () => { held(); return forever(); }); });

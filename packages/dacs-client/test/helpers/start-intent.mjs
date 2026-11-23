@@ -95,5 +95,5 @@ export function delegationFor(p, address, { now = Date.now(), session = createEp
 }
 
 export function identityFor(p, address, presentedAt = Date.now()) {
-  return buildUnsignedIdentityBundle({ address, presentedAt, sessionSeed: `${p.id}:${p.jobId}` });
+  return buildUnsignedIdentityBundle({ address, presentedAt, sessionNonce: sha256Hex(`TEST seller nonce ${p.id}:${p.jobId}`) });
 }
