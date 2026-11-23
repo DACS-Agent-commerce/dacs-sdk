@@ -76,15 +76,21 @@ function nonceFor(jobId: string, phaseIndex: number): Hex {
 /**
  * Builds the chain rule's verdicts for the testnet wallet-spend authority. A
  * claim is accepted only when the chain shows it at a final head reached from
- * the latest block by parent hash: `settled` needs the exact payment, and
- * `terminal-absent` needs a final cancel or an unused nonce at a head whose
- * time is past the hold's bound `validBefore`. `not-invoked` is never accepted.
+<<<<<<< HEAD
+ * the latest block by parent hash: `settled` needs the exact payment. Both
+ * absence claims, `terminal-absent` and `not-invoked`, need a final cancel or
+ * an unused nonce at a head whose time is past the hold's bound `validBefore`:
+ * the service cannot see whether the buyer signed, and after that time no
+ * signature for the nonce can pay. So a hold whose signed input the buyer
+ * never stored is still released once it expires.
  * After the chain walk the rule reads the lane's state once more. A payment is
  * refused while another rail's hold for the same job phase, which shares the
  * nonce, is reserved, effect-pending or settled. The hold itself must be in
  * that state, so of two such holds the later read always sees the other.
- * A release is refused unless the stored hold still has the generation and
- * expiry the core supplied; the core compares both again when it releases.
+ * The core supplies the stored hold with an absence claim and releases only
+ * while that hold is still current; a release is refused unless the stored
+ * hold still has the generation and expiry the core supplied, so the expiry
+ * judged is the one released.
  *
  * @returns `authenticateRecovery` and `bindAuthorizationValidBefore` for the
  *   core, and `check`, which gives the same decision with its reason code.
@@ -238,7 +244,7 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
    */
   async function stateRefusal(
     reservation: Readonly<WalletSpendReservationV1>,
-    disposition: "settled" | "terminal-absent",
+    disposition: "settled" | "absent",
     storedHold: StoredHold,
   ): Promise<string | undefined> {
     const state = await input.readState().catch(() => undefined);
@@ -262,7 +268,7 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
   /** Steps 1 to 3: the verdict for one bound hold. */
   async function verdict(
     hold: BoundHold,
-    disposition: "settled" | "terminal-absent",
+    disposition: "settled" | "absent",
     validBefore: number | undefined,
   ): Promise<DacsWalletSpendTestnetChainVerdictV1> {
     const head = await finalHead(hold.depth);
@@ -276,16 +282,14 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
     observation: Readonly<WalletSpendRecoveryObservationV1>,
     storedHold?: StoredHold,
   ): Promise<Readonly<{ accepted: boolean; reasonCode: string }>> {
-    if (observation.disposition === "not-invoked") {
-      return { accepted: false, reasonCode: "wallet-spend-chain-absence-kind-refused" };
-    }
-    if (observation.disposition === "terminal-absent" && storedHold === undefined) {
+    const disposition = observation.disposition === "settled" ? "settled" : "absent";
+    if (disposition === "absent" && storedHold === undefined) {
       return { accepted: false, reasonCode: HOLD_MISSING };
     }
     let found: Readonly<{ verdict: DacsWalletSpendTestnetChainVerdictV1; reasonCode: string }>;
     try {
       const hold = bindHold(reservation);
-      const reached = await verdict(hold, observation.disposition, storedHold?.authorizationValidBefore);
+      const reached = await verdict(hold, disposition, storedHold?.authorizationValidBefore);
       found = { verdict: reached, reasonCode: VERDICT_CODES[reached] };
     } catch (error) {
       if (error instanceof ChainCheckStop && error.verdict === undefined) {
@@ -295,11 +299,11 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
         ? { verdict: error.verdict, reasonCode: error.reasonCode }
         : { verdict: "unavailable", reasonCode: VERDICT_CODES.unavailable };
     }
-    const accepted = observation.disposition === "settled"
+    const accepted = disposition === "settled"
       ? found.verdict === "paid"
       : found.verdict === "cancelled" || found.verdict === "expired-unused";
     if (!accepted) return { accepted, reasonCode: found.reasonCode };
-    const refusal = await stateRefusal(reservation, observation.disposition, storedHold);
+    const refusal = await stateRefusal(reservation, disposition, storedHold);
     return refusal === undefined
       ? { accepted, reasonCode: found.reasonCode }
       : { accepted: false, reasonCode: refusal };
