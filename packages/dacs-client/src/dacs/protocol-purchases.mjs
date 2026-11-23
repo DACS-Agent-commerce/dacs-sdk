@@ -1087,8 +1087,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(operation.state.protocol.sessionDelegation)), delegationScope(operation)));
       requireDelegationMargin(operation, 'the Agreement plan');
     }
-    // Only the intent route supplies an already approved exact generation time.
-    const generatedAt = intentGeneratedAt ?? now();
+    const generatedAt = planGeneratedAt(operation, intentGeneratedAt);
     // Read again right before each Vet signature or anchor intent: a purchase
     // no longer pending starts no new write.
     const writable = () => {
@@ -1133,6 +1132,16 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     }
     return savePlan(current, buyerBundle, planned, { source: usesDemDeliveryContext(current) ? DEM_DELIVERY_CONTEXT_SOURCE : AGREEMENT_CONTEXT_SOURCE,
       authority: resolved.authority, scopeHash: contentHash(resolved.scope), resolvedAt: new Date(now()).toISOString() });
+  }
+
+  // The Agreement's generation time. The seller's context route requires the context scope to carry the time the saved
+  // challenge scope bound, so a context purchase uses that time on every plan step and retry, and refuses an approved
+  // time from the intent route that differs. Any other purchase uses the intent route's approved time, or now.
+  function planGeneratedAt(operation, intentGeneratedAt) {
+    if (!usesAgreementContext(operation)) return intentGeneratedAt ?? now();
+    const bound = operation.state.protocol.challengeScope.generatedAt;
+    if ((intentGeneratedAt ?? bound) !== bound) throw new OperationError('agreement_time_mismatch', 'the approved Agreement generation time differs from the one the seller challenge binds; no context was read and no Agreement was planned or signed');
+    return bound;
   }
 
   async function savePlan(operation, buyerBundle, planned, context) {
