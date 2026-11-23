@@ -492,6 +492,16 @@ export async function prepareX402BuyerSettlement(
   if (!selected || (bindAuthorization !== undefined && selected.paymentRequired.extensions !== undefined)) {
     return { disposition: "rejected", reason: "x402-payment-requirements-mismatch" };
   }
+  if (bindAuthorization !== undefined) {
+    // The signed payload carries these members; the settlement intent refuses
+    // any that are not canonical JSON, so refuse them before a wallet hold.
+    try {
+      x402BuyerSettlementStoreInternals.captureJson(selected.paymentRequired.resource, "x402 challenge resource");
+      x402BuyerSettlementStoreInternals.captureJson(selected.requirements, "x402 challenge requirements");
+    } catch {
+      return { disposition: "rejected", reason: "x402-payment-requirements-mismatch" };
+    }
+  }
 
   const scope: X402BuyerUnsignedIntentScope = {
     intentVersion: "1", settlementKey: x402BuyerSettlementKey(authority),

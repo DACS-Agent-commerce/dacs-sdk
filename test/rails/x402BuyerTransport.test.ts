@@ -731,3 +731,25 @@ test("a challenge carrying extensions is rejected before the authorization is bo
   expect(bindAuthorization).not.toHaveBeenCalled();
   expect(createPaymentPayload).not.toHaveBeenCalled();
 });
+
+test("a challenge whose resource or requirements are not canonical JSON is rejected before the authorization is bound", async () => {
+  const inner = client();
+  const createPaymentPayload = vi.fn(inner.createPaymentPayload);
+  const bindAuthorization = vi.fn(async () => ({ validBefore: 4_102_444_800 }));
+  const nested = (depth: number): unknown => (depth === 0 ? 1 : { n: nested(depth - 1) });
+  const challenges = [
+    { resource: { url: RESOURCE, size: 1e20 }, accepts: [requirements()] },
+    { resource: { url: RESOURCE, deep: nested(200) }, accepts: [requirements()] },
+    { resource: { url: RESOURCE }, accepts: [{ ...requirements(), extra: { ...requirements().extra, size: 1e20 } }] },
+  ];
+  for (const challenge of challenges) {
+    const result = await prepareX402BuyerSettlement({ authority: authority(), bindAuthorization }, {
+      client: { ...inner, createPaymentPayload },
+      transportPolicy: { mode: "insecure-test" as const },
+      fetchImpl: async () => new Response(JSON.stringify({ x402Version: 2, ...challenge }), { status: 402 }),
+    });
+    expect(result).toEqual({ disposition: "rejected", reason: "x402-payment-requirements-mismatch" });
+  }
+  expect(bindAuthorization).not.toHaveBeenCalled();
+  expect(createPaymentPayload).not.toHaveBeenCalled();
+});

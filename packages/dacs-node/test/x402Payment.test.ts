@@ -670,7 +670,7 @@ describe("coordinator x402 buyer payment track", () => {
         unauthorized: ["operator-action", "x402-prepared-intent-unauthorized"],
         denied: ["operator-action", "wallet-spend-per-order-limit"],
         unavailable: ["pending-retry", "wallet-spend-authority-unavailable"],
-        unbound: ["operator-action", "x402-authorization-valid-before-unbound"],
+        unbound: ["indeterminate", "x402-authorization-valid-before-unbound"],
         skipped: ["operator-action", "x402-authorization-valid-before-unbound"],
       }[failure];
       expect(await track(operationInput())).toMatchObject({ status: expected[0], reasonCode: expected[1] });
@@ -819,17 +819,47 @@ describe("coordinator x402 buyer payment track", () => {
       { disposition: "not-invoked", evidenceHash })).toBe(false);
   });
 
-  it("keeps an operator-action refusal raised after the hold as operator-action", async () => {
+  it("reports a refusal raised after the hold as retryable and frees the slot on a later attempt", async () => {
+    const opened = await database();
+    const options = trackOptions(opened);
+    let now = 1_000;
+    const authenticate = createDacsX402WalletSpendRecoveryAuthenticatorV1({
+      settlementStore: options.settlementStore, owner: "x402-wallet-recovery-test", chainId: 84532,
+      minimumConfirmations: 5, authorizationSearchFromBlock: 1, client: recoveryReader(),
+      verifySignature: validSignature, confirmUnused: safeUnused,
+    });
+    const wallet = constrainedWallet(intent(), authenticate, () => now);
+    let refuse = true;
+    const track = createDacsX402BuyerPaymentTrackV1({ ...options, walletSpendAuthority: wallet,
+      prepareIntent: async (_input, bind) => {
+        await bind(unsignedScope(intent()));
+        if (refuse) throw new DacsLiveEffectInputControlError("operator-action", "x402-prepare-test-refusal");
+        return intent();
+      } });
+    expect(await track(operationInput())).toMatchObject({ status: "indeterminate",
+      reasonCode: "x402-prepare-test-refusal" });
+    expect(options.transport.submitRetained).not.toHaveBeenCalled();
+    expect(await wallet.inspect()).toMatchObject({ activeEffects: 1 });
+    now = 1_011;
+    expect(await track(operationInput())).toMatchObject({ status: "indeterminate",
+      reasonCode: "x402-prepare-test-refusal" });
+    expect(await wallet.inspect()).toMatchObject({ activeEffects: 1, operatorActionReservations: [] });
+    refuse = false;
+    now = 1_022;
+    await track(operationInput());
+    expect(options.transport.submitRetained).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an operator-action refusal raised before any hold as operator-action", async () => {
     const opened = await database();
     const options = trackOptions(opened);
     const track = createDacsX402BuyerPaymentTrackV1({ ...options,
-      prepareIntent: async (_input, bind) => {
-        await bind(unsignedScope(intent()));
+      prepareIntent: async () => {
         throw new DacsLiveEffectInputControlError("operator-action", "x402-prepare-test-refusal");
       } });
     expect(await track(operationInput())).toMatchObject({ status: "operator-action",
       reasonCode: "x402-prepare-test-refusal" });
-    expect(options.transport.submitRetained).not.toHaveBeenCalled();
+    expect(await options.walletSpendAuthority.inspect()).toMatchObject({ activeEffects: 0 });
   });
 
   it("takes no hold from an authority that cannot bind an expiry", async () => {
