@@ -7,7 +7,7 @@ const modulePath = "../../scripts/registry-container-disposition.mjs";
 const { classifyAcceptanceFailure } = await import(modulePath);
 const ioModulePath = "../../scripts/acceptance-evidence-io.mjs";
 const { EVIDENCE_MAX_BYTES, EVIDENCE_MAX_LINE_BYTES, EVIDENCE_MAX_LINES, atomicWriteJson, boundedEvidenceText, evidenceLines,
-  readEvidence, readRequiredEvidence } = await import(ioModulePath);
+  readBoundedFile, readEvidence, readRequiredEvidence } = await import(ioModulePath);
 const repoRoot = resolve(import.meta.dirname, "../..");
 const fixture = (name: string) => readFileSync(join(repoRoot, "test/scripts/fixtures/acceptance-transport", name), "utf8");
 const cli = (...args: string[]) => spawnSync(process.execPath, ["scripts/registry-container-disposition.mjs", ...args],
@@ -126,6 +126,16 @@ describe("evidence read boundaries", () => {
       expect(error.message).toBe(`${reason}: ${path}`);
       expect(error.cause).toBeDefined();
     }
+  });
+  it("names a failed open without exposing its source path and keeps the original error as its cause", () => {
+    if (process.platform === "win32") return;
+    const path = join(tmpdir(), "x".repeat(5000));
+    let error: Error & { cause?: NodeJS.ErrnoException };
+    try { readBoundedFile(path, { name: "registry.log" }); } catch (caught) { error = caught as typeof error; }
+    expect(error!.message).toBe("evidence could not be opened: registry.log");
+    expect(error!.message).not.toContain(path);
+    expect(error!.cause?.code).toBe("ENAMETOOLONG");
+    expect(readEvidence(join(scratchRoot("dacs-read-"), "missing"), { name: "registry.log" })).toBeUndefined();
   });
   it("names the file whose log exceeds the line limit when reading policy findings", () => {
     const root = scratchRoot("dacs-lines-"), output = join(root, "output.json");
