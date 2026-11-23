@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF correct the packed entry point closure",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+      "before": "9335318ecf840977c43accd47d8be052da6760f9",
+      "after": "2f2c2f648bb095b7812aeac6523ae8cc22602bd8"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-f0011d483d0b.json",
+    "packages/dacs-client/test/helpers/entry-point-closure.mjs"
+  ]
+}
