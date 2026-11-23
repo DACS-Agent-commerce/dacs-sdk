@@ -490,7 +490,7 @@ const changeDuringDispatch = (w, change) => {
   } });
 };
 
-test('an answer carrying the co-signature is withheld when the context session ends during its answer pass, after the answer was stored: a first proposal, a recovered one and a cached repeat', async (t) => {
+test('an answer carrying the co-signature is withheld when the context session ends during its answer pass, after the answer was stored: a first proposal, a recovered one and a stored answer never acknowledged, while a repeat of an acknowledged answer is still returned', async (t) => {
   for (const terminal of ['aborted-by-other', 'finalised', 'aborted-by-self']) {
     const ends = (w) => { w.state.session = terminal; };
     const first = await proposalWireWorld(t);
@@ -511,11 +511,29 @@ test('an answer carrying the co-signature is withheld when the context session e
     assert.equal((await laneStates(recovered.f.effectsDirectory, recovered.jobId)).includes('dispatch-acknowledged'), false, `${terminal}: never acknowledged as sent`);
     assert.equal(recovered.agreementSignatures(), 1, terminal);
 
+    // A repeat of an answer that was acknowledged only reads it back, so the session ending during its pass does not withhold it.
     const cached = await proposalWireWorld(t);
-    assert.equal((await cached.post()).status, 200);
+    const delivered = await cached.post();
+    assert.equal(delivered.status, 200);
+    const recorded = await laneStates(cached.f.effectsDirectory, cached.jobId);
     changeDuringDispatch(cached, ends);
     const repeat = await cached.post();
-    assert.deepEqual([repeat.body.error, repeat.body.contribution], ['context_session_terminal', undefined], `${terminal}: a cached repeat's answer is withheld`);
-    assert.equal(cached.agreementSignatures(), 1, terminal);
+    assert.deepEqual([repeat.status, repeat.text], [200, delivered.text], `${terminal}: a cached repeat returns the retained answer`);
+    assert.deepEqual((await laneStates(cached.f.effectsDirectory, cached.jobId)).slice(recorded.length), ['dispatch-started', 'dispatch-acknowledged'], terminal);
+    assert.equal(cached.agreementSignatures(), 1, `${terminal}: no new signature`);
+
+    // A stored answer that was never acknowledged is a first transmission: a retry is refused while the session has ended,
+    // both when it ends during the retry's pass and when it had ended before the retry.
+    for (const [when, endBefore] of [['during the retry', false], ['before the retry', true]]) {
+      const unsent = await proposalWireWorld(t);
+      changeDuringDispatch(unsent, ends);
+      assert.equal((await unsent.post()).body.error, 'context_session_terminal', terminal);
+      if (endBefore) assert.equal(unsent.state.session, terminal);
+      else { unsent.state.session = null; changeDuringDispatch(unsent, ends); }
+      const retry = await unsent.post();
+      assert.deepEqual([retry.status, retry.body.error, retry.body.contribution], [409, 'context_session_terminal', undefined], `${terminal}: a retry of an unsent answer ${when} is refused`);
+      assert.equal((await laneStates(unsent.f.effectsDirectory, unsent.jobId)).includes('dispatch-acknowledged'), false, `${terminal}: never acknowledged as sent`);
+      assert.equal(unsent.agreementSignatures(), 1, terminal);
+    }
   }
 });
