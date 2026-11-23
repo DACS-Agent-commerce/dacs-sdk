@@ -127,7 +127,7 @@ untouched.
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
 
 const host = await startSellerHost({
-  signer,               // the seller key's roles, as openSellerKey returns them: { claim, sign(bytes), integritySigner, ... }
+  signer,               // the seller key's roles, as openSellerKey returns them: { claim, sign(bytes), integritySigner, readOnlyAnswerSigner }
   listing,              // the signed Listing this seller serves; the signer must control it
   dataDirectory,        // absolute real path of a private (0700) directory owned by this user
   contextSessionState,  // optional, synchronous ({ jobId }) -> DACS-5 state name or null
@@ -1201,7 +1201,7 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   canonical address, record, transaction and
   finalized receipt are read again from its source in passive mode; an early
   commitment needs no buyer Agreement anchor for this. A source that fails answers `503
-  seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,
+  seller_source_unavailable` with its cause at the end of its message (`absent`, `changed`, `timeout`,
   `too_large` or `unavailable`), a closed buyer access keeps its own refusal,
   and the stored outcome is never rewritten.
 - It mounts the signed challenge route and the Vet and Agreement context route on
@@ -1221,8 +1221,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   refusals); the envelope (the wire's refusals); the signed path (`peer_request_mismatch`) and
   the scope job (`peer_job_invalid`, `peer_job_mismatch`); anything but `{ scope }` with the
   ten challenge-scope keys (`peer_context_mismatch`); the kit guard
-  (`kit_operation_guard_off`) and the stop predicate (`seller_stopped`, with `cause`
-  `stop_check_failed` or `stop_check_invalid` when it throws or answers a non-boolean); the
+  (`kit_operation_guard_off`) and the stop predicate (`seller_stopped`, whose message ends with
+  `(cause: stop_check_failed)` or `(cause: stop_check_invalid)` when it throws or answers a non-boolean); the
   wire's pre-Agreement admission (Listing pin, parties, delegation, `seller_not_ready`); the
   scope against the Listing (`context_scope_invalid`, `context_generated_at`), buyer access
   and the known job (ten seconds each, `session_admission_unavailable` with its cause);
@@ -1283,6 +1283,24 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `close`. A second finalization refuses `wallet_session_finalize_once`, and
   after a close the handle, the fence and finalization refuse
   `wallet_session_closed`.
+- The port's `runCreate` is the one pass finalization builds, the same one the
+  anchor uses; before finalization it refuses `wallet_session_not_finalized` and
+  after a close `wallet_session_closed`, before any read. The Vet provider
+  (`createDevnetDemoAgreementContextProvider`) and the Listing publisher
+  (`createDevnetDemoListingPublisher`) require a `runCreate` option: pass
+  `port.runCreate`. Any `runCreate` the kit did not issue, a wrapper included,
+  is refused with a TypeError. Each Vet component signature, the identity
+  presentation and the Listing signature is made in that pass, right after the
+  boundary's stop check and final checks. The Listing signature and the
+  presentation are retained in the effect history: the same Listing draft
+  published again, also after a restart, reuses its signature without asking
+  the wallet. Their signer has 10 seconds from its call (`eb_sign_timeout`,
+  nothing retained). One that answers in time but after the pass window ends is
+  retained and then refused `stop_check_timeout`; the Listing retry reuses it.
+  A Vet signer that waits for a person holds the host's fence until it answers.
+  The provider's `resolveBuyer`, `recoverBuyer` and `resolveSeller`, each method
+  of the kit client `createSellerAgentClient` and the `request` of
+  `createSellerWireClientAuth` check the kit operation guard at each call.
 - Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).
@@ -1299,9 +1317,13 @@ one read answer, refusal or discovery document, whose `sign` returns a Promise
 of the signature (always `await` both: a Promise is never accepted as signature
 bytes) and checks the TP-1 authority when it signs, and the kit guard for a
 `ready: true` discovery document; and `integritySigner`, for seller-state journal bytes only.
-After `close()` every role refuses. The host signs the discovery document it serves at
-`/.well-known/dacs-seller.json` and each read answer through `readOnlyAnswerSigner`, and
-every other answer with `sign`.
+After `close()` every role refuses. The host, `createSellerAgent` and `createWireContext` each
+require all three roles (a TypeError before anything is opened). The host signs the discovery
+document it serves at `/.well-known/dacs-seller.json`, each read answer and each refusal through
+`readOnlyAnswerSigner`, so a re-held host still answers them. A refusal body is exactly
+`{ error, message }`; a cause is at the end of the message as `(cause: <cause>)`. Every other
+answer is signed with `sign` inside a short pass of the host's effect boundary, so it waits behind
+any pass that holds the boundary's fence, for up to 10 seconds (`tp1_fence_timeout`).
 
 This checkout provides source modules. Build the core from the same checkout
 before importing the seller source kit.
