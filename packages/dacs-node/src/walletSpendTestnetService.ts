@@ -182,11 +182,6 @@ function composeHandler({ settings, tokenDigest, stores, reader }: Readonly<{
   const recovery = createDacsWalletSpendTestnetRecoveryV1({
     policy,
     reader,
-    async readState() {
-      const state = await stores.stateStore().read?.(stores.lineageKey);
-      if (state === undefined || state === null) throw new Error("wallet-spend-continuity-state-missing");
-      return state;
-    },
     report: (line) => process.stderr.write(`${JSON.stringify(line)}\n`),
   });
   return createDacsWalletSpendAuthorityServiceV2({
