@@ -39,6 +39,7 @@ const VERDICT_CODES: Readonly<Record<DacsWalletSpendTestnetChainVerdictV1, strin
 const ANCESTRY_UNPROVEN = "wallet-spend-chain-ancestry-unproven";
 const HOLD_UNBOUND = "wallet-spend-chain-hold-unbound";
 const HOLD_CHANGED = "wallet-spend-chain-hold-changed";
+const HOLD_MISSING = "wallet-spend-chain-hold-missing";
 const NONCE_CLAIMED = "wallet-spend-chain-nonce-claimed";
 const LOWERCASE_ADDRESS_RE = /^0x[0-9a-f]{40}$/;
 
@@ -80,8 +81,8 @@ function nonceFor(jobId: string, phaseIndex: number): Hex {
  * time is past the hold's bound `validBefore`. `not-invoked` is never accepted.
  * After the chain walk the rule reads the lane's state once more. A payment is
  * refused while another rail's hold for the same job phase, which shares the
- * nonce, is reserved, effect-pending or settled: each hold is stored before its
- * own check runs, so of two such holds the later check always sees the other.
+ * nonce, is reserved, effect-pending or settled. The hold itself must be in
+ * that state, so of two such holds the later read always sees the other.
  * A release is refused unless the stored hold still has the generation and
  * expiry the core supplied; the core compares both again when it releases.
  *
@@ -229,9 +230,10 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
   }
 
   /**
-   * Step 4, after the walk: a payment needs no other live or settled hold on the
-   * same nonce, unless this hold already settled (a retry, which the core answers
-   * from its record), and a release needs the stored hold unchanged.
+   * Step 4, after the walk: the hold must be stored. A payment needs no other
+   * live or settled hold on the same nonce, unless this hold already settled (a
+   * retry, which the core answers from its record), and a release needs the
+   * stored hold unchanged.
    * @returns the refusal's reason code, or `undefined` when the state allows it.
    */
   async function stateRefusal(
@@ -242,16 +244,17 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
     const state = await input.readState().catch(() => undefined);
     if (state === undefined) return VERDICT_CODES.unavailable;
     const row = state.reservations.find((stored) => stored.reservationId === reservation.reservationId);
+    if (row === undefined) return HOLD_MISSING;
     if (disposition === "settled") {
       const nonce = nonceFor(reservation.jobId, reservation.phaseIndex);
-      const claimed = row?.stage !== "settled" && state.reservations.some((other) =>
+      const claimed = row.stage !== "settled" && state.reservations.some((other) =>
         other.reservationId !== reservation.reservationId && other.stage !== "released" &&
         nonceFor(other.reservation.jobId, other.reservation.phaseIndex) === nonce);
       if (!claimed) return undefined;
       reportForOperator(reservation.reservationId, NONCE_CLAIMED);
       return NONCE_CLAIMED;
     }
-    const unchanged = row !== undefined && row.generation === storedHold?.generation &&
+    const unchanged = row.generation === storedHold?.generation &&
       row.authorizationValidBefore === storedHold.authorizationValidBefore;
     return unchanged ? undefined : HOLD_CHANGED;
   }
@@ -277,7 +280,7 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
       return { accepted: false, reasonCode: "wallet-spend-chain-absence-kind-refused" };
     }
     if (observation.disposition === "terminal-absent" && storedHold === undefined) {
-      return { accepted: false, reasonCode: "wallet-spend-chain-hold-missing" };
+      return { accepted: false, reasonCode: HOLD_MISSING };
     }
     let found: Readonly<{ verdict: DacsWalletSpendTestnetChainVerdictV1; reasonCode: string }>;
     try {

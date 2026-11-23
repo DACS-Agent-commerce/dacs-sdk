@@ -511,6 +511,15 @@ describe("testnet wallet-spend recovery rule", () => {
       .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-paid" });
   });
 
+  it("refuses a payment for a hold the state does not hold yet", async () => {
+    const state = defaultChain();
+    payment(state);
+    const empty = { ...stateWithHold(RESERVATION, VALID_BEFORE), reservations: [] };
+
+    await expect(rule(await chainStub(state), empty).check(RESERVATION, settledClaim()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-hold-missing" });
+  });
+
   it("refuses a decision when the state cannot be read after the chain walk", async () => {
     const unreadable = async (): Promise<WalletSpendStateV1> => {
       throw new Error("state store offline");
