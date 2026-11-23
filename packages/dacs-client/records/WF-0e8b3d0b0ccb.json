@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add the host stop to the service session renewal methods",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "d910948e645a34b26ee365d45e6342593c91ea1e",
+      "after": "7ce24547868d450cc0726f0f1d0494b6a9205a63"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-0e8b3d0b0ccb.json",
+    "packages/dacs-client/src/purchases.mjs"
+  ],
+  "note": "The purchase service's sessionRenewal and sessionRenewalAccept checked the hold but not the host stop, so a stopped host read the purchase token before the protocol layer refused. Both now run the service's stop check right after the hold check, as the other service methods do, and refuse writes_stopped before any authority read."
+}

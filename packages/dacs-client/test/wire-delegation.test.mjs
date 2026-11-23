@@ -1,19 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalize, contentHash, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
-import { world, party, purchase as purchaseOf, request, code, challengeSeller, unreachableSeller, OLD_DELEGATION, T0, JOB } from './helpers/wire-client-fixture.mjs';
-import { fixtureListing } from './fixtures/listings.mjs';
+import { world, purchase, request, code, challengeSeller, sellerWorld, OLD_DELEGATION, T0, JOB } from './helpers/wire-client-fixture.mjs';
 const bytes = p => Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(p));
 // The seller is unreachable unless a test names one: the delegation is accepted and saved before the challenge is sent.
-const purchase = (t, w, options = {}) => purchaseOf(t, w, { fetchImpl: unreachableSeller, ...options });
 const identity = async (p) => p.service.identityRequest(p.get(), p.op.terms.buyer.wallet);
 const delegate = (p, signature) => p.service.agreementDelegation(p.get(), signature);
-// A world whose endpoint proof names the purchase's own Listing, so its seller requests can be signed.
-const sellerWorld = (t) => {
-  const listing = fixtureListing(party(2), { now: T0 });
-  return world(t, { pin: { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing) } });
-};
 // The delegation, then the seller's challenge, then the wallet's presentation over it.
 const plan = async (p, w, signature) => {
   const { message } = await delegate(p, signature);
@@ -68,7 +61,7 @@ test("every member of the delegation payload and its signature is mutated once, 
   assert.equal(w.state.signs.length, 0);
 });
 test("a derived Agreement deadline earlier than the delegation's expiry is refused seller_delegation_invalid (K2-DEL-8)", async (t) => {
-  const w = await sellerWorld(t), p = await purchase(t, w, { policy: () => ({ expiresAt: T0 + 7200000 }), fetchImpl: challengeSeller(w) }), r = await identity(p);
+  const w = await sellerWorld(t), p = await purchase(t, w, { policy: () => ({ expiresAt: T0 + 7200000 }), seller: challengeSeller(w) }), r = await identity(p);
   await assert.rejects(plan(p, w, w.buyer.sign(bytes(r.delegation.payload)).toString('base64url')), code('seller_delegation_invalid'));
   assert.equal(p.get().state.protocol.planned, undefined);
 });
@@ -234,7 +227,7 @@ test('an authority read that never answers while the wallet delegation is accept
   assert.equal(p.get().state.protocol.sessionDelegation.signature, undefined);
 });
 test('an authority read that never answers while the Agreement plan is saved ends at the seller deadline with its own cause', async (t) => {
-  const w = await sellerWorld(t), p = await purchase(t, w, { fetchImpl: challengeSeller(w) }), r = await identity(p);
+  const w = await sellerWorld(t), p = await purchase(t, w, { seller: challengeSeller(w) }), r = await identity(p);
   const { message } = await delegate(p, w.buyer.sign(bytes(r.delegation.payload)).toString('base64url'));
   const expire = deadline(t);
   silentAfterEntry(w);

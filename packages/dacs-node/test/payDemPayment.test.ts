@@ -597,6 +597,145 @@ describe("native DEM buyer payment track", () => {
     });
   });
 
+  describe("replaying a completed native payment", () => {
+    const RAIL_RESULT = {
+      ok: true,
+      txHash: TX_HASH,
+      chainId: "demos",
+      payer: PAYER,
+      payee: PAYEE,
+      finality: { model: "bft-final" as const },
+      blockNumber: 42,
+      txRefKind: "demos" as const,
+      networkFeeOs: "1000000000",
+      execution: "executed" as const,
+    };
+    const SETTLEMENT = { ...RAIL_RESULT, amountOs: AUTHORITY.amountOs };
+
+    async function completedPayment(
+      reconcile: DacsPayDemBuyerPaymentTrackOptionsV1["reconcile"],
+    ) {
+      const database = await open(join(root(), "buyer.sqlite"));
+      putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+      const settle = vi.fn(async (input: Parameters<PayDemRail["settle"]>[0]) => {
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 7,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          network: "demos",
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        return RAIL_RESULT as PayDemRailResult;
+      });
+      const publishNotice = vi.fn();
+      const baseWallet = createAccountingTestWalletSpendAuthorityV1({
+        wallet: PAYER_WALLET,
+        chainId: "demos",
+        asset: "DEM",
+        maximumConcurrentEffects: 1,
+      });
+      const walletReconcile = vi.fn(baseWallet.reconcile);
+      const payment = createDacsPayDemBuyerPaymentTrackV1({
+        walletSpendAuthority: { ...baseWallet, reconcile: walletReconcile },
+        database,
+        workerId: "buyer-dem-replay",
+        rail: markDacsSdkPreparedPayDemRailV1<PayDemRail>({ address: PAYER, settle }),
+        resolveAuthority: () => AUTHORITY,
+        reconcile,
+        publishNotice,
+        retryDelayMs: 1,
+      });
+      let operation: Parameters<typeof payment>[0] | undefined;
+      const coordinator = createFixedPricePayDemBuyerCoordinator({
+        store: database.createPayDemCoordinatorStore("buyer"),
+        workerId: "buyer-coordinator-replay",
+        operations: {
+          agreement: success,
+          payment: (input) => {
+            operation = input;
+            return payment(input);
+          },
+        },
+      });
+      await coordinator.startOrder(ORDER);
+      await coordinator.runPending({ limit: 2 });
+      expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
+        .toMatchObject({ state: "final", outcome: "success" });
+      if (operation === undefined) throw new Error("payment was not run");
+      return {
+        replay: () => payment(operation!),
+        settle,
+        publishNotice,
+        walletReconcile,
+      };
+    }
+
+    it("reports completion when the node still shows the recorded transfer", async () => {
+      const reconcile = vi.fn(() => ({
+        status: "completed" as const,
+        settlement: SETTLEMENT,
+      }));
+      const { replay, settle, publishNotice, walletReconcile } =
+        await completedPayment(reconcile);
+      const noticesBefore = publishNotice.mock.calls.length;
+
+      await expect(replay()).resolves.toMatchObject({
+        status: "final",
+        outcome: "success",
+        reference: `demos:${TX_HASH}:42`,
+      });
+      expect(reconcile).toHaveBeenCalledTimes(1);
+      expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({
+        prepared: expect.objectContaining({ txHash: TX_HASH, nonce: 7 }),
+      }));
+      expect(settle).toHaveBeenCalledTimes(1);
+      expect(publishNotice).toHaveBeenCalledTimes(noticesBefore);
+      expect(walletReconcile).not.toHaveBeenCalled();
+    });
+
+    it("does not report a recorded payment complete when the node finds no such transfer", async () => {
+      const reconcile = vi.fn(() => ({
+        status: "absent" as const,
+        absenceProofHash: "7".repeat(64),
+      }));
+      const { replay, settle, walletReconcile } = await completedPayment(reconcile);
+
+      await expect(replay()).resolves.toEqual({
+        status: "operator-action",
+        reasonCode: "effect-replay-record-absent",
+      });
+      expect(settle).toHaveBeenCalledTimes(1);
+      expect(walletReconcile).not.toHaveBeenCalled();
+    });
+
+    it("does not report a recorded payment complete when the node shows another block", async () => {
+      const { replay } = await completedPayment(() => ({
+        status: "completed" as const,
+        settlement: { ...SETTLEMENT, blockNumber: 99 },
+      }));
+
+      await expect(replay()).resolves.toEqual({
+        status: "operator-action",
+        reasonCode: "effect-replay-result-mismatch",
+      });
+    });
+
+    it("does not report a recorded payment complete when the node read fails", async () => {
+      const { replay } = await completedPayment(() => {
+        throw new Error("node unreachable");
+      });
+
+      await expect(replay()).resolves.toMatchObject({
+        status: "indeterminate",
+        reasonCode: "effect-reauthentication-unavailable",
+      });
+    });
+  });
+
   it.each([
     ["missing network fee", undefined, "executed"],
     ["missing execution", "1000000000", undefined],

@@ -16,7 +16,7 @@ import { TP1_APPROVED_IDENTITY_RECORD, TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES } fr
 import { NetworkBindingError } from '../src/dacs/network-binding.mjs';
 import { nativeWalletLaneKey } from '../src/wallet/devnet-native-transport.mjs';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
-import { createEffectBoundary, cutAppend, flush, setPurchaseAdmission } from './helpers/effect-boundary-fixture.mjs';
+import { createEffectBoundary, cutAppend, flush, refusedAfterContext, setPurchaseAdmission, settleUntil } from './helpers/effect-boundary-fixture.mjs';
 import { boundedCreateWorld } from './helpers/native-create-boundary.mjs';
 import { JOB_IDS } from './helpers/native-create-world.mjs';
 import { CURRENT_PIN, IDENTITY, LANE_PREFIX, PINS, RETIRED_PIN, nativeWorld as world } from './helpers/native-effect-world.mjs';
@@ -24,7 +24,6 @@ import { inPass } from './helpers/pass-context-fixture.mjs';
 
 const LEASE_MS = 1000;
 const OTHER_PURCHASE = '0x' + '9'.repeat(64);
-const settleUntil = async condition => { for (let tries = 0; tries < 50 && !condition(); tries++) await flush(); assert.ok(condition(), 'the expected state was not reached'); };
 const states = records => records.map(record => record.state);
 
 test('a 0x-prefixed lower-case chain identity binds and keys its lane the same as the bare form', async t => {
@@ -516,17 +515,6 @@ test('while held, every native path refuses profile_not_admitted with zero signe
   assert.equal(c.owner.events.length, fences, 'recovery takes no fence');
   assert.deepEqual(c.calls, NOTHING_SENT);
 });
-
-// Runs `run()` with the transport's next getContext call after `arm`'s trigger held (once), applies `change`, releases it, and returns the outcome.
-async function refusedAfterContext(world, arm, run, change) {
-  let held;
-  arm(() => { held ??= world.gate.hold(); });
-  const outcome = run().then(value => ({ value }), error => ({ error }));
-  await settleUntil(() => held?.reached === true);
-  change();
-  held.release();
-  return outcome;
-}
 
 test("with the real transport's final getContext() held pending, a stop, a re-hold or a reconnect behind the fence, then release: zero fetchImpl calls and the withheld state on initial confirmation, initial broadcast, recovery confirmation and recovery resend", async t => {
   for (const [label, code, change] of CHANGES) {

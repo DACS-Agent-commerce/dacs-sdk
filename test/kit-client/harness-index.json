@@ -62,17 +62,18 @@
     "owner": "P14a",
     "flippedBy": null,
     "current": {
-      "step": "identity",
-      "code": "seller_challenge_unavailable",
-      "failureClass": "OperationError",
-      "layer": "client",
+      "step": "plan",
+      "code": "agreement_context_held",
+      "failureClass": "SellerUnavailableError",
+      "layer": "response-auth",
       "counters": {
-        "context": 0,
+        "contextChallenge": 1,
+        "context": 1,
         "proposals": 0,
         "commitments": 0,
         "commitmentSignature": 0,
         "payments": 0,
-        "sellerSignatures": 0,
+        "sellerSignatures": 1,
         "walletEffects": 0
       },
       "updatedBy": "P14a"

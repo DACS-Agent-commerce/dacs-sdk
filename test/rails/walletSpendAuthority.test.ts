@@ -15,6 +15,7 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import {
   captureWalletSpendPolicyV1,
+  resumeWalletSpendAuthorityOperationV1,
   combineWalletSpendEffectFenceV1,
   createInMemoryWalletSpendStateStore,
   createWalletSpendAuthorityV1,
@@ -1166,4 +1167,116 @@ describe("canonical wallet identity", () => {
     expect(await wallet.reserve(reservation("one", { wallet: BARE, payee: "seller-2" })))
       .toMatchObject({ status: "conflict" });
   });
+});
+
+
+test("binds the authorization validBefore once when a hold is reserved", async () => {
+  const retained = createInMemoryWalletSpendStateStore();
+  const selected = policy();
+  let storedScope = "";
+  const store: WalletSpendStateStore = {
+    async transact(scope, operation) {
+      storedScope = scope;
+      return retained.transact(scope, operation);
+    },
+  };
+  let now = 1_000;
+  let value: unknown = 1_900_000_000;
+  const calls: unknown[] = [];
+  const dependencies = { store, readBalance: async () => "1000",
+    authenticateRecovery: async () => true, now: () => now,
+    leaseDurationMs: 100, owner: "binding-worker" };
+  const wallet = createWalletSpendAuthorityV1(selected, { ...dependencies,
+    bindAuthorizationValidBefore: async (input) => {
+      calls.push(input);
+      if (value instanceof Error) throw value;
+      return value as number;
+    } });
+  const item = reservation("authorization");
+  const claim = await wallet.reserve(item, { authorizationWindowSeconds: 120 });
+  if (claim.status !== "reserved") throw new Error("expected reservation");
+  expect(calls).toEqual([{ reservation: item, authorizationWindowSeconds: 120 }]);
+  expect(claim.permit.authorizationValidBefore).toBe(value);
+  const snapshot = () => retained.transact(storedScope, (state) => {
+    if (!state) throw new Error("missing state");
+    return { state, value: state };
+  });
+  const original = await snapshot();
+  expect(original?.reservations[0]).toMatchObject({ authorizationValidBefore: value });
+  expect((await wallet.reserve(item)).status).toBe("held");
+  expect(calls).toHaveLength(1);
+  expect(await snapshot()).toEqual(original);
+  const permit = {
+    reservationId: claim.permit.reservationId, bindingHash: claim.permit.bindingHash,
+    settlementBindingHash: claim.permit.settlementBindingHash, reservation: item,
+    owner: claim.permit.owner, generation: claim.permit.generation,
+    authorizationValidBefore: claim.permit.authorizationValidBefore,
+  };
+  await expect(resumeWalletSpendAuthorityOperationV1(wallet, {
+    operation: "begin", permit: { ...permit, authorizationValidBefore: 1_900_000_001 },
+  })).rejects.toThrow("wallet spend claimed operation replay is stale");
+  expect((await snapshot())?.reservations[0]?.stage).toBe("reserved");
+  await resumeWalletSpendAuthorityOperationV1(wallet, { operation: "begin", permit });
+  expect((await snapshot())?.reservations[0]?.stage).toBe("effect-pending");
+  now = 1_101;
+  await wallet.reconcile(item, { disposition: "terminal-absent", evidenceHash: HASH_C });
+  expect((await snapshot())?.reservations[0]).toMatchObject({
+    stage: "released", authorizationValidBefore: value,
+  });
+  value = 1_900_000_100;
+  const next = await wallet.reserve(item);
+  expect(calls).toHaveLength(2);
+  expect(next.status === "reserved" && next.permit.authorizationValidBefore).toBe(value);
+  expect((await snapshot())?.reservations[0]?.authorizationValidBefore).toBe(value);
+  for (const invalid of [new Error("chain read failed"), 0, -1, 1.5, "1", 2 ** 53]) {
+    const cleanStore = createInMemoryWalletSpendStateStore();
+    const broken = createWalletSpendAuthorityV1(selected, { ...dependencies, store: cleanStore,
+      bindAuthorizationValidBefore: async () => {
+        if (invalid instanceof Error) throw invalid;
+        return invalid as number;
+      } });
+    if (!original) throw new Error("missing state");
+    await cleanStore.transact(storedScope, () => ({
+      state: { ...original, reservations: [] }, value: undefined,
+    }));
+    const readState = () => cleanStore.transact(storedScope, (state) => {
+      if (!state) throw new Error("missing state");
+      return { state, value: canonicalize(state) };
+    });
+    const before = await readState();
+    await expect(broken.reserve(item)).rejects.toThrow("wallet spend authorization validBefore is unavailable");
+    expect(await readState()).toEqual(before);
+  }
+  for (const invalid of [0, "120"]) {
+    await expect(wallet.reserve(item, { authorizationWindowSeconds: invalid as number }))
+      .rejects.toThrow();
+    expect(calls).toHaveLength(2);
+  }
+  const plainStore = createInMemoryWalletSpendStateStore();
+  const unbound = createWalletSpendAuthorityV1(selected, { ...dependencies, store: plainStore });
+  const plain = await unbound.reserve(item);
+  expect(plain.status === "reserved" && plain.permit).not.toHaveProperty("authorizationValidBefore");
+  await plainStore.transact(storedScope, (state) => {
+    if (!state) throw new Error("missing state");
+    expect(state.reservations[0]).not.toHaveProperty("authorizationValidBefore");
+    return { state, value: undefined };
+  });
+  await retained.transact(storedScope, (state) => {
+    if (!state) throw new Error("missing state");
+    return { state: { ...state, reservations: state.reservations.map((row) => ({
+      ...row, authorizationValidBefore: "1" as never,
+    })) }, value: undefined };
+  });
+  await expect(wallet.inspect()).rejects.toThrow("wallet spend state has an invalid reservation shape");
+});
+
+test("an authorization window without an expiry binder is denied before any hold is taken", async () => {
+  const wallet = authority({});
+  expect(await wallet.reserve(reservation("windowed"), { authorizationWindowSeconds: 120 }))
+    .toEqual({ status: "denied", reason: "authorization-window-unsupported" });
+  expect(await wallet.inspect()).toMatchObject({ activeEffects: 0 });
+  // The one concurrency slot is still free, and the same id can still be reserved without a window.
+  expect((await wallet.reserve(reservation("windowed"))).status).toBe("reserved");
+  // A window request for an id that already holds a row reports that row, not the missing binder.
+  expect((await wallet.reserve(reservation("windowed"), { authorizationWindowSeconds: 120 })).status).toBe("held");
 });
