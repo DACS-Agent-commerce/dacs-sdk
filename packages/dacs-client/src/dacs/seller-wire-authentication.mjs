@@ -21,10 +21,11 @@ const evidenceMembers = (kept) => Object.fromEntries(EVIDENCE_MEMBERS.filter((me
  * Without `evidence` it signs only the routes up to the commitment (proposals, state, context, context challenge, commitments and commitment signature); the payment routes, the bundle routes and the buyer's bundle copy are refused with continuation_commitment_invalid before the signer is called, and a read of an already committed purchase is signed as a read of a new one.
  * The challenge and context routes are signed for `body.scope.jobId` with `agreementHash = sha256(JCS(body.scope))`; every other route needs `job.agreementHash`
  * (the retained plan's) and is refused with OperationError(seller_plan_required) without it.
- * Rejects with wire errors or profile_not_admitted; malformed configuration throws TypeError, and a missing delegation throws OperationError(seller_delegation_unavailable). No transport is invoked.
+ * `assertNotStopped(path)` (optional) is the host stop check: it runs after each hold check, at request entry and in the step that ends at the session signature, and throws to refuse.
+ * Rejects with wire errors, profile_not_admitted or the host stop's refusal (writes_stopped, stop_check_failed, stop_check_invalid); malformed configuration throws TypeError, and a missing delegation throws OperationError(seller_delegation_unavailable). No transport is invoked.
  * `request` takes optional `{ signal, checkDeadline }` guards for one absolute deadline: once it aborts, the session signer is not called and a late signature is dropped.
  */
-export function createSellerWireAuthentication({ admission, sessionSigner, delegation, seller, publicEndpoint, endpointProof, job, evidence, now = () => Date.now() }) {
+export function createSellerWireAuthentication({ admission, sessionSigner, delegation, seller, publicEndpoint, endpointProof, job, evidence, assertNotStopped = () => {}, now = () => Date.now() }) {
   if (!admission?.binding || typeof admission.currentLocal !== 'function') throw new TypeError('admission_required');
   if (!CLAIM.test(sessionSigner?.claim) || typeof sessionSigner?.sign !== 'function' || !CLAIM.test(seller)
     || !isPublicEndpoint(publicEndpoint) || !job?.jobId || !job.listingPin || !job.profile || typeof now !== 'function') throw new TypeError('seller_wire_configuration_invalid');
@@ -36,6 +37,7 @@ export function createSellerWireAuthentication({ admission, sessionSigner, deleg
   const signerFor = (path, localDigest, retainedDelegation, { signal, checkDeadline }) => ({ claim: sessionSigner.claim, async sign(bytes) {
     signal?.throwIfAborted(); checkDeadline();
     assertPurchaseActionsAdmitted();
+    assertNotStopped(path);
     if (canonicalize(currentLocal()) !== localDigest) throw new OperationError('tp1_local_binding_changed', 'the actor connection changed before signing');
     if (!isReadRoute(path) && now() >= retainedDelegation.payload.expiresAt) throw new WireError('peer_delegation_expired', 500);
     signal?.throwIfAborted(); checkDeadline();
@@ -47,6 +49,7 @@ export function createSellerWireAuthentication({ admission, sessionSigner, deleg
     async request(path, body, text, { signal, checkDeadline = () => {} } = {}) {
       signal?.throwIfAborted(); checkDeadline();
       assertPurchaseActionsAdmitted();
+      assertNotStopped(path);
       const bootstrap = BOOTSTRAP_PATHS.has(path);
       const jobId = bootstrap ? body.scope?.jobId : body.transportIdentity?.jobId ?? body.jobId;
       if (jobId !== job.jobId) throw new OperationError('peer_job_mismatch', 'request differs from the retained purchase');
@@ -72,6 +75,7 @@ export function createSellerWireAuthentication({ admission, sessionSigner, deleg
     async resumeProof({ payload }, { signal, checkDeadline = () => {} } = {}) {
       signal?.throwIfAborted(); checkDeadline();
       assertPurchaseActionsAdmitted();
+      assertNotStopped(payload.path);
       const local = currentLocal(), time = now(), retainedDelegation = JSON.parse(JSON.stringify(delegation));
       return signExplicitCreateResume({ version: '1', kind: 'explicit-create-resume', buyer: payload.buyer, seller: payload.seller, listingPin: payload.listingPin,
         jobId: payload.jobId, path: payload.path, agreementHash: payload.agreementHash, requestHash: wireRequestHash(payload), nonce: randomBytes(PROOF_NONCE_BYTES).toString('base64url'),

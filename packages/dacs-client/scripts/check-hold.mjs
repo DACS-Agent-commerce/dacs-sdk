@@ -35,8 +35,8 @@ class UsageError extends Error {}
 export const DERIVED_RULE_MODULES = Object.freeze(["scripts/delta-freeze.mjs", "scripts/delta-assemble.mjs", "scripts/delta-map.mjs", "scripts/delta-record.mjs", "scripts/publication-text.mjs", "scripts/source-git.mjs"]);
 
 export const PINNED = Object.freeze({
-  holdSha256: "63b2add518c8c1653f810106e82d6b3e584d5c941c165a67bc7569d2f3814e2b",
-  holdBytesSha256: "e4405492e12390f7a5ae9cd9f41a0a256ef6c294c59e2fe3095290fba02c549a",
+  holdSha256: "585c90767b16f452d5378612f10cccbe418eedb16019f9e75abe41decf16ab03",
+  holdBytesSha256: "bbebfd028ed2d73b1c6d68dc5db5c86ce7fb7dbf231ce38ad22e50811b3b54f1",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",

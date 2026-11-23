@@ -32,7 +32,7 @@ test('npm pack ships the four entry points, their reviewed import closure and th
   for (const path of ['src/dacs/seller-agent-error.mjs', 'src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-session-limits.mjs']) {
     assert.ok(!files.includes(path), `${path} stays outside the buyer closure`);
   }
-  for (const path of ['src/dacs/purchase-admission-state.mjs', 'src/public-admission.mjs']) assert.ok(files.includes(path), `${path} ships`);
+  for (const path of ['src/dacs/purchase-admission-state.mjs', 'src/public-admission.mjs', 'src/host-stop.mjs']) assert.ok(files.includes(path), `${path} ships`);
 });
 
 test('the packed archive offers no admission bypass and every packed module sees PURCHASE_ADMISSION held', t => {

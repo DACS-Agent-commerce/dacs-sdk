@@ -15,6 +15,8 @@ import type {
 } from "./x402BuyerSettlement.js";
 import {
   captureX402BuyerPreparationAuthority,
+  X402BuyerAuthorizationBindingError,
+  type X402BuyerAuthorizationBindingV1,
   type X402BuyerChallengeClient,
   type X402BuyerPreparationAuthority,
 } from "./x402BuyerTransport.js";
@@ -37,6 +39,8 @@ const REQUIREMENT_KEYS = [
 export interface DacsX402BuyerEvmChallengeClientConfig {
   /** Buyer EVM key. It remains captured inside the local signing client. */
   evmPrivateKey: string;
+  /** Require an authority-bound hold expiry on every signing call. */
+  requireHoldValidBefore?: true;
   /** The authenticated DACS authority also supplied to preparation. */
   authority: Readonly<X402BuyerPreparationAuthority>;
   /**
@@ -228,6 +232,7 @@ function captureChallengeClientConfig(
   value: unknown,
 ): Readonly<{
   evmPrivateKey: `0x${string}`;
+  requireHoldValidBefore?: true;
   authority: Readonly<X402BuyerPreparationAuthority>;
   expectedRequirements: Readonly<X402BuyerPaymentRequirements>;
 }> {
@@ -238,7 +243,11 @@ function captureChallengeClientConfig(
     throw new TypeError("DACS x402 buyer config must be a plain data record");
   }
   const descriptors = Object.getOwnPropertyDescriptors(value);
-  if (Object.keys(descriptors).length !== keys.length ||
+  const holdRequired = descriptors.requireHoldValidBefore;
+  if ((holdRequired !== undefined && (!holdRequired.enumerable ||
+      !("value" in holdRequired) || holdRequired.value !== true)) ||
+      Object.keys(descriptors).some((key) => key !== "requireHoldValidBefore" &&
+        !keys.some((required) => required === key)) ||
       keys.some((key) => {
         const descriptor = descriptors[key];
         return !descriptor || !descriptor.enumerable || !("value" in descriptor) ||
@@ -260,6 +269,7 @@ function captureChallengeClientConfig(
   );
   return Object.freeze({
     evmPrivateKey: evmPrivateKey as `0x${string}`,
+    ...(holdRequired === undefined ? {} : { requireHoldValidBefore: true as const }),
     authority,
     expectedRequirements,
   });
@@ -314,6 +324,7 @@ export async function createDacsX402BuyerEvmChallengeClient(
     throw new TypeError("DACS x402 buyer key does not control the authenticated payer");
   }
   const nonce = dacsNonce(authority.jobId, authority.phaseIndex);
+  let holdValidBefore: number | undefined;
   const chainId = Number(authority.network.slice("eip155:".length));
 
   const scheme: SchemeNetworkClient = {
@@ -327,8 +338,8 @@ export async function createDacsX402BuyerEvmChallengeClient(
           "x402 challenge requirements do not match DACS signing authority",
         );
       }
-      const now = Math.floor(Date.now() / 1_000);
-      const validBefore = now + expected.maxTimeoutSeconds;
+      const now = holdValidBefore === undefined ? Math.floor(Date.now() / 1_000) : 0;
+      const validBefore = holdValidBefore ?? now + expected.maxTimeoutSeconds;
       if (!Number.isSafeInteger(now) || now < 0 ||
           !Number.isSafeInteger(validBefore)) {
         throw new TypeError("DACS x402 authorization clock is outside the supported range");
@@ -341,6 +352,9 @@ export async function createDacsX402BuyerEvmChallengeClient(
         validBefore: String(validBefore),
         nonce,
       };
+      if (holdValidBefore !== undefined && authorization.validBefore !== String(holdValidBefore)) {
+        throw new X402BuyerAuthorizationBindingError("x402-authorization-valid-before-mismatch");
+      }
       const signature = await account.signTypedData({
         domain: {
           name: expected.extra.name as string,
@@ -409,7 +423,21 @@ export async function createDacsX402BuyerEvmChallengeClient(
     ) {
       return httpClient.getPaymentRequiredResponse(getHeader, body);
     },
-    async createPaymentPayload(paymentRequired: unknown) {
+    async createPaymentPayload(
+      paymentRequired: unknown, binding?: Readonly<X402BuyerAuthorizationBindingV1>,
+    ) {
+      if (binding !== undefined) {
+        if (!isRecord(binding) || Object.keys(binding).length !== 1 ||
+            !Number.isSafeInteger(binding.validBefore) || binding.validBefore <= 0) {
+          throw new X402BuyerAuthorizationBindingError("x402-authorization-valid-before-unbound");
+        }
+        if (holdValidBefore !== undefined && holdValidBefore !== binding.validBefore) {
+          throw new X402BuyerAuthorizationBindingError("x402-authorization-valid-before-mismatch");
+        }
+        holdValidBefore = binding.validBefore;
+      } else if (captured.requireHoldValidBefore) {
+        throw new X402BuyerAuthorizationBindingError("x402-authorization-valid-before-unbound");
+      }
       const payload = await httpClient.createPaymentPayload(paymentRequired as never);
       // x402 core materializes an `extensions: undefined` convenience member.
       // It is absent on the JSON wire and therefore must also be absent from the

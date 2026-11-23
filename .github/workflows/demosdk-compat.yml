@@ -4,9 +4,8 @@ name: demosdk compatibility
 # detects new in-range releases before another PR arrives
 # (the demosdk-pin-drift job, scheduled runs only, so it never blocks a PR)
 # and adds build/declaration emit at 4.0.23 and the newest in-range release.
-# Its PR runs cover changes to this workflow or dependency configuration only;
-# source changes get the 4.0.23 checks on the next daily run after they reach the default branch
-# (scheduled runs use the default branch only).
+# PR runs cover changes to this workflow, dependency files, type configuration, the SDK source, the tests
+# and the client and Node host packages, so a break against 4.0.23 shows up before the change merges.
 # When bumping the pinned demosdk, update demosdk-pinned-tests; update the matrix entry here too.
 # The demosdk-pin-drift job also passes the pinned version to scripts/demosdk-pin-drift.mjs.
 
@@ -19,6 +18,11 @@ on:
       - ".github/workflows/demosdk-compat.yml"
       - "package.json"
       - "package-lock.json"
+      - "tsconfig*.json"
+      - "src/**"
+      - "test/**"
+      - "packages/dacs-client/**"
+      - "packages/dacs-node/**"
 
 permissions:
   contents: read
@@ -133,9 +137,8 @@ jobs:
 
   # This job typechecks and runs the demosdk-related tests against exactly 4.0.23, the newest version the client's
   # reviewed loading table covers; the lockfile holds the range floor, 4.0.17. It never looks up the newest release (the pinned
-  # install itself still needs the registry). It runs daily, on manual runs and on pull requests that change this workflow or the dependency
-  # files, so a break against 4.0.23 shows up to a day after it reaches the default branch (scheduled runs use the
-  # default branch only). The demosdk-pin-drift job above reports newer
+  # install itself still needs the registry). It runs daily, on manual runs and on pull requests that change the paths listed under
+  # pull_request above, so a break against 4.0.23 shows up on the pull request. The demosdk-pin-drift job above reports newer
   # releases in ^4.0.17 (scripts/demosdk-pin-drift.mjs); the PR that acts on that report replaces every 4.0.23 in this
   # file with the new version and fixes what then fails.
   demosdk-pinned-tests:

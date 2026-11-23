@@ -25,7 +25,7 @@ export function party(seed) {
 }
 export const encode = (payload, signer, domain) => Buffer.from(canonicalize({ payload, signature: signer.sign(Buffer.from(domain + canonicalize(payload))).toString('base64url') })).toString('base64url');
 export const code = (expected) => (error) => error.code === expected;
-export const PUBLIC_ENDPOINT = 'https://127.0.0.1:19001';
+export const PUBLIC_ENDPOINT = 'https://seller.example.test';
 export const validReceipt =Object.assign(async () => 'valid', { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
 /** A transport that reaches no seller: every request fails before an answer. */
 export const unreachableSeller = async () => { throw new TypeError('TEST no seller is reachable'); };
@@ -90,12 +90,12 @@ export const request = (w, path = wire.DACS_SELLER_HTTP_PATHS.state) => {
   return w.auth.request(path, body, JSON.stringify(body));
 };
 // fetchImpl: the protocol service's transport (default: the global fetch).
-export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing, configureTerms = () => {}, fetchImpl } = {}) {
+export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing, configureTerms = () => {}, fetchImpl, sessionSignerFor = () => w.options.sessionSigner } = {}) {
   const { createSourceDemoSellerTransport } = await import('../../src/dacs/source-demo-seller-transport.mjs');
   const { createProtocolPurchases } = await import('../../src/index.mjs');
   let policies = 0;
   const transport = createSourceDemoSellerTransport({
-    authority: 'TEST-wire', sessionSignerFor: () => w.options.sessionSigner, sessionPolicyFor: (op) => {
+    authority: 'TEST-wire', sessionSignerFor, sessionPolicyFor: (op) => {
       policies++;
       return policy(op);
     }, endpointProofFor: () => w.endpointProof

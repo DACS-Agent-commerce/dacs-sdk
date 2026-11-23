@@ -188,6 +188,108 @@ describe("canonicalize (§7.1)", () => {
 
 });
 
+describe("canonical form errors", () => {
+  const accessorAtIndexZero = new Array(1);
+  Object.defineProperty(accessorAtIndexZero, "0", {
+    enumerable: true,
+    get: () => "unsigned",
+  });
+  const extraProperty: unknown[] & { extra?: string } = [];
+  extraProperty.extra = "unsigned";
+  const accessorProperty = {};
+  Object.defineProperty(accessorProperty, "a", {
+    enumerable: true,
+    get: () => 1,
+  });
+  const cycle: unknown[] = [];
+  cycle.push(cycle);
+
+  const plain = "canonical.container_not_plain";
+  const unsupported = "canonical.type_unsupported";
+  const unicode = "canonical.unicode_invalid";
+  const surrogate = "canonical form: unpaired UTF-16 surrogate: lone ";
+
+  it.each([
+    ["NaN", () => NaN, "canonical.number_non_finite", "canonical form: non-finite number (NaN)"],
+    [
+      "unsafe integer",
+      () => 2 ** 53,
+      "canonical.number_out_of_range",
+      "canonical form: number outside IEEE-754 safe-integer range (9007199254740992); carry as a string",
+    ],
+    [
+      "bigint",
+      () => 1n,
+      unsupported,
+      "canonical form: bigint not allowed; carry large integers as decimal or 0x-hex strings",
+    ],
+    ["undefined", () => undefined, unsupported, "canonical form: unsupported value type (undefined)"],
+    ["function", () => () => 1, unsupported, "canonical form: unsupported value type (function)"],
+    [
+      "array without the standard prototype",
+      () => Object.setPrototypeOf([], null),
+      plain,
+      "canonical form: array must use the standard Array prototype",
+    ],
+    [
+      "array from another realm",
+      () => runInNewContext("[]"),
+      plain,
+      "canonical form: array must use the standard Array prototype",
+    ],
+    [
+      "sparse array",
+      () => new Array(1),
+      plain,
+      "canonical form: sparse array; arrays must be dense (missing entry at index 0)",
+    ],
+    [
+      "array accessor",
+      () => accessorAtIndexZero,
+      plain,
+      "canonical form: arrays must be dense enumerable data properties",
+    ],
+    [
+      "array with an extra property",
+      () => extraProperty,
+      plain,
+      "canonical form: arrays must be dense and contain no extra properties",
+    ],
+    ["date", () => new Date(0), plain, "canonical form: only plain JSON objects are supported"],
+    [
+      "symbol key",
+      () => ({ [Symbol("s")]: 1 }),
+      plain,
+      "canonical form: symbol-keyed properties are not valid JSON",
+    ],
+    [
+      "object accessor",
+      () => accessorProperty,
+      plain,
+      "canonical form: object properties must be enumerable data properties",
+    ],
+    ["lone high surrogate", () => "\ud800", unicode, `${surrogate}high surrogate`],
+    ["lone low surrogate", () => "\udc00", unicode, `${surrogate}low surrogate`],
+    ["lone surrogate key", () => ({ "\ud800": 1 }), unicode, `${surrogate}high surrogate`],
+    [
+      "nesting too deep",
+      () => nestedArrays(129),
+      "canonical.nesting_too_deep",
+      "canonical form: nesting depth exceeds 128",
+    ],
+    ["cycle", () => cycle, "canonical.structure_cyclic", "canonical form: cyclic structure"],
+  ])("%s carries its catalog code", (_name, value, code, message) => {
+    let thrown: unknown;
+    try {
+      canonicalize(value());
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(DacsError);
+    expect(thrown).toMatchObject({ code, category: "permanent", message });
+  });
+});
+
 function nestedArrays(depth: number): unknown {
   let value: unknown = null;
   for (let index = 0; index < depth; index += 1) value = [value];

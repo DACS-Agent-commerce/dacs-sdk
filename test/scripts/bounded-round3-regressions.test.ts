@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 const require = createRequire(import.meta.url);
 const { readBoundedResponse, NPM_METADATA_MAX_BYTES, NPM_AUDIT_MAX_BYTES, NPM_JSON_MAX_ENTRIES } = require("../../scripts/bounded-npm-http.cjs");
 const response = (value: unknown, contentType?: string) => Object.assign(Readable.from([Buffer.from(JSON.stringify(value))]),
@@ -33,17 +33,34 @@ describe("request-driven npm JSON limits", () => {
     expect(await readBoundedResponse(Object.assign(Readable.from([bytes]), { headers: { "content-type": "text/html" } }), 1024)).toEqual(bytes);
   });
   it.each([undefined, "text/plain"])("delivers a successful large generator packument with Content-Type %s", async header => {
+    // When this case fails or is slow, print when each step happened, so a
+    // timeout shows whether the wait was in npm, the server or this worker.
+    // The hook also runs after a timeout, while the test body is still waiting.
+    // It writes to stderr directly because the default reporter hides console
+    // output from passing tests.
+    const began = performance.now(), stamps = new Map<string, number>(); let exitStatus = "-";
+    const stamp = (step: string) => { if (!stamps.has(step)) stamps.set(step, performance.now()); };
+    onTestFinished(({ task }) => {
+      const now = performance.now(); if (task.result?.state !== "fail" && now - began <= 5_000) return;
+      const since = (time: number | undefined) => time === undefined ? "-" : String(Math.round(time - (stamps.get("spawned") ?? began)));
+      const steps = ["request received", "body built", "body sent", "npm exited", "assertions done"].map(step => `${step} ${since(stamps.get(step))}`);
+      process.stderr.write(`large packument case (Content-Type ${header}), ms since npm spawn: began ${since(began)}, ${steps.join(", ")}, exit ${exitStatus}, hook ${since(now)}\n`);
+    });
     const root = mkdtempSync(join(tmpdir(), "dacs-npm-success-"));
     const server = createServer((_request, reply) => {
+      stamp("request received");
       reply.writeHead(200, header ? { "content-type": header } : {});
-      reply.end(JSON.stringify({ name: "fixture", "dist-tags": { latest: "1.2.3" }, versions: { "1.2.3": { name: "fixture", version: "1.2.3" } }, history: Array(600_000).fill(0), readme: "x".repeat(16 * 1024 * 1024) }));
+      const body = JSON.stringify({ name: "fixture", "dist-tags": { latest: "1.2.3" }, versions: { "1.2.3": { name: "fixture", version: "1.2.3" } }, history: Array(600_000).fill(0), readme: "x".repeat(16 * 1024 * 1024) });
+      stamp("body built"); reply.end(body, () => stamp("body sent"));
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     try {
       const address = server.address(); if (!address || typeof address === "string") throw new Error("missing test address");
-      const result = await finished(spawn("npm", ["view", "fixture", "version", "--fetch-retries=0", "--registry", `http://127.0.0.1:${address.port}`, "--cache", root],
-        { env: { ...process.env, DACS_BOUNDED_NPM_HTTP: "1", NODE_OPTIONS: `--require=${resolve("scripts/bounded-npm-http.cjs")}` }, stdio: ["ignore", "pipe", "pipe"] }));
-      expect(result.code, result.error).toBe(0); expect(result.output.trim()).toBe("1.2.3");
+      const child = spawn("npm", ["view", "fixture", "version", "--fetch-retries=0", "--registry", `http://127.0.0.1:${address.port}`, "--cache", root],
+        { env: { ...process.env, DACS_BOUNDED_NPM_HTTP: "1", NODE_OPTIONS: `--require=${resolve("scripts/bounded-npm-http.cjs")}` }, stdio: ["ignore", "pipe", "pipe"] });
+      stamp("spawned"); child.on("exit", (code, signal) => { exitStatus = String(code ?? signal); stamp("npm exited"); });
+      const result = await finished(child);
+      expect(result.code, result.error).toBe(0); expect(result.output.trim()).toBe("1.2.3"); stamp("assertions done");
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(root, { recursive: true, force: true }); }
   }, 20_000);
 });
