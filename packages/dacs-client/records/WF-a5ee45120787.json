@@ -1,0 +1,27 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged README, native transport and Node wallet session with the signature routing and the seller transport nonce lane",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "d55313ccf84d51899d8d24937cb0ee3ab4675ba0",
+      "after": "d55313ccf84d51899d8d24937cb0ee3ab4675ba0"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "26f84fc37061782dba50b0c3dd22509d58946e3a",
+      "after": "26f84fc37061782dba50b0c3dd22509d58946e3a"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "d30ed4a8d90603b69070c4ccf41f9c005607f7b2",
+      "after": "d30ed4a8d90603b69070c4ccf41f9c005607f7b2"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-a5ee45120787.json"
+  ],
+  "note": "Both sides of the merge recorded these files; this record chooses the merged copies, which merged without a conflict and keep both sides' changes. The README keeps the base's wallet nonce lane section and its facade member row, and this side's effect boundary paragraphs for the general sign request and the seller transport. The native transport keeps the base's withWalletNonceLock member and its continued lane at readback, CREATE recovery and broadcast, and this side's signAuthentication boundary method for the storage-write recovery's header signature. The Node wallet session keeps the base's note on the facade's withWalletNonceLock, and this side's routing of a general signature through the effect boundary."
+}
