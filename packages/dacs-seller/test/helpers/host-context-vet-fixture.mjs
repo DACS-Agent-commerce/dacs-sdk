@@ -103,8 +103,8 @@ export async function vetHostProcess(t, f, anchor, writes, { worker = WORKER, st
   child.on('disconnect', () => {
     const disconnected = new Error(`TEST the host process disconnected before reporting startup: ${stderr}`);
     disconnectGrace = setTimeout(() => {
-      if (!startupSettled && child.exitCode === null && child.signalCode === null) {
-        failBeforeStart(disconnected);
+      if (child.exitCode === null && child.signalCode === null) {
+        if (!startupSettled) failBeforeStart(disconnected);
         entered.reject(disconnected);
       }
     }, 25);

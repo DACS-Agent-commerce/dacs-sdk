@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { vetHostProcess } from './helpers/host-context-vet-fixture.mjs';
 
-async function runWorker(program) {
+async function runWorker(program, afterStarted) {
   const root = await mkdtemp(join(tmpdir(), 'TEST-vet-process-events-'));
   const worker = join(root, 'worker.cjs');
   const previousTmp = process.env.TMPDIR;
@@ -23,14 +23,15 @@ async function runWorker(program) {
   syncBuiltinESMExports();
   try {
     const startedAt = performance.now();
-    let result;
+    let result, runningHost;
     try {
-      const host = await vetHostProcess({ after: (fn) => { cleanup = fn; } },
+      runningHost = await vetHostProcess({ after: (fn) => { cleanup = fn; } },
         { dataDirectory: null }, {}, {}, { startupTimeoutMs: 2_000 });
-      result = { status: 'started', host: host.host };
+      result = { status: 'started', host: runningHost.host };
     } catch (error) {
       result = { status: 'rejected', error };
     }
+    if (runningHost && afterStarted) await afterStarted(runningHost);
     const readyAt = performance.now() - startedAt;
     assert.equal(typeof cleanup, 'function');
     await cleanup();
@@ -66,6 +67,17 @@ test('an IPC disconnect from a still-live child rejects startup promptly', async
   assert.equal(result.status, 'rejected');
   assert.match(result.error.message, /process disconnected before reporting startup/);
   assert.ok(readyAt < 900, `disconnect rejection took ${readyAt.toFixed(1)} ms`);
+  assert.ok(cleanupAt < 1_200, `direct-child cleanup took ${cleanupAt.toFixed(1)} ms`);
+});
+
+test('an IPC disconnect after startup rejects the pending entered promise', async () => {
+  const { result, readyAt, cleanupAt } = await runWorker(
+    `process.on('message', () => { process.send({ type: 'started', url: 'fixture', listingPin: 'pin' }, () => setTimeout(() => process.disconnect(), 25)); setInterval(() => {}, 1000); });`,
+    async (host) => assert.rejects(host.entered.promise, /process disconnected before reporting startup/));
+
+  assert.equal(result.status, 'started');
+  assert.deepEqual(result.host, { url: 'fixture', listingPin: 'pin' });
+  assert.ok(readyAt < 900, `startup took ${readyAt.toFixed(1)} ms`);
   assert.ok(cleanupAt < 1_200, `direct-child cleanup took ${cleanupAt.toFixed(1)} ms`);
 });
 
