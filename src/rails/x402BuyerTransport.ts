@@ -1,6 +1,6 @@
 import { types as nodeTypes } from "node:util";
 
-import { sha256Hex } from "../canonical/index.js";
+import { canonicalize, sha256Hex } from "../canonical/index.js";
 import type { X402BuyerEvmDisclosureRecovery } from "./x402BuyerEvmAuthorization.js";
 import {
   createX402BuyerSettlementIntent,
@@ -104,6 +104,28 @@ export type X402BuyerHeaderInit =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Whether a challenge's resource and requirements fit the buyer's durable
+ * payment input. The signed payload carries both, and the stored input holds
+ * them three objects deep (input, intent, signed payload). Each layer refuses
+ * JSON that is not canonical at that depth, and the intent refuses a resource
+ * naming another URL. The resource must be present. A refusal after the
+ * wallet hold would leave a hold with no stored input, so the buyer checks
+ * first.
+ */
+function challengeFitsStoredInput(resource: unknown, requirements: unknown, httpResource: string): boolean {
+  if (!isRecord(resource) || resource.url !== httpResource) return false;
+  const capture = x402BuyerSettlementStoreInternals.captureJson;
+  try {
+    const accepted = capture(requirements, "x402 challenge requirements");
+    const signedPaymentPayload = { accepted, resource: capture(resource, "x402 challenge resource") };
+    canonicalize({ intent: { chosenRequirements: accepted, signedPaymentPayload } });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 type BuyerTransportMethod = (...args: never[]) => unknown;
@@ -492,15 +514,9 @@ export async function prepareX402BuyerSettlement(
   if (!selected || (bindAuthorization !== undefined && selected.paymentRequired.extensions !== undefined)) {
     return { disposition: "rejected", reason: "x402-payment-requirements-mismatch" };
   }
-  if (bindAuthorization !== undefined) {
-    // The signed payload carries these members; the settlement intent refuses
-    // any that are not canonical JSON, so refuse them before a wallet hold.
-    try {
-      x402BuyerSettlementStoreInternals.captureJson(selected.paymentRequired.resource, "x402 challenge resource");
-      x402BuyerSettlementStoreInternals.captureJson(selected.requirements, "x402 challenge requirements");
-    } catch {
-      return { disposition: "rejected", reason: "x402-payment-requirements-mismatch" };
-    }
+  if (bindAuthorization !== undefined &&
+      !challengeFitsStoredInput(selected.paymentRequired.resource, selected.requirements, authority.httpResource)) {
+    return { disposition: "rejected", reason: "x402-payment-requirements-mismatch" };
   }
 
   const scope: X402BuyerUnsignedIntentScope = {
