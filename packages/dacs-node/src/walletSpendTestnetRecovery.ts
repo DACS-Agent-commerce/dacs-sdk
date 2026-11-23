@@ -7,7 +7,6 @@ import {
   type WalletSpendPolicyV1,
   type WalletSpendRecoveryObservationV1,
   type WalletSpendReservationV1,
-  type WalletSpendStateV1,
 } from "@kynesyslabs/dacs";
 
 import type {
@@ -51,6 +50,9 @@ const stopWith = (verdict: DacsWalletSpendTestnetChainVerdictV1, reasonCode = VE
   throw new ChainCheckStop(reasonCode, verdict);
 };
 
+/** The stored hold an absence claim is checked against, as the core supplies it. */
+type StoredHold = Parameters<WalletSpendAuthorityDependenciesV1["authenticateRecovery"]>[2];
+
 /** The parts of a hold the chain rule checks against. */
 interface BoundHold {
   reservationId: string;
@@ -73,6 +75,8 @@ function nonceFor(jobId: string, phaseIndex: number): Hex {
  * the latest block by parent hash: `settled` needs the exact payment, and
  * `terminal-absent` needs a final cancel or an unused nonce at a head whose
  * time is past the hold's bound `validBefore`. `not-invoked` is never accepted.
+ * The core supplies the stored hold with an absence claim and releases only
+ * while that hold is still current, so the expiry judged is the one released.
  *
  * @returns `authenticateRecovery` and `bindAuthorizationValidBefore` for the
  *   core, and `check`, which gives the same decision with its reason code.
@@ -81,7 +85,6 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
   policy: Readonly<WalletSpendPolicyV1>;
   reader: Pick<DacsWalletSpendEvmReaderV1,
     "readBlock" | "readBlockByHash" | "readAuthorizationState" | "readAuthorizationLogs" | "readReceipt">;
-  readState(): Promise<Readonly<WalletSpendStateV1>>;
   report(line: Readonly<Record<string, string>>): void;
 }>): Readonly<{
   authenticateRecovery: WalletSpendAuthorityDependenciesV1["authenticateRecovery"];
@@ -89,6 +92,7 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
   check(
     reservation: Readonly<WalletSpendReservationV1>,
     observation: Readonly<WalletSpendRecoveryObservationV1>,
+    hold?: StoredHold,
   ): Promise<Readonly<{ accepted: boolean; reasonCode: string }>>;
 }> {
   const { policy, reader } = input;
@@ -119,13 +123,6 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
       amountWord: `0x${BigInt(debit.maximumAmount).toString(16).padStart(64, "0")}`,
       depth,
     };
-  }
-
-  /** The `validBefore` this service bound when it reserved the hold. */
-  async function boundValidBefore(reservationId: string): Promise<number | undefined> {
-    const row = (await input.readState()).reservations.find((stored) => stored.reservationId === reservationId);
-    if (row === undefined) throw new ChainCheckStop("wallet-spend-chain-hold-missing");
-    return row.authorizationValidBefore;
   }
 
   /** The parent walk: follows `parentHash` from a block read by hash down to `toNumber`. */
@@ -234,15 +231,18 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
   async function check(
     reservation: Readonly<WalletSpendReservationV1>,
     observation: Readonly<WalletSpendRecoveryObservationV1>,
+    storedHold?: StoredHold,
   ): Promise<Readonly<{ accepted: boolean; reasonCode: string }>> {
     if (observation.disposition === "not-invoked") {
       return { accepted: false, reasonCode: "wallet-spend-chain-absence-kind-refused" };
     }
+    if (observation.disposition === "terminal-absent" && storedHold === undefined) {
+      return { accepted: false, reasonCode: "wallet-spend-chain-hold-missing" };
+    }
     let found: Readonly<{ verdict: DacsWalletSpendTestnetChainVerdictV1; reasonCode: string }>;
     try {
       const hold = bindHold(reservation);
-      const validBefore = await boundValidBefore(hold.reservationId);
-      const reached = await verdict(hold, observation.disposition, validBefore);
+      const reached = await verdict(hold, observation.disposition, storedHold?.authorizationValidBefore);
       found = { verdict: reached, reasonCode: VERDICT_CODES[reached] };
     } catch (error) {
       if (error instanceof ChainCheckStop && error.verdict === undefined) {
@@ -279,7 +279,8 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
     authenticateRecovery: async (
       reservation: Readonly<WalletSpendReservationV1>,
       observation: Readonly<WalletSpendRecoveryObservationV1>,
-    ) => (await check(reservation, observation)).accepted,
+      hold?: StoredHold,
+    ) => (await check(reservation, observation, hold)).accepted,
     bindAuthorizationValidBefore,
     check,
   });
