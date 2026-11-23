@@ -209,9 +209,7 @@ const reportLine = (line: Readonly<Record<string, string>>): void => {
 
 /** The x402 lane: Base Sepolia reads and its chain rule, which binds each hold's validBefore. */
 function x402Lane(stores: Lane["stores"], policy: Lane["policy"], reader: Readonly<DacsWalletSpendEvmReaderV1>): Lane {
-  const recovery = createDacsWalletSpendTestnetRecoveryV1({
-    policy, reader, readState: headStateReader(stores), report: reportLine,
-  });
+  const recovery = createDacsWalletSpendTestnetRecoveryV1({ policy, reader, report: reportLine });
   return {
     stores,
     policy,
