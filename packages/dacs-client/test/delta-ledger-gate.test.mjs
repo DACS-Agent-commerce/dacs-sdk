@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { assemble, readArchive } from '../scripts/delta-assemble.mjs';
 import { lastRecordOnlyFailures, pkg } from '../scripts/delta-map.mjs';
-test('the assembled records and checked-out head pass provenance and the four required refusals; the last archive entry names a source or test change, or is a record-only entry that records, for each path, the blob committed at its own commit when no other entry, superseded ones included, and no record file committed before it, recorded that blob for the path', () => {
+test('the checked-out head and its last ledger entry pass provenance and the required record-only checks', () => {
  const env={...process.env};delete env.NODE_TEST_CONTEXT;
  assert.deepEqual(assemble(pkg).failures, [], 'every record satisfies its schema and declares its id');
  const ledger=readArchive(pkg).ledger;
