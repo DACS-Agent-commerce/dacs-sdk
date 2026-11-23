@@ -3,7 +3,6 @@
 // A clean `close()` lets an admitted context step run to its own outcome; a killed process leaves its row running with its slot, which the
 // next start's startup sweep fences.
 import { fork } from 'node:child_process';
-import { once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +20,12 @@ const deferred = () => {
   let resolve, reject;
   const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
   return { promise, resolve, reject };
+};
+
+const completion = () => {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
 };
 
 /**
@@ -55,31 +60,71 @@ export function vetProvider(anchor, writes, { stall }) {
  */
 export async function vetHostProcess(t, f, anchor, writes, { worker = WORKER, startupTimeoutMs = STARTUP_TIMEOUT_MS } = {}) {
   const temporary = await mkdtemp(join(tmpdir(), 'TEST-host-context-process-'));
-  let child = null, exited = null;
-  const kill = async () => { if (child === null) return; if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await exited; };
+  let child = null;
+  const closed = completion();
+  const kill = async () => {
+    if (child === null) return;
+    if (child.exitCode === null && child.signalCode === null && !child.killed) {
+      try { child.kill('SIGKILL'); } catch { /* The child may have exited between the status check and kill. */ }
+    }
+    await closed.promise;
+  };
   t.after(async () => { await kill(); await rm(temporary, { recursive: true, force: true }); });
   child = fork(worker, [], { env: { ...process.env, TMPDIR: temporary }, serialization: 'advanced', stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
-  exited = once(child, 'exit');
   let stderr = '';
   child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
   const started = deferred(), entered = deferred();
   entered.promise.catch(() => {});
+  let startupSettled = false;
+  const failBeforeStart = (error) => {
+    if (startupSettled) return;
+    startupSettled = true;
+    started.reject(error);
+  };
   child.on('message', (message) => {
     if (message.type === 'anchor') {
       const answer = (reply) => { if (child.connected) child.send({ type: 'anchor', id: message.id, ...reply }); };
       Promise.resolve().then(() => anchor[message.method](message.input))
         .then((value) => answer({ value }), (error) => answer({ error: { message: error.message, code: error.code } }));
-    } else if (message.type === 'started') started.resolve(message);
+    } else if (message.type === 'started') {
+      if (!startupSettled) {
+        startupSettled = true;
+        started.resolve(message);
+      }
+    }
     else if (message.type === 'entered') entered.resolve(message.seen);
   });
-  exited.then(([code, signal]) => {
+  child.on('error', (error) => {
+    failBeforeStart(error);
+    entered.reject(error);
+  });
+  child.on('disconnect', () => {
+    const disconnected = new Error(`TEST the host process disconnected before reporting startup: ${stderr}`);
+    failBeforeStart(disconnected);
+    entered.reject(disconnected);
+  });
+  child.on('close', (code, signal) => {
     const ended = new Error(`TEST the host process ended (${signal ?? code}): ${stderr}`);
-    started.reject(ended);
+    failBeforeStart(ended);
     entered.reject(ended);
-  }, () => {});
-  child.send({ type: 'start', dataDirectory: f.dataDirectory, writes });
+    closed.resolve();
+  });
+  child.once('spawn', () => {
+    if (child.connected) {
+      try {
+        child.send({ type: 'start', dataDirectory: f.dataDirectory, writes }, (error) => {
+          if (!error) return;
+          failBeforeStart(error);
+          entered.reject(error);
+        });
+      } catch (error) {
+        failBeforeStart(error);
+        entered.reject(error);
+      }
+    }
+  });
   const deadline = setTimeout(() => {
-    started.reject(new Error(`TEST the host process did not report its start within ${startupTimeoutMs} ms: ${stderr}`));
+    failBeforeStart(new Error(`TEST the host process did not report its start within ${startupTimeoutMs} ms: ${stderr}`));
     kill().catch(() => {});
   }, startupTimeoutMs);
   const { url, listingPin } = await started.promise.finally(() => clearTimeout(deadline));

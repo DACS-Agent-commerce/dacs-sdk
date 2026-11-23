@@ -57,3 +57,25 @@ test('the child\'s temporary folder is removed also when fork throws', async (t)
     syncBuiltinESMExports();
   }
 });
+
+test('an asynchronous child spawn error rejects startup without an IPC write error or leftover folder', async (t) => {
+  const fork = childProcess.fork;
+  let spawnError;
+  childProcess.fork = (worker, args, options) => fork(worker, args, {
+    ...options,
+    execPath: join(tmpdir(), 'TEST-no-such-node-executable'),
+  });
+  syncBuiltinESMExports();
+  try {
+    const left = await leftIn(() => t.test('spawn fails', async (st) => {
+      spawnError = await vetHostProcess(st, { dataDirectory: null }, {}, {}, { worker: SILENT })
+        .then(() => undefined, (error) => error);
+      assert.ok(spawnError, 'startup rejects when the executable cannot be spawned');
+    }));
+    assert.equal(spawnError.code, 'ENOENT');
+    assert.deepEqual(left, [], 'no temporary folder is left');
+  } finally {
+    childProcess.fork = fork;
+    syncBuiltinESMExports();
+  }
+});
