@@ -112,8 +112,10 @@ function answerOrError(verdict, answer, status) {
   const { answerClass, code } = verdict;
   if (answerClass === RESULT || answerClass === PROGRESS) return answer;
   if (answerClass === DEFINITE || answerClass === FAILED_BOOTSTRAP) {
-    const refusalCode = code ?? `http_${status}`;
-    throw new SellerRefusedError(refusalCode, typeof answer.message === 'string' ? answer.message.slice(0, 200) : refusalCode, status, answerClass);
+    const refusalCode = code ?? (answerClass === FAILED_BOOTSTRAP && status === 429 ? 'seller_rate_limited' : `http_${status}`);
+    const refusal = new SellerRefusedError(refusalCode, typeof answer.message === 'string' ? answer.message.slice(0, 200) : refusalCode, status, answerClass);
+    if (typeof answer.cause === 'string') refusal.cause = answer.cause.slice(0, 240);
+    throw refusal;
   }
   throw new SellerUnavailableError(code === SELLER_EFFECT_UNRESOLVED ? SELLER_OPERATOR_MESSAGE : UNAVAILABLE_ANSWER_MESSAGE, statusCause(status), verdict);
 }
@@ -266,14 +268,18 @@ export function createSellerHttpsClient(options) {
       const unavailable = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, lastFailureCause, { answerClass: dispatched ? SELLER_ANSWER_CLASS.UNKNOWN : SELLER_ANSWER_CLASS.NOT_SENT });
       if (!dispatched) { preDispatchFailures.add(unavailable); lastFailureDispatched = false; }
       if (error instanceof RawJsonAdmissionError) { unavailable.admissionCode = error.code; unavailable.admissionStage = error.stage; }
+      // A refusal while signing (the wire's own, such as seller_not_ready) happened before dispatch; it stays the cause.
+      if (lastFailureCause === 'client-sign') unavailable.cause = error;
       throw unavailable;
     }
   }
 
   return {
     origin,
-    // The route adapter for callers without a named method yet (the context and challenge routes belong to the bootstrap callers).
+    // The route adapter for callers without a named method (the context route belongs to the bootstrap's context step).
     request: post,
+    // The seller's challenge for a `{scope}` body: `{sessionNonce, expiresAt}` once the wire verified it; the caller checks its members.
+    contextChallenge: (body) => post(DACS_SELLER_HTTP_PATHS.contextChallenge, body),
     // Records the bounded outcome of a failure that the caller otherwise swallows.
     recordFailure: (error) => requestRecords?.failure(error),
     // The durable Agreement coordinator retains only disposition/reason.

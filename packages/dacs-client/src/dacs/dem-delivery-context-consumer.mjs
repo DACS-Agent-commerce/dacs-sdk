@@ -11,6 +11,7 @@ import { claimForAddress } from '../signatures.mjs';
 import { DEM_RAIL } from './listing.mjs';
 import { agreementContextScope } from './agreement-context-consumer.mjs';
 import { listingPin, protocolSupport } from './purchase-protocol.mjs';
+import { heldContextMembers, refusalAnswer } from './bootstrap-outcome.mjs';
 import { cutText } from '../util/text.mjs';
 import { isTp1AuthorityLabel } from './tp1-authority-label.mjs';
 import { authorityLabel } from './tp1-authority-token.mjs';
@@ -33,7 +34,7 @@ const held = (disposition, reason) => ({ disposition: HELD.includes(disposition)
 // Provider refusal codes the purchase may name as its own error code.
 const HELD_CODES = new Set(['legacy_party_vet_state_missing']);
 // A resolver's answer is read only inside a try, each of its fields once, and
-// its thrown value only through failureText(): nothing it returns or throws can
+// a classified refusal retains its cause; other throws use failureText(). Nothing can
 // escape as a server error with no attempt recorded for a possible write.
 const failureText = (error) => { try { return String(error?.message ?? error); } catch { return 'unreadable error'; } };
 
@@ -126,8 +127,9 @@ function captureAnswer(answer, { scope, listing, buyerBundle }) {
   // Read once: a getter cannot pass a check with one value and reach the result with another.
   const disposition = answer.disposition;
   if (HELD.includes(disposition)) {
-    const code = answer.code;
-    return { ...held(disposition, answer.reason ?? 'context unavailable'), ...(HELD_CODES.has(code) ? { code } : {}) };
+    const code = answer.code, members = heldContextMembers(answer);
+    if (code === 'party_vet_non_pass' && !members.errorClass) return held('indeterminate', 'DEM delivery Vet refusal is malformed');
+    return { ...held(disposition, answer.reason ?? 'context unavailable'), ...members, ...(HELD_CODES.has(code) ? { code } : {}) };
   }
   const value = disposition === 'present' ? answer.value : undefined;
   if (!exactKeys(value, ['input', 'scope'])) return held('indeterminate', 'DEM_DELIVERY_CONTEXT_FAILED: malformed result');
@@ -147,7 +149,7 @@ export async function resolveDemDeliveryBuyerContext(capability, { operation, li
   const scope = agreementContextScope({ operation, buyerBundle, generatedAt });
   let answer;
   try { answer = await configured.resolveBuyer(structuredClone({ scope, buyerIdentityBundle: buyerBundle }), ...(writable ? [{ writable }] : [])); }
-  catch (error) { return held('indeterminate', `DEM delivery context failed: ${failureText(error)}`); }
+  catch (error) { answer = refusalAnswer(error); if (!answer) return held('indeterminate', `DEM delivery context failed: ${failureText(error)}`); }
   let captured;
   try { captured = captureAnswer(answer, { scope, listing, buyerBundle }); }
   catch { return held('indeterminate', 'DEM_DELIVERY_CONTEXT_FAILED: unreadable answer'); }

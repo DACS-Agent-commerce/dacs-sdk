@@ -2,31 +2,30 @@
 // The kit's proposal fixture (reused by import) stops the agent right after admission, so a control that is admitted ends at that boundary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalize, identityBundleHash, sha256Hex, signedBytes } from '@kynesyslabs/dacs';
+import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { proposalAdmissionFixture } from '../../packages/dacs-seller/test/helpers/proposal-admission-fixture.mjs';
 import { JOB, NOW, buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
 import { attachIdentityPresentation, buildUnsignedIdentityBundle } from '../../packages/dacs-client/src/dacs/listing.mjs';
 
-const PRESENTATION_DOMAIN = 'dacs-bundle-presentation:v1:';
 const CHALLENGE_SCOPE = sha256Hex('TEST challenge scope');
 const CLOSED_REFUSAL = 'the job has no accepted context presentation';
 const admissions = (fixture) => fixture.admission.calls.filter(([method]) => method === 'admit').length;
 
-/** The client's presentation for BUYER (its own derivation), or the same presentation re-signed over `nonce`. */
+// A well-formed nonce this seller never issued.
+const UNISSUED_NONCE = sha256Hex('TEST a nonce the seller never issued');
+
+/** The client's presentation for BUYER over `nonce`, built and signed by the client's own bundle builder. */
 function clientPresentation(nonce) {
-  const built = buildUnsignedIdentityBundle({ address: buyer.address, presentedAt: NOW, sessionSeed: `${JOB}:kit-client-purchase` });
-  if (nonce === undefined) return attachIdentityPresentation(built, buyer.signBytes(built.message).toString('base64url'));
-  const bundle = { ...built.bundle, sessionNonce: nonce };
-  const bundleHash = identityBundleHash(bundle);
-  return attachIdentityPresentation({ bundle, bundleHash }, buyer.signBytes(signedBytes(PRESENTATION_DOMAIN, bundleHash)).toString('base64url'));
+  const built = buildUnsignedIdentityBundle({ address: buyer.address, presentedAt: NOW, sessionNonce: nonce });
+  return attachIdentityPresentation(built, buyer.signBytes(built.message).toString('base64url'));
 }
 
 const proposalInput = (buyerIdentityBundle) => ({ proposal: {}, transportIdentity: { jobId: JOB, buyer: buyer.claim, seller: seller.claim }, buyerIdentityBundle });
 
-test("K12-H1 today: the kit refuses a presentation carrying the client's self-derived nonce: the job has no accepted context presentation", async (t) => {
+test('K12-H1 today: the kit refuses a presentation carrying a nonce it never issued: the job has no accepted context presentation', async (t) => {
   const fixture = await proposalAdmissionFixture(t), agent = await fixture.open();
   fixture.store.challenges.issue({ jobId: JOB, buyer: buyer.claim }, CHALLENGE_SCOPE);
-  await assert.rejects(agent.stagedProposal(proposalInput(clientPresentation())), (error) => {
+  await assert.rejects(agent.stagedProposal(proposalInput(clientPresentation(UNISSUED_NONCE))), (error) => {
     assert.equal(error.code, 'context_admission_closed');
     assert.equal(error.message, CLOSED_REFUSAL);
     return true;
