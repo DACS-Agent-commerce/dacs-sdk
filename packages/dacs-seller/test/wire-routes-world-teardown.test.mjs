@@ -51,3 +51,16 @@ test('the wire-routes world puts back the original performance.now after one, tw
   assert.deepEqual(wrong, [], 'cases that left performance.now changed');
   assert.deepEqual(during, [true], 'the parent world mock remains active after a nested world finishes');
 });
+
+test('a world teardown preserves a parent-owned mock on another object', async (t) => {
+  const target = { value: () => 'original' };
+  mock.method(target, 'value', () => 'parent');
+
+  await t.test('child world', async (child) => {
+    await world(child);
+  });
+
+  assert.equal(target.value(), 'parent');
+  mock.reset();
+  assert.equal(target.value(), 'original');
+});

@@ -1,5 +1,4 @@
 // The seller handler on its own wire journal with a counting stand-in agent, and the buyer that signs for it.
-import { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, readdirSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -128,13 +127,17 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
     const originalNow = Object.getOwnPropertyDescriptor(performance, 'now');
     performanceMocksByTest.set(t, originalNow);
     t.after(() => {
-      mock.reset();
       if (originalNow) Object.defineProperty(performance, 'now', originalNow);
       else delete performance.now;
       performanceMocksByTest.delete(t);
     });
   }
-  mock.method(performance, 'now', () => monotonicNow() + state.elapsedMs);
+  Object.defineProperty(performance, 'now', {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: () => monotonicNow() + state.elapsedMs,
+  });
   const clock = () => state.time;
   const connection = () => ({ ...state.connection });
   const signing = { calls: 0, failures: 0 };
