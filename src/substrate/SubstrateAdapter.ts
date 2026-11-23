@@ -1,6 +1,12 @@
 import type { AnchorResolution, OwnedAnchorScan } from "./anchorResolution.js";
 import type { DemosWriteJournal } from "./demosWriteJournal.js";
 
+/** Expected network: the genesis hash, with an optional genesis-declared id. */
+export interface ExpectedDemosChainIdentity {
+  genesisHash: string;
+  chainId?: string | null;
+}
+
 /** Configuration for the optional Demos-backed adapter. */
 export interface DemosAdapterConfig {
   /** Demos node RPC URL (e.g. https://node2.demos.sh). */
@@ -19,10 +25,11 @@ export interface DemosAdapterConfig {
    */
   writeJournal?: DemosWriteJournal;
   /**
-   * Optional pinned genesis-block hash. When omitted, the adapter reads block
-   * zero from the connected node before its first write.
+   * Optional genesis-block hash, checked against the connected node.
    */
   chainIdentity?: string;
+  /** Expected network, checked before signing or acquiring a write lease. */
+  expectedIdentity?: ExpectedDemosChainIdentity;
 }
 
 /**
@@ -151,7 +158,10 @@ export type AnchorWaitFailureCode =
   | "read-failed"
   | "prepare-failed"
   | "broadcast-failed"
-  | "inclusion-failed";
+  | "inclusion-failed"
+  // A broadcast Demos write whose outcome the node's answers cannot settle.
+  // Its journal entry is kept, so the wallet stays blocked until it resolves.
+  | "demos-write-unresolved";
 
 export interface AnchorWaitOptions {
   /** Confirmation level to reach before returning (default `read-visible`). */
@@ -284,11 +294,12 @@ export interface SubstrateAdapter {
    * physical address folds in the writer's create-time nonce, so a third party
    * must resolve by name rather than precompute. Owner binding is required — a
    * program name is not exclusive, so name-only resolution is squattable.
+   * `expectedOwner` is the bare native owner (hex), not a DID.
    *
    * Returns a TYPED {@link AnchorResolution}: `present` (owned by the writer),
    * `absent` (readable candidates, none the writer's), or `indeterminate` (the
-   * lookup itself failed) — so a transient substrate failure is never mistaken
-   * for "never created".
+   * lookup failed or its answers could not be confirmed) — so a transient
+   * substrate failure is never mistaken for "never created".
    */
   resolveAnchorByName(
     name: string,

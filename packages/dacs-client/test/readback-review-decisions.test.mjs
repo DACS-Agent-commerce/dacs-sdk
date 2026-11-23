@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { ARTIFACT_SEPARATORS, canonicalize, contentHash, demosSignedTransactionProofHash, ed25519Sign, finalityCommitmentAddress, fixedPriceAgreementLogicalAddress, logicalToStorageProgramName, paymentEvidenceAddress, privateKeyFromSeed, publicKeyFromSeed, rawPublicKey, sha256Hex, signComponentArtifact } from '@kynesyslabs/dacs';
 import { openDatabase, transaction, isUniqueViolation } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
+import { readOnlyBoundary } from './helpers/read-only-boundary.mjs';
 const store={transaction,isUniqueViolation},buyerAccess={assertWallet(){}};
 const state=globalThis[Symbol.for('d15.review.readers')]={};
 // Loader modules run in a separate thread; returned fakes execute in this test's realm.
@@ -23,12 +24,16 @@ const { readDemDeliveryReady }=await import('../src/dacs/dem-delivery-consumer.m
 const { createDevnetSettlementTransport, DEVNET_SETTLEMENT_POLICY }=await import('../src/wallet/devnet-native-transport.mjs');
 const { createDevnetNativeCommitmentCapability, DEVNET_NATIVE_COMMITMENT_MARKER }=await import('../src/devnet-demo/commitment-consumer.mjs');
 const { createProtocolPurchases, protocolStageHelp }=await import('../src/dacs/protocol-purchases.mjs');
+const { SellerRefusedError }=await import('../src/dacs/seller-http.mjs');
+const { createSourceDemoSellerTransport }=await import('../src/dacs/source-demo-seller-transport.mjs');
+// A paid purchase always declares its seller transport. The seller client and its wire authentication are stand-ins here.
+const sellerTransport=createSourceDemoSellerTransport({authority:'TEST-review',sessionSignerFor:()=>({}),sessionPolicyFor:()=>({}),endpointProofFor:()=>({})});
 // The seller is a real key pair so payment evidence can carry a real signature.
 const keyPair=seedByte=>{const seed=new Uint8Array(32).fill(seedByte),hex=Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString('hex');return {key:privateKeyFromSeed(seed),hex,claim:'did:demos:agent:'+hex};};
 const sellerKeys=keyPair(17),otherKeys=keyPair(23);
 const CHAIN='f'.repeat(64),BUYER='0x'+'e'.repeat(64),SELLER=sellerKeys.claim,JOB='01HZY3K8V9Q2W4E6R7T8Y9X0AB';
 const journal={get:async()=>null,put:async()=>{throw Error('not used');},entries:async()=>[],withWalletLock:(_k,work)=>work()};
-const sourceCapability=createDevnetSettlementTransport({settlementPublication:{policy:DEVNET_SETTLEMENT_POLICY,artifactKind:'SettlementEvidence',phase:'pay-dem',railId:'demos-native:DEM',phaseIndex:2,authority:'TEST-review'},expected:{network:'testnet',chainIdentity:CHAIN,pinVersion:'TEST-1',endpoint:'https://rpc.invalid/',transportAuthority:'TEST-owner'},transportOwner:{getContext(){throw Error('offline');},acquireConnectionFence(){throw Error('offline');}},journal});
+const sourceCapability=createDevnetSettlementTransport({ boundary: readOnlyBoundary,settlementPublication:{policy:DEVNET_SETTLEMENT_POLICY,artifactKind:'SettlementEvidence',phase:'pay-dem',railId:'demos-native:DEM',phaseIndex:2,authority:'TEST-review'},expected:{network:'testnet',chainIdentity:CHAIN,pinVersion:'TEST-1',endpoint:'https://rpc.invalid/',transportAuthority:'TEST-owner'},transportOwner:{getContext(){throw Error('offline');},acquireConnectionFence(){throw Error('offline');}},journal});
 const authority='TEST-RUN-review0000';
 const commitment=createDevnetNativeCommitmentCapability({authority,anchor:{authority,readRetained(){throw Error('not used');},verifyReceipt(){throw Error('not used');}}});
 const listing={listingId:'TEST',listingVersion:1,seller:{identity:{presentedBy:SELLER}},offering:{title:'TEST'}};
@@ -86,12 +91,12 @@ function coordinator(t, { status='settled_verified', stage='delivered', retained
  t.after(()=>{db.close();rmSync(dir,{recursive:true,force:true});});
  const ops=createOperationStore({db,handoffSecret:'TEST-only-d15-review-secret-000000000'});
  db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('TEST-buyer','TEST','TEST-buyer',new Date().toISOString());
- const terms={buyer:{wallet:BUYER},seller:{payee:SELLER,claim:SELLER},price:{amountOs:'2500000000'},listing:pin,network:'testnet',rail:'demos-native:DEM',domain:{mode:'public-chain-read',chainIdentity:CHAIN},protocol:{transportBinding:sourceCapability.transportBinding,jobId:JOB,profile:'dacs-chatgpt-plugin/sr2-wallet-agreement/v1',sellerAgent:'https://seller.invalid',sellerCommitment:DEVNET_NATIVE_COMMITMENT_MARKER,sellerAgreementProjection:'public-signed-create',nativePayment:NATIVE_AGREEMENT_PAYMENT,nativePaymentEvidence:NATIVE_PAYMENT_EVIDENCE}};
+ const terms={buyer:{wallet:BUYER},seller:{payee:SELLER,claim:SELLER},price:{amountOs:'2500000000'},listing:pin,network:'testnet',rail:'demos-native:DEM',domain:{mode:'public-chain-read',chainIdentity:CHAIN},protocol:{transportBinding:sourceCapability.transportBinding,jobId:JOB,profile:'dacs-chatgpt-plugin/sr2-wallet-agreement/v1',sellerAgent:'https://seller.invalid',sellerCommitment:DEVNET_NATIVE_COMMITMENT_MARKER,sellerAgreementProjection:'public-signed-create',nativePayment:NATIVE_AGREEMENT_PAYMENT,nativePaymentEvidence:NATIVE_PAYMENT_EVIDENCE,sellerTransport:sellerTransport.declaration}};
  const protocol={stage,signatures:{agreement:'TEST-signature'},planned:{plan:{agreementHash},anchorAddress:logicalAddress},listing,agreement:{artifact:agreement,hash:agreementHash,ref:{anchor:{locator:logicalAddress}},anchorReceipt:receipt,signedProjection:{hash:txHash}},
    ...(retainedDelivery?{delivery:{...delivery,report},nativeEvidence:{status:'verified'},paymentEvidence:{ref:{contentHash:'d'.repeat(64)}}}:{}),...protocolPatch};
  const op=ops.createIdempotent({accountId:'TEST-buyer',kind:'purchase',idempotencyKey:'TEST',request:{},status,terms,termsHash:CHAIN,state:{protocol},expiresAt:new Date(Date.now()+3600000).toISOString()}).operation;
  const nativeEvidence=createNativePaymentEvidenceConsumer({rpcUrl:sourceCapability.pins.endpoint,sourceCapability});
- const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess});
+ const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerTransport,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess});
  return {op,ops,service};
 }
 test('host chain-readback bookkeeping keeps its source and records a repeated hold once', t => {
@@ -212,4 +217,17 @@ test('present native payment evidence records the source outcome',async t=>{
  await service.recheck(op,{verifiedAt:'TEST',reportedTxHash:txHash,observation:{observation:transfer()}});
  assert.equal(ops.get(op.accountId,op.id).state.protocol.stage,'payment-evidenced');
  assert.equal(ops.history(op.id).at(-1).data.outcome,'verified-source-native-read');
+});
+
+test('a definite refusal on payments of a verified on-chain payment leaves status and stage held and opens no refund or cancel path',async t=>{
+ state.observeTransfer=async()=>transfer();paymentReader();
+ state.seller={origin:'https://seller.invalid',submitPayment:async()=>{throw new SellerRefusedError('peer_operation_mismatch','the job is bound elsewhere',409);}};
+ const {op,ops,service}=coordinator(t,{retainedDelivery:false,stage:'awaiting-claim',protocolPatch:{commitment:{committedAt:transferTime-1000},chainReadback:{[evidenceAddress]:paymentProjection}}});
+ await service.recheck(op,{verifiedAt:'TEST',reportedTxHash:txHash,observation:{observation:transfer()}});
+ const stored=ops.get(op.accountId,op.id);
+ assert.equal(stored.status,'settled_verified');
+ assert.equal(stored.state.protocol.stage,'awaiting-claim');
+ const history=JSON.stringify(ops.history(op.id));
+ assert.match(history,/the job is bound elsewhere/);
+ assert.doesNotMatch(history,/payment_failed|cancel|refund/i);
 });

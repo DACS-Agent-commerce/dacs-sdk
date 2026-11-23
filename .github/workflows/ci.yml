@@ -7,6 +7,10 @@ on:
     branches: [main, phase0-completion]
   pull_request:
   merge_group:
+  # A run of any branch by hand, e.g. a pull request's branch before it merges. It runs both Node legs and every
+  # suite, except that the client suite runs on Node 22 only. It tests the branch head as it is, not its merge with
+  # the base branch that a pull request run tests, yet reports the same check names.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,6 +31,7 @@ concurrency:
 jobs:
   build-test-plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     name: build-test plan
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
@@ -44,7 +49,7 @@ jobs:
 
   build-test:
     # The node 22 leg can run on the project's own one-job runners (label dacs-pool) for our own pull requests only
-    # (one pool job per node 22 shard, plus build-test-main's node 22 job: 5 on a pull request),
+    # (one pool job per node 22 shard, plus build-test-main's node 22 job: 9 on a pull request),
     # when ALL of these hold:
     #   - the repository variable SDK_SELF_HOSTED is 'on';
     #   - the event is pull_request and the head branch is in this repository;
@@ -55,8 +60,12 @@ jobs:
     #   - the pull request does not carry the label ci-hosted (urgent work stays on hosted runners). The labels come
     #     from the event that started the run, and a re-run replays that event, so a label added later only takes
     #     effect on the next push (or a close and reopen).
-    # Pushes and merge-queue runs (which can contain other people's merged code), fork pull requests, everyone
-    # else's runs and every other job use ubuntu-latest.
+    # Pushes, merge-queue runs, fork pull requests, runs that involve an account not in the list, and every other
+    # job use ubuntu-latest.
+    # These filters check the event type, the head repository and the accounts that opened the pull request or
+    # started the run. They say who started the run, not who wrote the code in the checkout: the checkout of a
+    # same-repository pull request also contains other people's commits (the base branch it merges into, and any
+    # commits others pushed to the branch).
     # This expression is only a routing filter: a branch can edit its own copy of this file. The boundary is on the
     # runners, maintained outside this repository: they check every job against the same rules before any step
     # runs and stop the runner for anything else.
@@ -77,11 +86,12 @@ jobs:
     # The same routing applies to build-test-main.
     runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.draft == false) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
     needs: build-test-plan
+    timeout-minutes: 45
     strategy:
       fail-fast: false
-      # One entry per shard: node-version, part (seller-1, client-2, ...), suite and shard (K/N). Pull requests run
-      # the seller suite on node 22 only; pushes and the merge queue run it on both legs. The client suite runs on
-      # node 22 only. scripts/ci-shards.mjs holds the list and the file split.
+      # One entry per shard: node-version, part (seller-1, client-2, ...), suite and shard (K/N). The seller
+      # suite runs on both legs for every event, pull requests included; the client suite runs on node 22 only.
+      # scripts/ci-shards.mjs holds the list and the file split.
       matrix: ${{ fromJSON(needs.build-test-plan.outputs.matrix) }}
     name: build-test shard (node ${{ matrix.node-version }}, ${{ matrix.part }})
     steps:
@@ -126,33 +136,6 @@ jobs:
           DACS_CLIENT_TEST_SHARD: ${{ matrix.shard }}
         run: node scripts/run-client-tests.mjs
 
-      # The locked demosdk 4.0.16 declarations do not resolve with NodeNext, so
-      # its NetworkInfo/AddressInfo and web2 types are `any` in the checks above.
-      # 4.0.18 resolves them; typecheck and run the demosdk-related tests
-      # against it (#339). This step checks exactly 4.0.18 and never looks up
-      # the newest release, so a newer 4.x cannot fail a pull request (the pinned
-      # install itself still needs the registry or the npm cache). The daily
-      # demosdk-compat workflow reports newer releases
-      # in ^4.0.16 (scripts/demosdk-pin-drift.mjs); the PR that acts on that
-      # report replaces every 4.0.18 in this step with the new version and fixes
-      # what then fails.
-      # Last step: it replaces the installed SDK for the rest of this job. It runs in node 22's seller-2 shard, the
-      # shorter seller shard.
-      # Not on pull requests: pushes to main and phase0-completion and main's merge queue run it, so a break against
-      # 4.0.18 shows on the next phase0-completion push, not on the PR. That includes the PR that bumps this pin: run
-      # these commands locally against the new version before opening it.
-      - name: Typecheck and test against demosdk 4.0.18
-        if: matrix.part == 'seller-2' && matrix.node-version == '22' && github.event_name != 'pull_request'
-        run: |
-          npm install --no-save --no-audit --ignore-scripts @kynesyslabs/demosdk@4.0.18
-          test "$(node -p "require('./node_modules/@kynesyslabs/demosdk/package.json').version")" = "4.0.18"
-          npm run typecheck
-          npm run host:typecheck
-          npx vitest run test/substrate/demos-adapter.test.ts test/rails/payDem-adapter.test.ts test/rails/payDem.test.ts test/agent/settlementFailure.test.ts
-          # Every client file this area promises under 4.0.18, named one by one; later changes append theirs. No glob selects one.
-          node --test --test-concurrency=1 packages/dacs-client/test/node-demos-loading.test.mjs packages/dacs-client/test/node-wallet-demosdk.test.mjs packages/dacs-client/test/node-wallet-final-content.test.mjs packages/dacs-client/test/node-wallet-fresh-child.test.mjs
-          node --test packages/dacs-client/test/delta-ledger-gate.test.mjs
-
   # build-test is split into jobs that run side by side; the required checks "build-test (node 22)" and
   # "build-test (node 24)" are build-test-result below, which passes only when every one of them passed:
   #   build-test-main   every step except the seller and client suites, once per Node leg;
@@ -162,6 +145,7 @@ jobs:
   # build-test-main and build-test route to runners by the same runs-on expression (described at build-test).
   build-test-main:
     runs-on: ${{ (vars.SDK_BLACKSMITH == 'on' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.draft == false) && 'blacksmith-2vcpu-ubuntu-2404' || (vars.SDK_SELF_HOSTED == 'on' && matrix.node-version == '22' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.event.pull_request.user.login)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.triggering_actor)) && contains(format(',{0},', vars.SDK_SELF_HOSTED_AUTHORS), format(',{0},', github.actor)) && !contains(github.event.pull_request.labels.*.name, 'ci-hosted')) && fromJSON('["self-hosted","linux","x64","dacs-pool"]') || 'ubuntu-latest' }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -185,19 +169,21 @@ jobs:
       - name: Test release workflow wiring
         run: node --test test/scripts/release-workflow.test.mjs
 
-      - name: Check that every seller and client test file is in exactly one shard
-        run: node scripts/ci-shards.mjs check
-
       - name: Sync DACS-Standard conformance vectors
         run: npm run conformance:sync
 
+      # The typechecks read the locked TypeScript and @types/node, not the Node version running them, so they run on
+      # the node 22 leg only.
       - name: Typecheck
+        if: matrix.node-version == '22'
         run: npm run typecheck
 
       - name: Typecheck Node host kit
+        if: matrix.node-version == '22'
         run: npm run host:typecheck
 
       - name: Typecheck project generator
+        if: matrix.node-version == '22'
         run: npm run generator:typecheck
 
       - name: Build
@@ -206,13 +192,17 @@ jobs:
       - name: Build Node host kit
         run: npm run host:build
 
-      # The seller shards prepare the locked seller consumer before the seller suite. A pull request runs no node 24
-      # seller shard, so this leg prepares it here instead, as every leg did before the suites were split.
-      - name: Prepare locked seller consumer
-        if: matrix.node-version != '22' && github.event_name == 'pull_request'
-        env:
-          DACS_SELLER_SMOKE_DIR: ${{ runner.temp }}/dacs-seller-consumer
-        run: npm run seller:prepare -- "$DACS_SELLER_SMOKE_DIR"
+      # Both list the tests of the split seller file by loading it, which imports the built package, so they run after
+      # the build.
+      - name: Test the shard split
+        run: npm run ci:test
+
+      - name: Check that every seller and client test file (and each test of a split file) is in exactly one shard
+        run: node scripts/ci-shards.mjs check
+
+      - name: Check client signature key validation
+        if: matrix.node-version == '22'
+        run: npm run client-keys:test
 
       - name: Test the kit-client contract harness
         if: matrix.node-version == '22'
@@ -247,22 +237,20 @@ jobs:
           grep -q "Cannot find module '@x402/evm/exact/client'" "$smoke_root/live-without-peers.log"
           grep -q "Cannot find module '@x402/fetch'" "$smoke_root/live-without-peers.log"
           grep -q "Cannot find module 'viem/accounts'" "$smoke_root/live-without-peers.log"
-          (cd "$smoke_root/app" && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller'), import('@kynesyslabs/dacs/commerce')]).then(([root, seller, commerce]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function' || typeof seller.runFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentCore !== 'function' || typeof seller.runDurableFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentToDeliveryReady !== 'function' || typeof seller.runDurableFulfilmentToDeliveryReady !== 'function' || typeof root.advanceDeliveryFinalisation !== 'function' || typeof seller.advanceDeliveryFinalisation !== 'function' || typeof root.resumeDeliveryFinalisation !== 'function' || typeof seller.resumeDeliveryFinalisation !== 'function' || typeof root.getDeliveryFinalisationStatus !== 'function' || typeof seller.getDeliveryFinalisationStatus !== 'function' || typeof root.createInMemoryFencedSessionStore !== 'function' || typeof root.createFsFencedSessionStore !== 'function' || seller.createInMemoryFencedSessionStore !== root.createInMemoryFencedSessionStore || root.FENCED_SESSION_STORE_VERSION !== 2 || seller.FENCED_SESSION_STORE_VERSION !== 2 || root.SESSION_STORE_VERSION !== 1 || typeof commerce.createFixedPriceX402BuyerCoordinator !== 'function' || commerce.createFixedPriceX402BuyerCoordinator !== root.createFixedPriceX402BuyerCoordinator || typeof commerce.createBuyerPaymentEvidenceHandshake !== 'function') process.exit(1) })")
+          (cd "$smoke_root/app" && node -e "Promise.all([import('@kynesyslabs/dacs'), import('@kynesyslabs/dacs/seller'), import('@kynesyslabs/dacs/commerce')]).then(([root, seller, commerce]) => { if (typeof root.verifyBundleCore !== 'function' || typeof seller.verifySellerPaymentIntake !== 'function' || typeof seller.runFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentCore !== 'function' || typeof seller.runDurableFulfilmentCore !== 'function' || typeof root.runDurableFulfilmentToDeliveryReady !== 'function' || typeof seller.runDurableFulfilmentToDeliveryReady !== 'function' || typeof root.advanceDeliveryFinalisation !== 'function' || typeof seller.advanceDeliveryFinalisation !== 'function' || typeof root.resumeDeliveryFinalisation !== 'function' || typeof seller.resumeDeliveryFinalisation !== 'function' || typeof root.getDeliveryFinalisationStatus !== 'function' || typeof seller.getDeliveryFinalisationStatus !== 'function' || typeof root.createInMemoryFencedSessionStore !== 'function' || typeof root.createFsFencedSessionStore !== 'function' || seller.createInMemoryFencedSessionStore !== root.createInMemoryFencedSessionStore || root.FENCED_SESSION_STORE_VERSION !== 2 || seller.FENCED_SESSION_STORE_VERSION !== 2 || typeof commerce.createFixedPriceX402BuyerCoordinator !== 'function' || commerce.createFixedPriceX402BuyerCoordinator !== root.createFixedPriceX402BuyerCoordinator || typeof commerce.createBuyerPaymentEvidenceHandshake !== 'function') process.exit(1) })")
           node scripts/check-npm-advisories.mjs --prefix "$smoke_root/app" --scope all --omit dev --omit optional --threshold low
-          npm install --prefix "$smoke_root/app" --no-audit --save-dev --ignore-scripts @kynesyslabs/demosdk@^4.0.16 @x402/core@^2.15.0 @x402/evm@^2.15.0 @x402/fetch@^2.15.0 viem@^2.55.19
+          npm install --prefix "$smoke_root/app" --no-audit --save-dev --ignore-scripts @kynesyslabs/demosdk@^4.0.17 @x402/core@^2.15.0 @x402/evm@^2.15.0 @x402/fetch@^2.15.0 viem@^2.55.19
           (cd "$smoke_root/app" && node --input-type=module -e "if (!import.meta.resolve('@kynesyslabs/demosdk/websdk')) process.exit(1)")
           "$smoke_root/app/node_modules/.bin/tsc" -p "$smoke_root/app/tsconfig.live.json"
 
       - name: Package smoke (buyer root)
         run: |
           client_smoke="$RUNNER_TEMP/dacs-client-smoke"
-          mkdir -p "$client_smoke/app"
-          npm pack --ignore-scripts --pack-destination "$client_smoke"
-          npm pack --workspace @kynesyslabs/dacs-client --pack-destination "$client_smoke"
-          npm pack --workspace @kynesyslabs/dacs-node --pack-destination "$client_smoke"
-          npm install --prefix "$client_smoke/app" --no-audit --ignore-scripts --omit=optional "$client_smoke"/*.tgz
-          (cd "$client_smoke/app" && npm ls --json @kynesyslabs/dacs-node | node -e 'const installed = JSON.parse(require("fs").readFileSync(0, "utf8")).dependencies["@kynesyslabs/dacs-node"]; if (!/^file:.*kynesyslabs-dacs-node-.*\.tgz$/.test(installed?.resolved)) { console.error("dacs-node is not the candidate archive: " + installed?.resolved); process.exit(1); }')
+          bash scripts/pack-buyer-install.sh "$client_smoke"
           (cd "$client_smoke/app" && node --input-type=module -e "const c = await import('@kynesyslabs/dacs-client'); if (typeof c.createPurchaseService !== 'function' || typeof c.NotWiredError !== 'function' || c.canonicalize({ b: 1, a: 2 }) !== '{\"a\":2,\"b\":1}') process.exit(1)")
+
+      - name: Package smoke (every entry point imports with the lowest allowed demosdk)
+        run: node scripts/verify-packed-entry-imports.mjs
 
       # The packed buyer must refuse Node below the engines floor. The node 22 leg installs Node 20.19.0 and then
       # 22.13.0 for these checks only, and sets up its own Node again after them.
@@ -271,6 +259,12 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20.19.0"
+
+      - name: Package smoke (every entry point imports with the lowest allowed demosdk on Node 20.19.0)
+        if: matrix.node-version == '22'
+        run: |
+          test "$(node --version)" = v20.19.0
+          node scripts/verify-packed-entry-imports.mjs
 
       - name: Package smoke (buyer purchase factories refuse Node 20 with runtime_unsupported)
         if: matrix.node-version == '22'
@@ -571,16 +565,11 @@ jobs:
           ]) if (!compose.includes(required)) process.exit(1);
           NODE
 
-      # Pull requests run this step on node 22 only, like the seller suite (scripts/ci-shards.mjs). The node 24 leg
-      # runs it on pushes to main and phase0-completion and in main's merge queue.
+      # Every event runs this on both Node legs, pull requests included, so a node 24 failure shows before the merge.
       - name: Test (unit + conformance harness)
-        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         run: npm test
 
-      # Pull requests run this step on node 22 only, like the seller suite (scripts/ci-shards.mjs). The node 24 leg
-      # runs it on pushes to main and phase0-completion and in main's merge queue.
       - name: Test durable RFQ filesystem record-size boundaries
-        if: matrix.node-version == '22' || github.event_name != 'pull_request'
         env:
           DACS_SLOW_BOUNDARY: "1"
         run: npx vitest run test/negotiate/durableRfqLifecycleStoreFs.test.ts -t "record size boundary"
@@ -590,9 +579,6 @@ jobs:
 
       - name: Test project generator
         run: npm run generator:test
-
-      - name: Test fail-closed dependency audit gate
-        run: npm run audit:test
 
       # Informational (non-blocking): surface production-tree advisories per the
       # SECURITY.md audit policy (#40). Findings are summarized without blocking;
@@ -614,6 +600,7 @@ jobs:
     if: ${{ always() }}
     needs: [build-test-plan, build-test-main, build-test]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       actions: read
@@ -633,8 +620,17 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           test "$PLAN_RESULT" = success || { echo "build-test plan: $PLAN_RESULT"; exit 1; }
-          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
-            --jq '.jobs[] | {name, status, conclusion}' > "$RUNNER_TEMP/jobs.jsonl"
+          # Every job this one needs has finished, but the jobs API can report a just-finished job as still running for a
+          # few seconds. While any other build-test job reads as unfinished, read the list again (up to 12
+          # times, 15 s apart, about 3 minutes) before verify decides; a job that really failed fails verify the same way on every read.
+          for attempt in $(seq 1 13); do
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=latest&per_page=100" \
+              --jq '.jobs[] | {name, status, conclusion}' > "$RUNNER_TEMP/jobs.jsonl"
+            unfinished=$(jq -r 'select(.status != "completed" and (.name | test("^build-test")) and (.name | test("^build-test \\(node [0-9]+\\)$") | not)) | .name' "$RUNNER_TEMP/jobs.jsonl")
+            if [ -z "$unfinished" ] || [ "$attempt" = 13 ]; then break; fi
+            echo "jobs still reading as unfinished (attempt $attempt): $(echo "$unfinished" | tr '\n' ' ')"
+            sleep 15
+          done
           node scripts/ci-shards.mjs verify --node "$NODE_VERSION" --event "$EVENT_NAME" --jobs "$RUNNER_TEMP/jobs.jsonl"
 
   postgres-wallet-authority:
@@ -672,6 +668,7 @@ jobs:
 
   packed-live-rail:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -756,27 +753,25 @@ jobs:
 
   buyer-minimum-runtime:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
+      # One failing Node leg must not cancel the other: each leg is its own engine-floor result.
+      fail-fast: false
       matrix:
         node-version: ["22.22.2", "24"]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm ci --no-audit
       - run: npm run build
       - run: npm run host:build
-      - run: node --test packages/dacs-client/test/node-wallet-fresh-child.test.mjs
+      - run: node --test packages/dacs-client/test/node-wallet-fresh-child.test.mjs packages/dacs-client/test/node-wallet-packed.test.mjs
       - name: Check both packed JavaScript entry points at the engine floor
         run: |
           client_minimum="$RUNNER_TEMP/client-minimum"
-          mkdir -p "$client_minimum/app"
-          npm pack --ignore-scripts --pack-destination "$client_minimum"
-          npm pack --workspace @kynesyslabs/dacs-client --pack-destination "$client_minimum"
-          npm pack --workspace @kynesyslabs/dacs-node --pack-destination "$client_minimum"
-          npm install --prefix "$client_minimum/app" --no-audit --ignore-scripts --omit=optional "$client_minimum"/*.tgz
-          (cd "$client_minimum/app" && npm ls --json @kynesyslabs/dacs-node | node -e 'const installed = JSON.parse(require("fs").readFileSync(0, "utf8")).dependencies["@kynesyslabs/dacs-node"]; if (!/^file:.*kynesyslabs-dacs-node-.*\.tgz$/.test(installed?.resolved)) { console.error("dacs-node is not the candidate archive: " + installed?.resolved); process.exit(1); }')
+          bash scripts/pack-buyer-install.sh "$client_minimum"
           (cd "$client_minimum/app" && node --input-type=module -e "await import('@kynesyslabs/dacs-client'); await import('@kynesyslabs/dacs-client/wallet/durable-journal')")
           cd "$client_minimum/app"
           node --input-type=module <<'NODE'
@@ -792,6 +787,15 @@ jobs:
           c.createPurchaseService({ db, coordinates, config: {}, ops: {}, accounts: {}, verifier: {}, chain: {}, challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, admission });
           c.createListingVerifier({ directory: {}, chain: {}, admission });
           NODE
-      # Transaction and crash coverage runs in build-test on current Node 22.
-      # Its engine-floor implementation and portable fixtures are separate changes.
-      - run: node --test --test-concurrency=1 --test-reporter=tap packages/dacs-client/test/public-api.test.mjs
+      # The public API, the SQLite write lease, transaction nesting and the SQLite iterator tests run here on each leg,
+      # so the engine floor itself runs them. The rest of the client suite (the crash and transaction coverage)
+      # runs in the build-test shards on current Node 22.
+      - run: >-
+          node --test --test-concurrency=1 --test-reporter=tap
+          packages/dacs-client/test/public-api.test.mjs
+          packages/dacs-client/test/sqlite-write-lease.test.mjs
+          packages/dacs-client/test/sqlite-lease-result-options.test.mjs
+          packages/dacs-client/test/purchase-tx-nesting.test.mjs
+          packages/dacs-client/test/sqlite-floor-iterators.test.mjs
+          packages/dacs-client/test/sqlite-iterator-own-methods.test.mjs
+          packages/dacs-client/test/sqlite-iterator-own-next-refusal.test.mjs

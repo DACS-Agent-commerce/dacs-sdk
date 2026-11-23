@@ -3,6 +3,9 @@ import { verifyComponent } from '../dacs/listing.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
 import { boundedResolutionValue, resolveWithDeadline } from '../util/bounded-resolution.mjs';
 import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
+import { reportNativeRefusal } from '../dacs/native-observation-evidence.mjs';
+import { lateWriteWatchOpen, watchLateWrite } from './late-write-watch.mjs';
+import { createWriteExclusionRule } from './write-exclusion.mjs';
 // Application-owned native publication for the real demo composition. Every
 // CREATE is produced by the packaged seller wallet and then accepted only
 // after an independent source read, original signed projection, and SDK
@@ -79,6 +82,8 @@ const RESEND_OPTION_REFUSED=Object.freeze({status:'rejected',reason:'the resend 
 const RESEND_UNAUTHORIZED=Object.freeze({status:'rejected',reason:'a resend needs the caller\'s authorization check (authorizeResend)'});
 // The recovery row of a resend the transport reported as never dispatched: its one resend is still unused.
 const UNSENT_RECOVERY_STAGE='unsent';
+// The kit effect boundary's lane of every wallet CREATE and resend this anchor runs through runCreate.
+const SELLER_WALLET_LANE='seller-wallet';
 // The refusal of a read's resend options, or null when they are usable.
 const resendOptionsRefusal=({resend,authorizeResend})=>typeof resend!=='boolean'?RESEND_OPTION_REFUSED:resend&&typeof authorizeResend!=='function'?RESEND_UNAUTHORIZED:null;
 // The nonce reply has a byte cap before decoding in the source, and a
@@ -173,9 +178,15 @@ export function createDevnetDemoArtifactAnchor(options) {
 // absent. It decides who may sign the seller's own composite record; nothing
 // read or requested later can change it. Any other value throws a TypeError
 // before the wallet factory or the journal is touched.
-function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,signer,buyerAccess=null,now=()=>Date.now(),vetMode:vetModeOption},ports={}) {
+// options.binding and options.observeIdentity: the host's bindTp1Profile binding
+// and its connection decision on the chain identity. The anchor's readback takes
+// its expected chain identity from them (see createDemosSr2Adapter).
+// options.runCreate: createSellerCreatePass's runCreate. Every wallet CREATE and the
+// one resend of a retained CREATE run inside it; a TypeError without it.
+function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,signer,buyerAccess=null,now=()=>Date.now(),vetMode:vetModeOption,binding,observeIdentity,runCreate},ports={}) {
   const vetMode=sellerFulfilmentVetModeOf(vetModeOption);
   if(vetMode===null) throw new TypeError('unsupported Vet mode');
+  if(typeof runCreate!=='function') throw new TypeError('runCreate from createSellerCreatePass is required');
   // Only the seller's own Listing has no purchase. Every other write, new or
   // retained, belongs to a job whose current buyer must be admitted first.
   const access=operatorBuyerAccessConfig(buyerAccess);
@@ -197,7 +208,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // Listing has no purchase, so its entry is keyed by locator and content hash
   // alone and lives only for the TTL, never for the whole process. `fresh`
   // reads skip reuse, and a fresh read that does not verify evicts the entry.
-  const immutable=createImmutableReadbacks({now});
+  const immutable=createImmutableReadbacks();
   const cachedKinds=new Set(['Listing','CompositeVerificationRecord','FinalityCommitmentRecord']);
   const cacheScope=(input,projection,receipt)=>({purchaseId:input.artifact.jobId ?? null,locator:input.logicalAddress,contentHash:input.receiptContentHash,scope:{input,projection,receipt,binding:sourceCapability.transportBinding}});
   const kinds=new Set(sourceCapability.demoArtifactPublication.artifactKinds);
@@ -207,10 +218,11 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // its own journal readback intentionally uses byte-for-byte JSON.stringify.
   delegate={get:(key)=>journal.get(`demo/wallet/${key}`),put:(key,value)=>journal.put(`demo/wallet/${key}`,structuredClone(value)),withWalletLock:(key,work)=>journal.withWalletLock(`demo/wallet/${key}`,work)};
   if(!wallet || typeof wallet.request!=='function' || typeof wallet.getPublicAccount!=='function' || typeof wallet.getWriteProfile!=='function') throw new TypeError('the packaged seller wallet contract is unavailable');
-  const reader=ports.reader ?? createDemosSr2Adapter({rpcUrl:sourceCapability.pins.endpoint,journal:createInMemoryDemosSr2Journal(),sourceCapability,now});
   const owner=wallet.getPublicAccount()?.address;
   const claim=owner ? `did:demos:agent:${owner.slice(2)}` : null;
+  const reader=ports.reader ?? createDemosSr2Adapter({rpcUrl:sourceCapability.pins.endpoint,journal:createInMemoryDemosSr2Journal(),sourceCapability,binding,observeIdentity,ownWriter:claim,now});
   const signRpc=Object.hasOwn(ports,'signRpc')?ports.signRpc:storageWriteRpcSigner(signer,claim);
+  const sleep=ports.sleep ?? (ms=>new Promise(resolve=>setTimeout(resolve,ms)));
   if(!owner || wallet.getWriteProfile()?.demoArtifactPublication?.policy!==DEVNET_DEMO_ARTIFACT_POLICY) throw new TypeError('the packaged seller wallet does not carry the demo artifact publication policy');
   const keyFor=(logicalAddress)=>{
     const jobPrefix=/^(?:dacs2:composite:|dacs3:commit:|dacs4:deliverable:|dacs4:evidence:)/.exec(logicalAddress);
@@ -218,19 +230,24 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     return `demo/artifact/${exactHash([network,sourceCapability.pins.chainIdentity,claim,logicalAddress])}`;
   };
 
+  // A refusal this anchor proves from its own retained intent or from an authenticated readback is reported, before
+  // the coarse status or error below replaces it, to the collector of the call that is running (if any).
+  const refusalProof=(kind,address,retainedHash,observedHash=null)=>reportNativeRefusal({kind,address,retainedHash,observedHash});
+  const scopeConflict=(address,retained,input)=>{refusalProof('immutable-scope-conflict',address,retained.inputHash,exactHash(input));fail('conflict','immutable demo artifact intent differs');};
   const snapshot=async()=>publicationSnapshot(await sourceCapability.journal.entries(),await journal.entries());
   const signedNothing=async(address,row)=>(await snapshot()).classify(address,row)==='unsigned';
 
   async function accountNonceSnapshot() {
+    let response;
     try {
-      const response=boundedResolutionValue(await resolveWithDeadline(limits=>sourceCapability.readRpc('/',{method:'nodeCall',params:[{message:'getAddressNonce',data:{address:owner}}]},limits),NONCE_READ_LIMITS),
+      response=boundedResolutionValue(await resolveWithDeadline(limits=>sourceCapability.readRpc('/',{method:'nodeCall',params:[{message:'getAddressNonce',data:{address:owner}}]},limits),NONCE_READ_LIMITS),
         {...NONCE_READ_LIMITS,maxValues:64,maxDepth:8,maxListEntries:16});
-      const snapshot=nonceAnswer(response?.response);
-      if(!rpcEnvelope(response,200,null) || snapshot.nonce===null) fail('indeterminate','seller nonce is unavailable');
-      return snapshot;
     } catch(cause) {
       throw Object.assign(new Error(`seller nonce read failed or exceeded its deadline: ${cause.message}`,{cause}),{code:'indeterminate'});
     }
+    const snapshot=nonceAnswer(response?.response);
+    if(!rpcEnvelope(response,200,null) || snapshot.nonce===null) fail('indeterminate','seller nonce is unavailable');
+    return snapshot;
   }
   const accountNonce=async()=>(await accountNonceSnapshot()).nonce;
   async function liveSourceRows() {
@@ -242,37 +259,49 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // refused: the CREATE was refused by the node, so an absent readback (not only a
   // pending one) leaves its original bytes eligible for the one resend.
   // A resend is off unless asked for, and then only after authorizeResend (the
-  // caller's own check, asked here, under the recovery lock, right before the
-  // resend is recorded) answers exactly true. Anything else sends nothing and
+  // caller's own check, asked in recoverExactRetainedCreate, under the recovery
+  // lock, right before the resend is recorded) answers exactly true. Anything else sends nothing and
   // records nothing; a throw from it reaches the caller with its cause.
-  async function observeSource(hash,projection,writeProof,{resend=false,refused=false,authorizeResend}={}) {
+  async function observeSource(hash,projection,writeProof,{resend=false,refused=false,authorizeResend,currentAuthorization=authorizeResend}={}) {
     if(resend&&typeof authorizeResend!=='function')fail('invalid','a resend needs the caller\'s authorization check');
     let observed=await sourceCapability.binding({phase:'readback',address:owner,hash,...(writeProof?{writeProof}:{})});
     // While the kit's guard is off every read, resend-enabled lane reconcilers included, stays readback only.
     if(resend && kitOperationAdmitted() && (observed.disposition==='pending'||refused&&observed.disposition==='absent') && signRpc && projection?.content?.type==='storageProgram') {
-      const recoveryKey=`demo/recovery/${hash}`;
-      await journal.withWalletLock(recoveryKey,async()=>{
-        const prior=await journal.get(recoveryKey),projectionHash=exactHash(projection);
-        if(prior){
-          if(prior.projectionHash!==projectionHash)fail('invalid','retained recovery projection differs');
-          // An interrupted or uncertain resend never authorizes another; one the
-          // transport said it never dispatched left its slot unused.
-          if(prior.stage!==UNSENT_RECOVERY_STAGE)return;
-        }
-        if(await authorizeResend()!==true)return;
-        await assertQualifiedDeployment(sourceCapability);
-        await journal.put(recoveryKey,{stage:'intent',projectionHash});
-        const answer=await sourceCapability.recoverStorageWrite({signedTransaction:projection,signRpc});
-        await journal.put(recoveryKey,{stage:answer?.resent===false?UNSENT_RECOVERY_STAGE:'issued',projectionHash});
-      });
+      await recoverExactRetainedCreate({hash,signedTransaction:projection,authorizeResend,currentAuthorization});
       observed=await sourceCapability.binding({phase:'readback',address:owner,hash});
     }
     return observed;
   }
 
+  // The one place a retained accepted CREATE is sent again: its exact stored bytes, at most once. Only an active read reaches it;
+  // eligibility is decided by observeSource. The caller's check is asked once, under the recovery lock, after the awaited
+  // deployment check and right before the intent is recorded, so authority that closed during that check sends and records nothing.
+  // The resend runs in runCreate. Its current-authorization check (publish's own check, or for a read the caller's resend check)
+  // is asked synchronously before each RPC-authentication signature and transmission; one that answers asynchronously refuses.
+  // The intent is recorded inside that pass, so a refusal before it leaves the one resend unused.
+  async function recoverExactRetainedCreate({hash,signedTransaction,authorizeResend,currentAuthorization}) {
+    const recoveryKey=`demo/recovery/${hash}`;
+    await journal.withWalletLock(recoveryKey,async()=>{
+      const prior=await journal.get(recoveryKey),projectionHash=exactHash(signedTransaction);
+      if(prior){
+        if(prior.projectionHash!==projectionHash)fail('invalid','retained recovery projection differs');
+        // An interrupted or uncertain resend never authorizes another; one the
+        // transport said it never dispatched left its slot unused.
+        if(prior.stage!==UNSENT_RECOVERY_STAGE)return;
+      }
+      await assertQualifiedDeployment(sourceCapability);
+      if(await authorizeResend()!==true)return;
+      const answer=await runCreate({operationId:recoveryKey,lane:SELLER_WALLET_LANE,operationClass:'job-create',currentAuthorization},async({guardedSigner})=>{
+        await journal.put(recoveryKey,{stage:'intent',projectionHash});
+        return sourceCapability.recoverStorageWrite({signedTransaction,signRpc:guardedSigner(signRpc)});
+      });
+      await journal.put(recoveryKey,{stage:answer?.resent===false?UNSENT_RECOVERY_STAGE:'issued',projectionHash});
+    });
+  }
+
   // The lane reconcilers' own resend of another job's accepted-but-missing write
   // (named exception closed-access-19-resend, below): no caller check applies.
-  const laneResend={resend:true,authorizeResend:async()=>true};
+  const laneResend={resend:true,authorizeResend:()=>true};
   async function reconcilePriorSourceLane() {
     const pending=(await liveSourceRows()).map(([,value])=>value).filter((value)=>value?.signedTransaction?.content?.from===owner&&value.stage!=='observed');
     const hashes=new Set(pending.map((value)=>value.hash).filter((value)=>typeof value==='string'&&value.length>0));
@@ -365,11 +394,13 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     if(fate===REFUSED_INCOMPLETE) return {status:'indeterminate',reason:'broadcast_rejected: the original demo CREATE was sent again and the index is not complete past its nonce',noResend:true};
     return {status:'rejected',reason:refusal,noResend:true};
   }
-  async function observe(input,retained,writeProof,{fresh=false,resend=false,authorizeResend}={}) {
+  // watch (optional): the late-write wait of a CREATE publish sent (awaitInclusion). It gets the first readback and
+  // reads again passively (never a resend) while that is pending; its answer replaces the readback.
+  async function observe(input,retained,writeProof,{fresh=false,resend=false,authorizeResend,currentAuthorization,watch}={}) {
     let hash=retained.hash;
     if(!hash) {
       const hashes=(await snapshot()).addressHashes.get(input.logicalAddress);
-      if(!hashes?.size&&retained.error==='user_rejected') return {status:'rejected',reason:'user_rejected: the operator refused this CREATE',noResend:true};
+      if(!hashes?.size&&retained.error==='user_rejected'){refusalProof('operator-denied',input.logicalAddress,retained.inputHash);return {status:'rejected',reason:'user_rejected: the operator refused this CREATE',noResend:true};}
       if(hashes?.size!==1) return {status:'indeterminate',reason:'the original demo CREATE hash is not uniquely retained',noResend:true};
       hash=[...hashes][0];
       // Every caller holds the artifact lock from intent lookup through save,
@@ -379,17 +410,21 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     const projection=await publicProjection(hash);
     if(!projection) return {status:broadcastRejected(retained)?'rejected':'indeterminate',reason:broadcastRejected(retained)?'broadcast_rejected: no original signed CREATE retained':'the original public signed CREATE projection is unavailable',noResend:true};
     if(!projectionAuthentic(projection,{transactionRef:{value:hash}})) return {status:'indeterminate',reason:'the original public signed CREATE does not authenticate',noResend:true};
-    if(!retained.signedTransaction) {retained={...retained,hash,signedTransaction:projection};await journal.put(keyFor(input.logicalAddress),retained);}
+    // The adopted hash and bytes are saved before an active read may send them again. A passive read keeps them local until the
+    // authenticated inclusion below saves them, so a pending or failed read leaves the journal as it was.
+    if(!retained.signedTransaction) {retained={...retained,hash,signedTransaction:projection};if(resend)await journal.put(keyFor(input.logicalAddress),retained);}
     const cacheable=cachedKinds.has(input.artifactKind),cacheKey=cacheScope(input,projection,retained.receipt ?? null);
     const cached=cacheable&&!fresh?immutable.get(cacheKey):null;
     if(cached){await sourceCapability.observeBinding();return cached;}
     const refused=broadcastRejected(retained);
-    const included=await observeSource(hash,projection,writeProof,{resend:resend&&(!refused||await refusedCreateMayResend(hash,projection)),refused,authorizeResend});
+    let included=await observeSource(hash,projection,writeProof,{resend:resend&&(!refused||await refusedCreateMayResend(hash,projection)),refused,authorizeResend,currentAuthorization});
+    if(watch) included=await watch(included,hash,projection,()=>observeSource(hash,projection,writeProof,{resend:false}));
     if(refused&&included.disposition==='absent') return refusedAbsence(hash,projection,retained);
     if(included.disposition!=='included') return {status:'indeterminate',reason:`the original demo CREATE has no authenticated inclusion readback (${included.disposition}: ${included.reason ?? included.error ?? 'no reason'})`,noResend:true};
     const record=await reader.read(input.logicalAddress,{expectedWriter:claim,expectedArtifactKind:input.artifactKind,...(input.deliveryBinding?{expectedDeliveryBinding:input.deliveryBinding}:{}),signedProjection:projection});
     if(record.status!=='present' || canonicalize(record.artifact)!==canonicalize(input.artifact) || record.receipt.contentHash!==input.receiptContentHash) {
       if(cacheable) immutable.delete(cacheKey);
+      if(record.status==='present') refusalProof('authenticated-contradiction',input.logicalAddress,input.receiptContentHash,contentHash(record.artifact));
       fail('invalid','native demo artifact readback differs from the retained intent');
     }
     const verdict=await reader.verifyReceipt({receipt:record.receipt,logicalAddress:input.logicalAddress,artifact:input.artifact,expectedWriter:claim,artifactKind:input.artifactKind,receiptContentHash:input.receiptContentHash,signedProjection:projection});
@@ -418,16 +453,28 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // A retained CREATE is sent again (its original bytes) only through authorize,
   // which is asked once more right before the resend; without authorize, or when
   // it answers anything but true, the retained intent is only read back.
-  async function publish({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,authorize,authorizeSigning,reaskDenied=false}) {
+  // awaitInclusion (optional, needs authorize): a CREATE this call sends that reads back pending is read back
+  // again, never sent again, every five seconds (late-write-watch.mjs) until it is no longer pending, its
+  // exclusion is proven (write-exclusion.mjs), authorize no longer answers true, or 30 minutes have passed since
+  // the wallet's answer (which itself comes after the transport's inclusion wait). The issued intent keeps that
+  // time, so a publish after a restart inside those 30 minutes resumes the wait with passive reads only. Any
+  // other retained intent is read back once, as without it. Like the transport's own inclusion wait, this keeps
+  // the seller's nonce lane, so no other seller CREATE is prepared meanwhile.
+  // operationClass and currentAuthorization (required for every kind): the job class of the CREATE's
+  // pass ('job-create' for a Listing too) and its synchronous current-authorization check, which runCreate
+  // asks last before the signature and each transmission. Without them nothing is read, stored or sent.
+  async function publish({logicalAddress,artifact,artifactKind,writer=claim,verifier=writer,deliveryBinding,authorize,authorizeSigning,reaskDenied=false,awaitInclusion=false,operationClass,currentAuthorization}) {
     assertKitOperationAdmitted('publish');
+    if(typeof operationClass!=='string'||typeof currentAuthorization!=='function') fail('invalid','publish needs the pass\'s operationClass and currentAuthorization check; nothing was read, stored or sent');
     if(authorize!==undefined&&typeof authorize!=='function') fail('invalid','publish authorization must be a function');
+    if(awaitInclusion&&!authorize) fail('invalid','awaiting inclusion needs the caller\'s authorization check');
     if(authorizeSigning!==undefined&&(typeof authorizeSigning!=='function'||wallet.guardsSigning!==true)) fail('not-authorized','the wallet cannot check this write right before it signs; no intent was stored and nothing was sent');
     if(writer!==claim || !kinds.has(artifactKind) || !artifactValid(artifactKind,artifact,writer,verifier,vetMode)) fail('invalid','demo artifact kind, producer, or signed shape differs');
     if(artifactKind==='SettlementEvidence'&&logicalAddress!==`dacs4:evidence:${artifact.jobId}`)fail('invalid','delivery evidence address differs from its job');
     const value=clone(artifact), jobId=value.jobId ?? `listing:${value.listingId}`, receiptContentHash=contentHash(value);
     if((artifactKind==='Deliverable')!==Boolean(deliveryBinding) || (deliveryBinding && !deliveryBindingValid(deliveryBinding,value,logicalAddress,receiptContentHash))) fail('invalid','demo Deliverable is not bound to the exact Agreement, Listing, fulfilment, amount and payload');
     const input={logicalAddress,artifact:value,artifactKind,writer,receiptContentHash,...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
-    const resendOptions={resend:authorize!==undefined,authorizeResend:authorize};
+    const resendOptions={resend:authorize!==undefined,authorizeResend:authorize,currentAuthorization};
     // The source owns the atomic wallet lane used by ALL its CREATE writers,
     // including writers using other journals. An artifact-local lock cannot
     // establish that guarantee. Unintegrated hosts may still read retained data.
@@ -450,13 +497,13 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         // carry it, and only within the same scope: a proven unsigned attempt signed nothing, and a dead refused CREATE can
         // never be included, so no immutable intent is left to contradict. A dead refused CREATE's replacement may differ only
         // in the re-stamped fields (RESTAMPED_FIELDS). Any other change stays a conflict.
-        if(!sameInput&&publicationScope(retained.input)!==publicationScope(input)) fail('conflict','immutable demo artifact intent differs');
+        if(!sameInput&&publicationScope(retained.input)!==publicationScope(input)) scopeConflict(logicalAddress,retained,input);
         if(!unsigned) {
-          if(!sameInput&&!restampedOnly(retained.input,input)) fail('conflict','immutable demo artifact intent differs');
+          if(!sameInput&&!restampedOnly(retained.input,input)) scopeConflict(logicalAddress,retained,input);
           const deadHash=await deadRefusedCreateHash(input,retained);
           if(deadHash) supersedes={hash:deadHash,transaction:clone(retained.transaction)};
-          else if(sameInput) return observe(input,retained,undefined,resendOptions);
-          else fail('conflict','immutable demo artifact intent differs');
+          else if(sameInput) return observe(input,retained,undefined,awaitInclusion&&retained.stage==='issued'&&lateWriteWatchOpen(retained.issuedAt,now())?{watch:lateWriteWatch(retained.issuedAt,authorize)}:resendOptions);
+          else scopeConflict(logicalAddress,retained,input);
         }
       }
       if(!retained&&(await snapshot()).addresses.has(logicalAddress)) return {status:'indeterminate',reason:'signed CREATE retained without an intent',noResend:true};
@@ -511,8 +558,9 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         await journal.put(keyFor(logicalAddress),{...intent,stage:'unsigned',error:'nonce-lane-changed'});
         fail('indeterminate','source wallet nonce lane changed during CREATE reservation');
       }
-      const answer=await wallet.request({method:'sendTransaction',params:[{kind:DEVNET_DEMO_ARTIFACT_KIND,profile:DEVNET_AGREEMENT_PROFILE,network,owner:writer,artifactKind,jobId,
-        logicalAddress,contentHash:receiptContentHash,envelopeHash:exactHash(value),transaction}]},...(authorizeSigning?[{authorize:authorizeSigning}]:[]));
+      const answer=await runCreate({operationId:keyFor(logicalAddress),lane:SELLER_WALLET_LANE,operationClass,currentAuthorization},()=>wallet.request({method:'sendTransaction',params:[{kind:DEVNET_DEMO_ARTIFACT_KIND,
+        profile:DEVNET_AGREEMENT_PROFILE,network,owner:writer,artifactKind,jobId,logicalAddress,contentHash:receiptContentHash,envelopeHash:exactHash(value),transaction}]},
+      ...(authorizeSigning?[{authorize:authorizeSigning}]:[])));
       if(answer?.error?.code===OPERATOR_CLOSING) {
         // Not a decision: the custody reports it only when the approval was
         // cut before signing. The intent stays askable (never denied).
@@ -526,6 +574,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         const state=await snapshot();
         const signed=state.live([...state.sourceRows,...state.walletRows]).some(([,row])=>!state.rejected(row) && row?.signedTransaction?.content?.from===owner && row.signedTransaction.content.nonce===nonce);
         const code=answer?.error?.code;
+        if(code==='user_rejected') refusalProof('operator-denied',logicalAddress,intent.inputHash);
         const stage=code==='user_rejected'?'denied':code==='broadcast_rejected'?'rejected':answer?.success===false&&!signed?'unsigned':'issued';
         await journal.put(keyFor(logicalAddress),{...intent,stage,error:code ?? 'wallet-response-missing'});
         if(signed&&code==='user_rejected') return observe(input,{...intent,stage,error:code},undefined,resendOptions);
@@ -537,10 +586,16 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         await journal.put(keyFor(logicalAddress),{...intent,stage:'issued',error:'wallet-answer-unbound'});
         return {status:'indeterminate',reason:'wallet answer has no matching retained signed CREATE',noResend:true};
       }
-      const issued={...intent,stage:'issued',hash};
+      const issued={...intent,stage:'issued',hash,issuedAt:now()};
       await journal.put(keyFor(logicalAddress),issued);
-      return observe(input,issued,answer.data.writeProof,resendOptions);
+      return observe(input,issued,answer.data.writeProof,{...resendOptions,...(awaitInclusion?{watch:lateWriteWatch(issued.issuedAt,authorize)}:{})});
     })));
+  }
+  // observe's watch for a CREATE the wallet answered for at issuedAt: its late-write wait, judged by the exclusion rule
+  // of that exact signed CREATE.
+  function lateWriteWatch(issuedAt,authorize) {
+    return (first,hash,projection,readBack)=>watchLateWrite({first,readBack,issuedAt,now,sleep,authorize,
+      excluded:createWriteExclusionRule({hash,nonce:projection.content.nonce,readRpc:(path,body,limits)=>sourceCapability.readRpc(path,body,limits),readAccountNonce:accountNonceSnapshot})});
   }
   // options.resend (default false): a read is passive. It reads the chain back and
   // never rebroadcasts the retained CREATE or records a resend. true sends the
@@ -557,7 +612,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       const retained=await journal.get(keyFor(logicalAddress));
       if(!retained) return noIntentAbsence(logicalAddress);
       const input={logicalAddress,artifact:clone(artifact),artifactKind,writer,receiptContentHash:contentHash(artifact),...(verifier!==writer?{verifier}:{}),...(deliveryBinding?{deliveryBinding:clone(deliveryBinding)}:{})};
-      if(retained.inputHash!==exactHash(input)) return {status:'rejected',reason:'retained demo CREATE scope differs'};
+      if(retained.inputHash!==exactHash(input)){refusalProof('immutable-scope-conflict',logicalAddress,retained.inputHash,exactHash(input));return {status:'rejected',reason:'retained demo CREATE scope differs'};}
       authorizeRetained(retained);
       if(await signedNothing(logicalAddress,retained)) return provenUnsignedAbsence(retained.stage==='closing'?CLOSING_ABSENT:UNSIGNED_ABSENT);
       if(retained.stage==='closing') return {status:'absent',reason:CLOSING_ABSENT};
@@ -586,7 +641,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
     return journal.withWalletLock(keyFor(logicalAddress),async()=>{
       const retained=await journal.get(keyFor(logicalAddress));
       if(!retained) return proofOfNoIntent?noIntentAbsence(logicalAddress):{status:'absent',reason:'no seller-owned demo CREATE intent'};
-      if(retained.input?.artifactKind!==artifactKind || retained.input?.writer!==writer || retained.input?.logicalAddress!==logicalAddress) return {status:'rejected',reason:'retained demo CREATE scope differs'};
+      if(retained.input?.artifactKind!==artifactKind || retained.input?.writer!==writer || retained.input?.logicalAddress!==logicalAddress){refusalProof('immutable-scope-conflict',logicalAddress,retained.inputHash);return {status:'rejected',reason:'retained demo CREATE scope differs'};}
       authorizeRetained(retained);
       // After the access check and before any proof, readback or recovery send, a retained Vet record is held to
       // this anchor's own mode: an intent kept under the other mode is refused, never read, resent or proven unsigned.
@@ -623,7 +678,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   const projectionWithinBudget=projection=>{
     try { boundedResolutionValue(projection,{maxBytes:SIGNED_PROJECTION_MAX_BYTES,maxValues:8192,maxDepth:34,maxListEntries:4096});return true; } catch { return false; }
   };
-  // demosdk 4.0.16 sign/GCRGeneration duplicates the CREATE and its metadata.
+  // demosdk 4.0.18 sign/GCRGeneration duplicates the CREATE and its metadata.
   // Long OS strings also cover fee byte overhead after the denomination fork.
   const sdkSignedCandidate=transaction=>{
     const content=clone(transaction.content),op=content.data[1],amount='9007199254740991000000000',from=content.from_ed25519_address;

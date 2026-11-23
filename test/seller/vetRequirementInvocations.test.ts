@@ -12,6 +12,7 @@ import {
   type SellerFulfilmentExpectedVerifyResult,
   type SellerFulfilmentVetRequirementInvocation,
 } from "../../src/seller/index.js";
+import { sellerFulfilmentVetBindingsOf } from "../../src/seller/fulfilmentAuditSource.js";
 
 // The seller-side pre-signature check runs the delivery runner's own
 // invocation predicate (isSellerFulfilmentVetInvocationMismatch), so an
@@ -352,6 +353,52 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     })).toBeNull();
   });
 
+  describe("claims compared by identity rather than by spelling", () => {
+    const withParameter = (claim: string) => `${claim}?alias=other`;
+
+    test("accepts an evaluated party spelled with a parameter variant", () => {
+      const variantBuyer = { ...buyer, vetRecordRef: recordRef(withParameter(buyerClaim), sellerClaim) };
+      const entry = invocation(variantBuyer, sellerClaim);
+      entry.evaluatedParty = withParameter(buyerClaim);
+      expect(sellerFulfilmentVetRequirementsViolation([entry, valid[1]], {
+        jobId, buyer: variantBuyer, seller, buyerRequirement,
+      })).toBeNull();
+    });
+
+    test("accepts a verifier spelled with a parameter variant", () => {
+      const entry = invocation(buyer, withParameter(sellerClaim));
+      entry.vetRecordRef.signer = sellerClaim;
+      expect(check([entry, valid[1]])).toBeNull();
+    });
+
+    test("accepts a record signer spelled with a parameter variant", () => {
+      const variantBuyer = { ...buyer, vetRecordRef: recordRef(buyerClaim, withParameter(sellerClaim)) };
+      expect(sellerFulfilmentVetRequirementsViolation([invocation(variantBuyer, sellerClaim), valid[1]], {
+        jobId, buyer: variantBuyer, seller, buyerRequirement,
+      })).toBeNull();
+    });
+
+    test("refuses a record signer that is a different identity than the verifier", () => {
+      const otherSignerBuyer = { ...buyer, vetRecordRef: recordRef(buyerClaim, withParameter(buyerClaim)) };
+      expect(sellerFulfilmentVetRequirementsViolation([invocation(otherSignerBuyer, sellerClaim), valid[1]], {
+        jobId, buyer: otherSignerBuyer, seller, buyerRequirement,
+      })).toMatch(/differs from its party/);
+    });
+
+    test("refuses a verifier that equals its expected verifier but is not a canonical claim", () => {
+      const uncanonicalSeller = `did:demos:agent:${"5E".repeat(32)}`;
+      const unsignedBuyer = { primaryClaim: buyerClaim, vetRecordRef: structuredClone(buyer.vetRecordRef) };
+      Reflect.deleteProperty(unsignedBuyer.vetRecordRef, "signer");
+      const uncanonicalSellerParty = {
+        primaryClaim: uncanonicalSeller, vetRecordRef: recordRef(uncanonicalSeller, buyerClaim),
+      };
+      expect(sellerFulfilmentVetRequirementsViolation(
+        [invocation(unsignedBuyer, uncanonicalSeller), invocation(uncanonicalSellerParty, buyerClaim)],
+        { jobId, buyer: unsignedBuyer, seller: uncanonicalSellerParty, buyerRequirement },
+      )).toMatch(/differs from its party/);
+    });
+  });
+
   test("does not give an orchestrator-only binding the seller's counterparty verifier", () => {
     const entry = invocation(seller, buyerClaim);
     const context = {
@@ -489,6 +536,23 @@ describe("sellerFulfilmentVetRequirementsViolation", () => {
     expect(sellerFulfilmentVetRequirementsViolation([invocation(sharedParty, buyerClaim)], {
       jobId, buyer: sharedParty, seller: sharedParty, buyerRequirement,
     })).toBeNull();
+  });
+
+  test("refuses one shared record whose buyer and seller claims differ only by a parameter", () => {
+    const buyerParty = { primaryClaim: buyerClaim, vetRecordRef: recordRef(buyerClaim, buyerClaim), bundleHash: "b".repeat(64) };
+    const sellerParty = { ...buyerParty, primaryClaim: `${buyerClaim}?alias=work` };
+    expect(sellerFulfilmentVetRequirementsViolation([invocation(buyerParty, buyerClaim)], {
+      jobId, buyer: buyerParty, seller: sellerParty, buyerRequirement,
+    })).not.toBeNull();
+  });
+
+  test("does not share a roster's Vet record between claims that differ only by a parameter", () => {
+    const vetRecordRef = recordRef(buyerClaim, sellerClaim);
+    const bindings = sellerFulfilmentVetBindingsOf([
+      { role: "buyer", primaryClaim: buyerClaim, bundleHash: "b".repeat(64), vetRecordRef },
+      { role: "seller", primaryClaim: `${buyerClaim}?alias=work`, bundleHash: "b".repeat(64), vetRecordRef },
+    ] as never);
+    expect(bindings).toBeNull();
   });
 
   describe("TP-1 G3 orchestrator Vet mode", () => {

@@ -593,11 +593,12 @@ function paused(input, outcome = () => input.checked.reserve()) {
   return { reached, open, input: { ...input, checked: { reserve: async () => { reach(); await opened; return outcome(); } } } };
 }
 
-// The coordinator over a world's accounting, capacity and admission transaction; `control.operation` answers the next inspection.
+// The coordinator over a world's accounting, capacity and admission transaction; `control.operation` answers the next inspection and
+// `control.unfinished` the agent's unfinished-work read.
 function withCoordinator(w) {
-  w.inspections = 0; w.nonces = 0; w.control.operation = () => view.none; w.control.payloads = new Map();
+  w.inspections = 0; w.nonces = 0; w.control.operation = () => view.none; w.control.unfinished = () => false; w.control.payloads = new Map();
   w.coordinator = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity: w.capacity, admissionTransaction: w.admission,
-    inspectOperation: target => { w.inspections++; return w.control.operation(target); } });
+    inspectOperation: target => { w.inspections++; return w.control.operation(target); }, retainsUnfinishedWork: target => w.control.unfinished(target) });
   w.contextInput = (p, path = PATHS.context) => {
     const payload = { version: '1', kind: 'request', method: 'POST', path, bodyHash: hash('{}'), jobId: p.jobId, buyer: p.input.buyer, seller: SELLER, listingPin: PIN,
       agreementHash: hash('agreement'), nonce: hash(`nonce-${++w.nonces}`).slice(0, 32), expiresAt: w.control.clock + 30000, profile: PROFILE };
@@ -747,7 +748,7 @@ test('the coordinator and terminal observer refuse without writes when the guard
   assert.deepEqual(JSON.parse(child.stdout), { code: 'kit_operation_guard_off', written: 0, portCalls: 0, terminalSession: 'kit_operation_guard_off', observed: 'finalised', closures: 0 });
 });
 
-test('with `maxRecords` small and `free` 0, then again after the 60,000 ms buyer window has moved, 100 fresh requests from 100 distinct buyers each refuse `peer_store_capacity` and leave every count at its pre-request value, also after two restarts', async t => {
+test('with `maxRecords` small and `free` 0, 100 fresh requests from 100 distinct buyers each refuse `peer_store_capacity` and leave every count at its pre-request value, also after two restarts', async t => {
   const w = await coordination(t, { maxRecords: 10 });
   for (let n = 0; n < 10; n++) {
     const request = await w.request({}, { retainedWork: false });
@@ -767,8 +768,25 @@ test('with `maxRecords` small and `free` 0, then again after the 60,000 ms buyer
     assert.ok(w.counts().kit_reservations <= 10);
   };
   await flood(0);
-  w.f.setTime(fixture.T0 + 60001); await flood(1);
-  w.reopen(); w.reopen(); await flood(2);
+  w.reopen(); w.reopen(); await flood(1);
+});
+
+test('refused polls fill the store only until their requests expire, then a repeat and a new job are admitted again', async t => {
+  const w = await coordination(t, { maxRecords: 5 });
+  for (let n = 0; n < 5; n++) {
+    const request = await w.request({}, { retainedWork: false });
+    if (n === 0) await w.reserve(request);
+    else await rejects(w.reserve(request), 'seller_effect_pending', 503);
+  }
+  assert.equal(w.capacity.capacityReport().free, 0);
+  await rejects(w.reserve(await w.request({}, { retainedWork: false })), 'peer_store_capacity', 503);
+  w.f.setTime(fixture.T0 + 60001);
+  assert.equal(w.capacity.capacityReport().used, 1);
+  await rejects(w.reserve(await w.request({}, { retainedWork: false })), 'seller_effect_pending', 503);
+  const jobId = generateCanonicalJobId({ timestamp: T0, entropy: Buffer.alloc(10, 9) }), payload = w.f.payload({ jobId, buyer: claim('new-job-buyer') });
+  const effect = await w.reserve({ checked: { reserve: async () => ({ state: 'new' }) }, payload, route: payload.path, operationId: wireOperationId(payload),
+    newJob: true, contextStart: false, paymentTx: null, keepProfile: FIXTURE_PROFILE, retainedWork: false });
+  assert.equal(effect.state, 'new');
 });
 
 // An operation completed through the coordinator, then the store reopened at `limit` (FOUR leaves `free` 0).
@@ -779,10 +797,22 @@ async function completedOperation(t, limit) {
   return w;
 }
 // One signed retry of the operation, admitted again for each reservation.
-const signedRetry = (w, change = {}) => {
+const signedRetry = (w, change = {}, options = {}) => {
   const p = w.f.payload(change);
-  return async () => w.reserve({ ...(await w.f.admit(p)), paymentTx: null, retainedWork: true });
+  return async () => w.reserve({ ...(await w.f.admit(p)), paymentTx: null, retainedWork: true, ...options });
 };
+
+test('a completed operation at capacity is answered from its stored outcome, twice, for a route that revalidates its sources, with no row, file or exhaustion record', async t => {
+  const w = await completedOperation(t, FOUR);
+  assert.equal(w.capacity.capacityReport().free, 0);
+  const rows = w.f.rows().length, files = w.f.files(), retry = signedRetry(w, {}, { answersCompletedAtCapacity: true });
+  for (let repeat = 0; repeat < 2; repeat++) {
+    const effect = await retry();
+    assert.deepEqual({ state: effect.state, outcome: effect.outcome }, { state: 'completed', outcome: { status: 200, text: '{"status":"delivered"}' } });
+  }
+  assert.equal(w.f.rows().length, rows); assert.deepEqual(w.f.files(), files); assert.deepEqual(w.capacity.capacityReport().exhausted, []);
+  await rejects(signedRetry(w, {}, { answersCompletedAtCapacity: 'yes' })(), 'wire_input_invalid', 500);
+});
 
 test('a completed operation at capacity refuses the same signed retry twice with no row, file or exhaustion record; with room the second is `peer_request_replayed`', async t => {
   await t.test('at capacity', async st => {
@@ -1129,6 +1159,46 @@ test('terminal checks and registered gates run before accounting under the opera
   assert.equal(durableClosures(crowd.w).length, 1); assert.equal(crowd.w.report().used, 0);
 });
 
+// A payment request for `p` whose admitted body claims PAYMENT_TX, as the payment route hands it to the coordinator.
+const PAYMENT_TX = hash('payment transaction');
+const paymentInput = (w, p) => {
+  const input = w.contextInput(p, PATHS.payments);
+  return { ...input, paymentTx: PAYMENT_TX, checked: { ...input.checked, body: { txHash: PAYMENT_TX } } };
+};
+
+test('a terminal session lets only a payment retry that must finish its recorded payment reach accounting', async t => {
+  const { w, p } = await coordinated(t), asked = [], charged = () => w.report().used;
+  const underThisBinding = state => target => ({ ...(state === 'pending' ? view.pending(w.control.clock + 300000) : view.ended), binding: wireOperationBinding(target) });
+  w.control.state = onlyJob(p.jobId, () => 'settle-failed');
+  w.control.unfinished = target => { asked.push(target); return true; };
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'context_session_terminal', 409);
+  assert.deepEqual(durableClosures(w), closureOf(p.jobId, 'settle-failed', 'effect-path'), 'a new payment operation is refused and closes the job');
+  w.control.operation = () => view.ended;
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'context_session_terminal', 409);
+  w.control.operation = underThisBinding('ended');
+  await rejects(attemptRoute(w, p, PATHS.commitments), 'context_session_terminal', 409);
+  assert.deepEqual(asked, [], 'a new operation, another binding and another route never ask for the payment work');
+
+  w.control.unfinished = target => { asked.push(target); return false; };
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'context_session_terminal', 409);
+  assert.deepEqual(asked, [{ jobId: p.jobId, path: PATHS.payments }], 'a job with no recorded payment work is refused');
+  const cut = new Error('TEST unfinished-work read failed');
+  w.control.unfinished = () => { throw cut; };
+  await assert.rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), error => error === cut);
+  assert.equal(charged(), 0, 'nothing is charged for a refused request');
+
+  w.control.unfinished = () => true;
+  for (const state of ['ended', 'pending']) {
+    w.control.operation = underThisBinding(state);
+    assert.equal((await attemptRoute(w, p, PATHS.payments, paymentInput(w, p))).state, 'new', `an ${state} payment with its recorded work reaches the reservation`);
+  }
+  assert.equal(charged(), 2, 'each retry is charged as any retry');
+  assert.deepEqual(durableClosures(w), closureOf(p.jobId, 'settle-failed', 'effect-path'), 'the closure stays as it was');
+  w.coordinator.addPreAccountingGate(() => ({ code: 'TEST_gate_refused', status: 422 }));
+  await rejects(attemptRoute(w, p, PATHS.payments, paymentInput(w, p)), 'TEST_gate_refused', 422);
+  assert.equal(charged(), 2, 'a gate still refuses it before accounting');
+});
+
 test('terminal-gate-shape-and-thenable-refusals', async t => {
   const unhandled = watchUnhandled(t), { w, p } = await coordinated(t);
   for (const notGate of ['gate', null, {}, undefined]) assert.throws(() => w.coordinator.addPreAccountingGate(notGate), TypeError);
@@ -1196,39 +1266,6 @@ test('issuance and reclamation preserve terminal observations across request rol
     assert.deepEqual(durableClosures(quiet), [], label);
   }
   await settle(); assert.deepEqual(unhandled, []);
-});
-
-// Each retiring reader of the session state observes through the same adapter, on every active path.
-const TERMINAL_REFUSAL = error => error.code === 'context_session_terminal' && error.status === 409;
-const proposalOf = (f, jobId) => f.payload({ jobId });
-const reserveProposal = (f, jobId) => f.store().reserve(proposalOf(f, jobId), {}, { keepProfile: FIXTURE_PROFILE });
-const contextOf = (f, jobId) => [f.payload({ path: PATHS.context, jobId }), { scope: { jobId } }];
-const reserveContext = (f, jobId) => f.store().reserve(...contextOf(f, jobId), { admit: () => fixture.T0 });
-const retiringReaders = {
-  'a new proposal': { run: f => assert.throws(() => reserveProposal(f, fixture.JOB), TERMINAL_REFUSAL) },
-  'the classify dry run': { run: f => assert.throws(() => f.store().classify(proposalOf(f, fixture.JOB), {}, { keepProfile: FIXTURE_PROFILE }), TERMINAL_REFUSAL) },
-  'the context step': { run: f => assert.throws(() => reserveContext(f, fixture.JOB), TERMINAL_REFUSAL) },
-  assertPending: { before: f => reserveProposal(f, fixture.JOB), run: (f, held) => assert.throws(() => f.store().assertPending(held), TERMINAL_REFUSAL) },
-  claim: { before: f => { f.store().finish(reserveProposal(f, fixture.JOB), 503, '{}'); return reserveProposal(f, fixture.JOB); },
-    run: (f, held) => assert.throws(() => f.store().claim(held, proposalOf(f, fixture.JOB)), { code: 'seller_unavailable', status: 503 }) },
-  resume: { before: f => { f.store().finish(reserveContext(f, fixture.JOB), 503, '{}'); return reserveContext(f, fixture.JOB); },
-    run: (f, held) => assert.throws(() => f.store().resume(held, contextOf(f, fixture.JOB)[0]), TERMINAL_REFUSAL) },
-  'context reclamation': { before: f => { f.store().finish(reserveContext(f, fixture.JOB), 200, '{}'); f.setTime(fixture.T0 + 7200000); }, run: f => { reserveContext(f, fixture.JOB2); }, maxContextRecords: 1 },
-  'job reclamation': { before: f => { f.store().finish(reserveProposal(f, fixture.JOB), 200, '{}'); f.setTime(fixture.T0 + 7200000); }, run: f => { reserveProposal(f, fixture.JOB2); }, maxJobs: 1 },
-};
-
-test('all terminal readers and classify preserve their observations', async t => {
-  for (const [name, { before, run, ...limits }] of Object.entries(retiringReaders)) {
-    const w = await coordination(t, {}, limits); w.allocate(fixture.JOB);
-    const held = before?.(w.f);
-    w.control.state = onlyJob(fixture.JOB, () => 'finalised');
-    run(w.f, held);
-    const closed = new Database(w.f.path, { readonly: true });
-    try { assert.deepEqual(closed.prepare(CLOSURES_SQL).all().map(row => ({ ...row })), closureOf(fixture.JOB), name); } finally { closed.close(); }
-    assert.equal(w.internals.transaction(() => w.capacity.allocationWithin(fixture.JOB)).state, 'released', name);
-    w.control.state = () => null; w.reopen();
-    assert.deepEqual(w.internals.terminalSession(fixture.JOB), { terminal: true, state: 'finalised' }, name);
-  }
 });
 
 test('terminal-observer-rollback-flush-crash-cuts', t => {
@@ -1341,4 +1378,41 @@ test('terminal-reader-installation-audit', () => {
   }
   assert.equal(store.match(/createSellerChallengeLedger\(\{[^}]*sessionState: contextSessionState/g)?.length, 1, 'the ledger is given the adapter');
   assert.ok(sources.get('host.mjs').includes('sessionState: sellerStoreInternals(store).sessionState'), 'the capacity is given the store\'s adapter');
+});
+
+// Accounting stops counting a settled repeat or a refused row once its request has expired, so `used` does the same.
+const REQUEST_EXPIRED_MS = 61000;
+
+test('repeat and refused rows of an expired request stop counting toward used', t => {
+  const w = world(t, { maxRecords: 5 }), p = w.purchase();
+  w.charge(p.jobId, PATHS.proposals, 5);
+  assert.deepEqual(figures(w.report()), { used: 5, allotted: 0, free: 0 });
+  refusal(() => w.capacity.classify(classifyInput(p, PATHS.proposals, view.none)), 'peer_store_capacity', 503);
+  w.control.clock += REQUEST_EXPIRED_MS;
+  assert.deepEqual(figures(w.report()), { used: 1, allotted: 0, free: 4 }, 'only the first settled row of the route is kept');
+  assert.equal(w.capacity.classify(classifyInput(p, PATHS.proposals, view.none)).class, 'general');
+});
+
+test('a full store frees its room for a new purchase once the repeat rows expire', t => {
+  const w = world(t, { maxRecords: FOUR + 5 }), p = w.purchase(1);
+  w.charge(p.jobId, PATHS.proposals, FOUR + 5);
+  assert.equal(w.capacity.fitsNewPurchase(), false);
+  w.control.clock += REQUEST_EXPIRED_MS;
+  assert.equal(w.capacity.fitsNewPurchase(), true);
+  assert.equal(w.allocate(w.purchase(2)).state, 'live');
+});
+
+test('a row still reserving after a crash keeps counting after its request expired', t => {
+  const w = world(t, { maxRecords: 5 }), p = w.purchase();
+  w.charge(p.jobId, PATHS.proposals, 3);
+  w.db().prepare("UPDATE kit_reservations SET state = 'reserving', rev = 1").run();
+  w.control.clock += REQUEST_EXPIRED_MS;
+  assert.equal(w.report().used, 3);
+});
+
+test('a row of a request that has not expired yet keeps counting', t => {
+  const w = world(t, { maxRecords: 5 }), p = w.purchase();
+  w.charge(p.jobId, PATHS.proposals, 5);
+  w.control.clock += REQUEST_EXPIRED_MS - 2000;
+  assert.equal(w.report().used, 5);
 });

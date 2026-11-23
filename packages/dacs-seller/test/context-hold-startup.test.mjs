@@ -1,4 +1,3 @@
-import { attemptChallenge } from './helpers/challenge-api.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,7 +8,7 @@ import { dirname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import { sha256Hex } from '@kynesyslabs/dacs';
 import { world, JOBS } from './helpers/d5-http-fixture.mjs';
-import { sellerTransportEffect } from '../src/dacs/seller-transport-auth.mjs';
+import { DACS_SELLER_HTTP_PATHS, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { createSellerContextAdmission, releaseSellerContextHolds, parsePolicyLedger, withContextHolds, heldPolicyBudget } from '../src/devnet-demo/operator-approval.mjs';
 import { acquireSellerStateLock } from '../src/devnet-demo/seller-state-lock.mjs';
@@ -17,10 +16,11 @@ import { acquireSellerStateLock } from '../src/devnet-demo/seller-state-lock.mjs
 const CONTEXT = 'dacs-node2-seller-context-admission/v1';
 async function fixture(t) {
   const w = await world(t), input = await w.wire();
-  const request = w.auth.readRequest(input.header), body = JSON.parse(input.text);
+  const { request } = input, body = JSON.parse(input.text);
   const evidencePath = join(dirname(w.path), 'approval.jsonl');
   const config = { evidencePath, sellerApproval: { mode: 'policy', maxWriteTotalOs: '4', maxWritesPerHour: 2, maxTotalOsPerHour: '8' }, now: w.now };
-  const hold = { jobId: request.jobId, effect: sellerTransportEffect(request), writes: 2, hold: sellerTransportEffect(request) };
+  const effect = wireOperationId({ seller: request.seller, jobId: request.jobId, path: DACS_SELLER_HTTP_PATHS.context });
+  const hold = { jobId: request.jobId, effect, writes: 2, hold: effect };
   const policy = createSellerContextAdmission(config);
   const rows = async () => parsePolicyLedger(await readFile(evidencePath, 'utf8')).rows;
   const restart = (extra = {}) => {
@@ -34,7 +34,7 @@ const nextHold = f => ({ ...f.hold, jobId: JOBS[1], effect: 'b'.repeat(64), hold
 function journal(path) {
   const db = new Database(path, { readonly: true });
   try {
-    return ['peer_effects', 'peer_context_admissions', 'peer_nonces', 'kit_challenges'].map(table => {
+    return ['peer_effects', 'peer_context_admissions', 'kit_challenges'].map(table => {
       const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(table);
       return exists ? db.prepare(`SELECT * FROM ${table}`).all() : [];
     });
@@ -51,47 +51,6 @@ for (const startup of [false, true]) test(`ready admission preserves reserve-bef
   assert.equal((await f.rows())[0].released, true);
 });
 
-test('startup restores capacity after a hold commits before its transport reservation', async t => {
-  const f = await fixture(t);
-  attemptChallenge(f.store,f.request, f.body);
-  assert.equal(await f.policy.reserve(f.hold), null);
-  assert.equal(f.store.contextAdmission(f.hold.jobId), null);
-  assert.equal(await f.policy.reserve(nextHold(f)), 'hourly-write-limit');
-  const before = journal(f.path), restarted = f.restart();
-  const admitted = restarted.reserve(nextHold(f));
-  await restarted.ready;
-  assert.equal(await admitted, null, 'orphan capacity must be reusable after startup');
-  assert.equal((await f.rows())[0].released, true);
-  assert.deepEqual(journal(f.path), before, 'consumed challenges and transport answers remain untouched');
-});
-
-for (const resumed of [false, true]) for (const outcome of ['complete', 'no-effect']) {
-  test(`startup releases ${resumed ? 'resumed' : 'original'} hold after ${outcome} without a request retry`, async t => {
-    const f = await fixture(t), reservation = f.store.reserve(f.request, f.body, { admit: f.now });
-    if (resumed) f.hold.hold += ':' + reservation.owner;
-    await f.policy.reserve(f.hold);
-    f.store.finish(reservation, 200, '{"disposition":"rejected"}', { noEffect: outcome === 'no-effect' });
-    const before = journal(f.path), restarted = f.restart();
-    assert.deepEqual(await restarted.ready, [f.hold.hold]);
-    assert.equal((await f.rows())[0].released, true);
-    const bytes = await readFile(f.config.evidencePath, 'utf8');
-    assert.deepEqual(await f.restart().ready, []);
-    assert.equal(await readFile(f.config.evidencePath, 'utf8'), bytes);
-    assert.deepEqual(journal(f.path), before);
-  });
-}
-
-for (const state of ['pending', 'uncertain', 'retry']) test(`startup retains capacity for a ${state} effect`, async t => {
-  const f = await fixture(t), reservation = f.store.reserve(f.request, f.body, { admit: f.now });
-  await f.policy.reserve(f.hold);
-  if (state !== 'pending') f.store.finish(reservation, 503, '{}', { retry: state === 'retry' });
-  const before = journal(f.path), restarted = f.restart();
-  assert.deepEqual(await restarted.ready, []);
-  assert.equal((await f.rows())[0].released, false);
-  assert.equal(await restarted.reserve(nextHold(f)), 'hourly-write-limit');
-  assert.deepEqual(journal(f.path), before);
-});
-
 test('startup releases orphan holds across jobs and exact arbitrary hold identities', async t => {
   const f = await fixture(t);
   f.config.sellerApproval.maxWritesPerHour = 10;
@@ -100,16 +59,6 @@ test('startup releases orphan holds across jobs and exact arbitrary hold identit
   await policy.reserve(f.hold); await policy.reserve(other);
   assert.deepEqual(await f.restart().ready, [f.hold.hold, other.hold]);
   assert((await f.rows()).every(row => row.released));
-});
-
-test('startup releases an older orphan while retaining a later pending effect for the same job', async t => {
-  const f = await fixture(t);
-  const orphan = { ...f.hold, effect: 'c'.repeat(64), hold: 'TEST earlier orphan', writes: 1 };
-  await f.policy.reserve(orphan);
-  f.store.reserve(f.request, f.body, { admit: f.now });
-  await f.policy.reserve({ ...f.hold, writes: 1 });
-  assert.deepEqual(await f.restart().ready, [orphan.hold]);
-  assert.deepEqual((await f.rows()).map(row => row.released), [true, false]);
 });
 
 test('startup releases unused slots while retaining converted signed-write accounting and bytes', async t => {
@@ -134,28 +83,6 @@ test('startup repairs a torn release and retries the exact hold once', async t =
   assert.deepEqual(await f.restart().ready, []);
   assert.equal((await f.rows())[0].released, true);
 });
-
-for (const damage of ['missing-effect', 'missing-admission', 'dangling-mapping', 'wrong-job', 'wrong-effect', 'unknown-state', 'invalid-completion']) {
-  test(`startup refuses ${damage} journal joins before releasing any holds`, async t => {
-    const f = await fixture(t), reservation = f.store.reserve(f.request, f.body, { admit: f.now });
-    await f.policy.reserve(f.hold);
-    const db = new Database(f.path);
-    try {
-      if (damage === 'missing-effect') db.prepare('DELETE FROM peer_effects WHERE effect = ?').run(reservation.effectKey);
-      if (damage === 'missing-admission') db.prepare('DELETE FROM peer_context_admissions').run();
-      if (damage === 'dangling-mapping') { db.prepare('DELETE FROM peer_effects').run(); db.prepare('DELETE FROM peer_context_admissions').run(); }
-      if (damage === 'wrong-job') db.prepare('UPDATE peer_context_admissions SET job = ?').run(JOBS[1]);
-      if (damage === 'wrong-effect') db.prepare('UPDATE peer_context_admissions SET effect = ?').run('c'.repeat(64));
-      if (damage === 'unknown-state') db.prepare("UPDATE peer_effects SET state = 'TEST unknown'").run();
-      if (damage === 'invalid-completion') db.prepare("UPDATE peer_effects SET state = 'complete', status = 503, response = '{}'").run();
-    } finally { db.close(); }
-    const before = await readFile(f.config.evidencePath, 'utf8'), restarted = f.restart();
-    await assert.rejects(restarted.ready, { code: 'peer_context_reconciliation_conflict' });
-    await assert.rejects(restarted.reserve(nextHold(f)), { code: 'peer_context_reconciliation_conflict' });
-    await assert.rejects(restarted.release({ jobId: f.hold.jobId }), { code: 'peer_context_reconciliation_conflict' });
-    assert.equal(await readFile(f.config.evidencePath, 'utf8'), before);
-  });
-}
 
 test('startup preflights every hold and preserves the journal read error', async t => {
   const f = await fixture(t); await f.policy.reserve({ ...f.hold, writes: 1 });
@@ -205,17 +132,18 @@ test('transport classification refuses invalid hold job and effect identifiers',
   assert.throws(() => f.store.contextHoldState({ jobId: f.hold.jobId, effect: 'TEST invalid effect' }), { code: 'peer_context_reconciliation_conflict' });
 });
 
-test('reopening an older transport store adds an indexed effect lookup for startup joins', async t => {
-  const f = await fixture(t); f.store.reserve(f.request, f.body, { admit: f.now });
-  const db = new Database(f.path);
-  try { db.exec('DROP INDEX peer_context_admissions_effect'); }
+const classification = f => f.store.contextHoldState({ jobId: f.hold.jobId, effect: f.hold.effect });
+
+const hasAdmissionsTable = path => {
+  const db = new Database(path, { readonly: true });
+  try { return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'peer_context_admissions'").get()); }
   finally { db.close(); }
-  await f.restart().ready;
-  const reopened = new Database(f.path, { readonly: true });
-  try {
-    const plan = reopened.prepare('EXPLAIN QUERY PLAN SELECT job FROM peer_context_admissions WHERE effect = ? AND job <> ? LIMIT 1').all(f.hold.effect, f.hold.jobId);
-    assert(plan.some(row => row.detail.includes('USING INDEX peer_context_admissions_effect')));
-  } finally { reopened.close(); }
+};
+
+test('transport classification reports absent when the store has no context admissions table', async t => {
+  const f = await fixture(t);
+  assert.equal(hasAdmissionsTable(f.path), false);
+  assert.equal(classification(f), 'absent');
 });
 
 test('startup rejects under another policy writer lock', async t => {

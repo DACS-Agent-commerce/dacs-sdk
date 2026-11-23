@@ -732,6 +732,37 @@ for (const status of ['awaiting_approval', 'agreement_pending']) {
     assert.equal(w.ops.history(w.op.id).length, events + 1);
   });
 }
+// A stale service clock must not keep an approval that elapsed on the wall clock open.
+for (const status of ['awaiting_approval', 'agreement_pending']) {
+  for (const publicApi of [true, false]) {
+    const elapsedWorld = t => {
+      let serviceClock = DIAGNOSTIC_TIME;
+      const w = diagnosticWorld(t, INCLUDED, { native: status === 'agreement_pending', publicApi, now: () => serviceClock });
+      w.db.prepare('UPDATE operations SET status=?, expires_at=?, state=? WHERE id=?').run(status, new Date(DIAGNOSTIC_TIME - 1000).toISOString(),
+        JSON.stringify(status === 'agreement_pending' ? { protocol: { stage: 'agreement-pending' } } : {}), w.op.id);
+      const token = w.ops.handoffTokenFor(w.op.id), writes = () => w.db.prepare('SELECT total_changes() n').get().n;
+      return { w, token, before: writes(), writes, stale: () => { serviceClock = DIAGNOSTIC_TIME - 5 * 365 * 86400000; } };
+    };
+    const kind = publicApi ? 'public' : 'internal';
+    test(`${kind} status reports an elapsed ${status} approval as expired under a stale service clock`, t => {
+      const { w, token, before, writes, stale } = elapsedWorld(t); stale();
+      assert.equal(w.purchases.status(w.op.accountId, w.op.id, token).operation.status, 'expired');
+      assert.equal(writes(), before);
+      assert.equal(w.ops.get(w.op.accountId, w.op.id).status, status);
+    });
+    // Public portal evidence is never actionable, so only the internal service can show it.
+    if (!publicApi) test(`internal portal evidence reports an elapsed ${status} approval as not actionable under a stale service clock`, t => {
+      const { w, token, before, writes, stale } = elapsedWorld(t); stale();
+      assert.equal(w.purchases.portalEvidence(w.op.id, token).actionable, false);
+      assert.equal(writes(), before);
+    });
+    if (publicApi) test(`public readback reports an elapsed ${status} approval as expired under a stale service clock`, async t => {
+      const { w, before, writes, stale } = elapsedWorld(t); stale();
+      assert.equal((await w.verify()).operation.status, 'expired');
+      assert.equal(writes(), before);
+    });
+  }
+}
 
 for (const source of ['lookup', 'buyer-access']) {
   test(`portal evidence preserves ${source} refusals before private reads`, t => {
@@ -996,4 +1027,30 @@ for (const method of ['portalOperation', 'portalEvidence']) {
       assert.throws(() => w.purchases[method](w.op.id, token), { code: 'not_found' });
     });
   }
+}
+
+for (const [label, reason] of [['Error', new Error('transaction reader failed')], ['undefined', undefined], ['null', null], ['zero', 0], ['empty string', ''], ['false', false]]) {
+  test(`transaction body read rejected with ${label} remains retryable`, async t => {
+    const w = world(t, { ...INCLUDED }), readBody = w.chain.getTransaction;
+    const before = w.coordinates.get(w.op.id);
+    w.chain.getTransaction = async () => { throw new Error('transaction reader failed'); };
+    assert.equal((await w.verify()).verification.outcome, 'chain_unavailable');
+    const control = w.coordinates.get(w.op.id).observation;
+    w.chain.getTransaction = async () => { throw reason; };
+    const result = await w.verify(), stored = w.coordinates.get(w.op.id);
+    assert.equal(result.verification.outcome, 'chain_unavailable');
+    assert.match(result.verification.reason, /^transaction body unavailable: /);
+    assert.deepEqual(stored.observation, control);
+    assert.deepEqual(result.operation, w.op);
+    assert.deepEqual(w.ops.get(w.op.accountId, w.op.id), w.op);
+    assert.equal(stored.reportedTxHash, before.reportedTxHash);
+    assert.equal(stored.expectedNonce, before.expectedNonce);
+    assert.equal(stored.nonceFence, before.nonceFence);
+    assert.ok(!stored.verifiedAt);
+    assert.equal(w.consumed(), 0);
+    w.chain.getTransaction = readBody;
+    assert.equal((await w.verify()).verification.outcome, 'verified');
+    assert.equal((await w.verify()).verification.outcome, 'verified');
+    assert.equal(w.consumed(), 1);
+  });
 }

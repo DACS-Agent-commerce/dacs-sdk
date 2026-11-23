@@ -1,3 +1,4 @@
+import type { ExpectedDemosChainIdentity } from "@kynesyslabs/dacs/substrate";
 import { canonicalizeDecimal } from "@kynesyslabs/dacs/canonical";
 
 export const DACS_NODE_OFFLINE_PROFILE =
@@ -35,6 +36,7 @@ export interface DacsLiveAgentConfig extends DacsAgentConfigBase {
   role: "buyer" | "seller" | "verifier";
   demos: Readonly<{
     rpcUrl: string;
+    expectedIdentity?: ExpectedDemosChainIdentity;
     storageReadUrl?: string;
   }>;
   rail: Readonly<{
@@ -54,6 +56,8 @@ const ROLE_VALUES = new Set<DacsAgentRole>([
   "verifier",
 ]);
 const DEFAULT_LIVE_RAIL_PROFILES = Object.freeze(["x402"] as const);
+/** Base Sepolia for the x402 rail, and `demos` for the native DEM rail. */
+const SUPPORTED_TEST_NETWORKS: ReadonlySet<unknown> = new Set(["eip155:84532", "demos"]);
 
 function record(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
@@ -179,11 +183,17 @@ function assertDacsAgentConfig(value: unknown): asserts value is DacsAgentConfig
       "limits",
     ], ["publicBaseUrl"]) || value.profile !== DACS_NODE_LIVE_PROFILE ||
       value.role === "demo-all" || !validBase(value) || !record(value.demos) ||
-      !keys(value.demos, ["rpcUrl"], ["storageReadUrl"]) ||
+      !keys(value.demos, ["rpcUrl"], ["storageReadUrl", "expectedIdentity"]) ||
       !validLiveEndpointUrl(
         value.demos.rpcUrl,
         new Set(["http:", "https:", "ws:", "wss:"]),
       ) ||
+      (value.demos.expectedIdentity !== undefined &&
+        (!record(value.demos.expectedIdentity) ||
+          !keys(value.demos.expectedIdentity, ["genesisHash"], ["chainId"]) ||
+          !text(value.demos.expectedIdentity.genesisHash) ||
+          (value.demos.expectedIdentity.chainId !== undefined &&
+            value.demos.expectedIdentity.chainId !== null && !text(value.demos.expectedIdentity.chainId)))) ||
       (value.demos.storageReadUrl !== undefined &&
         !validLiveEndpointUrl(
           value.demos.storageReadUrl,
@@ -198,7 +208,7 @@ function assertDacsAgentConfig(value: unknown): asserts value is DacsAgentConfig
         "registryIndexRef",
         "requestedNetwork",
       ], ["enabledProfiles"]) || !text(value.rail.registryIndexRef) ||
-      !text(value.rail.requestedNetwork) ||
+      !SUPPORTED_TEST_NETWORKS.has(value.rail.requestedNetwork) ||
       (value.rail.enabledProfiles !== undefined &&
         (!Array.isArray(value.rail.enabledProfiles) ||
           ![

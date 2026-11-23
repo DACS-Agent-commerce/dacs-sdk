@@ -653,7 +653,7 @@ async function runToConsumerStage(complete = false, failStart = false, hooks: Co
   const PATH = stubBin(directory, {
     curl: ['case "$*" in', '  *--version*) echo "curl 8.5.0" ;;', '  */-/ping*) printf \'{}\' ;;', '  *org.couchdb.user*) printf \'{"token":"local-acceptance-token"}\' ;;', 'esac', 'exit 0'].join("\n"),
     // The host npm models the bootstrapped client: it is already 11.19.0 and any host-side install fails.
-    npm: ['case "$1" in', `  install) touch '${pinned}'; exit 92 ;;`,
+    npm: ['if [ "$1" = --prefix ]; then shift 2; fi', 'case "$1" in', `  install) touch '${pinned}'; exit 92 ;;`,
       '  --version) echo 11.19.0 ;;', `  root) echo '${npmRoot}' ;;`, '  view) exit 97 ;;',
       `  run) if [ "$2" = release:set:verify ]; then mkdir -p "$5" && cp '${releaseSet}'/* "$5"/; fi ;;`, 'esac', 'exit 0'].join("\n"),
     docker: [`printf '%s\\n' "$*" | tr '\\n' ' ' >> '${commands}'`, `echo >> '${commands}'`, ...(failStart ? ['if [ "$1 $2" = "run --detach" ]; then exit 17; fi'] : []), `if [ "$1" = inspect ]; then echo ${port}; exit 0; fi`,
@@ -787,7 +787,8 @@ function dependencyPolicyHarness(candidateFields: Record<string, unknown> = {}, 
       if (split < 0 && DUAL_RAIL_DEPENDENCIES.includes(name)) continue;
       if (owner && !dependencies.some(field => Object.hasOwn(owner[field] ?? {}, name))) {
         const declared = owner.dependencies;
-        owner.dependencies = { ...(typeof declared === "object" && declared !== null ? declared : {}), [name]: entry.version };
+        // npm 11 ci leaves out a lock entry no spec declares; `*` declares one that has no version.
+        owner.dependencies = { ...(typeof declared === "object" && declared !== null ? declared : {}), [name]: entry.version ?? "*" };
       }
     }
     const lock = { lockfileVersion: 3, packages: { "": manifest, ...packages } };
@@ -2963,11 +2964,15 @@ describe("dependency policy over npm ci installations", () => {
         { bin: { "package.json": "scope.json" } }), "scope.json": scope });
       const other = packTarball({ "package.json": packageJson("other", CANDIDATE_VERSION),
         "index.js": "module.exports = 'unreleased-copy';" });
+      // npm 11 ci refuses a declared dependency the lock lacks and leaves out a lock entry nothing declares,
+      // so each alias form locks the copy it declares.
       const { project, policy } = await registryInstallation(directory, { plugin, "bin-owner": binOwner, other }, {
         "node_modules/plugin": ["plugin", { dependencies: { "bin-owner": CANDIDATE_VERSION } }],
         "node_modules/plugin/node_modules/bin-owner": ["bin-owner", { bin: { "package.json": "scope.json" } }],
-        ...(form === "alias-declaration" ? { "node_modules/candidate-alias": ["other", {}] as [string, Record<string, unknown>] } : {}),
-      }, { dependencies: { plugin: CANDIDATE_VERSION },
+        ...(form === "alias-declaration" ? { "node_modules/candidate-alias": ["other", { name: "other" }] as [string, Record<string, unknown>] } : {}),
+        ...(form === "alias-name" ? { "node_modules/candidate-alias": ["@kynesyslabs/dacs", { name: "@kynesyslabs/dacs", optional: true }] as
+          [string, Record<string, unknown>] } : {}),
+      }, { dependencies: { plugin: CANDIDATE_VERSION, ...(form === "alias-declaration" ? { [specifier]: `npm:other@${CANDIDATE_VERSION}` } : {}) },
         ...(form === "alias-name" ? { optionalDependencies: { [specifier]: alias } } : {}) });
       const installedScope = join(project, "node_modules/plugin/node_modules/.bin/package.json");
       expect(realpathSync(installedScope)).toBe(join(project, "node_modules/plugin/node_modules/bin-owner/scope.json"));
@@ -3539,7 +3544,8 @@ describe("acceptance failure class", () => {
     writeFileSync(join(stage, "registry.log"), Buffer.from([0x63, 0x75, 0x72, 0x6c, 0xff]));
     expect(failureSummaryCli(stage, "registry-auth", "7").status).toBe(0);
     expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({ complete: false,
-      failureClass: "functional", exitCode: 7, failureEvidence: ["evidence classification failed: evidence is not valid UTF-8"] });
+      failureClass: "functional", exitCode: 7,
+      failureEvidence: [`evidence classification failed: evidence is not valid UTF-8: ${join(stage, "registry.log")}`] });
   });
 
   // The audit stage is the --audit-policy command alone. Run it on `audit` and

@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { randomBytes, sign, verify } from 'node:crypto';
 import { mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
@@ -16,6 +17,8 @@ import * as wire from '@kynesyslabs/dacs/wire';
 import * as seller from '@kynesyslabs/dacs-seller';
 import { createSellerAgent } from '@kynesyslabs/dacs-seller/src/dacs/seller-agent.mjs';
 import { createSellerTransportStore } from '@kynesyslabs/dacs-seller/src/dacs/seller-transport-auth.mjs';
+import { AGREEMENT_CONTEXT_SOURCE } from '@kynesyslabs/dacs-seller/src/dacs/agreement-context-consumer.mjs';
+import { purchaseSupport } from '@kynesyslabs/dacs-seller/src/dacs/listing.mjs';
 import { createDemDeliveryContext } from '@kynesyslabs/dacs-seller/src/dacs/dem-delivery-context-consumer.mjs';
 import { KIT_TP1_VET_MODE } from '@kynesyslabs/dacs-seller/src/host.mjs';
 import { createNativeDemDeliveryCapability } from '@kynesyslabs/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs';
@@ -71,7 +74,10 @@ const unsignedRail = { railVersion: 1, railId: 'demos-native:DEM', railType: 'de
   phaseHandler: 'pay-dem', parameters: {}, availability: 'live', governance: { proposedBy: stewardClaim, acceptedAt: 1, anchoring: 'in-code' } };
 const railAuthority = { rail: { ...unsignedRail, signature: { algorithm: 'ed25519', signer: stewardClaim,
   value: sign(null, Buffer.from(`dacs-rail:v1:${core.contentHash(unsignedRail)}`, 'ascii'), steward.privateKey).toString('base64url') } }, stewardClaim, stewardPublicKey, railRegistryVersion: 1, production: false };
-const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Installed seller', publicEndpoint: 'https://seller.invalid/agent',
+// The Listing's endpoint, the listener's public origin and the discovery document's origin are one origin.
+const wireEndpoint = 'https://seller.example.invalid';
+const listener = { mode: 'proxy', host: '127.0.0.1', port: 0, publicOrigin: wireEndpoint };
+const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Installed seller', publicEndpoint: wireEndpoint,
   listingId: 'installed-report', listingVersion: 1, title: 'Installed package report', description: 'A report served by the installed seller package.',
   expectedSizeBytes: 1024, category: 'services.market-report', tags: ['installed'], priceDem: '2.5', notBefore: now - 60000 });
 draft.offering.deliverable.expectedSizeBytes=1024;
@@ -84,10 +90,10 @@ assert.equal((await seller.validateListing(listing, { now: () => now, revocation
 // one records and refuses if it is reached.
 const reached = [];
 const refuse = (name) => async () => { reached.push(name); throw new Error(`${name} is not reached while negotiating`); };
-// The seller admits one session per challenge it issued (CORE SN-1..SN-4):
-// the operator issues a random one per job through the host, and the buyer
-// presents it through the public builder's `sessionNonce`. The replayed job's
-// presentation carries a nonce the host never issued; the bare job's carries
+// The seller admits one session per challenge it issued: the buyer asks the wire's
+// challenge route for a random one per job and presents it through the public
+// builder's `sessionNonce` on the context route. The replayed job's presentation
+// carries a nonce the host never issued and is never sent; the bare job's carries
 // no session nonce at all (DACS-1 §6.3.2).
 const jobId = freshJob(), unvettedJobId = freshJob(), fabricatedJobId = freshJob(), replayedJobId = freshJob(), bareJobId = freshJob();
 const issuedNonces = new Map(), ownBundles = new Map();
@@ -149,24 +155,45 @@ const vetContextCalls = [];
 // answers both the evidence anchor and the host's journal question.
 const journalDirectory = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-wallet-')));
 const journal = seller.createPaymentEvidenceWalletJournal({ path: join(journalDirectory, 'wallet-journal.sqlite'), signCreate: refuse('wallet.signCreate'), broadcast: refuse('wallet.broadcast'),
-  readAccountNonce: refuse('wallet.readAccountNonce'), readTransactionState: refuse('wallet.readTransactionState') });
-// The wire's test-only authority semantics, inlined: this file runs alone in the consumer application,
-// where the repository's fixture helper is not available. It confirms the approved chain for the
-// connection and participants it is asked about.
+  readAccountNonce: refuse('wallet.readAccountNonce'), readTransactionState: refuse('wallet.readTransactionState'),
+  readNetworkInfo: refuse('wallet.readNetworkInfo') });
+// The buyer's own test-only authority, inlined: this file runs alone in the consumer application, where the
+// repository's fixture helper is not available. It confirms the approved chain for the connection and
+// participants it is asked about.
 const approvedRecord = wire.TP1_APPROVED_IDENTITY_RECORD;
 const approvedProfile = { id: wire.TP1_PROFILE_ID, revision: wire.TP1_PROFILE_REVISION, base: wire.TP1_BASE_REVISION, chainIdentity: approvedRecord.chainIdentity, pinVersion: approvedRecord.pinVersion };
-const tp1Network = {
+const buyerNetwork = {
   connection: () => ({ endpoint: 'https://rpc.example.invalid/', transportAuthority: 'installed-authority', connectionId: 'installed-conn-1' }),
   readAuthority: (scope) => ({ local: { ...scope.local }, chainIdentity: approvedRecord.chainIdentity, provenance: 'test-only-independent-authority/v1', sessionId: scope.sessionId,
     participants: scope.participants.map((claim) => ({ claim, profile: approvedProfile, modules: wire.TESTNET_PROFILE_TP1.tuple })) }),
 };
+// The seller's wallet-session port, inlined: the client that supplies it in a deployment is not installed beside the kit. It
+// answers offline: its connection reader confirms the approved chain for this one connection and nothing else, and its node
+// read is never reached. Participants come only from the installed kit's production reader and the enrollment below.
+const sellerConnection = { endpoint: 'https://rpc.example.invalid/', transportAuthority: 'installed-seller-authority', connectionId: 'installed-seller-conn-1' };
+const walletSession = () => ({
+  authority: { authorityRpc: refuse('walletSession.authorityRpc'), context: () => ({ network: approvedRecord.network, ...sellerConnection }), connectionGeneration: () => sellerConnection.connectionId },
+  connectionAuthority: () => ({ local: { ...sellerConnection }, chainIdentity: approvedRecord.chainIdentity, provenance: 'test-only-installed-connection/v1', sessionId: null, participants: [] }),
+  finalize: async () => ({ close: async () => {} }),
+});
+const enrollmentReads = [];
+let buyerEnrolled = true;
+const participantImplementations = { entriesFor: (claim) => {
+  enrollmentReads.push(claim);
+  return buyerEnrolled && claim === buyerKey.claim ? [{ claim, profile: approvedProfile, modules: { ...wire.TESTNET_PROFILE_TP1.tuple }, evidence: 'TEST-installed-enrollment', revoked: false }] : [];
+} };
 const capabilities = () => ({
-  tp1Network,
+  listener,
+  walletSession: walletSession(),
+  participantImplementations,
   readCommitmentReceipt: Object.assign(refuse('readCommitmentReceipt'), { chainIdentity: approvedRecord.chainIdentity }),
   now:()=>now,
   nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: 'http://127.0.0.1:9/', anchorEvidence: journal.anchorEvidence, fetchImpl: refuse('nativePaymentEvidence.fetch') }),
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence,
-  demDeliveryContext: createDemDeliveryContext({ authority: 'TEST-installed-package', vetMode: KIT_TP1_VET_MODE, resolveBuyer: refuse('demDeliveryContext.resolveBuyer'),
+  demDeliveryContext: createDemDeliveryContext({ authority: 'TEST-installed-package', vetMode: KIT_TP1_VET_MODE,
+    resolveBuyer: async ({ scope }) => { const input = fabricatedJobs.has(scope.jobId) ? fabricatedInput(scope.jobId) : await vettedInput(scope.jobId);
+      return { disposition: 'present', value: { scope: structuredClone(scope), input: { jobId: scope.jobId, buyer: { vetRecordRef: input.buyer.vetRecordRef }, seller: { vetRecordRef: input.seller.vetRecordRef } } } }; },
+    recoverBuyer: refuse('demDeliveryContext.recoverBuyer'), resumableBuyer: refuse('demDeliveryContext.resumableBuyer'), bindRetainedScope: () => ({ sellerBundlePresentedBy: sellerKey.claim }),
     resolveSeller: async ({ jobId }) => { vetContextCalls.push(jobId); const input = fabricatedJobs.has(jobId) ? fabricatedInput(jobId) : await vettedInput(jobId); return { disposition: 'present', value: { input, vetRequirements: invocationsFor(input) } }; } }),
   nativeDemDelivery: createNativeDemDeliveryCapability({ authority: 'TEST-installed-package', submitAuthorized: refuse('nativeDemDelivery.submit'), reconcile: refuse('nativeDemDelivery.reconcile'),
     read: refuse('nativeDemDelivery.read'), verifyReceipt: refuse('nativeDemDelivery.verifyReceipt') }),
@@ -202,7 +229,8 @@ const { sessionAdmission: _unadmitted, ...withoutAdmission } = capabilities();
 const { reconcilePaymentEvidence: _unreconciled, ...withoutJournal } = capabilities();
 // The packed Deliverable journal: its resume goes only with a capability made from its guarded submit.
 const deliveryJournal = seller.createDeliverableWalletJournal({ path: join(journalDirectory, 'delivery-wallet-journal.sqlite'), signCreate: refuse('deliveryWallet.signCreate'),
-  broadcast: refuse('deliveryWallet.broadcast'), readAccountNonce: refuse('deliveryWallet.readAccountNonce'), readTransactionState: refuse('deliveryWallet.readTransactionState') });
+  broadcast: refuse('deliveryWallet.broadcast'), readAccountNonce: refuse('deliveryWallet.readAccountNonce'), readTransactionState: refuse('deliveryWallet.readTransactionState'),
+  readNetworkInfo: refuse('deliveryWallet.readNetworkInfo') });
 const journalDelivery = (operations) => createNativeDemDeliveryCapability({ authority: 'TEST-installed-package', reconcile: refuse('nativeDemDelivery.reconcile'),
   read: refuse('nativeDemDelivery.read'), verifyReceipt: refuse('nativeDemDelivery.verifyReceipt'), ...operations });
 out.deliverableJournal = {
@@ -218,7 +246,7 @@ out.refusedConfigurations = {
   missingAgreementAnchor: await refusal({ signer, listing, dataDirectory, ...withoutReadback }),
   missingDelivery: await refusal({ signer, listing, dataDirectory, ...withoutDelivery }),
   missingRailAuthority: await refusal({ signer, listing, dataDirectory, ...withoutRail }),
-  publicInterface: await refusal({ signer, listing, dataDirectory, ...capabilities(), host: '0.0.0.0' }),
+  publicInterface: await refusal({ signer, listing, dataDirectory, ...capabilities(), listener: { ...listener, host: '0.0.0.0' } }),
   unknownOption: await refusal({ signer, listing, dataDirectory, ...capabilities(), anchors: { read: async () => null, write: async () => null } }),
   relativeDirectory: await refusal({ signer, listing, dataDirectory: 'seller-data', ...capabilities() }),
   otherSigner: await refusal({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, listing, dataDirectory, ...capabilities() }),
@@ -235,28 +263,38 @@ const proposalFor = async (input) => {
   const proposal = { ...material, proposalHash: core.sha256Hex(core.canonicalize(material)) };
   return { plan, buyerContribution, proposal, transportIdentity: { jobId: input.jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash } };
 };
-// Built once the host has issued the challenges: the vetted job; the same
+// Built once the host has admitted the sessions: the vetted job; the same
 // buyer on another job over the synthetic not-performed Vet references; on
-// another, whose Vet context names hashes no record backs; and a fresh
-// presentation on a job the seller issued no challenge for.
+// another, whose Vet context names hashes no record backs; and a proposal
+// on a job whose context was never admitted.
 fabricatedJobs.add(fabricatedJobId);
-let buyerBundle, plan, buyerContribution, proposal, transportIdentity, unvetted, fabricated, replayed, bare;
+let buyerBundle, plan, buyerContribution, proposal, transportIdentity, unvetted, fabricated, replayed;
 // The wire buyer, inlined for the same reason as the authority above: it binds the approved profile, holds the
 // seller's signed discovery document and the buyer's endpoint proof of it, signs each request under the wire
 // domain and verifies each answer over its exact received bytes.
-const wireEndpoint = 'https://seller.example.invalid';
 const wireBuyerSession = async () => {
-  const binding = await wire.bindTp1Profile({ record: approvedRecord, local: tp1Network.connection(), readAuthority: tp1Network.readAuthority });
+  const binding = await wire.bindTp1Profile({ record: approvedRecord, local: buyerNetwork.connection(), readAuthority: buyerNetwork.readAuthority });
   const document = await wire.signDiscoveryDocument({ format: wire.DACS_SELLER_DISCOVERY_FORMAT, profile: binding.profile, seller: sellerKey.claim, publicEndpoint: wireEndpoint, transport: [wire.DACS_SELLER_HTTP_V1],
-    listings: [pin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: now, expiresAt: now + 600_000 }, signer, binding, tp1Network.connection());
+    listings: [pin], capabilities: wire.TP1_CAPABILITIES, ready: true, issuedAt: now, expiresAt: now + 600_000 }, signer, binding, buyerNetwork.connection());
   const listingRecord = { seller: sellerKey.claim, publicEndpoint: wireEndpoint, listingPin: pin };
   const readListingEligibility = () => ({ ...listingRecord, pricingKind: 'fixed', negotiation: 'negotiate-fixed-price', commitPhase: wire.TP1_COMMIT_PHASE, rail: 'pay-dem', delivery: wire.TP1_CAPABILITIES.delivery,
     service: { kind: 'fixed-text' }, output: wire.TP1_CAPABILITIES.output, buyerRequestInput: false, notBefore: now - 86_400_000, expiresAt: now + 86_400_000 });
-  const endpointProof = await wire.verifyEndpointProof(document, { listing: listingRecord, binding, local: tp1Network.connection(), now, readListingEligibility });
+  const endpointProof = await wire.verifyEndpointProof(document, { listing: listingRecord, binding, local: buyerNetwork.connection(), now, readListingEligibility });
   return { binding, endpointProof };
 };
 let wireBuyerReady = null;
-const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, authentication: {
+// `fetch` cannot set `Host`; the host serves only the Host its Listing's endpoint names.
+const hostFetch = (input, init = {}) => new Promise((resolve, reject) => {
+  const request = httpRequest(new URL(input), { method: init.method ?? 'GET', headers: { host: new URL(wireEndpoint).host, ...init.headers }, signal: init.signal }, (res) => {
+    const chunks = [];
+    res.on('data', (chunk) => chunks.push(chunk));
+    res.on('error', reject);
+    res.on('end', () => resolve(new Response(Buffer.concat(chunks), { status: res.statusCode, headers: Object.entries(res.headers).map(([name, value]) => [name, [value].flat().join(', ')]) })));
+  });
+  request.on('error', reject);
+  request.end(init.body);
+});
+const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, fetchImpl: hostFetch, authentication: {
   request: async (path, body, text) => {
     const { binding, endpointProof } = await (wireBuyerReady ??= wireBuyerSession());
     const jobId = body.transportIdentity?.jobId ?? body.jobId;
@@ -267,14 +305,29 @@ const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) =>
       const signature = buyerKey.sign(Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.request + core.canonicalize(payload))).toString('base64url');
       return { payload, header: Buffer.from(core.canonicalize({ payload, signature })).toString('base64url') };
     }
-    return wire.signWireRequest({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, binding, local: tp1Network.connection(), endpointProof, publicEndpoint: wireEndpoint, path,
+    return wire.signWireRequest({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, binding, local: buyerNetwork.connection(), endpointProof, publicEndpoint: wireEndpoint, path,
       jobId, text, seller: sellerKey.claim, job: { listingPin, agreementHash, profile: binding.profile }, delegation: null, now, lifetimeMs: 30_000 });
   },
   verifyResponse: async (request, { header, status, responseBytes }) => {
     const { binding } = await wireBuyerReady;
-    return wire.verifyWireResponse(request, { header, status, body: responseBytes, now, binding, local: tp1Network.connection() });
+    return wire.verifyWireResponse(request, { header, status, body: responseBytes, now, binding, local: buyerNetwork.connection() });
   },
 } });
+// The buyer's own signed request to a context route, with no delegation: `answer` is the status and parsed body the host sent.
+const support = purchaseSupport(listing);
+const contextScopeFor = (jobId) => ({ source: AGREEMENT_CONTEXT_SOURCE, wallet: buyerKey.address, jobId, buyer: buyerKey.claim, seller: sellerKey.claim, listingPin: pin,
+  rail: { railId: 'demos-native:DEM', railVersion: 1 }, payee: support.payee, price: support.price, generatedAt: now });
+const postContextRoute = async (url, path, jobId, body) => {
+  const { binding, endpointProof } = await (wireBuyerReady ??= wireBuyerSession());
+  const text = JSON.stringify(body);
+  const signed = await wire.signWireRequest({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, binding, local: buyerNetwork.connection(), endpointProof, publicEndpoint: wireEndpoint, path,
+    jobId, text, seller: sellerKey.claim, job: { listingPin: pin, agreementHash: core.sha256Hex(core.canonicalize(body.scope)), profile: binding.profile }, delegation: null, now, lifetimeMs: 30_000 });
+  const response = await hostFetch(url + path, { method: 'POST', headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: signed.header }, body: text });
+  return { status: response.status, body: await response.json() };
+};
+const requestChallenge = (url, jobId) => postContextRoute(url, wire.DACS_SELLER_HTTP_PATHS.contextChallenge, jobId, { scope: contextScopeFor(jobId) });
+const requestContext = (url, jobId) => postContextRoute(url, wire.DACS_SELLER_HTTP_PATHS.context, jobId,
+  { scope: { ...contextScopeFor(jobId), buyerBundleHash: core.identityBundleHash(bundleFor(jobId)) }, buyerIdentityBundle: bundleFor(jobId) });
 // Independent of the package: node:crypto against the seller's own key.
 const independentVerifier = ({ party, algorithm, value, signedBytes }) => {
   if (algorithm !== 'ed25519' || party !== sellerKey.claim && party !== buyerKey.claim) return 'invalid';
@@ -287,18 +340,25 @@ const refusedCode = async (work) => { try { await work(); return null; } catch (
 try {
 let host = await start();
 out.host = { origin: new URL(host.url).origin, listingPin: host.listingPin, timeouts: host.timeouts };
-// The operator issues each job's challenge through the host (CORE SN-1/SN-3),
-// the nonce its buyer then presents; the replayed job gets none.
-for (const id of [jobId, unvettedJobId, fabricatedJobId]) issuedNonces.set(id, (await host.issueSessionChallenge({ jobId: id, buyer: buyerKey.claim })).sessionNonce);
-for (const [index, id] of [jobId, unvettedJobId, fabricatedJobId, replayedJobId, bareJobId].entries()) presentFor(id, now - index);
-out.presentsIssuedChallenge = [jobId, unvettedJobId, fabricatedJobId].every((id) => /^[0-9a-f]{64}$/.test(issuedNonces.get(id)) && bundleFor(id).sessionNonce === issuedNonces.get(id));
+// The buyer asks the wire for each admitted job's challenge and presents it on the context route, where the host admits the session;
+// the replayed job gets none, and the bare job's presentation carries no nonce.
+const admittedIds = [jobId, unvettedJobId, fabricatedJobId];
+for (const [index, id] of admittedIds.entries()) {
+  const issued = await requestChallenge(host.url, id);
+  assert.equal(issued.status, 200, JSON.stringify(issued));
+  issuedNonces.set(id, issued.body.sessionNonce);
+  presentFor(id, now - index);
+  const admitted = await requestContext(host.url, id);
+  assert.equal(admitted.status, 200, JSON.stringify(admitted));
+}
+for (const [index, id] of [replayedJobId, bareJobId].entries()) presentFor(id, now - admittedIds.length - index);
+out.presentsIssuedChallenge = admittedIds.every((id) => /^[0-9a-f]{64}$/.test(issuedNonces.get(id)) && bundleFor(id).sessionNonce === issuedNonces.get(id));
 buyerBundle = bundleFor(jobId);
 ({ plan, buyerContribution, proposal, transportIdentity } = await proposalFor(await vettedInput(jobId)));
 unvetted = await proposalFor(seller.agreementInput({ jobId: unvettedJobId, listing, buyerBundle: bundleFor(unvettedJobId), generatedAt: now }));
 fabricated = await proposalFor(fabricatedInput(fabricatedJobId));
 replayed = await proposalFor(await vettedInput(replayedJobId));
-bare = await proposalFor(await vettedInput(bareJobId));
-out.issuedChallenge = (({ sessionNonce, issuedAt, expiresAt }) => ({ nonce: /^[0-9a-f]{64}$/.test(sessionNonce), lifetimeMs: expiresAt - issuedAt }))(await host.issueSessionChallenge({ jobId: freshJob(), buyer: buyerKey.claim }));
+out.issuedChallenge = (({ sessionNonce, expiresAt }) => ({ nonce: /^[0-9a-f]{64}$/.test(sessionNonce), lifetimeMs: expiresAt - now }))((await requestChallenge(host.url, freshJob())).body);
 const client = clientFor(host.url);
 const first = await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
 out.proposal = { disposition: first.disposition, role: first.contribution?.role ?? null, signer: first.contribution?.party ?? null };
@@ -310,18 +370,23 @@ const state = await client.agreementState(transportIdentity);
 out.stateSameContribution = core.canonicalize(state.contribution) === core.canonicalize(first.contribution);
 out.refusals = {
   otherListingPin: await refusedCode(() => clientFor(host.url, { ...pin, contentHash: '0'.repeat(64) }).propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle })),
-  unsigned: await (async () => { const response = await fetch(`${host.url}/dacs/v1/agreements/proposals`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle }) }); return { status: response.status, body: await response.json() }; })(),
+  unsigned: await (async () => { const response = await hostFetch(`${host.url}/dacs/v1/agreements/proposals`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle }) }); return { status: response.status, body: await response.json() }; })(),
   unvettedProposal: await (async () => { try { const answer = await clientFor(host.url, pin, unvetted.plan.agreementHash).propose({ proposal: unvetted.proposal, transportIdentity: unvetted.transportIdentity, buyerIdentityBundle: bundleFor(unvettedJobId) });
     return { disposition: answer.disposition ?? null, contribution: answer.contribution ?? null }; } catch (error) { return { name: error.name, code: error.code ?? null, contribution: null }; } })(),
   fabricatedVetProposal: await (async () => { try { const answer = await clientFor(host.url, pin, fabricated.plan.agreementHash).propose({ proposal: fabricated.proposal, transportIdentity: fabricated.transportIdentity, buyerIdentityBundle: bundleFor(fabricatedJobId) });
     return { disposition: answer.disposition ?? null, contribution: answer.contribution ?? null }; } catch (error) { return { name: error.name, code: error.code ?? null, contribution: null }; } })(),
   replayedPresentation: await refusedCode(() => clientFor(host.url, pin, replayed.plan.agreementHash).propose({ proposal: replayed.proposal, transportIdentity: replayed.transportIdentity, buyerIdentityBundle: bundleFor(replayedJobId) })),
   bareNoNonce: !Object.hasOwn(bundleFor(bareJobId), 'sessionNonce'),
-  missingNonce: await refusedCode(() => clientFor(host.url, pin, bare.plan.agreementHash).propose({ proposal: bare.proposal, transportIdentity: bare.transportIdentity, buyerIdentityBundle: bundleFor(bareJobId) })),
-  contextChallenge: await (async () => { const response = await fetch(`${host.url}/dacs/v1/agreements/context/challenge`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); return { status: response.status, body: await response.json() }; })(),
+  missingNonce: await requestContext(host.url, bareJobId),
+  contextChallenge: await (async () => { const response = await hostFetch(`${host.url}/dacs/v1/agreements/context/challenge`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }); return { status: response.status, body: await response.json() }; })(),
   secondHostSameDirectory: await refusal({ signer, listing, dataDirectory, ...capabilities() }),
   secondProcessSameDirectory: JSON.parse(spawnSync(process.execPath, [fileURLToPath(import.meta.url), '--second', dataDirectory], { cwd: process.cwd(), env: process.env, encoding: 'utf8', timeout: 60000 }).stdout.trim().split('\n').at(-1)).secondProcess,
 };
+// The installed reader read the buyer's enrollment, and with that enrollment withdrawn it refuses the buyer's own signed request.
+const readBuyer = enrollmentReads.includes(buyerKey.claim);
+buyerEnrolled = false;
+out.authority = { readBuyer, withdrawn: await requestChallenge(host.url, freshJob()) };
+buyerEnrolled = true;
 await host.close();
 
 // Restart on the same state: the retained contribution is answered again.

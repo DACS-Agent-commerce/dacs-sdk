@@ -130,8 +130,8 @@ export interface EnvelopeSigningContext extends SigningContext {
  * (expiry is not checked here: the receiver decides which routes an expired one serves).
  * The signature the signer returns is verified under the key the receiver will
  * use (the delegated session key, else the buyer's key for a request or the
- * seller's for a response); a signature that does not verify throws
- * `peer_signature_invalid` and no header is returned.
+ * seller's for a response); a signature that is malformed or does not verify
+ * throws `peer_signature_invalid` (500) and no header is returned.
  */
 export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeSigningContext, suppliedDelegation?: SellerSessionDelegation | null): Promise<string> {
   const { signer, binding, local, purchaseProfile, endpointProof, publicEndpoint, now, commitment, agreement, signedListing, continuation } = ownedFields(context, ["signer", "binding", "local", "purchaseProfile", "endpointProof", "publicEndpoint", "now", "commitment", "agreement", "signedListing", "continuation"]) as EnvelopeSigningContext;
@@ -161,7 +161,7 @@ export async function signWireEnvelope(supplied: WirePayload, context: EnvelopeS
     publicEndpoint: publicEndpoint as string, now: now as number, request: payload as unknown as WireRequestPayload, commitment, agreement, signedListing, continuation,
   });
   await assertTp1Authority(binding, local, [payload.buyer as string, payload.seller as string], payload.jobId as string);
-  const signatureBytes = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes));
+  const signatureBytes = envelopeSignatureBytes(await (signer as WireSigner).sign(signingBytes), "peer_signature_invalid", 500);
   // The receiver verifies under the delegated session key, or else the key of the actor the payload names.
   const verifyingKey = verifiedDelegation?.sessionPublicKey ?? claimKey((payload.kind === "request" ? payload.buyer : payload.seller) as string);
   if (!verifyEd25519(signingBytes, signatureBytes, verifyingKey)) fail("peer_signature_invalid", 500);
@@ -384,8 +384,10 @@ function retainedMembers(path: string): string[] {
 /** The retained record's exact members for a route, each well-formed: anything else is `seller_retained_agreement_required` (500). */
 function assertRetainedShape(path: string, retained: JsonRecord | undefined): asserts retained is JsonRecord {
   const stage = isStageRoute(path);
+  const context = path === DACS_SELLER_HTTP_PATHS.context;
   if (!hasKeys(retained, retainedMembers(path)) || !isCanonicalJobId(retained.jobId) || !isHash(retained.agreementHash) ||
-      !isClaim(retained.buyer) || !isClaim(retained.seller) || (stage && typeof retained.allocated !== "boolean")) fail("seller_retained_agreement_required", 500);
+      !isClaim(retained.buyer) || !isClaim(retained.seller) || (stage && typeof retained.allocated !== "boolean") ||
+      (context && typeof retained.accepted !== "boolean")) fail("seller_retained_agreement_required", 500);
 }
 
 /**
@@ -483,6 +485,16 @@ function effectJournal(request: WireRequestPayload, journal: unknown): object | 
  * under ({profile, buyer, agreementHash}) and refuses any other one
  * (`peer_operation_mismatch`); the same binding gets the recorded outcome,
  * never a second effect (journal.ts).
+ *
+ * Once the operation has completed, a later request under the same binding
+ * whose body passes the host's body checks gets the recorded outcome, not a
+ * new attempt; a body they refuse is refused before the journal is consulted.
+ * The recorded outcome goes only to a request authenticated under that
+ * binding. Its signature is verified, and its buyer and Agreement hash are
+ * checked against the host's retained Agreement, before it is reserved. A
+ * handler's own refusal of a body that differs from earlier work (a seller
+ * refusing a different proposal for a job) applies only before the operation
+ * completes.
  */
 export function wireOperationId(request: Pick<WireRequestPayload, "seller" | "jobId" | "path">): string {
   const { seller, jobId, path } = request;
@@ -542,7 +554,8 @@ export interface CheckedWireRequest {
   body: JsonRecord;
   /**
    * Only an expired delegation authenticates the request. Such requests can
-   * reach only declared read routes; effect routes are refused by this check.
+   * reach only the routes for which `isReadRoute` is true (`agreements/state`
+   * and `bundles/buyer-copy`); every other route is refused by this check.
    */
   readbackOnly: boolean;
   /**
@@ -568,8 +581,13 @@ export interface CheckedWireRequest {
  * is compared first, then the exchange, then the job and Agreement the host
  * retained. The received body bytes are admitted (CF-5) before their hash is
  * compared, and the admitted body is returned.
+ *
+ * `mode` is the admission entry the request came through: `agreement` for
+ * `checkWireRequest` and `authorizeWireRequest`, which refuse the pre-Agreement
+ * routes; `preAgreement` for `admitPreAgreementRequest`, which admits only those.
  */
-async function requestAdmissionPrefix(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck | PreAgreementCheck, preAgreement: boolean): Promise<RequestAdmissionPrefix> {
+async function requestAdmissionPrefix(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck | PreAgreementCheck, mode: AdmissionMode): Promise<RequestAdmissionPrefix> {
+  const preAgreement = mode === "preAgreement";
   const startedAt = performance.now();
   const c = ownedFields(check, preAgreement ? PRE_AGREEMENT_CHECK_FIELDS : CHECK_FIELDS) as unknown as RequestCheck & { route?: unknown };
   const listingPin = ownedConfig(c.listingPin, "wire_input_invalid") as ListingPin;
@@ -605,6 +623,9 @@ async function requestAdmissionPrefix(envelope: OpenedEnvelope<WireRequestPayloa
   return { c, request, delegation, listingPin, retained, artifacts, body, startedAt };
 }
 
+/** Which admission entry runs the shared prefix: a request with an Agreement, or one before any Agreement exists. */
+type AdmissionMode = "agreement" | "preAgreement";
+
 /** What the shared prefix hands to each admission entry once its checks pass. */
 interface RequestAdmissionPrefix {
   c: RequestCheck;
@@ -624,8 +645,17 @@ function readmittedDelegation(delegation: SellerSessionDelegation): unknown {
   return admitWireJson(Buffer.from(JSON.stringify(delegation)), DACS_SELLER_HTTP_LIMITS.maxHeaderLength, "peer_delegation_invalid", 401);
 }
 
+/**
+ * The admission behind `checkWireRequest` and `authorizeWireRequest`: the shared
+ * prefix, then every host artifact bound to the signed job, Listing and parties,
+ * then the delegation if the request carries one. A live delegation or a direct
+ * request is admitted for effect with its reservation deferred; an expired one
+ * (or a request that outlives a live one) is admitted as readback on a read route.
+ * @throws the first failing step's refusal; `peer_delegation_expired` for an
+ * expired delegation on any route that is not a read route.
+ */
 async function admitWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: RequestCheck): Promise<Omit<CheckedWireRequest, "reserve"> & Deferred> {
-  const { c, request, delegation, listingPin, retained, artifacts, body, startedAt } = await requestAdmissionPrefix(envelope, check, false);
+  const { c, request, delegation, listingPin, retained, artifacts, body, startedAt } = await requestAdmissionPrefix(envelope, check, "agreement");
   // Every host artifact given binds the signed job, Listing and both parties, on a direct request as on a delegated one.
   const retainedArtifacts = artifacts.filter((a) => a != null) as JsonRecord[];
   for (const artifact of retainedArtifacts) {
@@ -661,7 +691,7 @@ async function admitWireRequest(envelope: OpenedEnvelope<WireRequestPayload>, ch
 }
 
 /**
- * Step 13: a delegation the request carries must be live now, for this buyer,
+ * A delegation the request carries must be live now, for this buyer,
  * seller, Listing pin and job, and must outlast the request; no deadline is
  * needed, as no Agreement exists. A direct request carries none. Verifier
  * failures other than scope and time (binding, profile, authority) propagate
@@ -675,11 +705,10 @@ async function admitPreAgreementDelegation({ c, request, delegation, listingPin 
   return expiresAt;
 }
 
-/** Step 14: new work needs `ready`; on the context route the host's `accepted` also lets a retained admission continue while it is false. */
+/** New work needs `ready`; on the context route the host's `accepted` also lets a retained admission continue while it is false. */
 function admitPreAgreementReadiness(request: WireRequestPayload, c: RequestCheck, retained: JsonRecord): void {
   const context = request.path === DACS_SELLER_HTTP_PATHS.context;
   if (typeof c.ready !== "boolean") fail("seller_readiness_required", 500);
-  if (context && typeof retained.accepted !== "boolean") fail("seller_retained_agreement_required", 500);
   if (!c.ready && !(context && retained.accepted === true)) fail("seller_not_ready", 503);
 }
 
@@ -695,7 +724,7 @@ function admitPreAgreementReadiness(request: WireRequestPayload, c: RequestCheck
  * that is not the request's path); a verifier failure keeps its own code and cause.
  */
 export async function admitPreAgreementRequest(envelope: OpenedEnvelope<WireRequestPayload>, check: PreAgreementCheck): Promise<AdmittedPreAgreementRequest> {
-  const prefix = await requestAdmissionPrefix(envelope, check, true);
+  const prefix = await requestAdmissionPrefix(envelope, check, "preAgreement");
   const { c, request, retained, body, startedAt } = prefix;
   const delegationExpiresAt = await admitPreAgreementDelegation(prefix);
   const store = request.path === DACS_SELLER_HTTP_PATHS.context ? journalStore(c.requestJournal) : null;

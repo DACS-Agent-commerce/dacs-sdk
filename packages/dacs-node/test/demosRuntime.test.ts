@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { demosAgentClaimRef } from "@kynesyslabs/dacs/identity";
+import { DacsError, DemosChainIdentityError } from "@kynesyslabs/dacs";
 import type { DemosWriteJournal } from "@kynesyslabs/dacs/substrate";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -151,6 +152,53 @@ describe("role-owned Demos runtime", () => {
     }
   });
 
+  it.each([
+    ["chain_identity_mismatch", "permanent"],
+    ["state_not_ready", "transient"],
+  ] as const)("preserves a network pin refusal before exposing signers: %s", async (code, category) => {
+    const directory = root();
+    const configured = payDemConfig(directory);
+    const error = new DemosChainIdentityError(code, { retryable: category === "transient" });
+    const roleAdapter = adapter({ getChainIdentity: vi.fn(async () => { throw error; }) });
+    const createPayDemRail = vi.fn();
+    const loaded = await secret(directory);
+    await expect(createDacsDemosActorRuntimeV1({
+      config: { ...configured, demos: { ...configured.demos, expectedIdentity: { genesisHash: "a".repeat(64) } } },
+      role: "buyer", authority: AUTHORITY, demosIdentity: loaded,
+      createAdapter: async () => roleAdapter, createPayDemRail,
+    })).rejects.toBe(error);
+    expect(roleAdapter.sign).not.toHaveBeenCalled();
+    expect(createPayDemRail).not.toHaveBeenCalled();
+    expect(loaded.destroyed).toBe(true);
+  });
+
+  it("reports other connect errors as demos-adapter-connect-failed", async () => {
+    const directory = root();
+    const configured = payDemConfig(directory);
+    const roleAdapter = adapter({ getChainIdentity: vi.fn(async () => { throw new DacsError("raw node detail"); }) });
+    await expect(createDacsDemosActorRuntimeV1({
+      config: { ...configured, demos: { ...configured.demos, expectedIdentity: { genesisHash: "a".repeat(64) } } },
+      role: "buyer", authority: AUTHORITY, demosIdentity: await secret(directory),
+      createAdapter: async () => roleAdapter, createPayDemRail: vi.fn(),
+    })).rejects.toMatchObject({ reasonCode: "demos-adapter-connect-failed" });
+  });
+
+  it("passes the configured identity pin to the role adapter", async () => {
+    const directory = root();
+    const configured = payDemConfig(directory);
+    const expectedIdentity = { genesisHash: "a".repeat(64), chainId: "demos-test" };
+    const roleAdapter = adapter({ getAddress: vi.fn(() => Buffer.from(PUBLIC_KEY).toString("hex")) });
+    const createAdapter = vi.fn(async () => roleAdapter);
+    await createDacsDemosActorRuntimeV1({
+      config: { ...configured, demos: { ...configured.demos, expectedIdentity } },
+      role: "buyer", authority: AUTHORITY, demosIdentity: await secret(directory),
+      createAdapter,
+      createPayDemRail: async () => ({ address: roleAdapter.getAddress(), settle: vi.fn() }),
+    });
+    expect(createAdapter).toHaveBeenCalledWith(expect.objectContaining({ expectedIdentity }));
+    expect(roleAdapter.getChainIdentity).toHaveBeenCalledOnce();
+  });
+
   it("connects a journalled wallet and proves its exact primary authority", async () => {
     const directory = root();
     const mock = adapter();
@@ -182,8 +230,7 @@ describe("role-owned Demos runtime", () => {
   it("opens read-only probes without creating a durable write journal", async () => {
     const directory = root();
     const loaded = await secret(directory);
-    let journal: DemosWriteJournal | undefined;
-    let maximumFeeOs: bigint | undefined;
+    let received: Readonly<Record<string, unknown>> | undefined;
     await createDacsDemosActorRuntimeV1({
       config: config(directory),
       role: "buyer",
@@ -191,15 +238,13 @@ describe("role-owned Demos runtime", () => {
       demosIdentity: loaded,
       writePolicy: "read-only",
       createAdapter: async (input) => {
-        journal = input.writeJournal;
-        maximumFeeOs = input.maximumFeeOs;
+        received = input;
         return adapter();
       },
     });
-    expect(maximumFeeOs).toBe(2_000_000_000n);
+    expect(received?.maximumFeeOs).toBe(2_000_000_000n);
+    expect("writeJournal" in received!).toBe(false);
     expect(existsSync(join(directory, "demos-write-journal"))).toBe(false);
-    await expect(journal!.acquire({ chainIdentity: "test", wallet: "0xactor" }))
-      .rejects.toMatchObject({ reasonCode: "demos-write-disabled" });
   });
 
   it("creates and binds the native buyer rail before destroying wallet material", async () => {
@@ -317,6 +362,7 @@ describe("role-owned Demos runtime", () => {
       authority: AUTHORITY,
       demosIdentity: loaded,
       createAdapter: async (input) => {
+        if (input.writeJournal === undefined) throw new Error("expected a write journal");
         journal = input.writeJournal;
         return mock;
       },

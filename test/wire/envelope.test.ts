@@ -28,6 +28,12 @@ it("refuses to return a request header signed by a key other than the buyer's", 
   await expect(wire.signWireEnvelope(x.request, { ...x.input, signer: wrongKey, purchaseProfile: x.binding.profile })).rejects.toMatchObject({ code: "peer_signature_invalid", status: 500 });
 });
 
+it("refuses a malformed signature from the local signer as its own fault with status 500", async () => {
+  const x = await wireWorld();
+  const malformed = { claim: x.buyer.claim, sign: () => "not a signature" };
+  await expect(wire.signWireEnvelope(x.request, { ...x.input, signer: malformed, purchaseProfile: x.binding.profile })).rejects.toMatchObject({ code: "peer_signature_invalid", status: 500 });
+});
+
 it("refuses to return a delegated request header signed by a key other than the session key", async () => {
   const x = await wireWorld();
   const delegation = x.signed(x.delegation, x.buyer, wire.DACS_SELLER_HTTP_DOMAINS.delegation) as wire.SellerSessionDelegation;

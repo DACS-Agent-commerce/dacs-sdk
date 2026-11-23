@@ -5,6 +5,7 @@ import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
 // a one-time handoff; the existing public SR-2 journal serializes CREATE plans.
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { isDevnetAgreementTransport } from '../wallet/devnet-native-transport.mjs';
+import { walletLane, walletLaneKey } from '../wallet/wallet-lane.mjs';
 import { createDemosSr2Adapter } from './demos-sr2-adapter.mjs';
 import { createSellerSr2AgreementAnchor, SELLER_SR2_PUBLIC_PROJECTION } from './seller-sr2-agreement-consumer.mjs';
 import { claimForAddress } from '../signatures.mjs';
@@ -22,10 +23,11 @@ export function nativeAgreementPaymentConfig(value, { walletConfig, sellerSr2Com
   if ((walletConfig.sourceCapability !== sourceCapability || rpc.href !== sourceCapability.pins.endpoint) || !sellerSr2Commitment?.publicProjection
     || !walletConfig?.journal || !coordinates) throw new TypeError('native Agreement payment requires the existing loopback wallet, public projection, fixture commitment and durable coordinates');
   const journal = walletConfig.journal;
-  const immutable=createImmutableReadbacks({ now });
+  const immutable=createImmutableReadbacks();
   const reader = createSellerSr2AgreementAnchor({ reader:createDemosSr2Adapter({rpcUrl:rpc.href,sourceCapability,journal:{get:()=>null,put:()=>{throw new Error('read-only source observer');},records:()=>[],withWalletLock:(_k,work)=>work()},fetchImpl,now}) });
   const workflowKey = (op) => `plugin/native-payment/${JSON.stringify([op.terms.network, op.terms.buyer.wallet])}`;
-  const laneKey = (op) => `sr2/wallet/${JSON.stringify([op.terms.network, sourceCapability.pins.chainIdentity, op.terms.buyer.wallet])}`;
+  const lane = (op) => walletLane({ network: op.terms.network, chainIdentity: sourceCapability.pins.chainIdentity, address: op.terms.buyer.wallet });
+  const laneKey = (op) => walletLaneKey(lane(op));
   function unresolved(op) {
     if(sourceCapability && (op.terms.domain.mode !== 'public-chain-read' || op.terms.domain.chainIdentity !== sourceCapability.pins.chainIdentity || op.terms.network !== sourceCapability.pins.network || canonicalize(op.terms.protocol.transportBinding) !== canonicalize(sourceCapability.transportBinding))) throw new OperationError('network_identity_mismatch','these terms do not carry the exact source capability binding');
     const pending = coordinates.unresolvedForSender(op.terms.buyer.wallet, op.id, ['payment_handoff', 'broadcast_reported', 'payment_uncertain', 'publication_handoff']);
@@ -74,7 +76,7 @@ export function nativeAgreementPaymentConfig(value, { walletConfig, sellerSr2Com
   return { withWorkflow: (op, work) => journal.withWalletLock(workflowKey(op), work),
     withPaymentLane: (op, work) => journal.withWalletLock(laneKey(op), work), unresolved, assertReady, verifyAgreement,
     async readLane(op, key) {
-      if (`sr2/wallet/${key}` !== laneKey(op)) throw new OperationError('wallet_lane_mismatch', 'only this purchase wallet lane may be read');
+      if (key !== lane(op)) throw new OperationError('wallet_lane_mismatch', 'only this purchase wallet lane may be read');
       await assertReady(op); await verifyAgreement(op);
       const record = await journal.get(laneKey(op));
       if (!record || record.stage !== 'broadcast-accepted' || record.hash !== op.state.protocol.agreement.anchorReceipt.transactionRef.value) throw new OperationError('wallet_fenced', 'the retained verified CREATE lane differs from this Agreement');

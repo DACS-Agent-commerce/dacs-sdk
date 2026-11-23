@@ -9,7 +9,7 @@ import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync,
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { sellerSourceFingerprint, staleSetupReason } from '../../../scripts/prepare-seller-consumer.mjs';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -36,7 +36,7 @@ if(args[0]==='pack'){
 if(args[0]==='ci'){
  if(env.PREPARE_PROBE_BARRIER){writeFileSync(join(env.PREPARE_PROBE_BARRIER,String(process.pid)),'');waitUntil(()=>readdirSync(env.PREPARE_PROBE_BARRIER).length>=2);}
  if(env.PREPARE_PROBE_HOLD){writeFileSync(join(env.PREPARE_PROBE_HOLD,'started'),'');waitUntil(()=>existsSync(join(env.PREPARE_PROBE_HOLD,'release')));}
- for(const name of ['dacs','dacs-node','dacs-seller']){mkdirSync(join(process.cwd(),'node_modules/@kynesyslabs',name),{recursive:true});writeFileSync(join(process.cwd(),'node_modules/@kynesyslabs',name,'package.json'),'{}\\n');}
+ for(const name of ['dacs','dacs-client','dacs-node','dacs-seller']){mkdirSync(join(process.cwd(),'node_modules/@kynesyslabs',name),{recursive:true});writeFileSync(join(process.cwd(),'node_modules/@kynesyslabs',name,'package.json'),'{}\\n');}
 }
 `;
 
@@ -55,6 +55,7 @@ function fixture(t) {
   return {
     base,
     temp,
+    env,
     calls: () => readFileSync(log, 'utf8').trim().split('\n').filter(Boolean),
     run: (directory, extra = {}) => spawnSync(process.execPath, args(directory), { env: { ...env, ...extra }, encoding: 'utf8', timeout: RUN_TIMEOUT_MS }),
     start: (directory, extra = {}) => new Promise((resolve) => {
@@ -90,11 +91,22 @@ test('a new directory is created and prepared, with prepared.json binding runtim
   const result = probe.run(directory);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(preparedPath(result.stdout), directory);
-  assert.equal(probe.calls().length, 4, 'pack core, pack seller, pack dacs-node and install once');
+  assert.equal(probe.calls().length, 5, 'pack core, pack seller, pack the client, pack dacs-node and install once');
   assert.ok(existsSync(join(directory, 'run.mjs')));
   const marker = JSON.parse(readFileSync(join(directory, 'prepared.json'), 'utf8'));
-  assert.deepEqual(Object.keys(marker).sort(), ['corePack', 'lockDigest', 'nodePack', 'runtime', 'sellerPack', 'sourceFingerprint']);
-  assert.equal(staleSetupReason(directory, sellerSourceFingerprint([])), null, 'the setup matches the files its seller pack contained');
+  assert.deepEqual(Object.keys(marker).sort(), ['clientPack', 'corePack', 'lockDigest', 'nodePack', 'runtime', 'sellerPack', 'sourceFingerprint']);
+  assert.equal(staleSetupReason(directory, sellerSourceFingerprint([], [])), null, 'the setup matches the files its seller and client packs contained');
+});
+
+test('the consumer lock gives the seller the demosdk version its own manifest pins', (t) => {
+  const probe = fixture(t), directory = join(probe.base, 'consumer');
+  const result = probe.run(directory);
+  assert.equal(result.status, 0, result.stderr);
+  const lock = JSON.parse(readFileSync(join(directory, 'package-lock.json'), 'utf8'));
+  const pinned = JSON.parse(readFileSync(join(root, 'packages/dacs-seller/package.json'), 'utf8')).dependencies['@kynesyslabs/demosdk'];
+  const seller = 'node_modules/@kynesyslabs/dacs-seller';
+  const resolved = lock.packages[`${seller}/node_modules/@kynesyslabs/demosdk`] ?? lock.packages['node_modules/@kynesyslabs/demosdk'];
+  assert.equal(resolved.version, pinned);
 });
 
 test('without a directory, each run prepares its own fresh temporary directory', (t) => {
@@ -108,6 +120,24 @@ test('without a directory, each run prepares its own fresh temporary directory',
     assert.equal(dirname(path), probe.temp);
     assert.ok(existsSync(join(path, 'prepared.json')));
   }
+});
+
+test('running the script through a symbolic link prepares the directory', (t) => {
+  const probe = fixture(t), directory = join(probe.base, 'consumer'), link = join(probe.base, 'prepare-link.mjs');
+  symlinkSync(script, link);
+  const result = spawnSync(process.execPath, [link, directory], { env: probe.env, encoding: 'utf8', timeout: RUN_TIMEOUT_MS });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(preparedPath(result.stdout), directory);
+  assert.ok(existsSync(join(directory, 'prepared.json')));
+});
+
+test('importing the script from standard input does not run the setup', (t) => {
+  const probe = fixture(t);
+  const source = `import { runtimeKey } from ${JSON.stringify(pathToFileURL(script).href)}; console.log(typeof runtimeKey);`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-'], { input: source, env: probe.env, encoding: 'utf8', timeout: RUN_TIMEOUT_MS });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), 'function');
+  assert.equal(readdirSync(probe.temp).length, 0);
 });
 
 const EXISTING = {
@@ -166,7 +196,7 @@ test('two setups of separate directories at once both succeed', async (t) => {
   assert.equal(first.status, 0, first.stderr);
   assert.equal(second.status, 0, second.stderr);
   assert.equal(readdirSync(barrier).length, 2, 'both installs were running together');
-  for (const name of ['one', 'two']) assert.equal(staleSetupReason(join(probe.base, name), sellerSourceFingerprint([])), null);
+  for (const name of ['one', 'two']) assert.equal(staleSetupReason(join(probe.base, name), sellerSourceFingerprint([], [])), null);
 });
 
 test('two setups of one directory: the first wins, the second is refused and the winner is left intact', async (t) => {
@@ -182,7 +212,7 @@ test('two setups of one directory: the first wins, the second is refused and the
   writeFileSync(join(hold, 'release'), '');
   const finished = await winner;
   assert.equal(finished.status, 0, finished.stderr);
-  assert.equal(staleSetupReason(directory, sellerSourceFingerprint([])), null);
+  assert.equal(staleSetupReason(directory, sellerSourceFingerprint([], [])), null);
 });
 
 test('setup before the core build is refused with a clear message and creates nothing', (t) => {
@@ -195,8 +225,39 @@ test('setup before the core build is refused with a clear message and creates no
   assert.equal(existsSync(directory), false);
 });
 
+// A checkout holding only the files the fingerprint reads, so a test can change one without touching this repository.
+async function fingerprintCheckout(t) {
+  const checkout = mkdtempSync(join(tmpdir(), 'dacs-seller-fingerprint-'));
+  t.after(() => rmSync(checkout, { recursive: true, force: true }));
+  const files = {
+    'package.json': '{"name":"root"}',
+    'package-lock.json': '{}',
+    'packages/dacs-seller/test/helpers/installed-seller-host.mjs': '',
+    'packages/dacs-seller/package.json': '{"name":"seller"}',
+    'packages/dacs-node/package.json': '{"name":"node-host","exports":{".":"./dist/index.js"}}',
+    'packages/dacs-node/dist/index.js': 'export {};',
+    'dist/index.js': 'export {};',
+  };
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(checkout, path)), { recursive: true });
+    writeFileSync(join(checkout, path), content);
+  }
+  mkdirSync(join(checkout, 'scripts'));
+  copyFileSync(script, join(checkout, 'scripts', 'prepare-seller-consumer.mjs'));
+  const copy = await import(pathToFileURL(join(checkout, 'scripts', 'prepare-seller-consumer.mjs')).href);
+  return { checkout, fingerprint: () => copy.sellerSourceFingerprint(['package.json'], []) };
+}
+
+test('a changed Node host manifest makes a prepared setup stale', async (t) => {
+  const { checkout, fingerprint } = await fingerprintCheckout(t);
+  const before = fingerprint();
+  assert.equal(fingerprint(), before, 'the same files give the same fingerprint');
+  writeFileSync(join(checkout, 'packages/dacs-node/package.json'), '{"name":"node-host","exports":{".":"./dist/index.js","./secrets":"./dist/secrets.js"}}');
+  assert.notEqual(fingerprint(), before);
+});
+
 test('a setup for another runtime, other sources, a changed lock or no marker is stale', (t) => {
-  const probe = fixture(t), directory = join(probe.base, 'consumer'), fingerprint = sellerSourceFingerprint([]);
+  const probe = fixture(t), directory = join(probe.base, 'consumer'), fingerprint = sellerSourceFingerprint([], []);
   assert.equal(probe.run(directory).status, 0);
   const markerPath = join(directory, 'prepared.json'), marker = readFileSync(markerPath, 'utf8'), lock = readFileSync(join(directory, 'package-lock.json'));
   const fresh = /; prepare a fresh directory with npm run seller:prepare -- <new directory>$/;

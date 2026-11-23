@@ -1,0 +1,13 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "D77",
+  "subject": "delta(client): D77 declare the expected blob without a value the allowed-path loop never reads",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/DELTA-MAP.md",
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/D77-5963710ebcba.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/scripts/delta-map.mjs"
+  ]
+}

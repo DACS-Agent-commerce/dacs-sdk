@@ -9,7 +9,7 @@ import { installPackedPair, packageDir, switchedCopy } from './helpers/packed-in
 
 // What the composition test needs besides the installed package, copied into the empty app.
 const COMPOSITION_FILES = ['test/public-composition.test.mjs', 'test/helpers/public-composition-world.mjs', 'test/helpers/purchase-integrity-operations.mjs',
-  'test/helpers/purchase-integrity-database.mjs', 'test/helpers/passive-native-world.mjs', 'test/fixtures/listings.mjs', 'test/fixtures/wallet.mjs', 'test/fixtures/tp1-authority-reader.mjs'];
+  'test/helpers/purchase-integrity-database.mjs', 'test/helpers/passive-native-world.mjs', 'test/helpers/read-only-boundary.mjs', 'test/fixtures/listings.mjs', 'test/fixtures/wallet.mjs', 'test/fixtures/tp1-authority-reader.mjs'];
 
 test('tests 24-29\'s composition passes from the packed client and core archives installed in an empty directory (switched-copy archive, DC-CW11)', t => {
   const { app, run } = installPackedPair(t, { clientDir: switchedCopy(t) });

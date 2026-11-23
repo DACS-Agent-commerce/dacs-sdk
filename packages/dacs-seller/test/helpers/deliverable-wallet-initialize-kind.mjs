@@ -24,7 +24,7 @@ DatabaseSync.prototype.prepare = function (sql, ...args) {
 const make = workerData.kind === 'deliverable' ? createDeliverableWalletJournal : createPaymentEvidenceWalletJournal;
 try {
   const journal = make({ path: workerData.path,
-    signCreate() {}, broadcast() {}, readAccountNonce() { return 0; }, readTransactionState() { return 'absent'; } });
+    signCreate() {}, broadcast() {}, readAccountNonce() { return 0; }, readTransactionState() { return 'absent'; }, readNetworkInfo() {} });
   parentPort.postMessage({ journalId: journal.journalId });
   journal.close();
 } catch (error) { parentPort.postMessage({ error: error.message }); }

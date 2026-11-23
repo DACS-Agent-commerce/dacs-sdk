@@ -3,12 +3,12 @@ import { describe, expect, test } from "vitest";
 import {
   buildCommitMessage,
   buildRevealMessage,
-  buildSealedAgreement,
   runSealedEnvelopeCore,
+  type SealedAgreementCommitResult,
+  type SealedCommitContext,
   type SealedEnvelopeDeps,
   type SealedEnvelopeInput,
 } from "../../src/negotiate/sealedEnvelope.js";
-import { isLegacyMvpAgreementDocument as isAgreementDocument } from "../../src/artifacts/legacyMvp.js";
 import {
   makeCommitment,
   compareDecimal,
@@ -39,6 +39,30 @@ function bidder(claim: string, amount: string, commitTs: number, revealTs: numbe
   return { commit, reveal };
 }
 
+/** The agreement and signer claims a caller returns once both parties have signed. */
+function committedAgreement(ctx: SealedCommitContext): SealedAgreementCommitResult {
+  return {
+    agreement: {
+      jobId: ctx.jobId,
+      pattern: "negotiate-sealed-envelope",
+      buyer: ctx.agreementBuyer,
+      seller: ctx.agreementSeller,
+      listingRef: "stor-listing",
+      price: {
+        amount: ctx.winningBid.price.amount,
+        asset: ctx.winningBid.price.currency,
+        decimals: 0,
+        rail: "pay-dem",
+      },
+      delivery: { phase: "deliver-attested-payload", format: "application/json" },
+      expiresAt: "2026-12-31T00:00:00Z",
+    },
+    verifiedSignerClaims: [...ctx.requiredSignerClaims],
+    agreementRef: `stor-agreement-${ctx.jobId}`,
+    agreementHash: `hash-${ctx.winningBidderClaim}`,
+  };
+}
+
 function deps(
   commits: AnchoredCommit[],
   reveals: AnchoredReveal[],
@@ -47,10 +71,7 @@ function deps(
   return {
     readAnchoredCommits: async () => commits,
     readAnchoredReveals: async () => reveals,
-    commitAgreement: async (ctx) => ({
-      agreementRef: `stor-agreement-${ctx.jobId}`,
-      agreementHash: `hash-${ctx.winningBidderClaim}`,
-    }),
+    commitAgreement: async (ctx) => committedAgreement(ctx),
     ...over,
   };
 }
@@ -185,9 +206,9 @@ describe("runSealedEnvelopeCore", () => {
         ],
         [b.reveal],
         {
-          commitAgreement: async () => {
+          commitAgreement: async (ctx) => {
             committed = true;
-            return { agreementRef: "unexpected", agreementHash: "unexpected" };
+            return committedAgreement(ctx);
           },
         },
       ),
@@ -391,66 +412,12 @@ describe("runSealedEnvelopeCore", () => {
       deps([a.commit], [a.reveal], {
         commitAgreement: async (ctx) => {
           called += 1;
-          return { agreementRef: "x", agreementHash: `hash-${ctx.winningBidderClaim}` };
+          return committedAgreement(ctx);
         },
       }),
     );
     expect(res.ok).toBe(false);
     expect(called).toBe(0);
-  });
-
-  test("buildSealedAgreement turns the winning bid into a valid AgreementDocument", () => {
-    const agreement = buildSealedAgreement(
-      {
-        jobId: "job-1",
-        seller: "did:demos:agent:seller",
-        winningBidderClaim: "did:demos:agent:bob",
-        winningBid: { price: { amount: "1.5", currency: "USDC" } },
-        losingBidderClaims: ["did:demos:agent:carol"],
-      },
-      {
-        seller: "did:demos:agent:seller",
-        listingRef: "stor-listing",
-        decimals: 6,
-        rail: "pay-x402",
-        deliveryPhase: "deliver-attested-payload",
-        deliveryFormat: "application/json",
-        expiresAt: "2026-01-01T00:00:00Z",
-      },
-    );
-    expect(isAgreementDocument(agreement)).toBe(true);
-    expect(agreement.pattern).toBe("negotiate-sealed-envelope");
-    expect(agreement.buyer).toBe("did:demos:agent:bob");
-    // 1.5 USDC @ 6 decimals → 1500000 base units.
-    expect(agreement.price).toEqual({
-      amount: "1500000",
-      asset: "USDC",
-      decimals: 6,
-      rail: "pay-x402",
-    });
-  });
-
-  test("buildSealedAgreement rejects a bid that resolves to zero base units", () => {
-    expect(() =>
-      buildSealedAgreement(
-        {
-          jobId: "j",
-          seller: "s",
-          winningBidderClaim: "b",
-          winningBid: { price: { amount: "0.000000", currency: "USDC" } },
-          losingBidderClaims: [],
-        },
-        {
-          seller: "s",
-          listingRef: "r",
-          decimals: 6,
-          rail: "pay-x402",
-          deliveryPhase: "p",
-          deliveryFormat: "f",
-          expiresAt: "t",
-        },
-      ),
-    ).toThrow();
   });
 
   test("SE-8 procurement assigns publisher→buyer and lowest bidder→seller", async () => {
@@ -472,15 +439,8 @@ describe("runSealedEnvelopeCore", () => {
       },
       deps([a.commit, b.commit], [a.reveal, b.reveal], {
         commitAgreement: async (ctx) => {
-          const agreement = buildSealedAgreement(ctx, {
-            seller: publisher,
-            listingRef: "stor-procurement-listing",
-            decimals: 0,
-            rail: "pay-dem",
-            deliveryPhase: "deliver-attested-payload",
-            deliveryFormat: "application/json",
-            expiresAt: "2026-12-31T00:00:00Z",
-          });
+          expect(ctx.listingPublisher).toBe(publisher);
+          const { agreement } = committedAgreement(ctx);
           expect(ctx.validateAgreementForCommit(agreement, [publisher, "did:demos:agent:provider-a"]))
             .toMatchObject({ ok: true });
           return {
@@ -527,15 +487,7 @@ describe("runSealedEnvelopeCore", () => {
       },
       deps([a.commit], [a.reveal], {
         commitAgreement: async (ctx) => {
-          const correct = buildSealedAgreement(ctx, {
-            seller: publisher,
-            listingRef: "stor-listing",
-            decimals: 0,
-            rail: "pay-dem",
-            deliveryPhase: "deliver-attested-payload",
-            deliveryFormat: "application/json",
-            expiresAt: "2026-12-31T00:00:00Z",
-          });
+          const correct = committedAgreement(ctx).agreement;
           return {
             agreement: { ...correct, buyer: provider, seller: publisher },
             verifiedSignerClaims: [publisher, provider],
@@ -572,15 +524,7 @@ describe("runSealedEnvelopeCore", () => {
       },
       deps([a.commit], [a.reveal], {
         commitAgreement: async (ctx) => ({
-          agreement: buildSealedAgreement(ctx, {
-            seller: publisher,
-            listingRef: "stor-listing",
-            decimals: 0,
-            rail: "pay-dem",
-            deliveryPhase: "deliver-attested-payload",
-            deliveryFormat: "application/json",
-            expiresAt: "2026-12-31T00:00:00Z",
-          }),
+          agreement: committedAgreement(ctx).agreement,
           verifiedSignerClaims: [provider],
           agreementRef: "must-not-succeed",
           agreementHash: "must-not-succeed",
@@ -594,11 +538,16 @@ describe("runSealedEnvelopeCore", () => {
     });
   });
 
-  test("SE-8 procurement rejects an opaque legacy agreement result", async () => {
+  test("a commit result with only a reference and hash is refused in both modes", async () => {
     const a = bidder("provider", "3", DEADLINE - 100, DEADLINE + 1_000);
-    const res = await runSealedEnvelopeCore(
+    // This shape does not type-check; an untyped caller can still return it.
+    const referenceOnly = (async (ctx: SealedCommitContext) => ({
+      agreementRef: `stor-agreement-${ctx.jobId}`,
+      agreementHash: `hash-${ctx.winningBidderClaim}`,
+    })) as unknown as SealedEnvelopeDeps["commitAgreement"];
+    const procurement = await runSealedEnvelopeCore(
       {
-        jobId: "job-opaque",
+        jobId: "job-reference-only-procurement",
         seller: "publisher",
         currency: "USDC",
         phaseKind: "negotiate-sealed-envelope-procurement",
@@ -609,13 +558,21 @@ describe("runSealedEnvelopeCore", () => {
           auctionMode: "procurement",
         },
       },
-      deps([a.commit], [a.reveal]),
+      deps([a.commit], [a.reveal], { commitAgreement: referenceOnly }),
     );
-    expect(res).toMatchObject({
-      ok: false,
-      failedAt: "agreement-validation",
-      errorClass: "permanent",
-    });
+    const demand = await runSealedEnvelopeCore(
+      input({ jobId: "job-reference-only-demand" }),
+      deps([a.commit], [a.reveal], { commitAgreement: referenceOnly }),
+    );
+    for (const res of [procurement, demand]) {
+      expect(res).toMatchObject({
+        ok: false,
+        failedAt: "agreement-validation",
+        errorClass: "permanent",
+        reason: "agreement commit must return the agreement and verified signer claims",
+      });
+      expect(res.agreementRef).toBeUndefined();
+    }
   });
 
   test("SE-1 is re-validated only against an explicit sessionStartMs, never now()", async () => {

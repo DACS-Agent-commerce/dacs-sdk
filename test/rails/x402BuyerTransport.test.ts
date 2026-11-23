@@ -5,6 +5,7 @@ import {
   createX402BuyerPaidRequestTransport,
   createX402BuyerRetainedDisclosureRecovery,
   prepareX402BuyerSettlement,
+  x402BuyerUnsignedIntentHash,
   type DacsPublicHttpsRequestV1,
   type PrepareX402BuyerSettlementInput,
   type X402BuyerChallengeClient,
@@ -673,4 +674,82 @@ describe("createX402BuyerRetainedDisclosureRecovery", () => {
       fence,
     })).resolves.toBeUndefined();
   });
+});
+
+
+test("binds the authorization after selecting the challenge and before signing", async () => {
+  const events: string[] = [];
+  const inner = client();
+  const createPaymentPayload = vi.fn(async (value: unknown, binding?: { validBefore: number }) => {
+    events.push("sign");
+    if (binding) expect(binding).toEqual({ validBefore: 4_102_444_800 });
+    return inner.createPaymentPayload(value);
+  });
+  const deps = { client: { ...inner, createPaymentPayload },
+    transportPolicy: { mode: "insecure-test" as const },
+    fetchImpl: async () => {
+      events.push("challenge");
+      return new Response(JSON.stringify({ x402Version: 2,
+        resource: { url: RESOURCE }, accepts: [requirements()] }), { status: 402 });
+    } };
+  let unsignedHash = "";
+  const bindAuthorization = vi.fn(async (scope) => {
+    events.push("bind");
+    unsignedHash = x402BuyerUnsignedIntentHash(scope);
+    expect(scope.chosenRequirements).toEqual(requirements());
+    return { validBefore: 4_102_444_800 };
+  });
+  const result = await prepareX402BuyerSettlement({ authority: authority(), bindAuthorization }, deps);
+  expect(events).toEqual(["challenge", "bind", "sign"]);
+  expect(bindAuthorization).toHaveBeenCalledTimes(1);
+  expect(createPaymentPayload.mock.calls[0]).toHaveLength(2);
+  if (result.disposition !== "prepared") throw new Error("expected intent");
+  expect(x402BuyerUnsignedIntentHash(result.intent)).toBe(unsignedHash);
+  expect(unsignedHash).not.toBe(result.intent.bindingHash);
+  const failure = new Error("binding unavailable");
+  createPaymentPayload.mockClear();
+  await expect(prepareX402BuyerSettlement({ authority: authority(),
+    bindAuthorization: async () => { throw failure; } }, deps)).rejects.toBe(failure);
+  expect(createPaymentPayload).not.toHaveBeenCalled();
+  await prepareX402BuyerSettlement({ authority: authority() }, deps);
+  expect(createPaymentPayload.mock.calls[0]).toHaveLength(1);
+});
+
+test("a challenge carrying extensions is rejected before the authorization is bound", async () => {
+  const inner = client();
+  const createPaymentPayload = vi.fn(inner.createPaymentPayload);
+  const bindAuthorization = vi.fn(async () => ({ validBefore: 4_102_444_800 }));
+  for (const extensions of [{}, { bazaar: {} }]) {
+    const result = await prepareX402BuyerSettlement({ authority: authority(), bindAuthorization }, {
+      client: { ...inner, createPaymentPayload },
+      transportPolicy: { mode: "insecure-test" as const },
+      fetchImpl: async () => new Response(JSON.stringify({ x402Version: 2,
+        resource: { url: RESOURCE }, accepts: [requirements()], extensions }), { status: 402 }),
+    });
+    expect(result).toEqual({ disposition: "rejected", reason: "x402-payment-requirements-mismatch" });
+  }
+  expect(bindAuthorization).not.toHaveBeenCalled();
+  expect(createPaymentPayload).not.toHaveBeenCalled();
+});
+
+test("a challenge whose resource or requirements are not canonical JSON is rejected before the authorization is bound", async () => {
+  const inner = client();
+  const createPaymentPayload = vi.fn(inner.createPaymentPayload);
+  const bindAuthorization = vi.fn(async () => ({ validBefore: 4_102_444_800 }));
+  const nested = (depth: number): unknown => (depth === 0 ? 1 : { n: nested(depth - 1) });
+  const challenges = [
+    { resource: { url: RESOURCE, size: 1e20 }, accepts: [requirements()] },
+    { resource: { url: RESOURCE, deep: nested(200) }, accepts: [requirements()] },
+    { resource: { url: RESOURCE }, accepts: [{ ...requirements(), extra: { ...requirements().extra, size: 1e20 } }] },
+  ];
+  for (const challenge of challenges) {
+    const result = await prepareX402BuyerSettlement({ authority: authority(), bindAuthorization }, {
+      client: { ...inner, createPaymentPayload },
+      transportPolicy: { mode: "insecure-test" as const },
+      fetchImpl: async () => new Response(JSON.stringify({ x402Version: 2, ...challenge }), { status: 402 }),
+    });
+    expect(result).toEqual({ disposition: "rejected", reason: "x402-payment-requirements-mismatch" });
+  }
+  expect(bindAuthorization).not.toHaveBeenCalled();
+  expect(createPaymentPayload).not.toHaveBeenCalled();
 });

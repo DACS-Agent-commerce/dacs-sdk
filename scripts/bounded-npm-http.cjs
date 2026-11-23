@@ -23,20 +23,68 @@ function responseBudget(path) {
 // and the characters of numbers and of true, false and null.
 const JSON_BYTES_OUTSIDE_STRINGS = new Set(Buffer.from('\t\n\r []{},:"+-.0123456789truefalsnE'));
 
+// Bytes npm's streaming parser takes without looking at them after a UTF-8 lead
+// byte inside a string, quote and backslash included. Other high bytes count as
+// ordinary string bytes. Valid UTF-8 holds only bytes 0x80 to 0xbf there; the
+// scanner refuses anything else, because npm's other parser would end the string
+// at such a quote.
+function continuationBytes(lead) {
+  if (lead >= 0xf0 && lead <= 0xf4) return 3;
+  if (lead >= 0xe0 && lead < 0xf0) return 2;
+  if (lead >= 0xc2 && lead < 0xe0) return 1;
+  return 0;
+}
+
+// A native search inside a string costs more than checking a few bytes one at a
+// time. When a search skips fewer than SEARCH_MIN_SKIP bytes (escapes or multibyte
+// characters close together), the next SEARCH_PAUSE_BYTES bytes are checked one at
+// a time, so dense strings run at the speed of the plain byte loop.
+const SEARCH_MIN_SKIP = 8, SEARCH_PAUSE_BYTES = 512;
+
 // Count tokens, not parsed objects: npm can consume multiple roots and duplicate
 // keys. Syntax remains npm's responsibility, except that counting stops at the
 // first byte no JSON text can hold outside a string: npm refuses the body there,
-// and a binary download is not JSON. State survives every chunk boundary.
+// and a binary download is not JSON. Strings end where npm's parser ends them.
+// State survives every chunk boundary.
 function jsonScanner() {
   const containers = [];
-  let entries = 0, string = false, escaped = false, notJson = false;
+  const stringBoundary = /["\\\xc2-\xf4]/g;
+  let entries = 0, string = false, escaped = false, notJson = false, continuation = 0;
+  // Bytes of a search pause still to come when a chunk ends.
+  let pause = 0;
   return bytes => {
     if (notJson) return;
-    for (const byte of bytes) {
+    const end = bytes.length;
+    let text, searchFrom = pause;
+    pause = Math.max(0, searchFrom - end);
+    for (let i = 0; i < end; i++) {
+      let byte = bytes[i];
       if (string) {
-        if (escaped) escaped = false;
-        else if (byte === 92) escaped = true;
+        if (continuation > 0) {
+          if (byte < 0x80 || byte > 0xbf) throw Object.assign(new Error("EMALFORMED npm HTTP response JSON string is not valid UTF-8"), { code: "EMALFORMED" });
+          continuation--;
+          continue;
+        }
+        if (escaped) { escaped = false; continue; }
+        // Latin-1 preserves byte offsets while native search skips ordinary string
+        // bytes. Short remainders stay byte by byte: tiny chunks would pay for a
+        // string per call.
+        if (i >= searchFrom && end - i >= 64) {
+          text ??= Buffer.from(bytes.buffer, bytes.byteOffset, end).toString("latin1");
+          stringBoundary.lastIndex = i;
+          // test() leaves lastIndex just past the match and builds no match array.
+          if (!stringBoundary.test(text)) return;
+          const next = stringBoundary.lastIndex - 1;
+          if (next - i < SEARCH_MIN_SKIP) {
+            searchFrom = next + SEARCH_PAUSE_BYTES;
+            pause = Math.max(0, searchFrom - end);
+          }
+          i = next;
+          byte = bytes[i];
+        }
+        if (byte === 92) escaped = true;
         else if (byte === 34) string = false;
+        else continuation = continuationBytes(byte);
         continue;
       }
       if (!JSON_BYTES_OUTSIDE_STRINGS.has(byte)) { notJson = true; return; }
@@ -61,8 +109,9 @@ function jsonScanner() {
 /** Buffers original wire bytes, incrementally admitting JSON tokens or gzip output.
  * Throws ELIMIT on overflow; json is retained for callers using the old signature,
  * but no route or caller can turn off token admission. Encoded bodies are refused.
- * Aborting `signal` stops reading and decompression and rejects with its reason. */
-async function readBoundedResponse(response, maximum, json = true, archiveMaximum = maximum, signal) {
+ * Aborting `signal` stops reading and decompression and rejects with its reason.
+ * Calls `onChunk` for each non-empty chunk read. */
+async function readBoundedResponse(response, maximum, json = true, archiveMaximum = maximum, signal, onChunk) {
   signal?.throwIfAborted();
   if (Number(response.headers["content-length"]) > maximum) throw limitError("byte");
   const encoding = response.headers["content-encoding"]?.toLowerCase();
@@ -87,6 +136,7 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
     signal?.addEventListener("abort", abort, { once: true });
     for await (const chunk of response) {
       if (!chunk.length) continue;
+      onChunk?.();
       if (encoding && encoding !== "identity") throw new Error("unsupported npm HTTP content encoding: " + encoding);
       length += chunk.length;
       if (length > maximum) throw limitError("byte");
@@ -103,7 +153,11 @@ async function readBoundedResponse(response, maximum, json = true, archiveMaximu
   finally { signal?.removeEventListener("abort", abort); gunzip?.destroy(); }
 }
 
-/** Installs opt-in HTTP(S) admission, with one socket-to-admission deadline per request. */
+/** Installs opt-in HTTP(S) admission. The wrapper fails a request with ETIMEDOUT when
+ * NPM_HTTP_TIMEOUT_MS passes after its socket opens, or after the last response chunk,
+ * without progress. The byte budget bounds the total size. The wrapper holds the response
+ * back until the whole body is admitted, so a fetch timeout set in npm itself still runs
+ * for the whole download. */
 function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeout, cancel = clearTimeout,
   now = () => performance.now() } = {}) {
   for (const transport of transports) {
@@ -113,7 +167,7 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
       // Headers already written (Expect: 100-continue, raw header array) cannot change;
       // an encoded reply is still refused when it arrives.
       if (!pending.headersSent) pending.setHeader("accept-encoding", "identity");
-      let failed = false, timer, deadline, response;
+      let failed = false, timer, deadline, armedFor, response;
       // Admission can outlive the request (its body may already be read), so the
       // deadline and request failures cancel admission directly.
       const admission = new AbortController();
@@ -125,10 +179,17 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
         stop(error); response.destroy(); pending.destroy();
         emit.call(pending, "error", error);
       };
+      // Chunks move the deadline; the timer is not re-armed per chunk. When it fires
+      // and the deadline has moved past it, it waits for the new deadline instead.
+      const expire = () => {
+        timer = undefined;
+        if (deadline > armedFor && deadline > now()) { armedFor = deadline; timer = schedule(expire, deadline - now()); return; }
+        if (response) fail(timeoutError()); else pending.destroy(timeoutError());
+      };
       pending.once("socket", () => {
         if (failed) return;
-        deadline = now() + NPM_HTTP_TIMEOUT_MS;
-        timer = schedule(() => response ? fail(timeoutError()) : pending.destroy(timeoutError()), NPM_HTTP_TIMEOUT_MS);
+        deadline = armedFor = now() + NPM_HTTP_TIMEOUT_MS;
+        timer = schedule(expire, NPM_HTTP_TIMEOUT_MS);
       });
       pending.once("error", error => stop(error));
       pending.once("abort", () => stop());
@@ -143,7 +204,8 @@ function installBoundedNpmHttp({ transports = [http, https], schedule = setTimeo
         if (pending.method === "HEAD" || response.statusCode === 204 || response.statusCode === 304) {
           clear(); return emit.call(this, event, response, ...rest);
         }
-        readBoundedResponse(response, responseBudget(pending.path), true, NPM_TARBALL_MAX_UNPACKED_BYTES, admission.signal).then(bytes => {
+        readBoundedResponse(response, responseBudget(pending.path), true, NPM_TARBALL_MAX_UNPACKED_BYTES, admission.signal,
+          () => { if (deadline !== undefined) deadline = now() + NPM_HTTP_TIMEOUT_MS; }).then(bytes => {
           if (deadline !== undefined && now() >= deadline) { fail(timeoutError()); return; }
           if (failed) return;
           clear();

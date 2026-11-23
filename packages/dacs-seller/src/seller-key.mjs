@@ -59,8 +59,8 @@ function refusing(refusal, run) {
   }
 }
 
-// The purchase paths admit Node ^22.22.2 || ^24.15.0, the package's engines range.
-function runtimeSupported(version) {
+/** True when `version` (a `process.version` string) is in the package's engines range, Node ^22.22.2 || ^24.15.0; false for any other text. */
+export function runtimeSupported(version) {
   const [major, minor, patch] = /^v(\d+)\.(\d+)\.(\d+)/.exec(version)?.slice(1).map(Number) ?? [];
   return (major === 22 && (minor > 22 || (minor === 22 && patch >= 2))) || (major === 24 && minor >= 15);
 }

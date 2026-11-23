@@ -1,7 +1,8 @@
 // Purchase capacity on the transport store's one SQLite owner. An admitted purchase holds one allocation with a slot of 17
 // reservation units per route; a charged request spends one unit of its slot, or one general unit, as the accounting row it commits.
-// `used` is every accounting row (it never decreases), `allotted` the unspent units of the open slots of live allocations, and
-// `free` is what is left of `maxRecords`. Nothing here signs, sends or deletes a journal file.
+// `used` is the accounting rows that still count (a refused row or a settled repeat stops counting once its request has expired, and
+// every expired row of a retired job does unless it is still reserving, as in the accounting's own limit), `allotted` the unspent units of the open slots of
+// live allocations, and `free` is what is left of `maxRecords`. Nothing here signs, sends or deletes a journal file.
 import { randomUUID } from 'node:crypto';
 import { canonicalize, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, wireOperationId } from '@kynesyslabs/dacs/wire';
@@ -67,7 +68,7 @@ export function createPurchaseCapacity({ store, now, maxRecords = DEFAULT_MAX_RE
   const byId = (allocationId) => { const found = db.prepare('SELECT * FROM kit_allocations WHERE allocationId = ?').get(allocationId); return found ? snapshot(found) : null; };
   const liveAllocations = () => db.prepare("SELECT * FROM kit_allocations WHERE state = 'live'").all().map(snapshot);
   function totals() {
-    const used = db.prepare('SELECT COUNT(*) AS n FROM kit_reservations').get().n;
+    const used = internals.retainedReservationCount(now());
     const allotted = liveAllocations().reduce((sum, row) => sum + Object.values(row.slots).reduce((units, slot) => units + unspent(slot), 0), 0);
     return { used, allotted, free: maxRecords - used - allotted };
   }
@@ -159,10 +160,12 @@ export function createPurchaseCapacity({ store, now, maxRecords = DEFAULT_MAX_RE
     if (live?.state === 'live') releaseAllWithin({ allocationId: live.allocationId, allocationRev: live.rev });
   }
   // The store's adapter observes each live allocation's job (a closure answers first); a terminal one is closed and released by the
-  // store's writer in a transaction of its own, so a failure leaves neither the closure nor the release.
-  function releaseTerminalAllocations() {
+  // store's writer in a transaction of its own, so a failure leaves neither the closure nor the release. A job that `keepOpen({ jobId, seller })`
+  // answers true for is not observed at all, so cleanup writes no closure for it and its allocation stays live.
+  function releaseTerminalAllocations(keepOpen = () => false) {
     if (db.inTransaction) throw new TypeError('terminal cleanup opens its own transaction');
-    for (const { jobId } of db.prepare("SELECT jobId FROM kit_allocations WHERE state = 'live'").all()) {
+    for (const { jobId, seller } of liveAllocations()) {
+      if (keepOpen({ jobId, seller })) continue;
       try { sessionState({ jobId }, 'cleanup'); }
       catch (error) {
         if (error?.code !== 'session_admission_unavailable' || error.status !== 503) throw error;

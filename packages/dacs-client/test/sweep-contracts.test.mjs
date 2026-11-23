@@ -13,6 +13,7 @@ import {createSellerAgent} from '../src/dacs/seller-agent.mjs';
 // The held buyer API uses the concrete store with an invalid database handle
 // and no operator capability; no authority, wallet or native check is mocked.
 import { createSqlitePurchaseStore } from '../src/seams/purchase-store-not-wired.mjs';
+import { readOnlyBoundary } from './helpers/read-only-boundary.mjs';
 const noWrites=createSqlitePurchaseStore();
 const jobId='01ARZ3NDEKTSV4RRFFQ69G5FAV',seller='did:demos:agent:'+'a'.repeat(64);
 const operation={terms:{buyer:{wallet:'0x'+'e'.repeat(64)},seller:{claim:seller},protocol:{jobId,profile:'dacs-chatgpt-plugin/fixed-price-pay-dem/v1'}},state:{protocol:{revision:7,stage:'delivery-ready',agreement:null,commitment:null,paymentEvidence:null,delivery:{report:{jobId}},bundle:null}}};
@@ -36,7 +37,7 @@ for(const v of grammar.vectors.filter(v=>(v.operation==='validate'||v.operation=
 });
 test('malformed JIDs stop all reader entries before resolution',async()=>{
  let reads=0;
- const source=createDevnetAgreementTransport({expected:{network:'testnet',chainIdentity:'f'.repeat(64),pinVersion:'TEST-1',endpoint:'https://rpc.invalid/',transportAuthority:'TEST-owner'},transportOwner:{getContext(){reads++;throw Error('unexpected');},acquireConnectionFence(){reads++;throw Error('unexpected');}},journal:{get:async()=>null,put:async()=>{throw Error('write');},entries:async()=>[],withWalletLock:(_k,w)=>w()}});
+ const source=createDevnetAgreementTransport({ boundary: readOnlyBoundary,expected:{network:'testnet',chainIdentity:'f'.repeat(64),pinVersion:'TEST-1',endpoint:'https://rpc.invalid/',transportAuthority:'TEST-owner'},transportOwner:{getContext(){reads++;throw Error('unexpected');},acquireConnectionFence(){reads++;throw Error('unexpected');}},journal:{get:async()=>null,put:async()=>{throw Error('write');},entries:async()=>[],withWalletLock:(_k,w)=>w()}});
  const reader=createBuyerChainReadback({sourceCapability:source,reader:{read:async()=>{reads++;throw Error('unexpected');},verifyReceipt:async()=>{reads++;throw Error('unexpected');}}});
  for(const v of grammar.vectors.filter(v=>(v.operation==='validate'||v.operation==='lookup-bundle'&&v.expected==='error')&&v.expected!=='pass')) {
   const args={jobId:v.jobId,agreement:{jobId:v.jobId},listing:{seller:{identity:{presentedBy:seller}}},seller};
@@ -48,7 +49,8 @@ for(const authority of [undefined,{}, {standardRevision:'old'}, {standardRevisio
  let effects=0;const effect=()=>{effects++;throw Error('effect');};
  const buyer=createProtocolPurchases({db:{},ops:{},coordinates:{},dacsProtocol:{profileAuthority:authority},fetchImpl:effect,store:noWrites});
  assert.equal(buyer.available,false);assert.equal(buyer.actionsAdmitted,false);
- for(const method of ['prepareTerms','identityRequest','signRequest','withNativePaymentLane','readNativePaymentLane'])assert.throws(()=>buyer[method]({},effect),refused);
+ for(const method of ['prepareTerms','signRequest','withNativePaymentLane','readNativePaymentLane'])assert.throws(()=>buyer[method]({},effect),refused);
+ await assert.rejects(buyer.identityRequest({}),refused);
  await assert.rejects(buyer.planRequest({}),refused);
  await assert.rejects(buyer.submitAgreement({}),refused);
  await assert.rejects(buyer.recheck({}),refused);

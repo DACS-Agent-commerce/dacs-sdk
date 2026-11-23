@@ -1,13 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { runFreshChild } from './helpers/fresh-node-child.mjs';
+import { childOwnStderr, runFreshChild } from './helpers/fresh-node-child.mjs';
 import { mnemonicBytes } from './helpers/tp1-node-fixture.mjs';
-// Where Node still marks Web Crypto Ed25519 experimental (23.4.0 and below), the storage-anchor signature check in
-// sdk-provider.mjs makes Node itself print this warning and its hint once. That output is Node's, not the child's.
-const NODE_ED25519_WARNING = /^\(node:\d+\) ExperimentalWarning: The Ed25519 Web Crypto API algorithm is an experimental feature and might change at any time\n/gm;
-const NODE_TRACE_WARNINGS_HINT = /^\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n/gm;
-function childOwnStderr(stderr) { return stderr.replace(NODE_ED25519_WARNING, '').replace(NODE_TRACE_WARNINGS_HINT, ''); }
 const names = ["a fresh child with no NODE_OPTIONS, loaders or helper imports constructs the source node-wallet entry, imports a generated valid mnemonic, completes an offline native-send and storage-CREATE control, and writes nothing to stdout or stderr, also when preparation fails or answers malformed", "a fresh child speaking a JSON-RPC line protocol on stdout answers a request, makes an offline native send, then answers a second request; every stdout line parses as a frame"];
 const fixture = readFileSync(new URL('./helpers/tp1-node-fixture.mjs',import.meta.url),'utf8');
 const nodeSource = fixture.slice(fixture.indexOf('export function scriptedNode()'),fixture.indexOf('export async function world')).replace('export ','');
@@ -26,8 +21,9 @@ ${nodeSource}
 ${agreementSource.replaceAll("'@kynesyslabs/dacs'",JSON.stringify(import.meta.resolve('@kynesyslabs/dacs')))}
 const node=scriptedNode(),owner=api.createNodeTransportOwner({endpoint:'https://rpc.example.invalid/',transportAuthority:'vector-authority',fetchImpl:node.fetch});
 const binding=await bindTp1Profile({record:TP1_APPROVED_IDENTITY_RECORD,local:owner.local,readAuthority:async scope=>({local:scope.local,chainIdentity:TP1_APPROVED_IDENTITY_RECORD.chainIdentity,provenance:'TEST-child',sessionId:scope.sessionId,participants:[]})});
-const records=new Map(); const journal={get:async k=>records.get(k)??null,put:async(k,v)=>records.set(k,structuredClone(v)),entries:async()=>[...records],withWalletLock:async(k,work)=>work(),close(){}};
-const session=await api.createNodeWalletSession({admission:{binding,currentLocal:owner.currentLocal},owner,journal,key:new Uint8Array(JSON.parse(process.argv[2])),approve:async()=>true,clock:{now:()=>T0}});
+const records=new Map(); const journal={get:async k=>records.get(k)??null,put:async(k,v)=>records.set(k,structuredClone(v)),entries:async()=>[...records],withWalletLock:async(k,work)=>work(),
+  withOwnedOrAcquiredLane:async(lane,work)=>work(),appendUnderLock:async(lane,k,v)=>records.set(k,structuredClone(v)),close(){}};
+const session=await api.createNodeWalletSession({admission:{binding,currentLocal:owner.currentLocal},owner,journal,key:new Uint8Array(JSON.parse(process.argv[2])),approve:async()=>true,clock:{now:()=>T0},stopped:async()=>false,feeCeilingOs:'50000000000'});
 const address=session.wallet.getPublicAccount().address;
 if(process.argv[3]==='frames')process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:1,result:address})+'\\n');
 const send=await session.wallet.request({method:'sendTransaction',params:[buildNativeTransferPayload({from:address,to:'0x'+'2'.repeat(64),amountOs:'2500000000',nonce:1,timestamp:T0,encoding:'os-string'})]});

@@ -8,7 +8,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { leaseHolderState, leaseState, PROCESS_LEASE_ID, PROCESS_NAMESPACE, takeLease } from '../src/dacs/process-lease.mjs';
+import { leaseHolderState, leaseState, PROCESS_LEASE_ID, PROCESS_NAMESPACE, ProcessLeaseError, takeLease } from '../src/dacs/process-lease.mjs';
 import { acquireSellerStateLock, SELLER_STATE_LOCK_FILE, SELLER_STATE_LOCK_REFUSALS } from '../src/devnet-demo/seller-state-lock.mjs';
 
 const WORKER = new URL('./helpers/lease-worker.mjs', import.meta.url);
@@ -196,6 +196,18 @@ test('BSD-shaped identities: only the same kernel boot with a free lease is exit
   assert.equal(leaseHolderState(dir, { ...holder, namespace: null }, { self }), 'no-identity');
 });
 
+test('a holder recorded in another PID namespace on this boot is exited when its lease is free, and live when it is held', async t => {
+  const dir = await directory(t), live = await worker(t, dir, 'lease'), dead = await worker(t, dir, 'lease');
+  await kill(dead.child);
+  const self = { ...PROCESS_NAMESPACE, pids: 'proc' };
+  const elsewhere = { ...PROCESS_NAMESPACE, ns: `${PROCESS_NAMESPACE.ns}0` };
+  // Its PID here runs a process with the recorded start; in its own namespace that PID is not this one.
+  const sharedPid = { process: dead.process, pid: process.pid, namespace: elsewhere };
+  assert.equal(leaseHolderState(dir, sharedPid, { self }), 'exited');
+  assert.equal(leaseHolderState(dir, { ...dead, namespace: { ...dead.namespace, ns: elsewhere.ns } }, { self }), 'exited');
+  assert.equal(leaseHolderState(dir, { ...live, pid: process.pid, namespace: { ...live.namespace, ns: elsewhere.ns } }, { self }), 'live');
+});
+
 test('leases that cannot be checked are never free', async t => {
   const dir = await directory(t), dead = await worker(t, dir, 'lease');
   await kill(dead.child);
@@ -217,6 +229,14 @@ test('takeLease refuses an unsafe holders directory, an existing lease file or a
   for (let round = 0; round < 2; round++) assert.throws(() => takeLease(taken), { code: 'seller_state_lease_unavailable' });
   await writeFile(join(open, 'TEST-file'), '');
   assert.throws(() => takeLease(join(open, 'TEST-file')), { code: 'seller_state_directory_unsafe' });
+});
+
+test('takeLease on a missing directory throws the filesystem error, creates nothing and registers nothing', async t => {
+  const missing = join(await directory(t), 'TEST-missing');
+  assert.throws(() => takeLease(missing), error => error.code === 'ENOENT' && !(error instanceof ProcessLeaseError));
+  assert.equal(await exists(missing), false);
+  await mkdir(missing);
+  assert.equal(takeLease(missing), PROCESS_LEASE_ID);
 });
 
 test('a fault while taking a lease removes the file it created, and the next takeLease works', async t => {

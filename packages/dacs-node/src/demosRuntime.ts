@@ -4,6 +4,7 @@ import { resolve, sep } from "node:path";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
 import {
   baseUnits,
+  DemosChainIdentityError,
   createPayDemRail as createSdkPayDemRail,
   type PayDemRail,
   type PayDemSettleParams,
@@ -21,6 +22,7 @@ import type {
   AnchorResolution,
   AnchorWriteOnceOptions,
   DemosWriteJournal,
+  ExpectedDemosChainIdentity,
   DemosWriteJournalLease,
   DemosWriteJournalRecord,
   OwnedAnchorScan,
@@ -74,6 +76,7 @@ export interface DacsDemosAdapterV1 {
   sign(bytes: Uint8Array): Promise<Uint8Array>;
   resolveIdentity(ref: string): Promise<ResolvedIdentity>;
   readAnchor(address: string): Promise<Record<string, unknown> | null>;
+  /** `expectedOwner` is the bare native owner (hex), not a DID. */
   resolveAnchorByName(
     name: string,
     expectedOwner: string,
@@ -110,13 +113,18 @@ export interface DacsDemosActorRuntimeOptionsV1 {
   authority: string;
   demosIdentity: Readonly<DacsLoadedSecretV1>;
   journalDirectory?: string;
-  /** Read-only probes receive an adapter whose journal rejects every write lease. */
+  /**
+   * Read-only runtimes get an adapter with no write journal: it refuses every
+   * write before signing and finds its own records through the owner-checked
+   * name index.
+   */
   writePolicy?: "perform" | "read-only";
   /** Deterministic test/custom-host seam. Production omits this callback. */
   createAdapter?: (input: Readonly<{
     rpc: string;
+    expectedIdentity?: ExpectedDemosChainIdentity;
     secret: string;
-    writeJournal: DemosWriteJournal;
+    writeJournal?: DemosWriteJournal;
     maximumFeeOs: bigint;
   }>) => Promise<DacsDemosAdapterV1> | DacsDemosAdapterV1;
   /** Deterministic test/custom-host seam. Production uses the SDK native rail. */
@@ -232,8 +240,9 @@ async function privateJournalDirectory(
 
 async function defaultAdapter(input: Readonly<{
   rpc: string;
+  expectedIdentity?: ExpectedDemosChainIdentity;
   secret: string;
-  writeJournal: DemosWriteJournal;
+  writeJournal?: DemosWriteJournal;
   maximumFeeOs: bigint;
 }>): Promise<DacsDemosAdapterV1> {
   const substrate = await import("@kynesyslabs/dacs/substrate").catch(() => {
@@ -353,9 +362,10 @@ function walletCoordinatedPayDemRail(input: Readonly<{
 }
 
 /**
- * Open one role-owned live Demos wallet with the SDK's durable cross-process
- * write journal, prove that its Ed25519 public key is the configured primary
- * ClaimRef, and expose only the bounded host capabilities used by role wiring.
+ * Open one role-owned live Demos wallet, prove that its Ed25519 public key is
+ * the configured primary ClaimRef, and expose only the bounded host
+ * capabilities used by role wiring. Write-enabled runtimes use the SDK's
+ * durable cross-process write journal; read-only runtimes have none.
  */
 export async function createDacsDemosActorRuntimeV1(
   rawOptions: Readonly<DacsDemosActorRuntimeOptionsV1>,
@@ -394,14 +404,8 @@ export async function createDacsDemosActorRuntimeV1(
   let adapter: DacsDemosAdapterV1;
   let payDemRail: Readonly<PayDemRail> | undefined;
   try {
-    let writeJournal: DemosWriteJournal;
-    if (rawOptions.writePolicy === "read-only") {
-      writeJournal = Object.freeze({
-        async acquire() {
-          throw new DacsDemosRuntimeError("demos-write-disabled");
-        },
-      });
-    } else {
+    let writeJournal: DemosWriteJournal | undefined;
+    if (rawOptions.writePolicy !== "read-only") {
       const journalDirectory = await privateJournalDirectory(
         config,
         rawOptions.journalDirectory,
@@ -420,12 +424,17 @@ export async function createDacsDemosActorRuntimeV1(
     try {
       adapter = await makeAdapter({
         rpc: config.demos.rpcUrl,
+        ...(config.demos.expectedIdentity === undefined ? {} : { expectedIdentity: config.demos.expectedIdentity }),
         secret,
-        writeJournal,
+        ...(writeJournal === undefined ? {} : { writeJournal }),
         maximumFeeOs: BigInt(baseUnits(config.limits.maxDemosNetworkFeeDem, 9)),
       });
       await adapter.connect();
-      if (rawOptions.role === "buyer" && rawOptions.writePolicy !== "read-only" &&
+      if (config.demos.expectedIdentity !== undefined) {
+        if (!adapter.getChainIdentity) throw new DacsDemosRuntimeError("demos-chain-identity-unavailable");
+        await adapter.getChainIdentity();
+      }
+      if (rawOptions.role === "buyer" && writeJournal !== undefined &&
           dacsLiveRailProfiles(config).includes("pay-dem")) {
         const makePayDemRail = rawOptions.createPayDemRail ?? createSdkPayDemRail;
         const uncoordinated = await makePayDemRail({
@@ -448,7 +457,8 @@ export async function createDacsDemosActorRuntimeV1(
           payDemRail = markDacsSdkPreparedPayDemRailV1(payDemRail);
         }
       }
-    } catch {
+    } catch (cause) {
+      if (cause instanceof DemosChainIdentityError) throw cause;
       throw new DacsDemosRuntimeError("demos-adapter-connect-failed");
     }
   } finally {

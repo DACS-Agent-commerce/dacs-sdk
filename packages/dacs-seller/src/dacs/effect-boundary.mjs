@@ -1,32 +1,38 @@
 // The kit's effect boundary (K0): every signature that authorizes an effect and every
 // transmission passes EB1 to EB9 in order, under one actor-local fence, with its signed
-// bytes and dispatch intent durable before anything leaves the process. Nothing in the kit
-// calls it yet. Errors are WireError (code, status, cause kept) or the guard's own error.
+// bytes and dispatch intent durable before anything leaves the process. The seller's wallet
+// CREATEs reach it through runCreate (devnet-demo/create-pass.mjs). Errors are WireError
+// (code, status, cause kept) or the guard's own error.
 import { createHash } from 'node:crypto';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { WireError, assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 
-// Monotonic window for authority and stop reads, in milliseconds: one for EB1 to EB4, and one that starts when the fence is acquired and covers EB5r to EB8f.
+// Monotonic window in milliseconds: one for the reads of EB1 to EB4, one that starts when the fence is acquired and covers the reads of EB5r to EB8f, and one that starts when each call to a signer passed to signPass or pass, or to the transport, is made. The inner signer of signerFor is not cut off by it.
 const EFFECT_READ_DEADLINE_MS = 10000;
 // Longest wait for the actor fence, in milliseconds.
 const EFFECT_FENCE_TIMEOUT_MS = 10000;
 const MAX_SIGNED_BYTES = 262144;
 const MAX_OPERATION_ID_LENGTH = 256;
 const MAX_CAUSE_MESSAGE_LENGTH = 256;
+const UNDESCRIBABLE_CAUSE_MESSAGE = 'the thrown value has no string form';
 const STAGES = ['dispatch', 'confirm', 'broadcast'];
 const JOB_OPERATION_CLASSES = ['job-create', 'payment-evidence', 'job-resume'];
 // Whether the retained bytes may be sent again after an earlier stage may have reached transport (K0 lane policy).
 const KINDS = { 'native-transaction': { mayResend: false }, 'seller-create': { mayResend: true }, 'wire-request': { mayResend: true } };
 const NOT_STOPPED_STATUS = 503;
+/** The wallet journals' per-write ceiling, in OS (10^9 OS per DEM): 50 DEM. A journal compares it with the whole debit of a write: its fees plus the storage and gas burns. The approval policy has its own limit (also 50 DEM by default, `SELLER_POLICY_DEFAULTS`) and the effect boundary takes its limit from its caller; neither reads this constant. */
+export const WRITE_FEE_CEILING_OS = 50_000_000_000n;
 
 const assertAdmitted = () => assertKitOperationAdmitted('effectBoundary');
 const refuse = (code, detail, cause, status = 500) => new WireError(code, status, detail, cause);
 const timeoutCause = (ms) => Object.assign(new Error(`no answer within ${ms} ms`), { name: 'TimeoutError' });
 const parseOs = (value) => (typeof value === 'bigint' && value >= 0n ? value : typeof value === 'string' && /^\d+$/.test(value) ? BigInt(value) : null);
 const hashOf = (bytes) => createHash('sha256').update(bytes).digest('hex');
-// What a history record keeps of a refusal or a transport error: its code (or name) and a bounded message.
-const describeCause = (error) => ({ code: String(error?.code ?? error?.name ?? 'Error'), message: String(error?.message ?? error).slice(0, MAX_CAUSE_MESSAGE_LENGTH) });
+// What a history record keeps of a refusal or a transport error: its code (or name) and a bounded message. A thrown value with no string form gets a fixed description.
+const describeCause = (error) => {
+  try { return { code: String(error?.code ?? error?.name ?? 'Error'), message: String(error?.message ?? error).slice(0, MAX_CAUSE_MESSAGE_LENGTH) }; } catch { return { code: 'Error', message: UNDESCRIBABLE_CAUSE_MESSAGE }; }
+};
 // The artifact's `${stage}-started` records with no durable withheld record of their own: each may have reached transport.
 const unwithdrawnStarts = (records, artifactHash) => records.filter((record) => record.artifactHash === artifactHash && record.state.endsWith('-started')
   && !records.some((other) => other.state === record.state.replace('-started', '-withheld') && other.of === record.seq));
@@ -35,10 +41,19 @@ const unwithdrawnStarts = (records, artifactHash) => records.filter((record) => 
 const confirmationEstablished = (records, artifactHash) => records.some((record) => record.artifactHash === artifactHash && (record.state === 'confirm-acknowledged'
   || (record.state === 'observed' && records.some((started) => started.seq === record.of && started.state === 'confirm-started' && started.artifactHash === artifactHash))));
 
+// Whether a stored `observed` record holds this result. A result that cannot be written never matches, so the append reports it.
+const sameResult = (record, result) => {
+  try { return canonicalize({ result: record.result }) === canonicalize({ result }); } catch { return false; }
+};
+
 // A pass's job class and private current-authorization check come only from jobPassContext, never from a request.
 const contexts = new WeakSet();
 const brand = (context) => { contexts.add(context); return Object.freeze(context); };
 const PLAIN_CONTEXT = brand({ operationClass: null, currentAuthorization: null });
+// The binding each boundary was built over, so a composition can check that a boundary is the host's.
+const boundaryBindings = new WeakMap();
+// Each fence token, mapped to a reader of its pass's remaining window (effectPassRemainingMs).
+const passWindows = new WeakMap();
 
 /**
  * The private context of a seller job pass: its class ('job-create', 'payment-evidence' or 'job-resume')
@@ -134,14 +149,24 @@ function assertStage(stage) {
  * stage), 'seller-create' or 'wire-request' (retained bytes may be sent again by a new pass);
  * `approvalRef` null or `{ revision() }` (null once the hold is gone); `k1Rev` null or `{ expected, current() }`.
  * Every method rejects (`signerFor` throws) with a WireError naming K0's refusal code, keeping its cause; a
- * callback's own error (a signer, a transport, `currentAuthorization`) is passed through unchanged.
+ * callback's own error (a signer, a transport, `currentAuthorization`) is passed through unchanged. A signer
+ * given to `signPass` or `pass`, or a transport, that has not answered 10,000 ms after it was called refuses
+ * `eb_sign_timeout` or `eb_send_timeout` and the fence is released; the inner signer of `signerFor` has no
+ * time limit of its own and holds the fence until it answers. A send that timed out is recorded as the
+ * stage's `-unknown` state, and until it settles every other signing (also through `signerFor`) or dispatch
+ * refuses `eb_send_in_flight`.
  * - `withFence(op, work, { context })` runs EB1 to EB5, then `work(held)` with `held.capability`, and releases.
  * - `signPass(op, innerSign, { context })` runs EB5r to EB7; resolves `{ bytes, artifactHash }`, signing only when nothing is retained.
  * - `dispatchPass(held, innerSend, { stage })` runs EB8 to EB9 for the bytes `signPass(held)` returned; resolves the send's answer.
  * - `pass(op, innerSign, innerSend, { stage, context })` is both under one fence; resolves `{ bytes, answer }`.
  * - `signerFor(held, inner)` is a wire signer that runs EB5r's final tail inside `sign`.
+ * - `refresh(held)` runs the pre-checks (guard, stop, fee and approval hold, binding) again on the pass's own window.
+ * - `checkNow(held)` runs the synchronous tail (guard, approval hold, connection, K1 revision, current authorization)
+ *   and returns true. Both refuse `tp1_fence_not_owned` for a `held` that is not a live fence owner.
  * - `recordObserved(op, stage, result)` records a readback that found the stage's transmission; for 'confirm' it
- *   counts as the acknowledgement a broadcast requires.
+ *   counts as the acknowledgement a broadcast requires. It refuses an `op` stamped with another pin version, and
+ *   when `op` already has an `observed` record of the transmission with the same result it returns that record
+ *   (`created: false`) instead of adding another.
  * - `replaceConnection(replace, capability)` replaces the connection under the fence and bumps `connectionGeneration()`.
  */
 export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilingOs = null, history, clock }) {
@@ -156,8 +181,12 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
   let generation = 0;
 
   const newWindow = () => clock.now() + EFFECT_READ_DEADLINE_MS;
+  const connectionUnreadable = (cause) => refuse('tp1_local_binding_changed', 'the current connection cannot be read', cause);
   const localDigest = () => {
-    try { return sha256Hex(canonicalize(currentLocal())); } catch (cause) { throw refuse('tp1_local_binding_changed', 'the current connection cannot be read', cause); }
+    try { return sha256Hex(canonicalize(currentLocal())); } catch (cause) { throw connectionUnreadable(cause); }
+  };
+  const readLocal = () => {
+    try { return currentLocal(); } catch (cause) { throw connectionUnreadable(cause); }
   };
 
   async function checkNotStopped(deadline) {
@@ -169,16 +198,37 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
   }
 
   async function checkBinding(deadline) {
-    const outcome = await within(clock, deadline, () => assertTp1Binding(binding, currentLocal()));
+    const outcome = await within(clock, deadline, () => assertTp1Binding(binding, readLocal()));
     if (outcome.timedOut) throw refuse('tp1_authority_timeout', undefined, timeoutCause(EFFECT_READ_DEADLINE_MS));
   }
+
+  // The answer of a signer or transport call that is already running, which must arrive before `deadline`. A late answer is ignored and never unhandled.
+  // The call's answer is taken once, so a thenable's `then` runs once. `onTimeout` receives the still-running answer.
+  async function answerWithinWindow(deadline, started, code, onTimeout) {
+    const answer = Promise.resolve(started);
+    answer.catch(() => {});
+    const outcome = await within(clock, deadline, () => answer);
+    if (outcome.timedOut) {
+      onTimeout?.(answer);
+      throw refuse(code, undefined, timeoutCause(EFFECT_READ_DEADLINE_MS));
+    }
+    return outcome.value;
+  }
+
+  // A send that timed out may still be running; no other send starts until it has settled.
+  let sendInFlight = false;
+  const holdSendUntilSettled = (answer) => {
+    sendInFlight = true;
+    const done = () => { sendInFlight = false; };
+    answer.then(done, done);
+  };
 
   // EB3: the policy cap and the approval hold. Returns the hold's revision (null without one); a hold that is gone or has changed refuses.
   function checkFeeAndApproval(op, expectedRevision) {
     if (op.paidWrite) {
       if (ceiling === null) throw refuse('fee_ceiling_required', 'no per-write fee ceiling was supplied');
       const debit = parseOs(op.debitOs);
-      if (debit === null || debit > ceiling) throw refuse('write-fee-cap', 'above the 50 DEM ceiling per write');
+      if (debit === null || debit > ceiling) throw refuse('write-fee-cap', `above the ${ceiling} OS ceiling per write`);
     }
     return checkApproval(op, expectedRevision);
   }
@@ -232,6 +282,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     const token = await fence.acquire();
     const pass = { operationId: op.operationId, lane: op.lane, generation, digest: null, approvalRevision, context, deadline: newWindow(), released: false, sealed: null };
     passes.set(token, pass);
+    passWindows.set(token, () => (pass.released ? 0 : pass.deadline - clock.now()));
     try {
       if (bind) pass.digest = localDigest();
       return await work(Object.freeze({ ...op, capability: token }));
@@ -265,6 +316,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
   async function signUnderFence(op, innerSign) {
     const pass = ownedPass(op);
     const { deadline } = pass;
+    if (sendInFlight) throw refuse('eb_send_in_flight', 'an earlier send that timed out has not finished');
     const records = await history.read(op.lane);
     assertLanePin(records);
     const retained = retainedSigned(records, op);
@@ -272,7 +324,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     await checkNotStopped(deadline);
     recheckNow(pass, op);
     const produced = retained === null ? innerSign() : null;
-    const signed = retained?.bytes ?? await produced;
+    const signed = retained?.bytes ?? await answerWithinWindow(newWindow(), produced, 'eb_sign_timeout');
     if (!(signed instanceof Uint8Array) || signed.length === 0 || signed.length > MAX_SIGNED_BYTES) throw refuse('eb_signed_bytes_invalid', `the signer must return 1 to ${MAX_SIGNED_BYTES} bytes`);
     // The pass keeps its own copy: the signer may still hold the array it returned, and the hash, the record and every transmission must use the same bytes.
     const bytes = Uint8Array.from(signed);
@@ -305,10 +357,11 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     if (pass.sealed === null) throw refuse('eb_dispatch_without_sign_pass', 'dispatchPass follows a signPass under the same fence');
     assertStage(stage);
     const { bytes, artifactHash } = pass.sealed;
+    if (sendInFlight) throw refuse('eb_send_in_flight', 'an earlier send that timed out has not finished');
     const records = await history.read(op.lane);
     assertLanePin(records);
     if (!KINDS[op.kind].mayResend && unwithdrawnStarts(records, artifactHash).some((record) => record.state === `${stage}-started`)) throw refuse('lane_readback_only', `${stage} may already have reached transport`);
-    if (stage === 'broadcast' && !confirmationEstablished(records, artifactHash)) throw refuse('confirm_not_acknowledged', 'broadcast follows an acknowledged confirmation');
+    if (stage === 'broadcast' && !confirmationEstablished(records, artifactHash)) throw refuse('confirm_not_acknowledged', 'broadcast follows a confirmation that was acknowledged or found by readback');
     const intent = await history.append(op.lane, { state: `${stage}-started`, ...base(op, artifactHash) });
     if (!intent.created) throw refuse('lane_readback_only', `${stage} intent was already recorded by an earlier run`);
     const of = intent.record.seq;
@@ -321,7 +374,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
       throw refusal;
     }
     let answer;
-    try { answer = await innerSend(Uint8Array.from(bytes)); } catch (error) {
+    try { answer = await answerWithinWindow(newWindow(), innerSend(Uint8Array.from(bytes)), 'eb_send_timeout', holdSendUntilSettled); } catch (error) {
       // A missing record leaves `-started`, which already means "possibly sent", so the send's own error is what the caller gets.
       await history.append(op.lane, { state: `${stage}-unknown`, ...base(op, artifactHash), of, cause: describeCause(error) }).catch(() => {});
       throw error;
@@ -330,7 +383,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     return answer;
   }
 
-  return Object.freeze({
+  const boundary = Object.freeze({
     withFence, signPass, dispatchPass,
     pass: (op, innerSign, innerSend, { stage, context } = {}) => withFence(op, async (held) => {
       const { bytes } = await signUnderFence(held, innerSign);
@@ -342,6 +395,7 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
       return Object.freeze({
         claim: inner.claim,
         async sign(bytes) {
+          if (sendInFlight) throw refuse('eb_send_in_flight', 'an earlier send that timed out has not finished');
           await checkNotStopped(pass.deadline);
           ownedPass(op);
           recheckNow(pass, op);
@@ -349,14 +403,25 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
         },
       });
     },
+    async refresh(op) {
+      const pass = ownedPass(op);
+      await preChecks(op, pass.deadline, pass.approvalRevision);
+    },
+    checkNow(op) {
+      recheckNow(ownedPass(op), op);
+      return true;
+    },
     async recordObserved(op, stage, result) {
       checkOperation(op);
+      checkOperationPin(op, binding.profile.pinVersion);
       assertStage(stage);
       return hold(op, PLAIN_CONTEXT, async () => {
         const records = await history.read(op.lane);
         const retained = retainedSigned(records, op);
         const started = retained === null ? undefined : unwithdrawnStarts(records, retained.artifactHash).findLast((record) => record.state === `${stage}-started`);
         if (started === undefined) throw refuse('eb_observation_unexpected', `no ${stage} transmission of ${op.operationId} to observe`);
+        const existing = records.find((record) => record.state === 'observed' && record.operationId === op.operationId && record.of === started.seq && sameResult(record, result));
+        if (existing !== undefined) return { record: existing, created: false };
         return history.append(op.lane, { state: 'observed', ...base(op, retained.artifactHash), of: started.seq, result });
       });
     },
@@ -368,4 +433,17 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
     },
     connectionGeneration: () => generation,
   });
+  boundaryBindings.set(boundary, binding);
+  return boundary;
+}
+
+/** The binding `createEffectBoundary` built `value` over, or undefined for any value it did not return. Never throws. */
+export const effectBoundaryBinding = (value) => boundaryBindings.get(value);
+
+/**
+ * The kit pass's remaining window in milliseconds on the boundary's own clock, for the `held` a `withFence` work received;
+ * 0 or less once the window has run out, and 0 for a released pass or any other value. Never throws. It adds and removes no check.
+ */
+export function effectPassRemainingMs(held) {
+  try { return passWindows.get(held?.capability)?.() ?? 0; } catch { return 0; }
 }

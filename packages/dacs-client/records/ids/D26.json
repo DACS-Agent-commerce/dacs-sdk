@@ -1,0 +1,6 @@
+{
+  "schema": "dacs-client-delta-id/v1",
+  "delta": "D26",
+  "registration": "D26: existing client delta lane",
+  "subject": "delta(client): D26 import PURCHASE_LIMITS in config so loadConfig can read it"
+}

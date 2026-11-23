@@ -15,18 +15,55 @@ const VERSION = "0.1.0-alpha.1";
 type Step = { name?: string; run?: string; if?: string; uses?: string; with?: Record<string, unknown> };
 type Job = {
   steps?: Step[]; uses?: string; needs?: string[]; environment?: string; permissions?: Record<string, string>;
-  "timeout-minutes"?: number; strategy?: { matrix?: { "node-version"?: string[] } };
+  "timeout-minutes"?: number; strategy?: { matrix?: { "node-version"?: string[] } }; env?: Record<string, string>;
 };
 type Workflow = { concurrency?: unknown; jobs: Record<string, Job> };
 const readWorkflow = (path: string) => parse(readFileSync(path, "utf8")) as Workflow;
 const gated = readWorkflow(gatedPath);
 const publishSteps = gated.jobs.publish?.steps ?? [];
 const verifySteps = gated.jobs.verify?.steps ?? [];
+const ADMISSION_STEP = "Admit reviewed main-line prerelease tag";
 const SUITE_COMMANDS = [
   "npm test", "npm run host:test", "npm run generator:test", "npm test --workspace @kynesyslabs/dacs-client",
   "npm run seller:prepare -- \"$DACS_SELLER_SMOKE_DIR\"", "npm run seller:test", "npm run release:test",
 ];
-const PUBLISH_COMMAND = "node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next --job-started-at \"$DACS_PUBLISH_JOB_STARTED_AT\"";
+// The job is scanned as JSON, so a double quote inside an expression arrives escaped as `\"`. Expression names are not
+// case-sensitive, and a name that follows a letter, digit, `_`, `-` or `.` (`needs.github.token`) is another name. The
+// letter of an escape (`\n`, `\t`) is not part of a name.
+const PUBLICATION_CREDENTIAL = new RegExp(
+  String.raw`(?<!(?<!\\)[\w.-])(?:secrets\s*[.[]|github\s*(?:\.\s*(?:token\b|\*)|\[\s*\\?["']token\\?["']\s*\])|toJSON\s*\(\s*(?:github|secrets)\s*\))` +
+    String.raw`|registry-url|NODE_AUTH_TOKEN|GH_TOKEN`,
+  "iu",
+);
+// The whole job is scanned, so job-level `env` counts as well as step fields.
+const mentionsPublicationCredential = (job: Job | undefined) => PUBLICATION_CREDENTIAL.test(JSON.stringify(job));
+const PUBLICATION_CREDENTIAL_FORMS: Record<string, (verify: Job) => void> = {
+  "a job-level secret in env": (verify) => { verify.env = { NPM_TOKEN: "${{ secrets.NPM_TOKEN }}" }; },
+  "a secret read by index": (verify) => { verify.env = { NPM_TOKEN: "${{ secrets['NPM_TOKEN'] }}" }; },
+  "the workflow token in a job-level env": (verify) => { verify.env = { TOKEN: "${{ github.token }}" }; },
+  "the workflow token in a step": (verify) => { verify.steps?.push({ run: "echo ${{ github.token }}" }); },
+  "the workflow token by single-quoted index": (verify) => { verify.env = { TOKEN: "${{ github['token'] }}" }; },
+  "the workflow token by double-quoted index": (verify) => { verify.env = { TOKEN: "${{ github[\"token\"] }}" }; },
+  "the workflow token by index in a step": (verify) => { verify.steps?.push({ run: "echo ${{ github['token'] }}" }); },
+  "the workflow token by index with spaces": (verify) => { verify.env = { TOKEN: "${{ github [ 'token' ] }}" }; },
+  "the workflow token with spaces around the dot": (verify) => { verify.env = { TOKEN: "${{ github . token }}" }; },
+  "the workflow token with capitals in the name": (verify) => { verify.env = { TOKEN: "${{ GitHub.Token }}" }; },
+  "the workflow token with a capitalised key": (verify) => { verify.env = { TOKEN: "${{ github.TOKEN }}" }; },
+  "the workflow token by index with capitals": (verify) => { verify.env = { TOKEN: "${{ GITHUB['token'] }}" }; },
+  "a secret with a capital first letter": (verify) => { verify.env = { X: "${{ Secrets.X }}" }; },
+  "a secret by index with capitals": (verify) => { verify.env = { X: "${{ SECRETS['X'] }}" }; },
+  "the whole github context as JSON": (verify) => { verify.env = { CONTEXT: "${{ toJSON(github) }}" }; },
+  "the whole secrets context as JSON": (verify) => { verify.env = { CONTEXT: "${{ toJSON(secrets) }}" }; },
+  "the workflow token at the start of a line": (verify) => { verify.env = { X: "always() &&\ngithub.token != ''" }; },
+  "a secret at the start of a line in an env block": (verify) => { verify.env = { X: "${{\nsecrets.X }}" }; },
+  "the workflow token after a tab": (verify) => { verify.steps?.push({ run: "echo ${{\tgithub.token }}" }); },
+  "the whole github context as JSON on its own line": (verify) => { verify.env = { CONTEXT: "${{\ntoJSON(github) }}" }; },
+  "every value of the github context": (verify) => { verify.env = { CONTEXT: "${{ toJSON(github.*) }}" }; },
+  "every value of the github context in a join": (verify) => { verify.env = { CONTEXT: "${{ join(github.*, ',') }}" }; },
+  "every value of the github context with spaces": (verify) => { verify.env = { CONTEXT: "${{ toJSON(github . *) }}" }; },
+  "a registry-url on setup-node": (verify) => { verify.steps?.push({ uses: "actions/setup-node@v4", with: { "registry-url": "https://registry.npmjs.org" } }); },
+};
+const PUBLISH_COMMAND ="node scripts/publish-release-set.mjs --artifact-dir package-artifacts/release-set --tag next --job-started-at \"$DACS_PUBLISH_JOB_STARTED_AT\"";
 
 // Each non-comment line of every step's `run`, in step order.
 const commandsOf = (steps: Step[]) => steps.flatMap((step) =>
@@ -59,7 +96,7 @@ function checkoutWithManifests(change: (name: string, manifest: Record<string, u
 }
 
 function runAdmission(checkout: string) {
-  const script = workflowStepScript("Admit reviewed main-line prerelease tag", gatedPath);
+  const script = workflowStepScript(ADMISSION_STEP, gatedPath);
   const PATH = stubBin(checkout, { git: "exit 0" });
   return runBash(["-e", "-c", script], { cwd: checkout, env: {
     PATH, CONFIRM_VERSION: VERSION, GITHUB_REF_TYPE: "tag", GITHUB_REF_NAME: `v${VERSION}`, GITHUB_SHA: "0".repeat(40) } });
@@ -85,6 +122,16 @@ describe("the gated publish workflow", () => {
     }
   });
 
+  it("the gated workflow admits the tag and confirmed version in a job that verify and publish both wait for, with the full history the main-line check needs", () => {
+    const admitting = Object.entries(gated.jobs).filter(([, job]) => job.steps?.some((step) => step.name === ADMISSION_STEP));
+    expect(admitting.map(([id]) => id)).toHaveLength(1);
+    const [admittingId, admittingJob] = admitting[0] ?? [];
+    expect(gated.jobs.verify?.needs).toContain(admittingId);
+    expect(gated.jobs.publish?.needs).toContain(admittingId);
+    const checkout = admittingJob?.steps?.find((step) => step.uses?.startsWith("actions/checkout@"));
+    expect(checkout?.with?.["fetch-depth"]).toBe(0);
+  });
+
   it("the gated workflow's verify job requires a clean build tree after npm ci, builds core, dacs-node and the generator, and runs all five packages' suites and then release:test", () => {
     expect(isInOrder(commandsOf(verifySteps), [
       "npm ci",
@@ -92,6 +139,17 @@ describe("the gated publish workflow", () => {
       "npm run build", "npm run host:build", "npm run generator:build",
       ...SUITE_COMMANDS,
     ])).toBe(true);
+  });
+
+  it("the gated workflow's verify job runs the package suites on the npm that ships with Node and installs and requires the publish job's pinned npm client only before release:test", () => {
+    const pin = commandsOf(publishSteps).find((command) => command.includes("npm install --global"));
+    expect(pin).toContain("npm@11.19.0");
+    const commands = commandsOf(verifySteps);
+    const pinAt = commands.indexOf(pin ?? "");
+    const lastPackageSuite = SUITE_COMMANDS.slice(0, -1).map((command) => commands.indexOf(command));
+    expect(pinAt).toBeGreaterThan(-1);
+    expect(lastPackageSuite.every((index) => index > -1 && index < pinAt)).toBe(true);
+    expect(isInOrder(commands, [pin ?? "", "test \"$(npm --version)\" = 11.19.0", "npm run release:test"])).toBe(true);
   });
 
   it("the gated workflow's publish job requires a clean build tree, builds, and builds the release set before it publishes", () => {
@@ -121,8 +179,31 @@ describe("the gated publish workflow", () => {
     const verify = gated.jobs.verify;
     expect(verify?.environment).toBeUndefined();
     expect(verify?.permissions).toEqual({ contents: "read" });
-    expect(JSON.stringify(verify?.steps)).not.toMatch(/secrets\.|registry-url|NODE_AUTH_TOKEN|GH_TOKEN/u);
+    expect(mentionsPublicationCredential(verify)).toBe(false);
     expect(gated.jobs.verify?.needs).toEqual(expect.arrayContaining(["registry-container-acceptance", "publish-environment"]));
+  });
+
+  it("a publication credential anywhere in the verify job is reported, whether in job-level env, by index, or as the workflow token", () => {
+    for (const [label, addCredential] of Object.entries(PUBLICATION_CREDENTIAL_FORMS)) {
+      const changed = structuredClone(gated);
+      const verify = changed.jobs.verify;
+      if (verify === undefined) throw new Error("the gated workflow has no verify job");
+      addCredential(verify);
+      expect(mentionsPublicationCredential(verify), label).toBe(true);
+    }
+  });
+
+  it("a name that only ends in github or secrets, or sits behind another name, is not a publication credential", () => {
+    for (const env of ["${{ needs.github.token }}", "${{ mygithub.token }}", "${{ needs.secrets.X }}", "${{ toJSON(needs) }}",
+      "${{ github.event.* }}", "${{ needs.github.* }}", "${{ toJSON(needs.*) }}", "${{ github.event_name }}"]) {
+      expect(mentionsPublicationCredential({ env: { X: env } }), env).toBe(false);
+    }
+  });
+
+  it("the gated workflow's verify job checks out without keeping the workflow token in the repository config", () => {
+    const checkouts = verifySteps.filter((step) => step.uses?.startsWith("actions/checkout@"));
+    expect(checkouts.length).toBeGreaterThan(0);
+    for (const checkout of checkouts) expect(checkout.with?.["persist-credentials"]).toBe(false);
   });
 
   it("every artifact upload in a re-runnable job of the gated workflow carries the run attempt in its name, so \"Re-run failed jobs\" does not upload an existing name", () => {
@@ -133,6 +214,17 @@ describe("the gated publish workflow", () => {
       expect(String(upload.with?.name), upload.name).toContain("${{ github.run_attempt }}");
     }
     expect(gated.jobs.publish?.steps?.some((step) => step.uses?.startsWith("actions/upload-artifact@"))).toBe(true);
+  });
+
+  it("every artifact upload in the acceptance workflow the gated workflow calls carries the run attempt in its name, so \"Re-run all jobs\" does not upload an existing name", () => {
+    const acceptance = readWorkflow(join(workflowsDirectory, "registry-container-acceptance.yml"));
+    expect(gated.jobs["registry-container-acceptance"]?.uses).toBe("./.github/workflows/registry-container-acceptance.yml");
+    const uploads = Object.values(acceptance.jobs).flatMap((job) => job.steps ?? [])
+      .filter((step) => step.uses?.startsWith("actions/upload-artifact@"));
+    expect(uploads.length).toBe(3);
+    for (const upload of uploads) {
+      expect(String(upload.with?.name), upload.name).toContain("${{ github.run_attempt }}");
+    }
   });
 
   it("the gated workflow keeps one publication at a time", () => {

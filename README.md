@@ -1,6 +1,8 @@
 # dacs-sdk
 
-TypeScript SDK for building **DACS** (Demos Agent Commerce Standards) agents — the reusable runtime that takes an agent through the five-stage lifecycle: **Identify → Vet → Negotiate → Settle → Verify**.
+TypeScript SDK for building DACS (Demos Agent Commerce Standards) agents — the reusable runtime that takes an agent through the five-stage lifecycle: **Identify → Vet → Negotiate → Settle → Verify**.
+
+DACS here means Demos Agent Commerce Standards. It is not related to other software or packages called DACS.
 
 > **Status: pre-alpha / in development.** This repo is being extracted from the `agent-commerce-demo` reference implementation into a reusable library. See **[IMPLEMENTATION.md](./IMPLEMENTATION.md)** for the v0.1 MVP build plan.
 
@@ -35,22 +37,18 @@ Self-declared identity (+ one verified claim) · fixed-price negotiation · **x4
 
 ## What's implemented
 
-The modern role-separated fixed-price coordinators cover all five lifecycle
-stages. The older `Agent.runSession()` convenience method remains a
-settlement-only compatibility API; it does not claim fulfilment or audit
-completion.
-
-The exported `SignedArtifact`, `buildSignedArtifact()` and
-`verifySignedArtifact()` symbols are likewise legacy raw-hex compatibility
-surfaces used by that quarantined path and historical readers. New producers
-and readers must use `ComponentSignedArtifact`,
-`buildComponentSignedArtifact()` and `verifyComponentSignature()`.
+The role-separated fixed-price coordinators cover all five lifecycle stages.
+A buyer and a seller run in separate processes, each over its own durable
+store. After a restart, the buyer's payment job, built on
+`advanceX402BuyerSettlement`, first reconciles an attempt that has no recorded outcome against the chain, and
+submits again only once that read shows the payment authorization unused. See
+[docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
 
 | Stage | API | Notes |
 | --- | --- | --- |
 | Identify | `createAgent({ identity })` | the agent's CCI / DID |
-| **Vet** | fixed-price coordinators · legacy `runSession({ vet })` · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements; aborts before paying on failure |
-| **Negotiate** | fixed-price coordinators · legacy `runSession({ terms })` · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` · `createDurableRfqLifecycleClient` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment, transcript-policy and durable lifecycle core |
+| **Vet** | fixed-price coordinators · `vetCore` · `partyVetCore` · `resolveRecipe` · `evaluateClaimRequirementQualification` | recipe-driven verified claims plus mixed presence-only claim requirements |
+| **Negotiate** | fixed-price coordinators · `openRfqSession` · `advanceRfqSession` · `deriveRfqAgreement` · `commitRfqAgreement` · `prepareRfqTranscript` · `createDurableRfqLifecycleClient` | end-to-end fixed-price; transport-neutral RFQ agreement, commitment, transcript-policy and durable lifecycle core |
 | **Settle** | `payDemSettle` · `withRecoveredAttempts` · `x402Settle` · `evmErc20Settle` · `advanceAp2Settlement` · `advanceSolanaSplSettlement` · `settleFromRail` | registry-selected x402, ERC-20 and pay-DEM buyer rails, optional AP2 provider integration, directly invoked provider-injected safety cores, and transport-neutral seller/provider intake |
 | **Verify** | `verifyBundle` · `getReputation` | per-artifact signature verification; reputation from bundles |
 
@@ -209,12 +207,7 @@ deployment responsibility of the generated role services.
 import {
   createAgent,
   createFsDemosWriteJournal,
-  createIdempotencyStore,
   createInMemoryBindingStore,
-  createX402Rail,
-  x402Settle,
-  resolveRecipe,
-  vetCore,
   verifyCompositeVerificationRecord,
 } from "@kynesyslabs/dacs";
 import { join } from "node:path";
@@ -270,120 +263,49 @@ if (
   throw new Error(`listing binding was not published: ${published.status}`);
 }
 
-// A read-only Directory can omit both wallet and publisher. A session-capable
-// buyer supplies its own wallet but still needs only the consumer index.
+// A read-only Directory can omit both wallet and publisher. A buyer that takes
+// part in a purchase holds its own Demos wallet (the coordinator guide's buyer
+// process does) but still needs only the consumer index.
 const buyer = await createAgent({
   demosRpc,
   wallet: buyerWallet,
   demosWriteJournal: await createFsDemosWriteJournal({
     dir: join(dacsStateDir, "buyer-demos-writes"),
   }),
-  identity: {
-    agentId: buyerId,
-    // The exact authenticated DACS-1 bundle is hashed into the Agreement and
-    // terminal bundle. A bare agent id is not an identity commitment.
-    bundle: buyerIdentityBundle,
-    // Presentation authentication is deliberately bundle-scoped so the same
-    // identity bundle can be reused. Session replay resistance is separate:
-    // its exact bundle hash is committed inside each signed Agreement.
-    verifyPresentation: ({ bundle, signedBytes }) =>
-      verifyBuyerIdentityPresentation(bundle, signedBytes),
-  },
+  identity: { agentId: buyerId },
   bindings: { index: bindings },
 });
 
 // buyer — resolve the stable logical address and authenticate its binding tuple,
 // signed content, seller, service, version, and Listing-domain signature.
 const resolved = await buyer.readListing(published.logicalAddress);
-if (
-  resolved.status !== "verified" ||
-  resolved.compatibility !== "normative"
-) {
+if (resolved.status !== "verified") {
   throw new Error(`listing could not pass ordered admission: ${resolved.status}`);
 }
 
 // Or page the historical Listings published by one known seller. This is
 // owner-scoped discovery, not global marketplace search.
 const firstPage = await buyer.enumerateListings(agentId);
-const rail = await createX402Rail({
-  evmPrivateKey,
-  rpcUrl: process.env.BUYER_EVM_RPC!, // independent trusted chain read
-  // Use the exact positive value from the authenticated rail descriptor.
-  finalityBlocks: 1,
-});
-// `durableSettlementLog` is your application's durable `SettlementLog`
-// (see the settlement store notes below); the bridge refuses to start without a store.
-const settlementStore = createIdempotencyStore(durableSettlementLog);
-// Passing the authenticated result (not only `resolved.ref`) pins the selected
-// content hash across runSession's pre-payment re-read.
-const session = await buyer.runSession(resolved, {
-  terms,
-  // Record the buyer-selected cross-namespace EVM destination in the
-  // buyer-signed legacy Agreement extension and durable recovery state.
-  // Same-namespace rails may omit this option; PB-1 payout negotiation uses a
-  // PayeeBoundAgreementDocument instead.
-  expectedSettlementPayee: recipientEvm,
-  // Optional Vet step. The producer emits signed §7.5/§7.7 artifacts and the
-  // money path independently verifies their complete, caller-expected closure.
-  vet: ({ jobId, evaluatedParty }) =>
-    resolveRecipe(
-      recipeRegistryRef,
-      { scheme: "key", method: "self-signed", recipeVersion: 1 },
-      { readRegistry, stewardPublicKey, stewardSigner, verify },
-    )
-      .then((recipe) => vetCore(
-        {
-          jobId,
-          subject: evaluatedParty,
-          bundleHash: sellerBundleHash,
-          requirement: sellerRequirement,
-          recipe,
-          selfSigned: sellerKeyPossessionProof,
-        },
-        {
-          proxyFetch,
-          nowMs: () => Date.now(),
-          componentSigner: buyerVerifierSigner,
-          // This seam is idempotent by logical address + content hash and
-          // reconciles response loss until a CORE §5.1 finalized receipt.
-          anchorFinalizedArtifact,
-          verifyFinalizedAnchor,
-          readAnchoredJson,
-          // Both capabilities are durable. `runOnce` must fence concurrent
-          // callers and replay the exact stored result or terminal failure;
-          // the lookup reconciles an anchor response lost after finality.
-          operationStore,
-          resolveFinalizedArtifact,
-        },
-      )),
-  // `expectedVetClosure` must be built from the verified identity bundle,
-  // listing requirement and selected recipes—not copied from `record`.
-  verifyVetRecord: (record, request) =>
-    verifyCompositeVerificationRecord(
-      record,
-      expectedVetClosure(request),
-      vetVerificationDeps,
-    ),
-  // Required with `vet`: resolve and cryptographically authenticate the exact
-  // finalized SR-2 ref/receipt from caller-held substrate trust. On resume,
-  // `claimed` is absent, so this closure must recover finality by the supplied
-  // logical/native address and content hash; shape-only receipts fail closed.
-  authenticateVetFinality: (request) =>
-    resolveAuthenticatedVetFinality(request),
-  // `asset` is the on-chain token id (ERC-20 contract) the 402 must advertise —
-  // the §4.1 guard compares against it, not the Price.asset symbol.
-  settle: x402Settle(rail, { url, network, recipientEvm, asset }, { store: settlementStore }),
-});
+```
 
-// Legacy compatibility only: payment settlement is not commerce completion.
-if (session.commerceComplete || session.profile !== "legacy-mvp-settlement-only") {
-  throw new Error("unexpected legacy session result");
-}
+The snippet stops before payment. The purchase runs in the role-separated
+coordinators, each over its own durable store; see
+[docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md).
+A buyer on that path supplies its identity as the `buyer` claim reference in the
+order it passes to `startOrder`. The coordinator checks that it is a canonical
+claim reference and differs from the seller; the application must make sure it
+is the buyer's own identity.
 
-// anyone — verify the bundle's structure, signatures, referenced artifacts,
-// and (through the configured callbacks above) every normative vet closure and
-// SettlementEvidence record
-const verdict = await buyer.verifyBundle(session.bundleRef);
+Once the purchase has produced a finalized bundle, anyone can verify it, and
+`getReputation` reads reputation from bundle references. `bundleRef` is the
+reference of that finalized bundle, `primaryClaim` is the claim reference the
+reputation is about, and `bundleRefs` is the list of bundle references to read:
+
+```ts
+// Verify the bundle's structure, signatures, referenced artifacts, and (through
+// the callbacks configured on the Agent) every normative vet closure and
+// SettlementEvidence record.
+const verdict = await buyer.verifyBundle(bundleRef);
 const rep = await buyer.getReputation(primaryClaim, bundleRefs);
 ```
 
@@ -622,15 +544,20 @@ exact resubmission; neither re-signing nor rebroadcasting is a permitted recover
 action.
 
 `createPayDemRail` exposes the same boundary as the `journalPreparedTransfer`
-hook. A direct caller can omit it, but `runSession` refuses a pay-dem session
-whose `settle` or `resumeSettlement` bridge was built over a rail without it.
+hook. `payDemSettle` and `settleFromRail` refuse a rail built without it, before
+any transfer, unless the caller passes `allowUnjournaled: true`. That opt-out
+accepts that a crash after the broadcast leaves no record of the transaction.
+A purchase that must finish after a restart needs the journal the hook fills
+(see [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
 Without the hook the low-level rail provides only in-process hash-first
 observation. Across a
 process restart, at-most-once settlement requires `payDemSettle` with a
-caller-supplied durable `SettlementIdempotencyStore`; useful hash/nonce reconciliation
-additionally requires an application-owned durable journal or equivalent rail
-record. With neither durable mechanism, the SDK cannot prove that a lost
-response did not move value, so applications must not automatically retry.
+caller-supplied durable `SettlementIdempotencyStore`. The journal does not
+replace that store: if the store is lost or not shared, a plain retry can pay
+again even when the hook is set. The journal makes recovery possible; recover
+from it before any retry. With neither durable mechanism, the SDK cannot prove
+that a lost response did not move value, so applications must not
+automatically retry.
 The x402, direct ERC-20, and native DEM payment bridges require a caller-supplied
 settlement store when constructed. The SDK cannot check that the store is durable:
 production callers must supply one backed by durable, atomic storage, because an
@@ -642,6 +569,7 @@ import { createIdempotencyStore, evmErc20Settle, payDemSettle, x402Settle } from
 const settlementStore = createIdempotencyStore(durableSettlementLog);
 const x402SettlePayment = x402Settle(x402Rail, x402Paywall, { store: settlementStore });
 const evmSettle = evmErc20Settle(evmRail, evmConfig, { store: settlementStore });
+// demRail is built with journalPreparedTransfer; payDemSettle refuses one without it.
 const demSettle = payDemSettle(demRail, {}, { store: settlementStore, reconcile: demReconcile });
 ```
 
@@ -655,7 +583,8 @@ For registry dispatch, pass the same store as top-level `settlementStore` for
 x402 and ERC-20 or as `payDem.settlementStore` for native DEM.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
-`settlementStore`, and `reconcile`. The rail's timing bounds
+`settlementStore`, and `reconcile`. `journalPreparedTransfer` is required
+unless `payDem.allowUnjournaled` is `true`. The rail's timing bounds
 `inclusionTimeoutMs`, `inclusionPollIntervalMs`, `statusRequestTimeoutMs`,
 `nonceVisibilityTimeoutMs` and `transactionRecordTimeoutMs` are forwarded from
 `payDem` to `createPayDemRail` unchanged; see
@@ -713,49 +642,47 @@ Run the funded test only with the complete guarded environment described above:
 npm run test:live:pay-dem
 ```
 
-`session.listingPin` is the exact DACS-1 §6.3.4 LR-1
-`(listingId, listingVersion, contentHash)` tuple used by the session. To resume
-an interrupted session safely, pass the prior `jobId` and the same authenticated
-Listing to `runSession`; anchored artifacts are reused and the Listing remains
-pinned. A `jobId` you pass is always a resume. A resumed run reuses anchored
-settlement evidence; only a successful native DEM (`pay-dem`) settlement still
-calls `resumeSettlement` to confirm the transaction on chain. When no evidence
-is anchored but a durable `sessionStore` records a settled outcome, the run
-reuses it without calling `resumeSettlement`, except for native DEM success.
-An unresolved intent or ambiguous outcome requires `resumeSettlement`. With no
-settled outcome on record, a resume calls `resumeSettlement` even when there is
-no `sessionStore`, no record of the job, or an Agreement anchored by an earlier
-run: none of those conditions proves the earlier run did not pay. A resume that
-needs `resumeSettlement` is refused when it is absent.
+A fixed-price Agreement records the exact DACS-1 §6.3.4 LR-1
+`(listingId, version, contentHash)` tuple of the verified Listing it was derived
+from, as its `listingRef`. `readListing` returns that tuple as `listingPin`.
 
-Every `resumeSettlement` request is recovery-only and must never start a fresh
-payment. It must use a function an SDK bridge returned (`payDemSettle`,
-`evmErc20Settle`, `x402Settle`, or `withRecoveredAttempts` around one of them);
-any other function is refused before payment. The bridge adopts or reconciles
-what the rail's own idempotency store recorded. With no unresolved intent for
-the job, it refuses and leaves the rail's log unchanged: a crash before the rail
-recorded intent, or a release after a not-invoked attempt, needs operator
-action. A refused recovery can still write a session checkpoint, and recovering
-an expired unresolved intent takes a current `reconcile` lease. Recovery needs
-a store with `recover()` over a settlement log with `claimExistingIntent`
-(`createIdempotencyStore` over `createInMemorySettlementLog()` has both); a
-custom log without it cannot recover.
+To settle a purchase after a restart through one of the bridges above, call it
+with the original request and `recoveryOnly: true`. A recovery request never
+starts a fresh payment: the bridge settles through its store's `recover`, and a
+store without `recover()` is refused. Recovery also needs a settlement log with
+`claimExistingIntent` (`createIdempotencyStore` over
+`createInMemorySettlementLog()` has both); a custom log without it cannot
+recover. What recovery does depends on what the store holds for the job:
 
-A first run omits `jobId`; keep the generated job id from the `settle` request
-or `sessionStore` before anything can fail. A first run takes its id from
-`deps.newJobId`, which must return a fresh id on every call. After a crash, pass
-the id as `jobId`; never rerun the first run with it. A first run whose Agreement
-for that id is already anchored settles only by recovery, whatever the
-`sessionStore` holds. Two concurrent first runs that share one id and have
-separate stores can still both pay; a shared `sessionStore` directory prevents
-that. A restart that finds an intent and no recorded outcome refuses instead
-of paying again; for a pay-dem purchase,
+- A recorded outcome is returned.
+- No recorded intent: it refuses and leaves the rail's log unchanged. A crash
+  before the rail recorded its intent, or a release after a not-invoked attempt,
+  needs operator action.
+- An intent whose lease another worker still holds: it refuses rather than pay
+  again.
+- An unresolved intent whose lease has expired: recovery takes a current
+  `reconcile` lease, and the bridge's `reconcile` option decides the rest.
+  Without it the recovery is refused and the purchase stays unresolved; nothing
+  is paid again, and the payment is not adopted even if it landed. The
+  `x402Settle` and `evmErc20Settle` bridges built as shown above have no
+  `reconcile`, so for them this is the outcome; check the chain by hand before
+  buying again under a new job id (see
+  [the pay-dem guide](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)).
+  With `reconcile`, a final result bound to the request is recorded and
+  returned, which adopts a payment that landed; an authorization to replay that
+  is bound to the same effect lets recovery submit again; `null` (proof of
+  absence) is refused, because absence alone cannot revoke an earlier effect;
+  and a throw leaves the purchase unresolved. `payDemSettle` is built with
+  `reconcile` above.
+
+Keep the order's job id in your durable store before anything can fail, and
+restart with the same id. Do not start a second purchase under a new id while
+the first has no recorded outcome. A restart that finds an intent and no
+recorded outcome does not pay again by itself: the bridge refuses, or acts only
+on what `reconcile` proves. For a pay-dem purchase,
 [the recovery recipe](./docs/pay-dem-execution.md#recovering-a-pay-dem-purchase-after-a-restart)
-finishes it from the prepared-transfer journal. For durable session checkpoints
-and worker coordination, use a durable `sessionStore` and rail-idempotent
-`resumeSettlement` backed by durable rail state. A job id alone cannot prove
-whether a lost rail response moved value. The legacy native-ref input remains
-available for callers with a separate trusted pin.
+finishes it from the prepared-transfer journal. A job id alone cannot prove
+whether a lost rail response moved value.
 
 `publishListing` requires `AgentConfig.wallet` and
 `AgentConfig.bindings.publisher`, and fails before anchoring when either write
@@ -769,9 +696,8 @@ anchor finality, active-listing eligibility, or complete DACS conformance.
 `readListing(logicalAddress)` and `enumerateListings(sellerId)` need only
 `AgentConfig.bindings.index`; the Agent wallet and publisher are optional for a
 read-only consumer. A normative `verified` result has passed the SDK-owned
-ordered DACS-1 reader through step 9 and carries its exact `listingPin`; an
-`authenticated` result is restricted to the explicit historical legacy-read
-arm. Both have passed exact binding-tuple, hash, Listing-context, and authorship
+ordered DACS-1 reader through step 9 and carries its exact `listingPin`. It has
+also passed exact binding-tuple, hash, Listing-context, and authorship
 checks. The binding owner is an
 index assertion; direct lookup does not by itself prove that the seller deployed
 the native anchor. Keep physical provenance separate from signed-content and
@@ -804,7 +730,13 @@ const search = await queryListingCatalog(catalog, {
   rail: "x402:default",
   limit: 50,
 });
-if (search.status !== "ok") throw new Error(search.reason);
+if (search.status !== "ok") {
+  // reason explains every indeterminate result. An unsupported rate filter
+  // also returns code: "unsupported-filter" and filters: the requested names
+  // that the Directory does not advertise.
+  if (search.code === "unsupported-filter") console.log(search.filters);
+  throw new Error(search.reason);
+}
 
 const candidate = search.page.listings[0];
 if (!candidate) throw new Error("no matching listing");
@@ -826,13 +758,36 @@ timeouts are defaults. Plain HTTP requires explicit `allowInsecureHttp: true`
 for trusted development catalogs. `reachabilityHint` and `reputationHint` remain
 operational pre-filters, never validity or trust evidence.
 
+Queries setting `minCompletionRate` or `minRating` first read the Directory's
+`/.well-known/dacs-directory.json` on the catalog origin; set
+`directoryManifestUrl` to override that absolute HTTPS URL. Query arguments are
+validated before any network request. For manifest versions `"1"` and `"2"`,
+the advertised `catalog` URL must match `catalogUrl`, and every requested rate
+filter must appear in `filters`. Otherwise, missing advertised filters produce
+`{ status: "indeterminate", reason, code: "unsupported-filter", filters: [...] }`
+without a listings request. Filters are never silently removed.
+
+A manifest HTTP 404 preserves the original request as a compatibility fallback
+for an unadvertised catalog; it identifies no Directory version. Other unreadable,
+malformed, mismatched or unknown-version manifests return `indeterminate`.
+Queries without rate filters do not read the manifest. Negotiation and listings
+share one `timeoutMs` deadline and caller cancellation signal; `maxResponseBytes`
+bounds each decoded response, including the manifest.
+
 Handle enumeration results by status. A `page` may contain permanent candidate
 `diagnostics` and advances to `nextCursor`. An `indeterminate` page is atomic:
 it returns no Listings or diagnostics, and the caller retries its unchanged
 `retryCursor`. `invalid-seller` and `invalid-options` are caller errors;
 `historyPageSize`, when supplied, must be an integer from 1 through 100.
 
-See **[examples/hello-world.ts](./examples/hello-world.ts)** for the full lifecycle end to end.
+In the repository, `examples/hello-world.ts` (not shipped in the package) publishes a Listing and admits
+it from its logical address. For the purchase itself, see
+[docs/fixed-price-x402-coordinator.md](./docs/fixed-price-x402-coordinator.md). In a checkout of the repository,
+`npm run test:live` runs the funded two-agent flow end to end when funded testnet credentials are set, and
+skips it otherwise; `docs/live-e2e.md` in the repository lists what it needs. In the repository,
+`docs/fixed-price-x402-walkthrough.md` walks through a generated live project on testnet. The page
+marks each step script, manual or not run, and lists what does not work yet, including the buy's
+doctor and its blocked checks.
 
 ### AP2 reference integration (optional)
 
@@ -909,18 +864,19 @@ Stripe, DAHR, the faucet, or Demos.
 
 ### Sealed-envelope procurement
 
-`runSealedEnvelopeCore` supports both the backwards-compatible
+`runSealedEnvelopeCore` supports both the default
 `negotiate-sealed-envelope` demand phase and the explicit
 `negotiate-sealed-envelope-procurement` phase. Demand makes the winning bidder
 the agreement buyer. Procurement requires `auctionMode: "procurement"` and
 makes the listing publisher the agreement buyer and the winning bidder the
 seller, so the bid price always flows from agreement buyer to agreement seller.
 
-Existing demand callbacks may still return only `agreementRef` and
-`agreementHash`. A procurement `commitAgreement` callback must verify both
+The SDK does not build the agreement for this pattern; the caller's
+`commitAgreement` callback does. In both phases the callback must verify both
 agreement-party signatures, call `ctx.validateAgreementForCommit(...)` before
 anchoring, and return the exact agreement plus `verifiedSignerClaims`; the core
-repeats the role/signature gate before returning an `ok` result.
+repeats the role/signature gate before returning an `ok` result. A result with
+only `agreementRef` and `agreementHash` fails the phase.
 
 ### Fault-aware bundle helper
 
@@ -930,8 +886,7 @@ orchestrator. Fault and abort inputs require an absolute `faultedParty`; each
 copy gets the matching role-relative `outcome` and signs under
 `dacs-fault-bundle:v1:`. Consumers continue to accept legacy
 `AttestationBundle` records, and consistency/reputation reconciliation supports
-legacy, fault-aware, and mixed pairs. The helper is not yet wired into
-`runSessionCore`.
+legacy, fault-aware, and mixed pairs.
 
 For DACS-5 v0.4 exact settlement-evidence closure, use
 `verifyEvidenceBoundFaultBundle(authority, deps)`. It authenticates the distinct
@@ -1023,17 +978,16 @@ const resolveAttestationRef: VerifyBundleDeps["resolveAttestationRef"] = async (
 ```
 
 Artifacts emitted by early SDK releases with flat `{ kind, id }` references or
-`{ rail, txHash, kind }` transaction refs are exposed only through the
-explicitly named `LegacyMvp*` read/resume compatibility types and validators.
-Normative producers, including `buildTwoSidedBundle`, reject those legacy
-shapes. The existing buyer-only `runSessionCore` producer remains explicitly
-quarantined on `LegacyMvp*` until its v0.3 migration in #81.
+`{ rail, txHash, kind }` transaction refs fail the current validators, and
+normative producers, including `buildTwoSidedBundle`, reject them.
 
-Its deterministic historical names are available as
-`legacyMvpSessionAnchorName` for old indexers and recovery tooling. The explicit
-prefix is intentional: these strings must not be used as the current DACS
-address grammar. New code should use the typed address helper exported by the
-relevant producer, such as `compositeVerificationAddress`,
+`verifyBundle` and `verifyBundleCore` no longer read artifacts of those early
+shapes: such an input is refused with `not an attestation bundle`, whether it
+is a whole early-shape bundle or a current bundle that carries one early-shape
+reference.
+
+To compute the address of an artifact, use the typed address helper exported
+by the module that produces it, such as `compositeVerificationAddress`,
 `fixedPriceAgreementLogicalAddress`, or `bundleAddress`.
 
 The public `attestationAddress`, `paymentEvidenceAddress`, `ratingAddress`, and

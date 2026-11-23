@@ -55,6 +55,10 @@ test('a nonce reply larger than its byte cap refuses before the wallet is asked'
   const f=await anchorFixture();f.source.readRpc=async()=>({result:200,response:0,require_reply:false,extra:null,TEST:'x'.repeat(4096)});
   await assert.rejects(f.publish(f.open(),JOB),error=>error.code==='indeterminate'&&/byte limit/.test(error.message));assert.equal(f.captured.length,0);assert.equal(f.journal.rows.size,0);
 });
+test('a nonce reply that is not a usable nonce is reported as unavailable, not as a failed or late read',async()=>{
+  const f=await anchorFixture();f.source.readRpc=async()=>({result:200,response:{nonce:'TEST-not-a-number',blockHeight:1},require_reply:false,extra:null});
+  await assert.rejects(f.publish(f.open(),JOB),error=>error.code==='indeterminate'&&error.message==='seller nonce is unavailable'&&error.cause===undefined);assert.equal(f.captured.length,0);assert.equal(f.journal.rows.size,0);
+});
 
 // A caller's signed projection is bounded and JSON before it is hashed or read (rvd r4 D-4).
 test('verifyReceipt refuses a caller projection larger than one signed CREATE, or not JSON, before any read',async()=>{
@@ -192,7 +196,7 @@ for (const which of ['sourceJournal', 'journal']) test(`failed ${which} snapshot
 for (const abortAware of [false,true]) test(`nonce read preserves cause and releases lane, abort aware ${abortAware}`, async t => {
   const f=await anchorFixture(), cause=Object.assign(new Error('TEST RPC failure'),{code:'TEST_RPC'});
   f.source.readRpc=async()=>{throw cause;};
-  await assert.rejects(f.publish(f.open(),JOB),error=>error.code==='indeterminate'&&error.cause===cause);
+  await assert.rejects(f.publish(f.open(),JOB),error=>error.code==='indeterminate'&&/failed or exceeded its deadline: TEST RPC failure/.test(error.message)&&error.cause===cause);
   f.source.readRpc=async()=>({result:200,response:0,require_reply:false,extra:null});
   await f.publish(f.open(),JOB);
   assert.equal(f.captured.length,1);

@@ -42,7 +42,7 @@ import {
   sameCanonicalClaimIdentity,
 } from "../identity/claimReference.js";
 import { attestationBundleHash, bundleSignedScope } from "./twoSidedBundle.js";
-import type { Verifier } from "./signedArtifact.js";
+import type { Verifier } from "../crypto/byteSignerTypes.js";
 import {
   authenticatedAlternativePaymentEffectivePipeline,
   type AlternativePaymentProjection,

@@ -4,7 +4,7 @@ import {mkdtempSync,rmSync,readdirSync,readlinkSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import * as core from '@kynesyslabs/dacs';
-import {createSellerAgent,SellerAgentError} from '../src/dacs/seller-agent.mjs';
+import {createSellerAgent} from '../src/dacs/seller-agent.mjs';
 import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {fixtureListing} from './fixtures/listings.mjs';
 import {seller,buyer,JOB,NOW} from './helpers/protocol-fixture.mjs';
@@ -44,8 +44,11 @@ const vetRef=(jobId,party,verifier)=>({anchor:{kind:'storage-program',locator:co
 const sessionFor=(jobId,bundle,checkpoint)=>({jobId,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),stage:'vetted',vetCheckpoint:checkpoint});
 // CORE SN-4: the accepted attempt binds the exact complete presentation.
 const FIXTURE_PIN=listingPin(fixtureListing(seller,{now:NOW}));
+// The challenge the context route issues for a job and buyer: one scope, one nonce.
+const CHALLENGE_SCOPE=core.sha256Hex('TEST challenge scope');
+const issue=(f,jobId=JOB,party=buyer)=>f.ledger.issue({jobId,buyer:party.claim},CHALLENGE_SCOPE);
 const admitWith=(ledger,nonce,session)=>{
- const bundle=session.buyerBundle,jobId=session.jobId??JOB,{owner}=ledger.attempt({path:'proposal',nonce,jobId,buyer:bundle.presentedBy,challengeScopeHash:null,presentationHash:core.sha256Hex(core.canonicalize(bundle))});
+ const bundle=session.buyerBundle,jobId=session.jobId??JOB,{owner}=ledger.attempt({path:'context',nonce,jobId,buyer:bundle.presentedBy,challengeScopeHash:CHALLENGE_SCOPE,presentationHash:core.sha256Hex(core.canonicalize(bundle))});
  const bundleHash=core.identityBundleHash(bundle),admission=admittedSession({jobId,bundle,bundleHash,seller:seller.claim,listingPin:FIXTURE_PIN});
  assert.equal(ledger.accept(owner,nonce,{buyerBundleText:core.canonicalize(bundle),buyerBundleHash:bundleHash,admission,admittedAt:NOW,firstAdmission:{challengeExpiresAt:NOW,generatedAt:NOW,checkedAt:NOW}}),true);
 };
@@ -63,27 +66,28 @@ test('failed Listing initialization closes every owned database handle',async t=
  const before=descriptors();for(let i=0;i<3;i++)await assert.rejects(f.open({listing:changed}));assert.equal(descriptors(),before);
 });
 test('an issued challenge survives a reopen of the ledger with every bound field',async t=>{
- const f=fixture(t),agent=await f.open(),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+ const f=fixture(t),agent=await f.open(),issued=issue(f);agent.close();
  const reopened=createSellerTransportStore({path:f.storePath,now:()=>NOW,generation:'TEST-generation-two'});t.after(()=>reopened.close());
- const {nonce,jobId,buyer:issuedFor,issuedAt,expiresAt,state,origin}=reopened.challenges.retained(issued.sessionNonce);
- assert.deepEqual({nonce,jobId,buyer:issuedFor,issuedAt,expiresAt,state,origin},{nonce:issued.sessionNonce,jobId:JOB,buyer:buyer.claim,issuedAt:issued.issuedAt,expiresAt:issued.expiresAt,state:'issued',origin:'operator'});
+ const {nonce,jobId,buyer:issuedFor,challengeScopeHash,issuedAt,expiresAt,state}=reopened.challenges.retained(issued.sessionNonce);
+ assert.deepEqual({nonce,jobId,buyer:issuedFor,challengeScopeHash,issuedAt,expiresAt,state},{nonce:issued.sessionNonce,jobId:JOB,buyer:buyer.claim,challengeScopeHash:CHALLENGE_SCOPE,issuedAt:NOW,expiresAt:issued.expiresAt,state:'issued'});
 });
 for(const durable of [true,false])test(`${durable?'durable':'memory'} closed agents refuse every public operation`,async t=>{
  const f=fixture(t),agent=await f.open(durable?{}:{durableDirectory:undefined});agent.close();agent.close();
- for(const [name,operation]of Object.entries(agent))if(typeof operation==='function'&&name!=='close')assert.throws(()=>operation(name==='issueSessionChallenge'?{jobId:JOB,buyer:buyer.claim}:JOB),e=>e.code==='seller_closed',name);
+ for(const [name,operation]of Object.entries(agent))if(typeof operation==='function'&&name!=='close')assert.throws(()=>operation(JOB),e=>e.code==='seller_closed',name);
 });
 test('the partial constructor is absent from the public package entry',async()=>{
  const entry=await import('../src/index.mjs');assert.equal(entry.createSellerAgent,undefined);
 });
 
 test('sessionAdmission without a complete challengeLedger is refused at construction',async t=>{
- const f=fixture(t),incomplete={...f.ledger};delete incomplete.issueForOperator;
+ const f=fixture(t),incomplete={...f.ledger};delete incomplete.jobBinding;
  await assert.rejects(f.open({challengeLedger:null}),{name:'TypeError',message:/needs the challengeLedger/});
  await assert.rejects(f.open({challengeLedger:incomplete}),{name:'TypeError',message:/challengeLedger must provide/});
 });
 test('malformed challenge requests are coded refusals',async t=>{
- const f=fixture(t),agent=await f.open();t.after(()=>agent.close());
- for(const request of [null,undefined,42,'challenge',[]])await assert.rejects(agent.issueSessionChallenge(request),error=>error instanceof SellerAgentError&&error.code==='challenge_invalid'&&error.status===422);
+ const f=fixture(t);
+ for(const request of [null,undefined,42,'challenge',[]])assert.throws(()=>f.ledger.issue(request,CHALLENGE_SCOPE),error=>error.code==='peer_job_invalid'&&error.status===409);
+ for(const request of [{jobId:JOB,buyer:'not a claim'},{jobId:JOB}])assert.throws(()=>f.ledger.issue(request,CHALLENGE_SCOPE),error=>error.code==='context_scope_invalid');
 });
 test('restart refuses a retained session whose challenge this seller never issued',async t=>{
  const f=fixture(t),agent=await f.open();agent.close();
@@ -94,18 +98,18 @@ test('restart refuses a retained session whose challenge this seller never issue
 test('restart refuses a retained session whose challenge was issued for another job or never attempted',async t=>{
  const otherJob='01J8N4YV7YVYQ4DB7M8T4C7W0B';
  {
-  const f=fixture(t),agent=await f.open(),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+  const f=fixture(t),agent=await f.open(),issued=issue(f);agent.close();
   await saveSession(f,sessionFor(otherJob,presentWith(buyer,issued.sessionNonce),{buyer:vetRef(otherJob,buyer.claim,seller.claim),seller:vetRef(otherJob,seller.claim,buyer.claim)}));
   await assert.rejects(f.open(),error=>error.code==='seller_state_unverified'&&/another job or buyer/.test(error.message));
  }
  {
-  const f=fixture(t),agent=await f.open(),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+  const f=fixture(t),agent=await f.open(),issued=issue(f);agent.close();
   await saveSession(f,sessionFor(JOB,presentWith(buyer,issued.sessionNonce),{buyer:vetRef(JOB,buyer.claim,seller.claim),seller:vetRef(JOB,seller.claim,buyer.claim)}));
   await assert.rejects(f.open(),error=>error.code==='seller_state_unverified'&&/not consumed and admitted/.test(error.message));
  }
 });
 test('restart refuses a retained vetted session with no exact, job-bound, verifier-signed Vet checkpoint',async t=>{
- const f=fixture(t),agent=await f.open(),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+ const f=fixture(t),agent=await f.open(),issued=issue(f);agent.close();
  const bundle=presentWith(buyer,issued.sessionNonce);
  const admit=async session=>{await saveSession(f,session);if(!f.ledger.retained(issued.sessionNonce).accepted)admitWith(f.ledger,issued.sessionNonce,session);};
  for(const [checkpoint,pattern] of [
@@ -133,7 +137,8 @@ test('read paths refuse a retained session another writer left unverified',async
  const bundle=presentWith(buyer,'ab'.repeat(32));
  await saveSession(f,sessionFor(JOB,bundle,{buyer:vetRef(JOB,buyer.claim,seller.claim),seller:vetRef(JOB,seller.claim,buyer.claim)}));
  for(const read of [()=>agent.transportAgreementOf(JOB),()=>agent.deliveryStateOf(JOB)])assert.throws(read,error=>error.code==='seller_state_unverified');
- assert.equal(agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),false,'an unverified session retains no payment claim');
+ assert.throws(()=>agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),{code:'seller_state_unverified'},'an unverified session is unknown retention, never no work');
+ assert.throws(()=>agent.retainsPaymentWork(JOB),{code:'seller_state_unverified'},'an unverified session is unknown job-wide retention, never no work');
 });
 test('restart refuses a Vet record the counterparty did not sign or a receipt below accepted',async t=>{
  const signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes},otherJob='01J8N4YV7YVYQ4DB7M8T4C7W0B';
@@ -147,7 +152,7 @@ test('restart refuses a Vet record the counterparty did not sign or a receipt be
  ]) {
   const f=fixture(t),admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
   prepare?.(admission);
-  const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+  const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=issue(f);agent.close();
   const bundle=presentWith(buyer,issued.sessionNonce);
   const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
   const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement,...options});
@@ -162,7 +167,7 @@ test('restart refuses a Vet record the counterparty did not sign or a receipt be
 test('restart restores a session bound to its admitted challenge and to verified Vet records and receipts',async t=>{
  const f=fixture(t),signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
  const admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
- const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+ const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=issue(f);agent.close();
  const bundle=presentWith(buyer,issued.sessionNonce);
  const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement});
@@ -189,7 +194,7 @@ test('explicit fixture sessions reopen without native-only admission checkpoints
 async function vettedSession(t,requirementHash={}){
  const f=fixture(t),signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
  const admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
- const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+ const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=issue(f);agent.close();
  const bundle=presentWith(buyer,issued.sessionNonce);
  const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement,...requirementHash.buyer?{requirementHash:requirementHash.buyer}:{}});
  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement,...requirementHash.seller?{requirementHash:requirementHash.seller}:{}});
@@ -232,7 +237,7 @@ test('restart fails closed when a Vet reader returns an oversized reply',async t
 test('restart refuses a retained session admitted for a different presentation',async t=>{
  const f=fixture(t),signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
  const admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
- const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+ const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=issue(f);agent.close();
  const bundle=presentWith(buyer,issued.sessionNonce),other=presentAt(buyer,issued.sessionNonce,NOW-2000);
  assert.notEqual(core.contentHash(other),core.contentHash(bundle));
  const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
@@ -248,12 +253,13 @@ test('restart refuses a retained session admitted for a different presentation',
 // retained evidence is refused by every live read, however exact its shapes.
 test('live reads refuse a shape-valid session another writer saved after open',async t=>{
  const f=fixture(t),agent=await f.open();t.after(()=>agent.close());
- const issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),bundle=presentWith(buyer,issued.sessionNonce);
+ const issued=issue(f),bundle=presentWith(buyer,issued.sessionNonce);
  const session={...sessionFor(JOB,bundle,{buyer:vetRef(JOB,buyer.claim,seller.claim),seller:vetRef(JOB,seller.claim,buyer.claim)}),paymentWork:{txHash:'a'.repeat(64),payerPayingKey:buyer.claim}};
  admitWith(f.ledger,issued.sessionNonce,session);await saveSession(f,session);
  for(const read of [()=>agent.stageOf(JOB),()=>agent.durableSessionOf(JOB),()=>agent.transportAgreementOf(JOB),()=>agent.deliveryStateOf(JOB),()=>agent.durableSessions()])
   assert.throws(read,error=>error.code==='seller_state_unverified'&&/not verified by this seller instance/.test(error.message));
- assert.equal(agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),false,'an unverified session retains no payment claim');
+ assert.throws(()=>agent.retainsPaymentClaim(JOB,{txHash:'0x'+'a'.repeat(64),payerPayingKey:buyer.claim}),{code:'seller_state_unverified'},'an unverified session is unknown retention, never no work');
+ assert.throws(()=>agent.retainsPaymentWork(JOB),{code:'seller_state_unverified'},'an unverified session is unknown job-wide retention, never no work');
 });
 test('live reads refuse a retained session changed after this instance verified it',async t=>{
  const {f,admission}=await vettedSession(t),agent=await f.open({sessionAdmission:admission.sessionAdmission});t.after(()=>agent.close());
@@ -271,7 +277,7 @@ test('restart refuses a retained seller bundle that is not the Listing identity 
  ]) {
   const f=fixture(t),signerKey={claim:seller.claim,sign:seller.signBytes},buyerKey={claim:buyer.claim,sign:buyer.signBytes};
   const admission=createSessionAdmissionFixture({seller:signerKey,buyer:buyerKey,now:()=>NOW});
-  const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});agent.close();
+  const agent=await f.open({sessionAdmission:admission.sessionAdmission}),issued=issue(f);agent.close();
   const bundle=presentWith(buyer,issued.sessionNonce),sellerBundle=build(f.listing);
   const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
   const sellerRef=await admission.vetRecord(JOB,seller.claim,sellerBundle,{requirement:f.listing.buyerRequirement});
@@ -297,7 +303,7 @@ test('a retained receipt read failure keeps its cause and only a missing result 
 // DACS-1 RB-4..RB-6: the seller opens a new session only when the operator's
 // own readers find the Listing not revoked, and refuses before any nonce is
 // retained when the reading is revoked (409) or indeterminate (503).
-test('a new session is gated by the operator revocation reading before a nonce is retained',async t=>{
+test('a first presentation is gated by the operator revocation reading before it is admitted',async t=>{
  const revokedSurface=async listing=>{
   const pin=listingPin(listing);
   const marker=await core.signComponentArtifact({listingId:listing.listingId,listingVersion:listing.listingVersion,listingContentHash:pin.contentHash,revokedAt:NOW,reason:'TEST revoked'},'dacs-revocation:v1:',{algorithm:'ed25519',signer:seller.claim,sign:seller.signBytes});
@@ -308,18 +314,19 @@ test('a new session is gated by the operator revocation reading before a nonce i
  f.admission.readRevocationWith(()=>revoked.surfaces);
  const agent=await f.open();t.after(()=>agent.close());
  const readings=()=>f.admission.calls.filter(([name])=>name==='readRevocationSurfaces').length;
- await assert.rejects(agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),error=>error.code==='session_not_admitted'&&error.status===409);
- assert.equal(readings(),1,'the operator revocation reader is asked before a session opens');
+ const request={jobId:JOB,bundle:presentWith(buyer,issue(f).sessionNonce)};request.nonce=request.bundle.sessionNonce;
+ await assert.rejects(agent.admitSessionPresentation(request),error=>error.code==='session_not_admitted'&&error.status===409);
+ assert.equal(readings(),1,'the operator revocation reader is asked before a presentation is admitted');
  f.admission.readRevocationWith(()=>{throw new Error('revocation reader down');});
- await assert.rejects(agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),error=>error.code==='session_admission_unavailable'&&error.status===503);
+ await assert.rejects(agent.admitSessionPresentation(request),error=>error.code==='session_admission_unavailable'&&error.status===503);
  f.admission.readRevocationWith(null);
- const issued=await agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});
- assert.match(issued.sessionNonce,/^[0-9a-f]{64}$/);
- assert.equal(readings(),3,'an active reading is required for every new session');
+ assert.equal((await agent.admitSessionPresentation(request)).disposition,'admitted');
+ assert.equal(readings(),3,'an active reading is required for every first presentation');
 });
-test('a native seller without a session admission cannot open a session',async t=>{
+test('a native seller without a session admission cannot admit a presentation',async t=>{
  const f=fixture(t),agent=await f.open({sessionAdmission:undefined});t.after(()=>agent.close());
- await assert.rejects(agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim}),error=>error.code==='session_admission_unavailable'&&error.status===503);
+ const bundle=presentWith(buyer,issue(f).sessionNonce);
+ await assert.rejects(agent.admitSessionPresentation({jobId:JOB,bundle,nonce:bundle.sessionNonce}),error=>error.code==='session_admission_required'&&error.status===503);
 });
 // The construction check proves the Listing's own bytes, signature and rail;
 // its fabricated catalog row is not a revocation reading and is not retained.
@@ -331,11 +338,11 @@ test('the retained Listing admission never records a revocation reading',async t
 // A close during the live revocation read must not let the issuance settle:
 // the nonce is not retained and the caller sees the same coded refusal as any
 // other operation on a closed agent.
-test('a close during the live revocation read refuses the issuance',async t=>{
+test('a close during the live revocation read refuses the admission read',async t=>{
  const f=fixture(t);let release;const gate=new Promise(resolve=>{release=resolve;});
  f.admission.readRevocationWith(()=>gate);
  const agent=await f.open();t.after(()=>agent.close());
- const pending=agent.issueSessionChallenge({jobId:JOB,buyer:buyer.claim});
+ const bundle=presentWith(buyer,issue(f).sessionNonce),pending=agent.admitSessionPresentation({jobId:JOB,bundle,nonce:bundle.sessionNonce});
  agent.close();
  release([{kind:'catalog',status:'active',readStatus:'ok',catalogObservedAt:NOW}]);
  await assert.rejects(pending,error=>error.code==='seller_closed'&&error.status===503);

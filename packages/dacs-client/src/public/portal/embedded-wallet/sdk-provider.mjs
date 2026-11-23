@@ -53,6 +53,13 @@
 
 const ADDRESS = /^0x[0-9a-f]{64}$/;
 const SIGNATURE_HEX = /^(0x)?[0-9a-f]{128}$/;
+const FIELD_PRIME = (1n << 255n) - 19n;
+const GROUP_ORDER = (1n << 252n) + 27742317777372353535851937790883648493n;
+const SMALL_ORDER_Y = new Set([
+  0n, 1n, FIELD_PRIME - 1n,
+  2707385501144840649318225287225658788936804267575313519463743609750303402022n,
+  FIELD_PRIME - 2707385501144840649318225287225658788936804267575313519463743609750303402022n,
+]);
 const HASH = /^[0-9a-f]{64}$/;
 const HANDLE = /^[A-Za-z0-9_-]{1,39}$/;
 const OS_STRING = /^(0|[1-9][0-9]*)$/;
@@ -109,6 +116,20 @@ export class EmbeddedWalletError extends Error {
   }
 }
 
+function littleEndianInteger(bytes) {
+  let value = 0n;
+  for (let i = bytes.length - 1; i >= 0; i--) value = (value << 8n) | BigInt(bytes[i]);
+  return value;
+}
+
+export async function verifyEmbeddedEd25519(publicKey, signature, message) {
+  if (publicKey.length !== 32 || signature.length !== 64 || littleEndianInteger(signature.subarray(32)) >= GROUP_ORDER) return false;
+  const y = littleEndianInteger(publicKey) & ((1n << 255n) - 1n);
+  if (y >= FIELD_PRIME || SMALL_ORDER_Y.has(y)) return false;
+  const key = await crypto.subtle.importKey('raw', publicKey, { name: 'Ed25519' }, false, ['verify']);
+  return crypto.subtle.verify('Ed25519', key, signature, message);
+}
+
 function ok(data) {
   return { success: true, data, error: null };
 }
@@ -117,12 +138,21 @@ function fail(code, message) {
   return { success: false, data: null, error: { code, message } };
 }
 
-// SDK-generated mnemonics are lowercase words joined by single spaces, and
-// connectWallet hashes the exact string, so import uses that same form.
-function normalizeMnemonic(value) {
+/**
+ * Returns the recovery phrase in the form the SDK generates (lowercase words joined by single spaces), which is the form connectWallet
+ * hashes, so every wallet opened from one phrase has one address. Throws EmbeddedWalletError(invalid_mnemonic) for a non-string.
+ */
+export function normalizeMnemonic(value) {
   if (typeof value !== 'string') throw new EmbeddedWalletError('invalid_mnemonic', 'recovery phrase must be text');
   return value.normalize('NFKD').trim().toLowerCase().split(/\s+/).join(' ');
 }
+
+// The authority labels a publication may declare: a fixture label or a canonical `TP1-` label string. The `TP1-` form is
+// the one `isTp1AuthorityLabel` accepts; this file imports nothing, so it can be served alone. A label grants no authority.
+const TEST_LABEL = /^TEST-/;
+const TEST_RUN_LABEL = /^TEST-RUN-[A-Za-z0-9._-]{8,80}$/;
+const TP1_LABEL = /^TP1-[0-9a-f]{32}$/;
+const isPublicationLabel = (value, fixtureLabel) => typeof value === 'string' && (fixtureLabel.test(value) || TP1_LABEL.test(value));
 
 // The transport is honoured only in its exact documented shape; its members
 // are read once here and never invoked unless the shape matches. A held
@@ -147,9 +177,9 @@ function readTransport(candidate, relayOrigin = globalThis.location?.origin) {
         || rpc.pathname !== '/portal/api/devnet-native-wallet-rpc' || binding.pathname !== '/portal/api/devnet-native-wallet-binding') return null;
       const bindingKeys=['source','bindingVersion','bindingId','network','chainIdentity','pinVersion','endpoint','transportAuthority',...(settlement?['settlementPublication']:[]),...(delivery?['deliveryPublication']:[]),...(demo?['demoArtifactPublication']:[])];
       if(agreement && (!hasKeys(candidate.transportBinding,bindingKeys) || candidate.transportBinding.source !== 'devnet-agreement-transport/v1' || candidate.transportBinding.bindingVersion !== 'dacs-demos-network-binding/v1' || candidate.transportBinding.network !== network || !HASH.test(candidate.transportBinding.bindingId) || !HASH.test(candidate.transportBinding.chainIdentity) || new URL(candidate.transportBinding.endpoint).protocol !== 'https:')) return null;
-      if(settlement && (!hasKeys(candidate.settlementPublication,['policy','artifactKind','phase','railId','phaseIndex','authority']) || candidate.settlementPublication.policy!==DEVNET_SETTLEMENT_POLICY || candidate.settlementPublication.artifactKind!=='SettlementEvidence' || candidate.settlementPublication.phase!=='pay-dem' || candidate.settlementPublication.railId!=='demos-native:DEM' || candidate.settlementPublication.phaseIndex!==2 || typeof candidate.settlementPublication.authority!=='string' || !candidate.settlementPublication.authority.startsWith('TEST-') || anchorJson(candidate.transportBinding.settlementPublication)!==anchorJson(candidate.settlementPublication))) return null;
-      if(delivery && (!hasKeys(candidate.deliveryPublication,['policy','artifactKind','phase','phaseIndex','authority']) || candidate.deliveryPublication.policy!==DEVNET_DELIVERY_POLICY || candidate.deliveryPublication.artifactKind!=='Deliverable' || candidate.deliveryPublication.phase!=='deliver-storage-program' || !Number.isSafeInteger(candidate.deliveryPublication.phaseIndex) || candidate.deliveryPublication.phaseIndex<0 || typeof candidate.deliveryPublication.authority!=='string' || !candidate.deliveryPublication.authority.startsWith('TEST-') || anchorJson(candidate.transportBinding.deliveryPublication)!==anchorJson(candidate.deliveryPublication))) return null;
-      if(demo && (!hasKeys(candidate.demoArtifactPublication,['policy','artifactKinds','authority']) || candidate.demoArtifactPublication.policy!==DEVNET_DEMO_ARTIFACT_POLICY || ![DEVNET_DEMO_ARTIFACT_TYPES,[...DEVNET_DEMO_ARTIFACT_TYPES,'SettlementEvidence']].some(kinds=>anchorJson(candidate.demoArtifactPublication.artifactKinds)===anchorJson(kinds)) || typeof candidate.demoArtifactPublication.authority!=='string' || !/^TEST-RUN-[A-Za-z0-9._-]{8,80}$/.test(candidate.demoArtifactPublication.authority) || anchorJson(candidate.transportBinding.demoArtifactPublication)!==anchorJson(candidate.demoArtifactPublication))) return null;
+      if(settlement && (!hasKeys(candidate.settlementPublication,['policy','artifactKind','phase','railId','phaseIndex','authority']) || candidate.settlementPublication.policy!==DEVNET_SETTLEMENT_POLICY || candidate.settlementPublication.artifactKind!=='SettlementEvidence' || candidate.settlementPublication.phase!=='pay-dem' || candidate.settlementPublication.railId!=='demos-native:DEM' || candidate.settlementPublication.phaseIndex!==2 || !isPublicationLabel(candidate.settlementPublication.authority,TEST_LABEL) || anchorJson(candidate.transportBinding.settlementPublication)!==anchorJson(candidate.settlementPublication))) return null;
+      if(delivery && (!hasKeys(candidate.deliveryPublication,['policy','artifactKind','phase','phaseIndex','authority']) || candidate.deliveryPublication.policy!==DEVNET_DELIVERY_POLICY || candidate.deliveryPublication.artifactKind!=='Deliverable' || candidate.deliveryPublication.phase!=='deliver-storage-program' || !Number.isSafeInteger(candidate.deliveryPublication.phaseIndex) || candidate.deliveryPublication.phaseIndex<0 || !isPublicationLabel(candidate.deliveryPublication.authority,TEST_LABEL) || anchorJson(candidate.transportBinding.deliveryPublication)!==anchorJson(candidate.deliveryPublication))) return null;
+      if(demo && (!hasKeys(candidate.demoArtifactPublication,['policy','artifactKinds','authority']) || candidate.demoArtifactPublication.policy!==DEVNET_DEMO_ARTIFACT_POLICY || ![DEVNET_DEMO_ARTIFACT_TYPES,[...DEVNET_DEMO_ARTIFACT_TYPES,'SettlementEvidence']].some(kinds=>anchorJson(candidate.demoArtifactPublication.artifactKinds)===anchorJson(kinds)) || !isPublicationLabel(candidate.demoArtifactPublication.authority,TEST_RUN_LABEL) || anchorJson(candidate.transportBinding.demoArtifactPublication)!==anchorJson(candidate.demoArtifactPublication))) return null;
       return Object.freeze({ held:false,devnetNative:true,devnetAgreement:agreement,devnetSettlement:settlement,devnetDelivery:delivery,devnetDemo:demo,rpcUrl:rpc.href,bindingUrl:binding.href,network,...(agreement?{transportBinding:JSON.parse(JSON.stringify(candidate.transportBinding)),...(settlement?{settlementPublication:JSON.parse(JSON.stringify(candidate.settlementPublication))}:{}),...(delivery?{deliveryPublication:JSON.parse(JSON.stringify(candidate.deliveryPublication))}:{}),...(demo?{demoArtifactPublication:JSON.parse(JSON.stringify(candidate.demoArtifactPublication))}:{})}:{}) });
     } catch { return null; }
   }
@@ -506,8 +536,7 @@ async function normativeAgreementMatches(r, data) {
       const signature = Uint8Array.from(atob(sigs[0].value.replace(/-/g, '+').replace(/_/g, '/') + '=='), (c) => c.charCodeAt(0));
       if (signature.length !== 64 || btoa(String.fromCharCode(...signature)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') !== sigs[0].value) return false;
       const keyBytes = Uint8Array.from(party.slice('did:demos:agent:'.length).match(/../g), (b) => Number.parseInt(b, 16));
-      const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'Ed25519' }, false, ['verify']);
-      if (!await crypto.subtle.verify('Ed25519', key, signature, signedBytes)) return false;
+      if (!await verifyEmbeddedEd25519(keyBytes, signature, signedBytes)) return false;
     } catch { return false; }
   }
   return true;
@@ -539,8 +568,7 @@ async function normativeSettlementMatches(r, data) {
     const scope = anchorJson(Object.fromEntries(Object.entries(data).filter(([k]) => !['signature', 'signatures'].includes(k))));
     const signedBytes = new TextEncoder().encode(`dacs-evidence:v1:${await sha256HexOfText(scope)}`);
     const keyBytes = Uint8Array.from(r.owner.slice('did:demos:agent:'.length).match(/../g), (b) => Number.parseInt(b, 16));
-    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'Ed25519' }, false, ['verify']);
-    return await crypto.subtle.verify('Ed25519', key, signature, signedBytes);
+    return await verifyEmbeddedEd25519(keyBytes, signature, signedBytes);
   } catch { return false; }
 }
 
@@ -599,8 +627,7 @@ async function devnetDemoArtifactMatches(r, data, metadata, transport) {
     const message=new TextEncoder().encode(`${separator}${await sha256HexOfText(scope)}`);
     const sig=Uint8Array.from(atob(signature.value.replace(/-/g,'+').replace(/_/g,'/')+'=='),c=>c.charCodeAt(0));
     const keyBytes=Uint8Array.from(writer.slice('did:demos:agent:'.length).match(/../g),b=>Number.parseInt(b,16));
-    const key=await crypto.subtle.importKey('raw',keyBytes,{name:'Ed25519'},false,['verify']);
-    return sig.length===64 && await crypto.subtle.verify('Ed25519',key,sig,message);
+    return await verifyEmbeddedEd25519(keyBytes,sig,message);
   } catch { return false; }
 }
 
@@ -763,8 +790,7 @@ async function anchorSignatureMatches(signed, address) {
     || await sha256HexOfText(JSON.stringify(signed.content)) !== signed.hash) return false;
   try {
     const bytes = (v) => Uint8Array.from(v.replace(/^0x/, '').match(/../g), (b) => Number.parseInt(b, 16));
-    const key = await crypto.subtle.importKey('raw', bytes(address), { name: 'Ed25519' }, false, ['verify']);
-    return await crypto.subtle.verify('Ed25519', key, bytes(signed.signature.data), new TextEncoder().encode(signed.hash));
+    return await verifyEmbeddedEd25519(bytes(address), bytes(signed.signature.data), new TextEncoder().encode(signed.hash));
   } catch { return false; }
 }
 

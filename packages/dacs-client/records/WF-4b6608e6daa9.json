@@ -1,0 +1,42 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF check a stopped service call as its own action does before suspending queued work, and suspend on a stop refusal raised during the call",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "977af2c7c90859afd7a608214a3ef84daeeb1f0d",
+      "after": "79e4aae9472004a14f16e0185d712f65087c10e0"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "bc0e95534aaee057d236900e4e8c72f882900fa2",
+      "after": "3a02ef05b81600cf317e481e4b03f2832ce44aee"
+    },
+    {
+      "path": "packages/dacs-client/src/public-admission.mjs",
+      "before": "b33eb8d89811458cd9dd76fdaf5196d299527af3",
+      "after": "971c322dc6297dbb9002c385f40f8d46e55151a8"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "e71eeb082d56a980f864e6540d2a316f0ceef01b",
+      "after": "9831d5a8312d9d4145797e68a30f3019b68587f5"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-suspension.test.mjs",
+      "before": "3be55a0f74ae6ac4799c8609c074d50aa9a204a8",
+      "after": "8ca49010ac883836aaf9461dee23ef439ec267dc"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-4b6608e6daa9.json",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/public-admission.mjs",
+    "packages/dacs-client/src/purchases.mjs",
+    "packages/dacs-client/test/seller-suspension.test.mjs"
+  ],
+  "note": "The recorder for a stopped service call chose the purchase by account whenever the request carried accountId, so a token action such as protocolRecheck given a valid accountId and a wrong token suspended that purchase's queued work, though the action itself never accepts accountId as authority. The recorder is now told which action was refused and authenticates the request the way that action does: the handoff token for the portal actions, the account for cancel; prepare and any other action record nothing. The admission wrapper also runs the recorder when the action itself rejects with a host stop refusal, so a stop that turns on while agreementSubmit waits on its network check, or inside the protocol call it makes, suspends queued work as protocolRecheck does. The test of a stopped protocolRecheck or agreementSubmit now sends {operationId, token} and checks after the stop is lifted that verifyDeal starts no queued agreement submit."
+}

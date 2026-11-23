@@ -19,6 +19,7 @@ import {
   isPhaseStep,
 } from "../artifacts/index.js";
 import { canonicalize, encodeAddressSegment, sha256Hex } from "../canonical/index.js";
+import { sameCanonicalClaimIdentity } from "../identity/claimReference.js";
 import { presenceRequirementPreflight } from "../agent/compositeVerification.js";
 
 /** CORE SIG-4 SDK-operational extension; deliberately outside the closed registry. */
@@ -483,8 +484,11 @@ function isSellerFulfilmentVetVerifierMismatch(
       ? (sellerVerifiesSellerRecord ? claims.sellerClaim : claims.buyerClaim)
       : undefined;
   const signer = invocation.vetRecordRef.signer;
-  return expectedVerifier === undefined || invocation.verifier !== expectedVerifier ||
-    (signer === undefined ? sellerVerifiesSellerRecord : signer !== invocation.verifier);
+  return expectedVerifier === undefined ||
+    !sameCanonicalClaimIdentity(invocation.verifier, expectedVerifier) ||
+    (signer === undefined
+      ? sellerVerifiesSellerRecord
+      : !sameCanonicalClaimIdentity(signer, invocation.verifier));
 }
 
 /**
@@ -582,7 +586,7 @@ export function isSellerFulfilmentVetInvocationMismatch(
     );
     return !binding ||
       isSellerFulfilmentVetVerifierMismatch(invocation, binding, context, vetMode) ||
-      invocation.evaluatedParty !== binding.primaryClaim ||
+      !sameCanonicalClaimIdentity(invocation.evaluatedParty, binding.primaryClaim) ||
       invocation.vetRecordRef.anchor.kind !== "storage-program" ||
       invocation.vetRecordRef.anchor.locator !== expectedCompositeAddress ||
       (listingOwned && !sameJcs(invocation.requirement, context.buyerRequirement)) ||

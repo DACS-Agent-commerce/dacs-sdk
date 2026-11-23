@@ -39,7 +39,7 @@ export function signatureCommitmentAnchor(anchor, seller, enabled) {
     // The broker invokes this only after retaining the approved signed CREATE.
     // It returns immediately so the buyer remains the sole broadcaster.
     onCreateAuthorized(input, signedProjection => {
-      void Promise.resolve().then(() => seller.commitOnSignature(input.artifact.jobId, plainJson(input.artifact), structuredClone(signedProjection))).catch(() => null);
+      void Promise.resolve().then(() => seller.commitOnSignature(input.artifact.jobId, plainJson(input.artifact), structuredClone(signedProjection))).catch(error => { try { seller.recordFailure?.(error); } catch { /* the stored request stays unknown */ } });
     });
     return anchor.anchorAgreement(input);
   } };

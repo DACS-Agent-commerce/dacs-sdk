@@ -213,7 +213,6 @@ export {
 export {
   buildCommitMessage,
   buildRevealMessage,
-  buildSealedAgreement,
   resolveSealedEnvelopeMode,
   assignSealedEnvelopeRoles,
   validateSealedAgreementRoleAssignment,
@@ -231,10 +230,8 @@ export {
   type SealedAgreementCommitValidation,
   type SealedAgreementCommitResult,
   type VerifiedSealedAgreementCommitResult,
-  type LegacySealedAgreementCommitResult,
   type SealedCommitContext,
   type SealedWinnerContext,
-  type SealedAgreementContext,
   type SealedEnvelopeDeps,
   type SealedEnvelopeInput,
   type SealedEnvelopeResult,

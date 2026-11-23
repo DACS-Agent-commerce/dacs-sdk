@@ -3,7 +3,7 @@ import { DACS_SELLER_HTTP_PATHS as PATHS, isTp1WireProfile, wireOperationBinding
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { boundedCall, isBoundedCallTimeout } from './bounded-call.mjs';
 import { assertAdmissionJobLease } from './seller-admission-transaction.mjs';
-import { SELLER_CONTEXT_PATH, SellerTransportError } from './seller-transport-auth.mjs';
+import { SellerTransportError } from './seller-transport-auth.mjs';
 
 // The wire journal's lease; accounting refuses a clock whose lease sum the journal could not take.
 const RESERVATION_LEASE_MS = 300000;
@@ -18,13 +18,15 @@ const PAYMENT_PATH = '/dacs/v1/payments';
 const transactionOf = value => typeof value === 'string' && /^(?:0x)?[0-9a-fA-F]{64}$/.test(value) ? value.replace(/^0x/, '').toLowerCase() : null;
 const uint = value => Number.isSafeInteger(value) && value >= 0 && !Object.is(value, -0);
 const fail = (code, status) => { throw new SellerTransportError(code, status); };
+/** The key a request's accounting row is stored under: the hash of its buyer, seller, profile and nonce. */
+export const requestNonceKey = (payload) => sha256Hex(canonicalize({ buyer: payload.buyer, seller: payload.seller, profile: payload.profile, nonce: payload.nonce }));
 // K5 step 8 (amend1 D19): a refusal of the wire or the host carries a string code and an HTTP status; a system error's code (EIO) has no status.
 const isDefiniteRefusal = error => typeof error?.code === 'string' && Number.isInteger(error.status);
 
 /**
  * Compose durable pre-reservation accounting over the owning store's synchronous SQL/transaction port and its
  * reservation ledger: the store's one definition of the records behind each limit, which its old reserve path reads too.
- * Returns an object with reserveAccounted; throws a TypeError on invalid limits.
+ * Returns an object with reserveAccounted and reservedRequest; throws a TypeError on invalid limits.
  * The store owns the schema and BEGIN IMMEDIATE; every check and hook runs within that same transaction.
  */
 export function createReservationAccounting({ store, now, limits, contextRecords }) {
@@ -59,11 +61,9 @@ export function createReservationAccounting({ store, now, limits, contextRecords
     return Boolean(purchase);
   }
 
-  // The old reserve path's other refusals that read journal state, so a request is judged the same on either path:
-  // a read of an unknown job, a job and route whose effect the old path holds, and a fresh start for a terminal session.
+  // The refusals that read journal state: a read of an unknown job and a fresh start for a terminal session.
   function checkRouteWithin(payload, operationId) {
     if (ledger.unknownJobWithin(payload)) fail('peer_unknown_job', 404);
-    if (ledger.oldSlotWithin(payload)) fail('peer_operation_conflict', 409);
     if (ledger.terminalStartWithin(payload, operationId)) fail('context_session_terminal', 409);
   }
 
@@ -85,7 +85,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
   // Steps 1 to 6 in one transaction: a refusal at any step, or a failed commit, leaves no hold, row, unit, claim or tuple.
   function chargeWithin(input, key, requestHash) {
     const { payload, route, operationId, paymentTx, keepProfile } = input;
-    const contextStart = route === SELLER_CONTEXT_PATH;
+    const contextStart = route === PATHS.context;
     const at = now();
     if (!uint(at) || !uint(at + RESERVATION_LEASE_MS)) fail('peer_clock_invalid', 503);
     const replay = ledger.retiredReplayWithin(payload, operationId);
@@ -158,7 +158,7 @@ export function createReservationAccounting({ store, now, limits, contextRecords
       assertKitOperationAdmitted('reserveAccounted');
       const input = admittedInput(options);
       const { checked, payload } = input;
-      const key = sha256Hex(canonicalize({ buyer: payload.buyer, seller: payload.seller, profile: payload.profile, nonce: payload.nonce }));
+      const key = requestNonceKey(payload);
       const replay = transaction(() => chargeWithin(input, key, wireRequestHash(payload)));
       let effect;
       try { effect = await checked.reserve(); }
@@ -170,7 +170,24 @@ export function createReservationAccounting({ store, now, limits, contextRecords
       saveResult(key, effect.state);
       return effect;
     },
+    /** Whether the request's nonce key already has its reservation row, which reserveAccounted refuses peer_request_replayed. Read-only. */
+    reservedRequest(payload) {
+      return get('SELECT key FROM kit_reservations WHERE key = ?', requestNonceKey(payload)) !== undefined;
+    },
   };
+}
+
+/**
+ * The pre-accounting gate for a retry that the wire journal would refuse as pending only after its charge and its nonce. A request under the
+ * binding of an operation whose latest attempt has no end and whose lease has not run out at `now()`, the journal's clock, is refused
+ * seller_effect_pending 503 before any row, unit or nonce key. A request whose nonce already has its reservation row is left to the accounting,
+ * which refuses it peer_request_replayed, and a lapsed lease to the journal's recovery. Throws a TypeError for a missing port.
+ */
+export function createLiveAttemptGate({ accounting, now }) {
+  if (typeof accounting?.reservedRequest !== 'function' || typeof now !== 'function') throw new TypeError('the live-attempt gate needs the accounting and the journal clock');
+  const pending = Object.freeze({ code: 'seller_effect_pending', status: 503 });
+  return ({ payload, inspection }) => inspection?.state === 'pending' && inspection.binding === wireOperationBinding(payload)
+    && now() < inspection.leaseUntil && !accounting.reservedRequest(payload) ? pending : null;
 }
 
 // One in-process first-come mutex per key. `acquire(key)` resolves to a release function (safe to call twice); a key nobody owns or
@@ -192,14 +209,16 @@ function createKeyedMutex() {
 /**
  * Compose the reservation coordinator over the accounting, the purchase capacity and `inspectOperation(payload)`, the
  * synchronous read-only wire inspection of the payload's operation. `admissionTransaction`, when given, validates the job lease the
- * context route borrows. Returns an object with reserveCoordinated and addPreAccountingGate; throws a TypeError when a port is missing or
+ * context route borrows. `retainsUnfinishedWork({ jobId, path })` is the agent's synchronous read of the work a retry on that route
+ * must still finish; without it no job has any, so a terminal session refuses every retry that has not completed.
+ * Returns an object with reserveCoordinated and addPreAccountingGate; throws a TypeError when a port is missing or
  * unusable. The capacity supplies the terminal check (`terminalSession`) and the pending-observation barrier it forwards from the store.
  */
-export function createReservationCoordinator({ accounting, capacity, inspectOperation, admissionTransaction }) {
+export function createReservationCoordinator({ accounting, capacity, inspectOperation, admissionTransaction, retainsUnfinishedWork = () => false }) {
   if (typeof accounting?.reserveAccounted !== 'function' || typeof capacity?.classify !== 'function' || typeof capacity.recordExhaustion !== 'function'
       || typeof capacity.terminalSession !== 'function' || typeof capacity.flushTerminalObservations !== 'function'
-      || typeof inspectOperation !== 'function') {
-    throw new TypeError('the reservation coordinator needs accounting, purchase capacity, an operation inspection and, for context, the admission transaction');
+      || typeof inspectOperation !== 'function' || typeof retainsUnfinishedWork !== 'function') {
+    throw new TypeError('the reservation coordinator needs accounting, purchase capacity, an operation inspection, an unfinished-work reader and, for context, the admission transaction');
   }
   const acquire = createKeyedMutex();
   const gates = [];
@@ -244,29 +263,38 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
       throw new SellerTransportError(answer.code, answer.status);
     }
   }
+  // A payment retry that must finish a payment the seller already recorded: the wire journal holds this operation open or ended without
+  // an outcome under the request's binding, and the agent's durable job still holds the payment's work. The buyer has paid, so a terminal
+  // session does not stop that payment from being finished; a new operation, another binding or a job with no recorded payment does not qualify.
+  const finishesRecordedPayment = (payload, inspection) => payload.path === PAYMENT_PATH && ['pending', 'ended'].includes(inspection?.state)
+    && inspection.binding === wireOperationBinding(payload) && retainsUnfinishedWork({ jobId: payload.jobId, path: payload.path }) === true;
   // A terminal session refuses, then each gate may, unless this very operation already completed under the
-  // request's binding, whose source-verified replay stays available.
+  // request's binding, whose source-verified replay stays available. A retry that finishes a recorded payment meets the gates only.
   function refuseBeforeAccounting({ payload, route }, inspection) {
     if (inspection?.state === 'completed' && inspection.binding === wireOperationBinding(payload)) return;
-    if (capacity.terminalSession(payload.jobId).terminal) fail('context_session_terminal', 409);
+    if (!finishesRecordedPayment(payload, inspection) && capacity.terminalSession(payload.jobId).terminal) fail('context_session_terminal', 409);
     refuseByGates(Object.freeze({ route, jobId: payload.jobId, payload, inspection }));
   }
-  async function reserveUnderMutex({ retainedWork, ...accounted }) {
+  async function reserveUnderMutex({ retainedWork, answersCompletedAtCapacity, ...accounted }) {
     const { payload, route } = accounted;
     capacity.flushTerminalObservations();
     const inspection = inspectOperation(payload);
     refuseBeforeAccounting(accounted, inspection);
     let refusal = null;
+    const classify = () => capacity.classify({ jobId: payload.jobId, buyer: payload.buyer, seller: payload.seller, listingPin: payload.listingPin,
+      route, binding: wireOperationBinding(payload), inspection, retainedWork });
+    // A completed operation at capacity has no unit, record or nonce to charge, so no limit on a new reservation applies to it. A route that
+    // revalidates its sources is answered from the stored outcome before any accounting; any other route is refused in the charge.
+    if (answersCompletedAtCapacity && inspection.state === 'completed' && inspection.binding === wireOperationBinding(payload)) {
+      const classified = classify();
+      if (classified.class === 'completed-at-capacity') return Object.freeze({ state: 'completed', outcome: classified.outcome });
+    }
     const checkCapacityWithin = () => {
       let classified;
-      try {
-        classified = capacity.classify({ jobId: payload.jobId, buyer: payload.buyer, seller: payload.seller, listingPin: payload.listingPin,
-          route, binding: wireOperationBinding(payload), inspection, retainedWork });
-      } catch (error) {
+      try { classified = classify(); } catch (error) {
         if (error?.code === STORE_CAPACITY_CODE) refusal = error;
         throw error;
       }
-      // A completed operation at capacity has no unit to charge, and answering it needs its source revalidated: it is refused.
       if (classified.class === 'completed-at-capacity') fail(STORE_CAPACITY_CODE, 503);
       return classified;
     };
@@ -294,18 +322,24 @@ export function createReservationCoordinator({ accounting, capacity, inspectOper
      * The mutex is released only once reserveAccounted has settled, whether it returned or threw; a context request borrows the
      * `ownership.jobLease` its caller holds instead, validated against the job and never released here.
      * After the inspection, an operation completed under this request's binding classifies as before and meets neither the terminal
-     * check nor a gate; any other request is refused context_session_terminal 409 once its job's closure is durable, or by a gate, before
-     * any accounting row, unit or agent call. A failed write of the closure, or of an earlier pending one, is thrown as it is.
+     * check nor a gate. A payment retry whose operation is pending or ended under this request's binding, for a job whose recorded payment
+     * work `retainsUnfinishedWork` still reports, meets the gates but not the terminal check, and writes no closure. Any other request is
+     * refused context_session_terminal 409 once its job's closure is durable, or by a gate, before
+     * any accounting row, unit or agent call. A failed write of the closure, or of an earlier pending one, is thrown as it is, and so is
+     * an error from `retainsUnfinishedWork`.
      * Throws seller_effect_pending 503 (the timeout as its cause) after 10,000 ms without the mutex, before inspecting and with no
-     * row, unit or file. Throws peer_store_capacity 503 for a completed operation at capacity, with no row, unit, file or exhaustion record,
-     * and where the class has no capacity, after its exhaustion record; wire_input_invalid 500
+     * row, unit or file. A completed operation at capacity returns `{ state: 'completed', outcome }` before any accounting, so a full record
+     * ledger or buyer window does not refuse it, with no row, unit, nonce, file or exhaustion record, when `answersCompletedAtCapacity`
+     * is true (the route revalidates its sources before it answers); otherwise it throws peer_store_capacity 503, as does a class that
+     * has no capacity, after its exhaustion record; wire_input_invalid 500
      * for malformed input; a TypeError for a context request without a live lease of its job or any other route given one;
      * otherwise the inspection's, accounting's or reservation's own error.
      */
     async reserveCoordinated(input = {}, ownership) {
       assertKitOperationAdmitted('reserveCoordinated');
-      const { payload, route, operationId, retainedWork } = input;
-      if (payload === null || typeof payload !== 'object' || route !== payload.path || operationId !== wireOperationId(payload) || typeof retainedWork !== 'boolean') {
+      const { payload, route, operationId, retainedWork, answersCompletedAtCapacity = false } = input;
+      if (payload === null || typeof payload !== 'object' || route !== payload.path || operationId !== wireOperationId(payload) || typeof retainedWork !== 'boolean' ||
+          typeof answersCompletedAtCapacity !== 'boolean') {
         fail('wire_input_invalid', 500);
       }
       const release = await enter(input, ownership);

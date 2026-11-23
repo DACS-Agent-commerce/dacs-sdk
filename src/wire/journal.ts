@@ -7,7 +7,7 @@
 // from those three, never from a request body). The first attempt records the operation's binding (profile, buyer and Agreement hash); every later request must
 // carry the same one, or gets peer_operation_mismatch (409), never a second effect.
 //   no attempt         -> attempt 0 is published: "new" (run the effect)
-//   attempt n live     -> "pending" (seller_effect_pending, 503: retry later)
+//   attempt n live     -> "pending" (seller_effect_pending, 503: the same signed request is now refused as peer_request_replayed; sign a new one with a new nonce)
 //   attempt n ended    -> attempt n+1 is published: "recover" (an earlier attempt may have acted: reconcile first)
 //   outcome published  -> "completed" (re-sign the stored outcome; no effect)
 // Attempt n ends exactly once, by publishing its end entry: completeWireEffect publishes it with the attempt's outcome (or null), and a request that finds the
@@ -380,8 +380,8 @@ export function reserveEffect(storeHandle: object, reservation: EffectReservatio
  * Record the end of an effect attempt that reserveEffect issued (`new` or `recover`), on the journal it was issued from. `outcome` is the answer the handler
  * signed: a later request for the same operation is answered with it and runs no effect, so its text must be a body the wire can sign: a JSON object CF-5
  * admission admits, in well-formed UTF-8 (`wire_input_invalid`, detail `OUTCOME-INVALID`, before anything is published). It is published once: the same outcome
- * again is accepted, another is `seller_effect_conflict` (500). `null` ends an attempt that caused no effect and will cause none (for example, a payment not yet
- * visible), so the next request recovers at once instead of after the lease. Clean null ends do not spend MAX_EFFECT_ATTEMPTS; only superseded attempts do. An
+ * again is accepted, another is `seller_effect_conflict` (500). `null` ends an attempt with no outcome (one that caused no effect, or progress that may still
+ * finish later, such as a payment not yet visible), so the next request recovers at once instead of after the lease; it is never proof of no effect. Clean null ends do not spend MAX_EFFECT_ATTEMPTS; only superseded attempts do. An
  * attempt whose lease ran out and that a later request ended first is `seller_effect_superseded` (500), and records nothing: its successor reconciles. Call it
  * only after the effect's own write is durable.
  */

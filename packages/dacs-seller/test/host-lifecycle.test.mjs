@@ -4,7 +4,7 @@ import fs, {chmodSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {connect} from 'node:net';
 import {once} from 'node:events';
-import {mkdtemp,rm,chmod,access,writeFile,symlink} from 'node:fs/promises';
+import {mkdtemp,rm,chmod,access,writeFile,symlink,readdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
@@ -12,36 +12,32 @@ import Database from 'better-sqlite3';
 import * as core from '@kynesyslabs/dacs';
 import {commitmentFixture} from './helpers/commitment-fixture.mjs';
 import {privateModule} from './helpers/private-module.mjs';
-import {testNetwork} from './helpers/wire-authority-fixture.mjs';
+import {hostAuthority,testWalletSession} from './helpers/kit-wallet-session.mjs';
 import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {startSellerHost,KIT_TP1_VET_MODE} from '../src/host.mjs';
 import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
-import {SELLER_CONTEXT_PATH} from '../src/dacs/seller-transport-auth.mjs';
-import {createSellerTransportStore} from './helpers/bound-transport-store.mjs';
-import {wireAuthentication} from './helpers/wire-buyer.mjs';
+import {DACS_SELLER_DISCOVERY_PATH} from '@kynesyslabs/dacs/wire';
+import {FIXTURE_ENDPOINT,wireAuthentication,wireBuyer} from './helpers/wire-buyer.mjs';
+import {LISTING_AUTHORITY,fetchAsHost,proxyListener} from './helpers/listener-host.mjs';
 import {PROCESS_LEASE_ID,PROCESS_NAMESPACE} from '../src/dacs/process-lease.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
-async function fixture(t,{wrap=agent=>agent}={}){
- const f=await commitmentFixture(t,{vetMode:KIT_TP1_VET_MODE}),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
+async function fixture(t,{wrap=agent=>agent,publicEndpoint=FIXTURE_ENDPOINT}={}){
+ const f=await commitmentFixture(t,{vetMode:KIT_TP1_VET_MODE,publicEndpoint}),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
  // `vetMode` is an agent option: the host fixes it and takes no such option.
  const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;delete config.vetMode;
  delete config.challengeLedger; // the host builds its own ledger
  const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout','setTestReadbackTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){const wrapped=new WeakMap();testWrapper=agent=>{if(!wrapped.has(agent))wrapped.set(agent,value(agent));return wrapped.get(agent);};}\nconst REQUIRED =').replace('now, agent, requireDelegation: false','now, agent: testWrapper(agent), requireDelegation: false').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nlet testReadbackTimeout=15000; function setTestReadbackTimeout(value){testReadbackTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout').replace('timeoutMs: TIMEOUTS.requestTimeout','timeoutMs: testReadbackTimeout'));
- api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,tp1Network:testNetwork()},hosts=[];
+ api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,...hostAuthority(),listener:proxyListener()},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
- const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:wireAuthentication({buyer:{claim:buyer.claim,sign:buyer.signBytes},seller:{claim:seller.claim,sign:seller.signBytes},listingPin:host.listingPin,clock:()=>NOW},()=>request.proposal.plan.agreementHash),timeoutMs:60000});
+ const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:wireAuthentication({buyer:{claim:buyer.claim,sign:buyer.signBytes},seller:{claim:seller.claim,sign:seller.signBytes},listingPin:host.listingPin,clock:()=>NOW},()=>request.proposal.plan.agreementHash),timeoutMs:60000,fetchImpl:fetchAsHost()});
  return{...f,start,options,dataDirectory,client,setKeepAliveTimeout:api.setTestKeepAliveTimeout,setReadbackTimeout:api.setTestReadbackTimeout};
 }
 async function anchorAgreement(f,request,answer){
  const agreement=await core.finalizeFixedPriceAgreementContributions(request.proposal.plan,[request.proposal.buyerContribution,answer.contribution],contributionVerifier);
  f.controls.agreement=fixtureRecord(core.fixedPriceAgreementLogicalAddress(agreement.jobId),agreement,buyer);
 }
-test('host refuses non-loopback before opening state',async t=>{
- const f=await fixture(t);for(const host of ['0.0.0.0','localhost','192.0.2.1'])await assert.rejects(f.start({host}),/literal loopback/);
- await assert.rejects(access(join(f.dataDirectory,'seller-state.lock')),{code:'ENOENT'});
-});
 test('host owns its lock while an authenticated HTTP request drains, then reopens and replays retained contribution',async t=>{
  const entered=defer(),release=defer();let block=true;t.after(()=>release.resolve());
  const f=await fixture(t,{wrap:agent=>({...agent,receiveProposal:async request=>{if(block){entered.resolve();await release.promise;}return agent.receiveProposal(request);}})}),host=await f.start();
@@ -149,7 +145,7 @@ test('host close destroys a connection that never finishes its request headers',
   await once(socket,'connect');
   // A buyer may open a connection and send a partial request line; no request
   // is dispatched, so nothing of it can be drained.
-  socket.write('POST /dacs/v1/commitments HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n');
+  socket.write(`POST /dacs/v1/commitments HTTP/1.1\r\nHost: ${LISTING_AUTHORITY}\r\nContent-Type: application/json\r\n`);
   await new Promise(resolve=>setImmediate(resolve));
   let guard;
   const outcome=await Promise.race([
@@ -161,17 +157,17 @@ test('host close destroys a connection that never finishes its request headers',
  }finally{socket.destroy();}
 });
 
-test('a class-instance tp1Network whose connection() reads its own private field answers a signed proposal, state read and commitment, each signed and verified by the buyer',async t=>{
- const f=await fixture(t),network=testNetwork(),receivers=[];
- class OperatorNetwork{#current=network.connection();connection(){receivers.push(this);return {...this.#current};}readAuthority(scope){return network.readAuthority(scope);}}
- const tp1Network=new OperatorNetwork(),host=await f.start({tp1Network}),request=await f.proposal(host),client=f.client(host,request);
+test('a class-instance wallet-session authority whose context() reads its own private field answers a signed proposal, state read and commitment, each signed and verified by the buyer',async t=>{
+ const f=await fixture(t),{walletSession}=testWalletSession(),receivers=[];
+ class OperatorAuthority{#inner=walletSession.authority;context(){receivers.push(this);return this.#inner.context();}authorityRpc(body,options){return this.#inner.authorityRpc(body,options);}connectionGeneration(){return this.#inner.connectionGeneration();}}
+ const authority=new OperatorAuthority(),host=await f.start({walletSession:{...walletSession,authority}}),request=await f.proposal(host),client=f.client(host,request);
  const reads=[receivers.length];
  const answer=await client.propose(request);assert.equal(answer.disposition,'complete');reads.push(receivers.length);
  assert.equal(typeof await client.agreementState(request.transportIdentity),'object');reads.push(receivers.length);
  await anchorAgreement(f,request,answer);
  assert.equal((await client.commit(request.transportIdentity.jobId)).status,'committed');reads.push(receivers.length);
  for(let i=1;i<reads.length;i++)assert.ok(reads[i]-reads[i-1]>=2,`request ${i} read the connection again`);
- assert.ok(receivers.every(receiver=>receiver===tp1Network),'every read ran on tp1Network');
+ assert.ok(receivers.every(receiver=>receiver===authority),'every read ran on the authority');
 });
 test('wrapped native artifact readbacks keep their capability receiver',async t=>{
  const f=await fixture(t),native=f.native;
@@ -222,7 +218,8 @@ test('host issues no session challenge once close has begun',async t=>{
  await entered.promise;
  const closing=host.close();
  try{
-  assert.throws(()=>host.issueSessionChallenge({jobId:request.transportIdentity.jobId,buyer:buyer.claim}),error=>error.code==='seller_host_closing');
+  const {hostBuyer}=await import('./helpers/host-context-client.mjs');
+  await assert.rejects((await hostBuyer(host,f.config.listing,{jobId:request.transportIdentity.jobId})).challenge(),'a challenge request after close has begun is not served');
  }finally{release.resolve();}
  await pending;await closing;
 });
@@ -239,7 +236,7 @@ test('host close closes an idle keep-alive connection instead of waiting for its
   // A refusal before any effect is answered without `connection: close`, so
   // the server keeps this connection alive after the response.
   const body='{"transportIdentity":{}}';
-  socket.write(`POST /dacs/v1/agreements/state HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: keep-alive\r\n\r\n${body}`);
+  socket.write(`POST /dacs/v1/agreements/state HTTP/1.1\r\nHost: ${LISTING_AUTHORITY}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: keep-alive\r\n\r\n${body}`);
   const [answer]=await once(socket,'data');
   assert.match(String(answer),/^HTTP\/1\.1 4\d\d /);
   assert.doesNotMatch(String(answer),/connection: close/i);
@@ -259,7 +256,7 @@ test('a listen failure releases the state lock and everything opened before it',
  const f=await fixture(t),blocker=createServer();
  await new Promise(resolve=>blocker.listen({host:'127.0.0.1',port:0,exclusive:true},resolve));
  const port=blocker.address().port;
- try{await assert.rejects(f.start({port}),error=>error.code==='EADDRINUSE');}
+ try{await assert.rejects(f.start({listener:proxyListener({port})}),error=>error.code==='EADDRINUSE');}
  finally{await new Promise(resolve=>blocker.close(resolve));}
  const host=await f.start();await host.close();
 });
@@ -267,7 +264,7 @@ test('a listen failure releases the state lock and everything opened before it',
 test('host reports both literal loopback URLs',async t=>{
  const f=await fixture(t);
  const v4=await f.start();assert.match(v4.url,/^http:\/\/127\.0\.0\.1:\d+$/);await v4.close();
- const v6=await f.start({host:'::1'});assert.match(v6.url,/^http:\/\/\[::1\]:\d+$/);await v6.close();
+ const v6=await f.start({listener:proxyListener({host:'::1'})});assert.match(v6.url,/^http:\/\/\[::1\]:\d+$/);await v6.close();
 });
 
 test('host makes newly created seller, transport and journal directories durable before listening',async t=>{
@@ -314,18 +311,6 @@ test('host releases the job lock of a holder that is gone before serving and log
  assert.deepEqual(refusals,[[liveJob,'seller_state_busy']]);
 });
 
-test('host opens its transport store so a context step an earlier process left pending is uncertain',async t=>{
- const f=await fixture(t);await (await f.start()).close();
- const path=join(f.dataDirectory,'transport','transport.sqlite'),jobId=core.generateCanonicalJobId();
- const earlier=createSellerTransportStore({path});
- earlier.reserve({path:SELLER_CONTEXT_PATH,method:'POST',bodyHash:'c'.repeat(64),jobId,buyer:buyer.claim,seller:seller.claim,listingPin:{listingId:'test',version:1,contentHash:'d'.repeat(64)},agreementHash:'e'.repeat(64),nonce:'earlier',expiresAt:Date.now()+60000},{scope:{jobId}},{admit:()=>Date.now()});
- earlier.close();
- const states=()=>{const db=new Database(path,{readonly:true});try{return db.prepare('SELECT state FROM peer_effects').all().map(row=>row.state);}finally{db.close();}};
- assert.deepEqual(states(),['pending']);
- await f.start();
- assert.deepEqual(states(),['uncertain']);
-});
-
 test('host refuses malformed options before opening any state',async t=>{
  const root=await mkdtemp(join(tmpdir(),'TEST-host-options-')),dataDirectory=await mkdtemp(join(root,'state-'));
  const loose=await mkdtemp(join(tmpdir(),'TEST-host-loose-'));await chmod(loose,0o755);
@@ -334,17 +319,12 @@ test('host refuses malformed options before opening any state',async t=>{
  // The data directory's mode must be exactly 0700: owner-only modes without full owner access refuse too.
  const notExactly0700=await Promise.all([0o500,0o600,0o710].map(async mode=>{const directory=await mkdtemp(join(root,'mode-'));await chmod(directory,mode);return [mode,directory];}));
  t.after(async()=>{await rm(root,{recursive:true,force:true});await rm(loose,{recursive:true,force:true});});
- const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{},dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',tp1Network:testNetwork()});
+ const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{seller:{publicEndpoint:FIXTURE_ENDPOINT}},listener:proxyListener(),dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',...hostAuthority()});
  const cases=[
   ['non-object',null,/must be an object/],
   ['array options',[],/must be an object/],
   ['unknown option',{...base(),extra:true},/unknown seller host option: extra/],
   ['missing required',(()=>{const value=base();delete value.agreementAnchor;return value;})(),/requires agreementAnchor/],
-  ['non-loopback host',{...base(),host:'localhost'},/literal loopback/],
-  ['negative port',{...base(),port:-1},/port must be an integer/],
-  ['port above 65535',{...base(),port:65536},/port must be an integer/],
-  ['fractional port',{...base(),port:1.5},/port must be an integer/],
-  ['string port',{...base(),port:'80'},/port must be an integer/],
   ['relative dataDirectory',{...base(),dataDirectory:'relative/state'},/absolute path/],
   ['non-private dataDirectory',{...base(),dataDirectory:loose},/existing private \(mode 0700\) directory/],
   ['symbolic link dataDirectory',{...base(),dataDirectory:link},/existing private \(mode 0700\) directory/],
@@ -361,13 +341,42 @@ test('a host started with a TP-1 G3 orchestrator DEM context takes a W proposal'
  const f=await fixture(t),host=await f.start(),request=await f.proposal(host);
  assert.equal((await f.client(host,request).propose(request)).disposition,'complete');
 });
-test('the host refuses a counterparty DEM context with vet_mode_mismatch before the state lock',async t=>{
+test('the host refuses a counterparty DEM context with its own vet_mode_mismatch before it opens any state',async t=>{
  const f=await fixture(t);
- await assert.rejects(f.start({demDeliveryContext:f.capability(undefined)}),{name:'TypeError',code:'vet_mode_mismatch'});
- await assert.rejects(access(join(f.dataDirectory,'seller-state.lock')),{code:'ENOENT'});
+ await assert.rejects(f.start({demDeliveryContext:f.capability(undefined)}),{name:'TypeError',code:'vet_mode_mismatch',message:/the seller host runs in the tp1-g3-orchestrator Vet mode/});
+ assert.deepEqual(await readdir(f.dataDirectory),[]);
+});
+test('mode-like environment variables and a request member leave the host in the kit Vet mode',async t=>{
+ const names=['VET_MODE','DACS_VET_MODE','KIT_TP1_VET_MODE','DACS_SELLER_VET_MODE'],saved=names.map(name=>[name,process.env[name]]);
+ t.after(()=>{for(const [name,value] of saved){if(value===undefined)delete process.env[name];else process.env[name]=value;}});
+ for(const name of names)process.env[name]='counterparty';
+ const f=await fixture(t),host=await f.start(),request=await f.proposal(host);
+ const withMember={...request,vetMode:'counterparty'},withProposalMember={...request,proposal:{...request.proposal,vetMode:'counterparty'}};
+ for(const sent of [withMember,withProposalMember,request])assert.equal((await f.client(host,sent).propose(sent)).disposition,'complete');
+});
+test('a Listing member naming another Vet mode leaves the host in the kit Vet mode',async t=>{
+ const f=await fixture(t),draft={...f.listing};
+ delete draft.signature;
+ const listing=await core.signComponentArtifact({...draft,vetMode:'counterparty'},core.ARTIFACT_SEPARATORS.Listing,{signer:seller.claim,algorithm:'ed25519',sign:seller.signBytes});
+ // An agent in another mode than the host's kit DEM context cannot be created, so a started host is in the kit mode.
+ await f.start({listing});
 });
 test('no host option selects or changes the kit Vet mode',async t=>{
  const f=await fixture(t);
  for(const mode of ['counterparty',KIT_TP1_VET_MODE,undefined])await assert.rejects(f.start({vetMode:mode}),/unknown seller host option: vetMode/);
+ await assert.rejects(access(join(f.dataDirectory,'seller-state.lock')),{code:'ENOENT'});
+});
+const discoveryOf=async host=>{const response=await fetchAsHost()(`${host.url}${DACS_SELLER_DISCOVERY_PATH}`);return{status:response.status,bytes:Buffer.from(await response.arrayBuffer())};};
+test('a started host serves its signed discovery document over HTTP, which the buyer\'s endpoint proof accepts',async t=>{
+ const f=await fixture(t,{publicEndpoint:FIXTURE_ENDPOINT}),host=await f.start();
+ const buyerWire=await wireBuyer({buyer:{claim:buyer.claim,sign:buyer.signBytes},seller:{claim:seller.claim,sign:seller.signBytes},listingPin:host.listingPin,clock:()=>NOW});
+ const served=await discoveryOf(host);
+ assert.equal(served.status,200);
+ const proof=await buyerWire.verifyDiscovery(served.bytes);
+ assert.deepEqual({endpoint:proof.payload.publicEndpoint,ready:proof.ready},{endpoint:FIXTURE_ENDPOINT,ready:true});
+});
+test('a host does not start for a Listing that names no HTTPS origin, so it never answers discovery for one',async t=>{
+ const endpoint='https://seller.example/agent',f=await fixture(t,{publicEndpoint:endpoint});
+ await assert.rejects(f.start({listener:proxyListener({publicOrigin:endpoint})}),{name:'TypeError',code:'listener_origin_mismatch'});
  await assert.rejects(access(join(f.dataDirectory,'seller-state.lock')),{code:'ENOENT'});
 });

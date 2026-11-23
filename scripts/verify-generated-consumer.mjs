@@ -79,10 +79,10 @@ const steps = [];
 
 /** Run one fixed command without a shell and keep its complete log as evidence. */
 async function step(name, command, commandArgs, options) {
-  const started = Date.now();
+  const started = performance.now();
   const result = spawnSync(command, commandArgs, {
     cwd: options.cwd,
-    env: { ...process.env, NO_COLOR: "1", npm_config_update_notifier: "false" },
+    env: { ...process.env, NO_COLOR: "1", npm_config_update_notifier: "false", ...options.env },
     encoding: "utf8",
     maxBuffer: 256 * 1024 * 1024,
     timeout: options.timeoutMs,
@@ -102,7 +102,7 @@ async function step(name, command, commandArgs, options) {
     exitCode: result.status,
     signal: result.signal,
     timedOut: result.error?.code === "ETIMEDOUT",
-    durationMs: Date.now() - started,
+    durationMs: performance.now() - started,
     log: logName,
   };
   steps.push(record);
@@ -214,7 +214,7 @@ async function releaseSetComparison(packs) {
 }
 
 await prepareOutputDirectory();
-const started = Date.now();
+const started = performance.now();
 const version = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8")).version;
 const scratch = await mkdtemp(join(tmpdir(), "dacs-generated-consumer-"));
 const report = {
@@ -280,6 +280,12 @@ try {
         "install", "--no-audit", "--no-save", "--ignore-scripts", "--omit=optional",
         tarballs.core.path, tarballs.host.path, TYPESCRIPT, NODE_TYPES,
       ], { cwd: generated, timeoutMs: 20 * MINUTE });
+      for (const entry of ["websdk", "storage", "abstraction"]) {
+        await step(`${rail}-import-${entry}`, process.execPath, [
+          "--input-type=module", "--eval",
+          `await import("@kynesyslabs/demosdk/${entry}");`,
+        ], { cwd: generated, env: { NODE_OPTIONS: "" }, timeoutMs: MINUTE });
+      }
       await step(`${rail}-rebuild-sqlite`, "npm", ["rebuild", "better-sqlite3"],
         { cwd: generated, timeoutMs: 15 * MINUTE });
       railReport.installed = {
@@ -342,7 +348,7 @@ try {
   await rm(scratch, { recursive: true, force: true });
 }
 report.steps = steps;
-report.durationMs = Date.now() - started;
+report.durationMs = performance.now() - started;
 report.passed = report.failures.length === 0 &&
   RAILS.every((rail) => report.rails[rail]?.status === "passed");
 await writeFile(join(outputDirectory, "generated-consumer.json"),

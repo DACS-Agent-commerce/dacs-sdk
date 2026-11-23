@@ -1,0 +1,36 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF check the broadcast fee ceiling against the signed fees and refuse a node fee view that differs from them",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "f596428e36c1b9810391a33cd5535c1482e17123",
+      "after": "7d54d645d3a1f69a7bc3af3772006692e0bf50c8"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+      "before": "97948082e383966553ced55aa7fd07a2f63b2b92",
+      "after": "1928920fabd97766cd4e600436152fbbcc7cb2a5"
+    },
+    {
+      "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+      "before": "259e6645e3bd08d8f21ac90daf026c99ccc4fdb0",
+      "after": "2ebeb1fcc8edc071a9f782152560e42479846de3"
+    },
+    {
+      "path": "packages/dacs-client/test/native-node-fee-view.test.mjs",
+      "before": null,
+      "after": "1e9b64d15e4054ca63381d2fc4a19ab8a0fc6fa4"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-ccfcece0ae2d.json",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/src/wallet/effect-boundary.mjs",
+    "packages/dacs-client/test/native-effect-paths.test.mjs",
+    "packages/dacs-client/test/native-node-fee-view.test.mjs"
+  ],
+  "note": "The broadcast's fee ceiling now reads the debit of the signed transaction only: its amount plus the fees of its own signed transaction_fee. A confirmation whose node fee view is present and is not exactly the signed fees is refused at broadcast with fee_view_mismatch, a transfer refusal relays answer with 409 as not sent, before any lane, intent or dispatch record; the lease ends and nothing is broadcast."
+}

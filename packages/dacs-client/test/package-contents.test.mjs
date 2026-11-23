@@ -1,33 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { installPackedPair } from './helpers/packed-install.mjs';
+import { LOADING_MODULES, entryPointClosure, packageDir } from './helpers/entry-point-closure.mjs';
 
-const packageDir = fileURLToPath(new URL('..', import.meta.url));
-function entryPointClosure() {
-  const files = new Set();
-  function visit(path) {
-    if (files.has(path)) return;
-    assert.ok(path.startsWith('src/') && path.endsWith('.mjs'), path);
-    files.add(path);
-    const source = readFileSync(join(packageDir, path), 'utf8');
-    for (const [, specifier] of source.matchAll(/\b(?:from|import)\s*(?:\(\s*)?['"](\.[^'"]+)['"]/g)) {
-      visit(relative(packageDir, resolve(packageDir, dirname(path), specifier)));
-    }
-  }
-  visit('src/index.mjs');
-  visit('src/wallet/durable-journal.mjs');
-  visit('src/wallet/node-wallet-session.mjs');
-  visit('src/substrate/demos.mjs');
-  return [...files].sort();
-}
-
-// The quiet hook is registered by URL, so no import reaches it; the four entry points determine the rest of the closure.
-const LOADING_MODULES = ['src/wallet/demos-quiet-hooks.mjs'];
 test('npm pack ships the four entry points, their reviewed import closure and the quiet loading hook', t => {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-pack-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -50,7 +29,11 @@ test('npm pack ships the four entry points, their reviewed import closure and th
     assert.doesNotMatch(path, /(?:^|\/)(?:public|portal|portal-intent|config|seller-agent|seller-durable-state|switch-files|FIX-REPORT|\.fix-tmp|\.rr-tmp|\.stack)(?:[/.]|$)/, path);
   }
   assert.deepEqual(files, [...entryPointClosure(), ...LOADING_MODULES, 'package.json', 'README.md', 'LICENSE'].sort());
-  for (const path of ['src/dacs/purchase-admission-state.mjs', 'src/public-admission.mjs']) assert.ok(files.includes(path), `${path} ships`);
+  for (const path of ['src/dacs/seller-agent-error.mjs', 'src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-session-limits.mjs']) {
+    assert.ok(!files.includes(path), `${path} stays outside the buyer closure`);
+  }
+  for (const path of ['src/dacs/purchase-admission-state.mjs', 'src/public-admission.mjs', 'src/host-stop.mjs',
+    'src/host/purchase-ops.mjs', 'src/host/purchase-challenges.mjs', 'src/host/local-account.mjs']) assert.ok(files.includes(path), `${path} ships`);
 });
 
 test('the packed archive offers no admission bypass and every packed module sees PURCHASE_ADMISSION held', t => {
@@ -299,4 +282,56 @@ test('documented local packing builds core before skipping pack lifecycle script
   const install = commands.indexOf('npm ci'), build = commands.indexOf('npm run build');
   const pack = commands.findIndex(command => command.startsWith('npm pack --ignore-scripts'));
   assert.ok(install >= 0 && build > install && pack > build, 'fresh clones build dist before packing core');
+});
+
+test("no test double or authority fixture is in the client's files or exports", t => {
+  const { app, run } = installPackedPair(t);
+  writeFileSync(join(app, 'eb-contents.mjs'), `
+    import assert from 'node:assert/strict';
+    import { readdirSync, readFileSync } from 'node:fs';
+    const root = new URL('./node_modules/@kynesyslabs/dacs-client/', import.meta.url);
+    const files = readdirSync(root, { recursive: true });
+    assert.ok(files.includes('src/wallet/effect-boundary.mjs'));
+    for (const file of files) assert.doesNotMatch(file, /fixture|double|test\\//);
+    const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
+    assert.doesNotMatch(JSON.stringify(pkg.exports), /effect-boundary/);
+    const { createEffectBoundary } = await import(new URL('src/wallet/effect-boundary.mjs', root));
+    assert.equal(typeof createEffectBoundary, 'function');
+  `);
+  run(process.execPath, ['eb-contents.mjs'], app);
+});
+
+test('packed and installed outside the checkout, the client ships authority-reader.mjs and every runtime file it imports, no authority or enrollment fixture, and its installed reader runs against a bounded offline transport', t => {
+  const { app, run } = installPackedPair(t);
+  writeFileSync(join(app, 'authority-contents.mjs'), `
+    import assert from 'node:assert/strict';
+    import { existsSync, readdirSync, readFileSync } from 'node:fs';
+    import { dirname, join, relative, resolve } from 'node:path';
+    import { fileURLToPath } from 'node:url';
+    import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD as record } from '@kynesyslabs/dacs/wire';
+    import { createAuthorityReader } from '@kynesyslabs/dacs-client';
+    const root = fileURLToPath(new URL('./node_modules/@kynesyslabs/dacs-client/', import.meta.url));
+    for (const file of readdirSync(root, { recursive: true })) assert.doesNotMatch(file, /fixture|double|test\\//);
+    const seen = new Set();
+    const visit = path => {
+      if (seen.has(path)) return;
+      seen.add(path);
+      assert.ok(existsSync(join(root, path)), path + ' ships');
+      for (const [, specifier] of readFileSync(join(root, path), 'utf8').matchAll(/\\b(?:from|import)\\s*['"](\\.[^'"]+)['"]/g)) visit(relative(root, resolve(root, dirname(path), specifier)));
+    };
+    visit('src/wallet/authority-reader.mjs');
+    assert.ok(seen.has('src/wallet/authority-reader.mjs'));
+    const claim = 'did:demos:agent:' + '4'.repeat(64);
+    const context = { network: record.network, endpoint: 'https://rpc.example.invalid/', transportAuthority: 'TEST-offline-authority', connectionId: 'TEST-offline-connection' };
+    const requests = [];
+    const authority = { context: () => context, connectionGeneration: () => 'TEST-generation',
+      authorityRpc: async body => { requests.push(body.params[0].message); return { result: 200, response: { number: 0, status: 'confirmed', hash: record.chainIdentity, content: {} }, require_reply: false, extra: null }; } };
+    const readAuthority = createAuthorityReader({ authority, identityRecord: record, claim: () => claim, listings: { isRegistered: () => false },
+      purchases: { findByJobId: () => null }, participantImplementations: { entriesFor: () => [] } });
+    const { endpoint, transportAuthority, connectionId } = context;
+    const binding = await bindTp1Profile({ record, local: { endpoint, transportAuthority, connectionId }, readAuthority });
+    assert.equal(binding.profile.chainIdentity, record.chainIdentity);
+    assert.deepEqual([...new Set(requests)], ['getBlockByNumber']);
+  `);
+  run(process.execPath, ['authority-contents.mjs'], app);
 });

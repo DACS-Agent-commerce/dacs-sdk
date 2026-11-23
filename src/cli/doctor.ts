@@ -163,9 +163,12 @@ export function rpcSensitiveNeedles(rpc?: string): string[] {
   }
 }
 
-/** Drop C0/C1 control characters (no exceptions) from text that comes from a node reply. */
+/**
+ * Drop control, format, line-separator and paragraph-separator characters (Unicode
+ * categories Cc, Cf, Zl and Zp) from text that comes from a node reply.
+ */
 function stripControlChars(text: string): string {
-  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+  return text.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "");
 }
 
 function sanitizeError(err: unknown, secrets: Array<string | undefined> = []): string {

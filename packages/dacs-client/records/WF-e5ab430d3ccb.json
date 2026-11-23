@@ -1,0 +1,96 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF take an authority token at the native capability constructors and publication policies",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "73d0105200cb8ccc9991eb7748d1a192034e49c0",
+      "after": "15cab2c38f9e69aea06e3d156eaa8253e7382393"
+    },
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "4f0b105f73bcbe642866b8c01b9e73a3ff0796e2",
+      "after": "18859936179914e393d1b5f1626d51ff9e2b4e7d"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/dem-delivery-context-consumer.mjs",
+      "before": "b190cb9f28255865882e670bbd9ef45bd9193bba",
+      "after": "5f053fb7d098f5ba4a9ce640851ec801335a1bbd"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/native-dem-delivery-consumer.mjs",
+      "before": "c542cfbceb16d7d440698c48c9e9d93377ea744c",
+      "after": "c4eae8421a70f35cf3d984cb4e5a259fe2b51375"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/source-demo-seller-transport.mjs",
+      "before": "14350d302f2efcecf790150cd2fcaec4244982d0",
+      "after": "ef789562706d4ceefea8f2396d9c85a8ed306bac"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/tp1-authority-token.mjs",
+      "before": null,
+      "after": "52df590546fdee62505e6ecad4bd90ec1af456c9"
+    },
+    {
+      "path": "packages/dacs-client/src/devnet-demo/commitment-consumer.mjs",
+      "before": "7bb3b241b531f8bab3843663648c476f81b0add1",
+      "after": "95481b0b6707bcc37a555071b83e3481e5fe1019"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "97f216ffcc232847f64fe09c2aaecb4f70c20f28",
+      "after": "890e36787f46026084bbd87b99b524ee732b1d4a"
+    },
+    {
+      "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "before": "10714c8e99468837c2ebc47cd666ec638488bf33",
+      "after": "b0a5422444b652a0f23e9f75ed99fd427a590a19"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "7ea5f078b95888b7dce1c6cc33abc6d4136fc7c7",
+      "after": "2a298acb11258608a0e9dbe202dbc03db404cd41"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "8818616150a76a7c84d90cddd1e023a441e7f9b5",
+      "after": "997810c6701716312239b0040f18a9c1a22aef7e"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/native-create-world.mjs",
+      "before": "c9eb47740d119d27269303a30d23ed32445dadfa",
+      "after": "6947b2e0ea9fa97fa231b2530ade7b6855b1f7eb"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+      "before": "5c183870097d09f7096490af9fc6ff0486aafb02",
+      "after": "27720e1d2f3fc057ac8d8d8088bd7ca924fcb9ea"
+    },
+    {
+      "path": "packages/dacs-client/test/tp1-authority.test.mjs",
+      "before": null,
+      "after": "e26ddb7fad57e45f8e5d28b49535b55b3b9549ef"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-e5ab430d3ccb.json",
+    "packages/dacs-client/src/dacs/dem-delivery-context-consumer.mjs",
+    "packages/dacs-client/src/dacs/native-dem-delivery-consumer.mjs",
+    "packages/dacs-client/src/dacs/source-demo-seller-transport.mjs",
+    "packages/dacs-client/src/dacs/tp1-authority-token.mjs",
+    "packages/dacs-client/src/devnet-demo/commitment-consumer.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/test/helpers/native-create-world.mjs",
+    "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+    "packages/dacs-client/test/tp1-authority.test.mjs"
+  ],
+  "note": "The four capability constructors that take an authority (source demo seller transport, DEM delivery context, native DEM delivery, native commitment) and the native transport's settlement, delivery and demo publication policies accept an authority token as well as a TEST- label. A token is checked by identity against the binding passed to the constructor (the transport's new authorityBinding option; the Node seller composition passes its own admission binding), is refused while purchase actions are held, and only its label string is stored, declared and signed. A plain TP1- label string is refused authority_unbound. The token registry moves into the new src/dacs/tp1-authority-token.mjs, now a WeakMap from token to binding, and node-wallet-session.mjs registers into it. isDemDeliveryContextAuthority accepts canonical TEST- and TP1- label strings. sdk-provider.mjs readTransport accepts a canonical TP1- label for a publication that equals the transport binding's copy; it keeps its own label pattern because the served provider imports nothing. index.mjs documents the new options and the README gains a paragraph on tokens and labels. The test world takes authority options next to its reference block option and the session fixture can derive session options from the admission."
+}

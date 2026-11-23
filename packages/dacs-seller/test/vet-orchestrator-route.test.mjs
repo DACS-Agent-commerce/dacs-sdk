@@ -1,20 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { orchestratorFixture, SELLER, BUYER, OTHER, address, copy, assertPresent } from './helpers/vet-orchestrator-fixture.mjs';
-import { world, exchange, JOBS } from './helpers/d5-http-fixture.mjs';
-const routeWorld = async (t, limits) => { const f = await orchestratorFixture(t), p = f.provider(), holds=[], w = await world(t, { fixture: { seller: { claim: SELLER.claim, sign: SELLER.signBytes }, buyer: { claim: BUYER.claim, sign: BUYER.signBytes }, other: { claim: OTHER.claim, sign: OTHER.signBytes }, listing: f.listing }, ...(limits ? { limits } : {}), admitWrites:async value=>{holds.push(value);return null;},perform: p.resolveBuyer, recover: p.recoverBuyer, resumable: p.resumableBuyer }); return { f, w, holds }; };
-test("a W context start reserves two writes and makes exactly two Vet CREATEs; an identical retry makes none", async (t) => { const { f, w, holds } = await routeWorld(t), input = await w.wire(); assert.equal((await exchange(w.handler, input)).status, 200); assert.equal(w.effects().holds, 1); assert.equal(holds[0].writes,2); assert.equal(f.controls.creates.length, 2); assert.equal((await exchange(w.handler, input)).status, 200); assert.equal(f.controls.creates.length, 2); });
-test("a W readback that fails after a restart reaches the route as an indeterminate answer with a closed cause, not a failure or a malformed answer", async (t) => { const f = await orchestratorFixture(t, { disk: true }); assertPresent(await f.run()); f.controls.onRead = () => { throw new Error('TEST read outage /home/x'); }; const w = await world(t, { fixture: { seller: { claim: SELLER.claim, sign: SELLER.signBytes }, buyer: { claim: BUYER.claim, sign: BUYER.signBytes }, other: { claim: OTHER.claim, sign: OTHER.signBytes }, listing: f.listing }, perform: () => f.fresh().resolveSeller(f.sellerRequest()) }); const reply = await exchange(w.handler, await w.wire()); assert.equal(reply.status, 200); assert.deepEqual(JSON.parse(reply.text), { disposition: 'indeterminate', reason: 'party Vet readback failed (unavailable)' }); });
-test("the per-buyer and global unpaid-start limits refuse a W start before any policy hold or Vet signature", async (t) => { for (const global of [false, true]) {
-    const { f, w } = await routeWorld(t, { maxStartsPerHour: global ? 1 : 2, maxStartsPerBuyerPerHour: 1 });
-    assert.equal((await exchange(w.handler, await w.wire())).status, 200);
-    const held = w.effects().holds, count = f.controls.signatures.length;
-    const out = await exchange(w.handler, await w.wire({ jobId: JOBS[1], actor: global ? w.other : w.buyer }));
-    assert.equal(out.status, 409);
-    assert.match(out.text, /unpaid_start_limit/);
-    assert.equal(w.effects().holds, held);
-    assert.equal(f.controls.signatures.length, count);
-} });
+import { orchestratorFixture, SELLER, BUYER, address, copy, assertPresent } from './helpers/vet-orchestrator-fixture.mjs';
 test("W resumable answers null for: another binding; another or unsupported retained mode; a seller or same-binding buyer record that fails the strict check for its party's exact bundle and requirement, or whose receipt is not verified finalized and established; an address whose intent has an unknown outcome; and an address that reads plain absence, or hasIntent:false, without the anchor's no-intent proof. Each sits beside a control that answers {writes:1} or {writes:2}", async (t) => { for (const fault of ['binding', 'counterparty', 'unsupported', 'seller-bundle', 'buyer-requirement', 'seller-receipt', 'buyer-receipt', 'unknown', 'plain', 'false-intent', 'control'])
     await t.test(fault, async (t) => { const f = await orchestratorFixture(t); f.controls.beforePublish = ({ logicalAddress }) => { if (logicalAddress === address(BUYER))
         throw new Error('TEST buyer no intent'); }; await assert.rejects(f.run()); const p = f.fresh(); if (fault === 'control') {

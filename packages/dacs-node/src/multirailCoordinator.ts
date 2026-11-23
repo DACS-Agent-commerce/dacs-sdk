@@ -145,6 +145,8 @@ function limit(value: number | undefined): number {
  * One actor-local facade over independent x402 and native DEM coordinators.
  * A job is admitted to exactly one profile before Agreement; the facade never
  * falls back to another rail after payment authority or ambiguity exists.
+ * Starts for the same job id run one at a time inside the facade, so the rule
+ * holds when the two coordinators use independent stores.
  */
 export function createDacsLiveMultirailCoordinatorV1(
   options: DacsLiveMultirailCoordinatorOptionsV1,
@@ -179,6 +181,28 @@ export function createDacsLiveMultirailCoordinatorV1(
         ? null
         : { profile: "pay-dem" as const, status: payDemStatus }
       : { profile: "x402" as const, status: x402Status };
+  };
+
+  const startsInFlight = new Map<string, Promise<undefined>>();
+
+  const startOnSelectedRail = async (
+    order: Readonly<DacsLiveCommerceOrderInputV1>,
+    selected: DacsLiveCommerceRailProfileV1,
+  ): Promise<DacsLiveCommerceOrderStatusV1> => {
+    const existing = await resolveExisting(order.jobId);
+    if (existing !== null && existing.profile !== selected) {
+      throw new DacsLiveMultirailCoordinatorError("multirail-job-profile-conflict");
+    }
+    if (selected === "x402") {
+      if (x402 === undefined) {
+        throw new DacsLiveMultirailCoordinatorError("multirail-profile-disabled");
+      }
+      return x402.startOrder(order as FixedPriceX402OrderInput);
+    }
+    if (payDem === undefined) {
+      throw new DacsLiveMultirailCoordinatorError("multirail-profile-disabled");
+    }
+    return payDem.startOrder(order as FixedPricePayDemOrderInput);
   };
 
   const run = async (
@@ -236,20 +260,20 @@ export function createDacsLiveMultirailCoordinatorV1(
       if (selected === undefined) {
         throw new DacsLiveMultirailCoordinatorError("multirail-order-profile-invalid");
       }
-      const existing = await resolveExisting(order.jobId);
-      if (existing !== null && existing.profile !== selected) {
-        throw new DacsLiveMultirailCoordinatorError("multirail-job-profile-conflict");
+      // Starts for one job run one at a time, so a later start reads the
+      // binding an earlier start wrote, even when the rails use separate stores.
+      const earlier = startsInFlight.get(order.jobId);
+      const start = (async () => {
+        await earlier;
+        return startOnSelectedRail(order, selected);
+      })();
+      const settled = start.then(() => undefined, () => undefined);
+      startsInFlight.set(order.jobId, settled);
+      try {
+        return await start;
+      } finally {
+        if (startsInFlight.get(order.jobId) === settled) startsInFlight.delete(order.jobId);
       }
-      if (selected === "x402") {
-        if (x402 === undefined) {
-          throw new DacsLiveMultirailCoordinatorError("multirail-profile-disabled");
-        }
-        return x402.startOrder(order as FixedPriceX402OrderInput);
-      }
-      if (payDem === undefined) {
-        throw new DacsLiveMultirailCoordinatorError("multirail-profile-disabled");
-      }
-      return payDem.startOrder(order as FixedPricePayDemOrderInput);
     },
     async getOrderStatus(jobId) {
       return (await resolveExisting(jobId))?.status ?? null;

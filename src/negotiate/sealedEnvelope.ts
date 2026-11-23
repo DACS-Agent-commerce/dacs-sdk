@@ -1,4 +1,3 @@
-import { baseUnits } from "../canonical/decimal.js";
 import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { DacsError } from "../errors.js";
@@ -52,8 +51,7 @@ export interface SealedRuleEvaluationInput {
  * build the authoritative anchored candidate set, select the winner, and hand
  * the winning bid plus resolved SE-8 roles to the injected `commitAgreement`
  * (which builds/signs/anchors the AgreementDocument — kept out of here so this
- * stays substrate-agnostic and testable, exactly like runSessionCore's injected
- * settle/anchor).
+ * stays substrate-agnostic and testable).
  *
  * The channel transport (L2PS / SR-4) and the SR-2 anchoring of commits/reveals
  * are the caller's concern; this consumes their *anchored* outputs (the
@@ -234,7 +232,12 @@ export function assignSealedEnvelopeRoles(input: {
   };
 }
 
-/** Context the injected agreement builder needs to construct the AgreementDocument. */
+/**
+ * Winning bid of a sealed-envelope selection and its job context.
+ * `SealedCommitContext` makes the resolved mode and roles required and adds
+ * the commit check; `runSealedEnvelopeCore` passes that context to
+ * `commitAgreement`.
+ */
 export interface SealedWinnerContext {
   jobId: string;
   /**
@@ -247,7 +250,7 @@ export interface SealedWinnerContext {
   winningBidderClaim: string;
   winningBid: SealedBid;
   losingBidderClaims: string[];
-  /** Defaults to the legacy demand phase when absent. */
+  /** Absent means the demand phase, as in `resolveSealedEnvelopeMode`. */
   phaseKind?: SealedEnvelopePhaseKind;
   /** Defaults to demand only for the demand phase; required for procurement. */
   auctionMode?: SealedEnvelopeAuctionMode;
@@ -256,70 +259,6 @@ export interface SealedWinnerContext {
   agreementSeller?: string;
   requiredSignerClaims?: [string, string];
   parties?: SealedAgreementParty[];
-}
-
-/** Listing-side context needed to turn a winning bid into an AgreementDocument. */
-export interface SealedAgreementContext {
-  /** Listing publisher; historical field name retained for compatibility. */
-  seller: string;
-  listingRef: string;
-  /** Token decimals for the listing's rail (bid amount is a decimal → base units). */
-  decimals: number;
-  /** Payment rail id the agreement settles on. */
-  rail: string;
-  deliveryPhase: string;
-  deliveryFormat: string;
-  /** Agreement expiry / settle-by (ISO-8601). */
-  expiresAt: string;
-}
-
-/**
- * Construct the AgreementDocument from the winning sealed bid (§8.4.3 step 6,
- * `derivedFromPattern: sealed-envelope`). SE-8 assigns the winning bidder as
- * buyer for demand and seller for procurement; the listing publisher takes the
- * opposite role. The bid amount is converted to integer base units (matching
- * the SDK's base-unit Price.amount), and is always payable by the resulting
- * agreement buyer to its seller. Pure — the caller signs + anchors it. Throws
- * if the bid amount carries more precision than the rail's token supports.
- */
-export function buildSealedAgreement(
-  win: SealedWinnerContext,
-  ctx: SealedAgreementContext,
-): AgreementDocument {
-  if (
-    win.listingPublisher !== undefined &&
-    win.listingPublisher !== ctx.seller
-  ) {
-    throw new DacsError(
-      "sealed-envelope listing publisher does not match the pinned listing context",
-    );
-  }
-  const roles = assignSealedEnvelopeRoles({
-    phaseKind: win.phaseKind,
-    auctionMode: win.auctionMode,
-    listingPublisher: ctx.seller,
-    winningBidderClaim: win.winningBidderClaim,
-    losingBidderClaims: win.losingBidderClaims,
-  });
-  const amount = baseUnits(win.winningBid.price.amount, ctx.decimals);
-  if (amount === "0") {
-    throw new DacsError("winning sealed bid resolves to a zero base-unit amount");
-  }
-  return {
-    jobId: win.jobId,
-    pattern: "negotiate-sealed-envelope",
-    buyer: roles.buyer,
-    seller: roles.seller,
-    listingRef: ctx.listingRef,
-    price: {
-      amount,
-      asset: win.winningBid.price.currency,
-      decimals: ctx.decimals,
-      rail: ctx.rail,
-    },
-    delivery: { phase: ctx.deliveryPhase, format: ctx.deliveryFormat },
-    expiresAt: ctx.expiresAt,
-  };
 }
 
 export type SealedAgreementRoleValidation =
@@ -437,22 +376,9 @@ export interface VerifiedSealedAgreementCommitResult {
   agreementHash: string;
 }
 
-/**
- * Legacy demand-only result retained so existing `negotiate-sealed-envelope`
- * integrations remain source-compatible. Procurement requires the verified
- * form above because SE-8 cannot be enforced from an opaque ref/hash pair.
- */
-export interface LegacySealedAgreementCommitResult {
-  agreementRef: string;
-  agreementHash: string;
-  agreement?: never;
-  verifiedSignerClaims?: never;
-}
+export type SealedAgreementCommitResult = VerifiedSealedAgreementCommitResult;
 
-export type SealedAgreementCommitResult =
-  | VerifiedSealedAgreementCommitResult
-  | LegacySealedAgreementCommitResult;
-
+/** A callback that returns only a reference and hash gives the core nothing to check. */
 function hasCommitProof(
   result: SealedAgreementCommitResult,
 ): result is VerifiedSealedAgreementCommitResult {
@@ -470,12 +396,11 @@ export interface SealedEnvelopeDeps {
   readAnchoredReveals: () => Promise<AnchoredReveal[]>;
   /**
    * Build + sign + anchor the AgreementDocument from the winning bid
-   * (`derivedFromPattern: "sealed-envelope"`), collecting the agreement buyer
-   * + seller signatures. Procurement callers MUST call
+   * (`pattern: "negotiate-sealed-envelope"`), collecting the agreement buyer
+   * + seller signatures. Callers MUST call
    * `ctx.validateAgreementForCommit(...)` after cryptographic verification and
    * before anchoring, then return the agreement and verified signer claims so
-   * the core can independently repeat the gate. The legacy opaque ref/hash
-   * result remains valid only for the backwards-compatible demand phase.
+   * the core can independently repeat the gate.
    */
   commitAgreement: (
     ctx: SealedCommitContext,
@@ -483,9 +408,9 @@ export interface SealedEnvelopeDeps {
   /** Fetch an anchored/HTTPS rule by the listing-pinned SE-6 reference. */
   resolveRuleContent?: (ref: Readonly<RuleRef>) => Promise<unknown>;
   /**
-   * Deterministic interpreter capability for verified rule content. Unlike the
-   * old caller predicate, this can only be invoked by the core with branded,
-   * hash-checked content and the fixed authoritative bid set.
+   * Deterministic interpreter capability for verified rule content. The core
+   * calls it only with branded, hash-checked content and the fixed
+   * authoritative bid set.
    */
   evaluateVerifiedRule?: (input: SealedRuleEvaluationInput) => boolean;
 }
@@ -800,31 +725,16 @@ export async function runSealedEnvelopeCore(
   };
   const committed = await deps.commitAgreement(commitContext);
   if (!hasCommitProof(committed)) {
-    if (mode.auctionMode === "procurement") {
-      return {
-        ok: false,
-        phaseKind: mode.phaseKind,
-        auctionMode: mode.auctionMode,
-        winningBidderClaim,
-        losingBidderClaims,
-        reason:
-          "procurement agreement commit must return the agreement and verified signer claims",
-        failedAt: "agreement-validation",
-        errorClass: "permanent",
-        excluded: selection.excluded,
-        requiredSignerClaims: roles.requiredSignerClaims,
-        parties: roles.parties,
-      };
-    }
     return {
-      ok: true,
+      ok: false,
       phaseKind: mode.phaseKind,
-      contextDeltaKey: mode.phaseKind,
       auctionMode: mode.auctionMode,
       winningBidderClaim,
-      agreementRef: committed.agreementRef,
-      agreementHash: committed.agreementHash,
       losingBidderClaims,
+      reason:
+        "agreement commit must return the agreement and verified signer claims",
+      failedAt: "agreement-validation",
+      errorClass: "permanent",
       excluded: selection.excluded,
       requiredSignerClaims: roles.requiredSignerClaims,
       parties: roles.parties,

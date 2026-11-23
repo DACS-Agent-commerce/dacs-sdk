@@ -2,6 +2,15 @@
   "name": "@kynesyslabs/dacs",
   "version": "0.1.0-alpha.0",
   "description": "TypeScript SDK for building DACS (Demos Agent Commerce Standards) agents — the reusable runtime for the Identify → Vet → Negotiate → Settle → Verify lifecycle.",
+  "keywords": [
+    "dacs",
+    "ai-agents",
+    "agent-commerce",
+    "agent-payments",
+    "verified-data",
+    "procurement",
+    "demos"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -120,7 +129,7 @@
     "host:test:postgres": "npm run test:postgres --workspace @kynesyslabs/dacs-node",
     "generator:test": "npm test --workspace create-dacs-agent",
     "audit:test": "vitest run test/scripts/check-npm-advisories.test.ts",
-    "test:live": "vitest run test/integration/live.e2e.test.ts",
+    "test:live": "vitest run test/integration/funded-two-agent.e2e.test.ts",
     "test:live:pay-dem": "vitest run test/integration/pay-dem-two-agent.live.test.ts",
     "test:watch": "vitest",
     "conformance:sync": "node scripts/sync-vectors.mjs",
@@ -132,11 +141,13 @@
     "release:check": "node scripts/check-release-packages.mjs",
     "release:dry-run": "node scripts/release-dry-run.mjs",
     "release:test:native": "DACS_RELEASE_NATIVE_INTEGRATION=1 node --test --test-concurrency=1 --test-name-pattern=\"native sqlite integration\" test/scripts/release-checks.test.mjs",
+    "ci:test": "node --test test/scripts/ci-shards.test.mjs",
     "release:test": "node --test --test-concurrency=1 test/scripts/release-*.test.mjs && vitest run test/scripts/release-identity.test.ts",
     "release:set:publish": "node scripts/publish-release-set.mjs",
     "acceptance:registry-container": "bash scripts/verify-registry-container-consumer.sh",
     "seller:test": "node scripts/run-seller-tests.mjs",
     "kit-client:test": "node scripts/run-kit-client-tests.mjs test/kit-client/*.test.mjs",
+    "client-keys:test": "node --test test/client-key-validation.test.mjs",
     "seller:prepare": "node scripts/prepare-seller-consumer.mjs"
   },
   "publishConfig": {
@@ -160,7 +171,7 @@
     "xpath": "^0.0.34"
   },
   "peerDependencies": {
-    "@kynesyslabs/demosdk": "^4.0.16",
+    "@kynesyslabs/demosdk": "^4.0.17",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",
     "@x402/fetch": "^2.15.0",
@@ -174,7 +185,7 @@
     "viem": { "optional": true }
   },
   "devDependencies": {
-    "@kynesyslabs/demosdk": "^4.0.16",
+    "@kynesyslabs/demosdk": "^4.0.17",
     "@types/node": "^20",
     "@x402/core": "^2.15.0",
     "@x402/evm": "^2.15.0",

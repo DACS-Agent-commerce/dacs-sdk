@@ -1,9 +1,12 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 const inventoryPath = "../../scripts/runtime-image-inventory.mjs";
 const policyPath = "../../scripts/registry-container-disposition.mjs";
+const inventoryScript = fileURLToPath(new URL(inventoryPath, import.meta.url));
 const { runtimeImageInventory } = await import(inventoryPath);
 const { runtimeImageInventoryFindings } = await import(policyPath);
 const roots: string[] = [];
@@ -52,6 +55,55 @@ describe("runtime inventory boundary regressions", () => {
     const input = { packages: { "": {}, "node_modules/a": { version: "1.0.0", integrity: "sha512-fixture", dev } } };
     expect(runtimeImageInventoryFindings({ schema: "dacs-runtime-image-inventory/v1", packages: [{ location, name, version }] }, input))
       .toMatchObject({ scanComplete: true, unexpected: [{ location, name, version, integrity: location === "node_modules/a" ? "sha512-fixture" : null }] });
+  });
+});
+
+describe("inventory command line entry", () => {
+  const inventoryFrom = (entry: string, directory: string) =>
+    JSON.parse(execFileSync(process.execPath, [entry, directory], { encoding: "utf8" }));
+
+  it("prints the inventory when started through the real script path", () => {
+    const directory = root(); pkg(join(directory, "node_modules/a"));
+    expect(inventoryFrom(inventoryScript, directory).packages).toEqual([{ location: "node_modules/a", name: "a", version: "1.0.0" }]);
+  });
+  it("prints the inventory when started through a symlink to the script", () => {
+    const directory = root(); pkg(join(directory, "node_modules/a"));
+    const link = join(directory, "inventory-link.mjs");
+    symlinkSync(inventoryScript, link);
+    expect(inventoryFrom(link, directory).packages).toEqual([{ location: "node_modules/a", name: "a", version: "1.0.0" }]);
+  });
+  it("prints the inventory when started from a symlinked directory", () => {
+    const directory = root(); pkg(join(directory, "node_modules/a"));
+    const linkedScripts = join(directory, "linked-scripts");
+    symlinkSync(dirname(inventoryScript), linkedScripts, "dir");
+    expect(inventoryFrom(join(linkedScripts, "runtime-image-inventory.mjs"), directory).packages)
+      .toEqual([{ location: "node_modules/a", name: "a", version: "1.0.0" }]);
+  });
+});
+
+describe("inventory entry with symlinks preserved", () => {
+  it("prints the inventory when started through a symlink", () => {
+    const directory = root(); pkg(join(directory, "node_modules/a"));
+    const link = join(directory, "inventory-link.mjs");
+    symlinkSync(inventoryScript, link);
+    const output = execFileSync(process.execPath, ["--preserve-symlinks-main", link, directory], { encoding: "utf8" });
+    expect(JSON.parse(output).packages).toEqual([{ location: "node_modules/a", name: "a", version: "1.0.0" }]);
+  });
+});
+
+describe("inventory import without a script path", () => {
+  it("prints nothing when imported from standard input beside a symlink named -", () => {
+    const directory = root();
+    symlinkSync(inventoryScript, join(directory, "-"));
+    const output = execFileSync(process.execPath, ["--input-type=module", "-"], { encoding: "utf8", cwd: directory,
+      input: `import ${JSON.stringify(pathToFileURL(inventoryScript).href)};` });
+    expect(output).toBe("");
+  });
+
+  it("prints nothing and does not fail when imported from standard input", () => {
+    const output = execFileSync(process.execPath, ["--input-type=module", "-"], { encoding: "utf8",
+      input: `import ${JSON.stringify(pathToFileURL(inventoryScript).href)};` });
+    expect(output).toBe("");
   });
 });
 
@@ -136,6 +188,20 @@ describe("inventory executable entries", () => {
       expect(runtimeImageInventoryFindings(runtimeImageInventory(directory), input))
         .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
     });
+  it("accepts a bin link when the root path contains a symlink", () => {
+    const directory = root(); const real = join(directory, "real");
+    pkg(join(real, "node_modules/a"));
+    mkdirSync(join(real, "node_modules/.bin"));
+    writeFileSync(join(real, "node_modules/a/cli.js"), "module.exports = 42;");
+    symlinkSync(join(real, "node_modules/a/cli.js"), join(real, "node_modules/.bin/a"));
+    const linkedRoot = join(directory, "linked");
+    symlinkSync(real, linkedRoot, "dir");
+    const input = { packages: { "": {}, "node_modules/a": { version: "1.0.0", bin: { a: "cli.js" } } } };
+    const inventory = runtimeImageInventory(linkedRoot);
+    expect(inventory.packages).toContainEqual(expect.objectContaining({ location: "node_modules/.bin/a", target: "node_modules/a/cli.js" }));
+    expect(runtimeImageInventoryFindings(inventory, input))
+      .toEqual({ scanComplete: true, errors: [], unexpected: [], missing: [] });
+  });
 });
 
 describe("required runtime dependency reachability", () => {
