@@ -74,6 +74,29 @@ test('appendUnderLock writes once inside an owned lane with zero lane reacquisit
   assert.equal((await full.entries()).length, 1);
 });
 
+test('put overwrites and append enforce independent count and byte quotas for lower-case eb/ and native keys', async (t) => {
+  const { journal } = tempJournal(t, { maxRecords: 3, maxValueBytes: 80, maxTotalBytes: 80 });
+  for (const key of ['eb/a', 'eb/b', 'EB/native-a', 'native/b']) await journal.put(key, { v: 'a' });
+
+  for (const key of ['eb/a', 'EB/native-a']) {
+    await journal.put(key, { v: 'x'.repeat(50) });
+    await assert.rejects(journal.put(key, { v: 'x'.repeat(70) }), { code: 'journal-capacity' }, `${key} overwrite must subtract the old row before checking the byte limit`);
+    assert.deepEqual(await journal.get(key), { v: 'x'.repeat(50) }, 'a rejected overwrite leaves the previous row intact');
+  }
+
+  await journal.withWalletLock(LANE, async () => {
+    for (const key of ['eb/c', 'EB/native-c']) {
+      await assert.rejects(journal.appendUnderLock(LANE, key, { v: 'x'.repeat(10) }), { code: 'journal-capacity' }, `${key} append must enforce the byte limit`);
+      await journal.appendUnderLock(LANE, key, { v: 'c' });
+      await assert.rejects(journal.appendUnderLock(LANE, key.replace(/c$/, 'd'), 0), { code: 'journal-capacity' }, `${key} append must enforce the count limit`);
+    }
+  });
+  assert.deepEqual(await journal.get('eb/c'), { v: 'c' });
+  assert.deepEqual(await journal.get('EB/native-c'), { v: 'c' }, 'uppercase EB/ belongs to the native namespace');
+  assert.equal(await journal.get('eb/d'), undefined);
+  assert.equal(await journal.get('EB/native-d'), undefined);
+});
+
 test('withOwnedOrAcquiredLane refuses journal-fenced and never runs its work when the lane context outlives its lock: after release, or while another holder owns the lane', async (t) => {
   const { journal, open } = tempJournal(t);
   const other = open();

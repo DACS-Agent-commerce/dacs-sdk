@@ -153,11 +153,18 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
 
   // Every read verifies identity, row count/bytes and each row digest. A
   // changed, moved or removed row fails closed instead of reading as absent.
-  function meta() {
+  function meta({ includeNamespaceTotals = false } = {}) {
     const m = Object.fromEntries(db.prepare('SELECT key, value FROM meta').all().map((r) => [r.key, r.value]));
     if (m.format !== DURABLE_WALLET_JOURNAL_FORMAT || m.journal_id !== journalId) fail('journal-integrity', 'the journal identity changed');
-    const totals = db.prepare('SELECT count(*) AS n, coalesce(sum(bytes), 0) AS bytes, coalesce(max(seq), 0) AS seq FROM records').get();
+    const namespaceTotals = includeNamespaceTotals
+      ? ", count(*) FILTER (WHERE key GLOB 'eb/*') AS history_n, coalesce(sum(bytes) FILTER (WHERE key GLOB 'eb/*'), 0) AS history_bytes"
+      : '';
+    const totals = db.prepare(`SELECT count(*) AS n, coalesce(sum(bytes), 0) AS bytes, coalesce(max(seq), 0) AS seq${namespaceTotals} FROM records`).get();
     if (String(totals.n) !== m.records || String(totals.bytes) !== m.total_bytes || totals.seq >= Number(m.next_seq)) fail('journal-integrity', 'journal record totals changed outside this journal');
+    if (includeNamespaceTotals) {
+      m.history_n = totals.history_n;
+      m.history_bytes = totals.history_bytes;
+    }
     return m;
   }
   function decode(row) {
@@ -181,12 +188,14 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     });
   }
 
-  // The caller holds an IMMEDIATE transaction and has read `m = meta()`.
+  // The caller holds an IMMEDIATE transaction and has read `m = meta({ includeNamespaceTotals: true })`.
   function writeRecord(m, key, text, bytes) {
     const old = db.prepare('SELECT bytes FROM records WHERE key = ?').get(key);
     const records = Number(m.records) + (old ? 0 : 1);
     const total = Number(m.total_bytes) - (old?.bytes ?? 0) + bytes;
-    const budget = db.prepare("SELECT count(*) AS n, coalesce(sum(bytes), 0) AS bytes FROM records WHERE (substr(key, 1, 3) = 'eb/') = ?").get(key.startsWith('eb/') ? 1 : 0);
+    const budget = key.startsWith('eb/')
+      ? { n: m.history_n, bytes: m.history_bytes }
+      : { n: Number(m.records) - m.history_n, bytes: Number(m.total_bytes) - m.history_bytes };
     if (budget.n + (old ? 0 : 1) > maxRecords || budget.bytes - (old?.bytes ?? 0) + bytes > maxTotalBytes) fail('journal-capacity', 'journal record capacity is exhausted; nothing was written');
     if (old) db.prepare('UPDATE records SET value = ?, digest = ?, bytes = ? WHERE key = ?').run(text, digest(key, text), bytes, key);
     else {
@@ -210,7 +219,7 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     const { text, bytes } = checkedRecord(value);
     const mine = held.getStore()?.get(key);
     tx('BEGIN IMMEDIATE', () => {
-      const m = meta();
+      const m = meta({ includeNamespaceTotals: true });
       const lock = db.prepare('SELECT token FROM locks WHERE key = ?').get(key);
       if (mine ? lock?.token !== mine : lock) fail('journal-fenced', mine ? 'this holder no longer owns the wallet lane lock; nothing was written' : 'another holder owns this key; nothing was written');
       writeRecord(m, key, text, bytes);
@@ -228,7 +237,7 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     const mine = held.getStore()?.get(laneKey);
     const mineAtKey = held.getStore()?.get(key);
     tx('BEGIN IMMEDIATE', () => {
-      const m = meta();
+      const m = meta({ includeNamespaceTotals: true });
       if (!mine || db.prepare('SELECT token FROM locks WHERE key = ?').get(laneKey)?.token !== mine) fail('journal-fenced', 'this context does not own the wallet lane lock; nothing was written');
       // As `put`: a key another holder locks is not written (a key this context
       // locks itself, such as the lane, passes with its own token).
