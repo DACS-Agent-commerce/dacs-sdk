@@ -177,7 +177,9 @@ const host = await startSellerHost({
                          // stopped, feeCeilingOs, stateLock, dataDirectory }) resolves the session, with close().
                          // Before it opens any state the host binds the SDK's approved TP-1 record (no option,
                          // environment variable or file names one) through its production reader over this
-                         // session, each read within 10,000 ms (tp1_authority_timeout). Under the lock it finalizes it
+                         // session, each read within 10,000 ms (tp1_authority_timeout). Under the lock it finalizes it.
+                         // createSellerWalletSession(...) is the production port (below); with it, artifactAnchor
+                         // must be walletSession.artifactAnchor, or the host refuses with a TypeError
   participantImplementations, // { entriesFor(claim) -> [{ claim, profile, modules, evidence, revoked }] }: the
                          // independently approved enrollment of each buyer, read on every request; a buyer
                          // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch
@@ -213,7 +215,7 @@ that marker, or with another one, is from an older kit format and is refused
 with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
 or `unreadable`); nothing is migrated. A transport store that still has the
 tables an earlier version created and the kit no longer uses (`peer_slots`,
-`peer_transactions`, `peer_nonces`, `peer_nonce_retention`) drops them when they are all
+`peer_transactions`, `peer_nonces`, `peer_nonce_retention`, `kit_context_reservations`) drops them when they are all
 empty, and is refused with `kit_store_format_unsupported` and left unchanged when any holds a
 row. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
@@ -298,7 +300,8 @@ parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
 `createSellerContextRoute`,
 `createWireSellerContextRoute` (the context step on the wire),
-`createSellerAuthorityReader` (the host's TP-1 authority reader) and the buyer
+`createSellerAuthorityReader` (the host's TP-1 authority reader),
+`createSellerWalletSession` (the host's production `walletSession` port) and the buyer
 side `createSellerAgentClient` and `createSellerWireClientAuth`. The host
 answers every route through the wire, under the wire domain with a TP-1
 profile in each request, and refuses a request signed under the transport's
@@ -335,7 +338,7 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createWireSellerContextRoute`,
-`createSellerTransportStore`, `createSellerAuthorityReader` and `createSellerWireClientAuth`. The kit's other modules are reachable by
+`createSellerTransportStore`, `createSellerAuthorityReader`, `createSellerWalletSession` and `createSellerWireClientAuth`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
@@ -648,8 +651,21 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   (`createSellerNodeWallet`, below); `isDevnetDemoTransport`
   (`src/dacs/devnet-source.mjs`, the client's own check) refuses any other
   value. Every write it makes is still held by the kit operation guard and the
-  client's purchase hold. An operator-supplied anchor must enforce the contract
-  itself.
+  client's purchase hold. It also needs `runCreate` from
+  `createSellerCreatePass` (`src/devnet-demo/create-pass.mjs`): each wallet
+  CREATE, and the one resend of a retained CREATE, runs after the kit effect
+  boundary's checks, under its fence, inside one effect pass of the wallet
+  session. That pass asks the lane's synchronous `currentAuthorization` check
+  last before the signature and before each transmission, so `publish` needs
+  `operationClass` and `currentAuthorization` for every artifact kind. The
+  operator's approval of a write runs inside that pass, so a manual approval
+  must finish within the pass's deadline, 10 seconds at most: a slower
+  `APPROVE` answers `tp1_authority_timeout` and nothing is signed. Moving the
+  approval outside the pass is planned. The kit's own fee and approval-hold
+  checks run only when the caller passes `debitOs` or `approvalRef`; the
+  seller's anchor passes neither, so the session pass's fee ceiling is the
+  fee check that applies to these CREATEs. An operator-supplied anchor must
+  enforce the contract itself.
 - Without the next option, a Deliverable CREATE the capability signed but did
   not broadcast (or that the node dropped) reads back as a plain absence, and the
   order stays held: only the capability's own journal could send it again.
@@ -1234,6 +1250,34 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   DEM delivery context accept only `TEST-` authorities, as in the source kit.
   Native writes also need a
   qualified node deployment (`QUALIFIED_NODE_COMMITS`).
+- `createSellerWalletSession` (`src/devnet-demo/seller-wallet-session.mjs`) is
+  the host's production `walletSession` port. It takes the node connection
+  (`endpoint`, `transportAuthority`, `fetchImpl`), the seller `signer`,
+  `loadKeyRecord()`, and the `approve`, `approvalMode`, `journalMode`,
+  `publications` and `diagnostics` it passes unchanged to
+  `createSellerNodeWallet`, a wall `clock` (`Date.now` by default) and the
+  anchor's `buyerAccess` (`null` by default, which refuses every job's write
+  and read with `buyer_access_closed`); any other option is a TypeError. Its
+  `artifactAnchor` is the one handle the operator gives the host, the Vet
+  provider and the delivery capability. Until the host finalizes the port
+  under the state lock, every anchor method refuses
+  `wallet_session_not_finalized`. Finalization checks that the host's effect
+  boundary was built over its binding (`wallet_session_boundary_mismatch`) and
+  that the binding is current on the port's connection (the wire's `tp1_*`
+  refusals). Only then does it call `loadKeyRecord` once; the port zero-fills
+  the bytes it returns on every outcome. It builds the wallet over the port's
+  own connection and binds the handle to the artifact anchor composed over
+  it, whose wallet CREATEs run through `runCreate` over the host's effect
+  boundary and this session. That anchor's readback compares the chain identity the port's
+  connection reader observes (within the readback's remaining time, at most
+  10,000 ms, else `tp1_authority_timeout`) with the binding. The finalized
+  session has `effectPass`, `runInEffectPass`,
+  `walletFactory`, `transport` (with `recoverStorageWrite`),
+  `acquireConnectionFence` (the fence its passes need), `address`,
+  `observer`, `artifactJournal`, `paymentEvidence`, `readBalance` and
+  `close`. A second finalization refuses `wallet_session_finalize_once`, and
+  after a close the handle, the fence and finalization refuse
+  `wallet_session_closed`.
 - Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).

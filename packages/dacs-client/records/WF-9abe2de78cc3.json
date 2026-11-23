@@ -1,0 +1,52 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged purchase files with the delegation-first bootstrap",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "fb6902ffa3253fb6bce7dbb32b32150090c58baa",
+      "after": "fb6902ffa3253fb6bce7dbb32b32150090c58baa"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+      "before": "498fcbd6f21641252c8d22c005991c06c614d715",
+      "after": "498fcbd6f21641252c8d22c005991c06c614d715"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+      "before": "48a101c8d3bb725b434a9a7973ab71d54c297357",
+      "after": "48a101c8d3bb725b434a9a7973ab71d54c297357"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "2d1f28b112d73256b9c38cbdaf4fe99fb648d07c",
+      "after": "2d1f28b112d73256b9c38cbdaf4fe99fb648d07c"
+    },
+    {
+      "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+      "before": "8de640ef8a5f5dd10f4e7f03cfc2e7bd839e4d7f",
+      "after": "8de640ef8a5f5dd10f4e7f03cfc2e7bd839e4d7f"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+      "before": "53c4612f52817c37f2a8a315b2d4be71d5ab1eb9",
+      "after": "53c4612f52817c37f2a8a315b2d4be71d5ab1eb9"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+      "before": "256ff0e0ccf410e47ba62c17a4ec50c399890a9d",
+      "after": "256ff0e0ccf410e47ba62c17a4ec50c399890a9d"
+    },
+    {
+      "path": "packages/dacs-client/test/wire-continuation-evidence.test.mjs",
+      "before": "c7aa8bcea4d68d2a8e3de37530f924a617354943",
+      "after": "c7aa8bcea4d68d2a8e3de37530f924a617354943"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-9abe2de78cc3.json"
+  ],
+  "note": "Both sides of the merge recorded these files; this record chooses the merged copies. The protocol purchases keep the base's HTTPS seller client over the pinned connector, its host stop on every entry and on the request records, its check that the saved delegation names the session key, and its session renewal with the paid renewal margin and the stale-save retry it uses; they keep this side's three wallet steps (the delegation is accepted first, the session key asks for the seller's challenge, and the presentation is signed over the seller's nonce), with the challenge and context routes signed before a plan exists. The new delegation step takes the base's purchase gate and host stop. The seller HTTP client keeps the base's HTTPS client and connector and this side's challenge method and its signing-refusal cause. The seller wire authentication keeps the base's host stop check at request entry and this side's scope-signed challenge and context routes. The purchase service keeps the base's session renewal entries, host stop and handoff-token action list, and this side's delegation entry, which joins that list, with the plan entry taking no delegation signature. The purchase action test lists both sides' held service entries. The composition world keeps the base's settlement transport and signs the delegation through the service, then saves this side's presentation request over a seller nonce. The wire client fixture keeps the base's session signer option and this side's scope body for the bootstrap routes and its seller stand-in option. The continuation evidence test keeps the base's HTTPS client over a fetch stand-in and this side's scope body for the bootstrap routes."
+}

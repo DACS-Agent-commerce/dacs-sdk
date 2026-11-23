@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged README and protocol purchases with the HTTPS seller client, the seller session keys and the host stop, and the paid renewal margin",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "a19207599d694e16db9dab4873b2eafff92d9f24",
+      "after": "a19207599d694e16db9dab4873b2eafff92d9f24"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "5e8ca771d7123c576d280901857032dcb0a9e4f6",
+      "after": "5e8ca771d7123c576d280901857032dcb0a9e4f6"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-89be4eff6324.json"
+  ],
+  "note": "Both sides of the merge recorded these files; this record chooses the merged copies. The README keeps the base's public HTTPS seller client section, its seller session keys section, its authority token text and its host stop causes of a seller suspension, and this side's refusals of a session renewal for a paid purchase whose delegation has expired and for a purchase with an unresolved payment inside the delegation margin. The protocol purchases keep the base's HTTPS seller client, its seller transport rule, its host stop on the request records and its session key check, and this side's renewal of a paid purchase's seller session until the delegation expires, its refusal of a purchase with an unresolved payment inside the margin and its expired-delegation refusal at acceptance."
+}

@@ -35,6 +35,12 @@ function continuationBytes(lead) {
   return 0;
 }
 
+// A native search inside a string costs more than checking a few bytes one at a
+// time. When a search skips fewer than SEARCH_MIN_SKIP bytes (escapes or multibyte
+// characters close together), the next SEARCH_PAUSE_BYTES bytes are checked one at
+// a time, so dense strings run at the speed of the plain byte loop.
+const SEARCH_MIN_SKIP = 8, SEARCH_PAUSE_BYTES = 512;
+
 // Count tokens, not parsed objects: npm can consume multiple roots and duplicate
 // keys. Syntax remains npm's responsibility, except that counting stops at the
 // first byte no JSON text can hold outside a string: npm refuses the body there,
@@ -44,10 +50,13 @@ function jsonScanner() {
   const containers = [];
   const stringBoundary = /["\\\xc2-\xf4]/g;
   let entries = 0, string = false, escaped = false, notJson = false, continuation = 0;
+  // Bytes of a search pause still to come when a chunk ends.
+  let pause = 0;
   return bytes => {
     if (notJson) return;
     const end = bytes.length;
-    let text;
+    let text, searchFrom = pause;
+    pause = Math.max(0, searchFrom - end);
     for (let i = 0; i < end; i++) {
       let byte = bytes[i];
       if (string) {
@@ -60,12 +69,17 @@ function jsonScanner() {
         // Latin-1 preserves byte offsets while native search skips ordinary string
         // bytes. Short remainders stay byte by byte: tiny chunks would pay for a
         // string per call.
-        if (end - i >= 64) {
+        if (i >= searchFrom && end - i >= 64) {
           text ??= Buffer.from(bytes.buffer, bytes.byteOffset, end).toString("latin1");
           stringBoundary.lastIndex = i;
-          const boundary = stringBoundary.exec(text);
-          if (!boundary) return;
-          i = boundary.index;
+          // test() leaves lastIndex just past the match and builds no match array.
+          if (!stringBoundary.test(text)) return;
+          const next = stringBoundary.lastIndex - 1;
+          if (next - i < SEARCH_MIN_SKIP) {
+            searchFrom = next + SEARCH_PAUSE_BYTES;
+            pause = Math.max(0, searchFrom - end);
+          }
+          i = next;
           byte = bytes[i];
         }
         if (byte === 92) escaped = true;
