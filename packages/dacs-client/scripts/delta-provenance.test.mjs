@@ -340,7 +340,7 @@ const RECORD_FAULTS = [
  { name: 'a changed parent blob', edit: value => { value.files[0].before = '0'.repeat(40); } },
  { name: 'an ordinary record with no changed blob', edit: value => { value.files[0].after = value.files[0].before; } },
  { name: 'an empty file list', edit: value => { value.files = []; } },
- { name: 'an inventory row naming another file', edit: value => { value.commitFiles = ['packages/dacs-client/README.md']; } },
+ { name: 'an inventory row naming another file', edit: value => { value.commitFiles = ['packages/dacs-client/DELTA-NOTES.md']; } },
  { name: 'an unqualified repeated subject', duplicate: true },
 ];
 for (const fault of RECORD_FAULTS) test(`immutable record files refuse ${fault.name}`, t => {

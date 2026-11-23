@@ -1,5 +1,6 @@
 // The seller's effect paths. The CREATE lanes at the artifact anchor's publish, over the production wallet session: every
-// refusal is raised before publish reaches the wallet, with no authority or node read, no stored intent and no signature.
+// refusal is raised before publish reaches the wallet, with no stored intent and no signature, and a refusal before the admitted
+// binding check makes no node read.
 // The agent's signatures and the answer that carries its Agreement co-signature, through the host's effect boundary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,17 +9,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as core from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
-import { anchorFixture, signSdkCreate } from './helpers/anchor-isolated-fixture.mjs';
-import { agentFixture, fixtureProposal } from './helpers/seller-agent-isolated-fixture.mjs';
-import { countedKeyRoles } from './helpers/counted-key-roles.mjs';
-import { proposalWireWorld } from './helpers/proposal-wire-world.mjs';
-import { PATHS } from './helpers/wire-routes-world.mjs';
-import { MONOTONIC_CLOCK, TEST_BINDING, integrityRoleOf } from './helpers/agent-signing.mjs';
-import { TEST_CONNECTION } from './helpers/wire-authority-fixture.mjs';
-import { JOBS } from './helpers/bilateral-vet-fixture.mjs';
 import { T0, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
 
+// Static imports are all resolved before any module runs, so a module that reaches the client's admission state must be imported
+// after the world helper above has installed the purchase-admission hook.
+const { anchorFixture, signSdkCreate } = await import('./helpers/anchor-isolated-fixture.mjs');
+const { agentFixture, fixtureProposal } = await import('./helpers/seller-agent-isolated-fixture.mjs');
+const { countedKeyRoles } = await import('./helpers/counted-key-roles.mjs');
+const { proposalWireWorld } = await import('./helpers/proposal-wire-world.mjs');
+const { PATHS } = await import('./helpers/wire-routes-world.mjs');
+const { MONOTONIC_CLOCK, TEST_BINDING, integrityRoleOf } = await import('./helpers/agent-signing.mjs');
+const { TEST_CONNECTION } = await import('./helpers/wire-authority-fixture.mjs');
+const { JOBS } = await import('./helpers/bilateral-vet-fixture.mjs');
 const guard = await import('../src/kit-operation-guard.mjs');
 const { createDevnetDemoArtifactAnchor } = await import('../src/devnet-demo/artifact-anchor.mjs');
 const { createDevnetDemoListingPublisher } = await import('../src/devnet-demo/listing.mjs');
@@ -55,6 +58,9 @@ async function finalizedWorld(t) {
   return { world, session, anchor: world.port.artifactAnchor };
 }
 const NOTHING = Object.freeze({ authorityReads: 0, nodeReads: [], signatures: 0 });
+// An admitted publish makes one authority read, the node's block read behind the binding check, and then refuses the unqualified
+// deployment, before any nonce read or signature.
+const BINDING_READ_ONLY = Object.freeze({ authorityReads: 1, nodeReads: ['getBlockByNumber'], signatures: 0 });
 
 // The Listing publisher over `anchor`, with the world's signer, and the Listing draft it publishes.
 function listingPublisher(world, anchor) {
@@ -98,12 +104,12 @@ test('a publish without its pass operationClass or currentAuthorization check re
     ['a check that is not a function', { operationClass: 'job-create', currentAuthorization: true }]]) {
     await assert.rejects(anchor.publish({ ...input, ...pass }), { code: 'invalid', message: /operationClass and currentAuthorization/ }, label);
   }
-  await assert.rejects(anchor.publish({ ...input, ...PASS }), { code: 'nonce_lane_unavailable' }, 'with both it passes the parameter check');
-  assert.deepEqual(world.effects(), NOTHING);
+  await assert.rejects(anchor.publish({ ...input, ...PASS }), { code: 'deployment_unqualified' }, 'with both it passes the parameter check');
+  assert.deepEqual(world.effects(), BINDING_READ_ONLY);
   assert.equal(await anchor.hasIntent(LISTING_ADDRESS), false);
 });
 
-test('the Listing publisher passes operationClass job-create and its publication check: over the real session its publish passes publish\'s parameter check and stops at nonce_lane_unavailable, storing no intent, while a publish without them refuses at the parameter check', async (t) => {
+test('the Listing publisher passes operationClass job-create and its publication check: over the real session its publish passes publish\'s parameter check and stops at deployment_unqualified, storing no intent, while a publish without them refuses at the parameter check', async (t) => {
   const { world, anchor } = await finalizedWorld(t);
   const inputs = [];
   const recording = Object.freeze({ ...anchor, publish: (input) => { inputs.push(input); return anchor.publish(input); } });
@@ -112,7 +118,7 @@ test('the Listing publisher passes operationClass job-create and its publication
   const refusal = await publish(draft).then(() => assert.fail('expected a refusal'), (error) => error);
   const codes = [];
   for (let link = refusal; link instanceof Error; link = link.cause) codes.push(link.code);
-  assert.ok(codes.includes('nonce_lane_unavailable'), `the publish passed the parameter check: ${codes} ${refusal}`);
+  assert.ok(codes.includes('deployment_unqualified'), `the publish passed the parameter check: ${codes} ${refusal}`);
   assert.equal(inputs.length, 1);
   assert.equal(inputs[0].operationClass, 'job-create');
   assert.equal(inputs[0].currentAuthorization(), true);
@@ -120,7 +126,7 @@ test('the Listing publisher passes operationClass job-create and its publication
   delete withoutPass.operationClass;
   delete withoutPass.currentAuthorization;
   await assert.rejects(anchor.publish(withoutPass), { code: 'invalid' }, 'the same publish without them');
-  assert.deepEqual(world.effects(), NOTHING);
+  assert.deepEqual(world.effects(), BINDING_READ_ONLY);
   assert.equal(await anchor.hasIntent(inputs[0].logicalAddress), false, 'no intent was stored');
 });
 

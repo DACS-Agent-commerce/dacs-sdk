@@ -16,7 +16,7 @@ npm install /tmp/dacs-artifacts/kynesyslabs-dacs-0.1.0-alpha.0.tgz /tmp/dacs-art
 
 All three artifacts must come from the same reviewed SDK revision. Release-set admission requires coordinated artifact, lifecycle, SBOM and publication checks; `private: true` prevents publication until that happens.
 
-Every public entry point requires Node ^22.22.2 or ^24.15.0. The root does not load SQLite during import. `@kynesyslabs/dacs-client/wallet/durable-journal` separately exports the durable wallet journal and its format/version constants. Source paths are private.
+Every public entry point requires Node ^22.22.2 or ^24.15.0. The root does not load SQLite during import. `@kynesyslabs/dacs-client/wallet/durable-journal` separately exports the durable wallet journal, its format/version constants and the wallet-lane view. Source paths are private.
 
 The client depends on `@kynesyslabs/dacs-node` (the exact same release), `@kynesyslabs/demosdk` (`^4.0.16`) and `@scure/bip39` (exact). The Node wallet session loads demosdk's websdk through an internal loading module that is not a package export and that the root import never reaches. It imports `@kynesyslabs/dacs-node/demos-loader`, which registers the SDK's package-scoped resolver for demosdk's one extensionless directory import, and then registers a reviewed load transform. The transform removes demosdk's own diagnostic output on the signing paths by replacing only these statements with an empty statement on the same line: GCRGeneration.js lines 173, 246, 249, 250 and demosclass.js lines 719, 1547 (demosdk 4.0.16), GCRGeneration.js lines 178, 302, 305, 306 and demosclass.js lines 738, 1767, 1773 (demosdk 4.0.17), GCRGeneration.js lines 178, 302, 305, 306 and demosclass.js lines 738, 1775, 1781 (demosdk 4.0.18), or GCRGeneration.js lines 254, 378, 381, 382 and demosclass.js lines 788, 2054, 2060 (demosdk 4.0.23). It first checks the source's SHA-256 against a reviewed table, then each listed line against its recorded text, then the output's SHA-256 against its recorded digest, and refuses any other source shape with `node_wallet_sdk_unreviewed`. Nothing assigns `console`, `process.stdout` or `process.stderr`. Host rule: build the composition before any other import of `@kynesyslabs/demosdk/websdk` in the process; a module imported earlier never passes through the transform, so loading refuses `node_wallet_sdk_preloaded`.
 
@@ -35,16 +35,32 @@ Return fresh objects so projections cannot alter stored state. The host must der
 A lane lock left by a process that crashed is taken over only when its holder is proven dead. Opening the journal takes this process's lease in a private `holders` directory beside the journal file, an exclusive SQLite lock the kernel frees when the process ends; each lock row records its holder's lease, PID namespace, boot and start. Each process that opens a journal leaves one empty lease file there, and that file is the proof its process exited, so nothing here removes it. A holder is `exited`, and its lock is replaced when the next process acquires the lane, only on the same boot and PID namespace with a free lease and the original process no longer running. Age, a timeout or a PID alone never prove death, so a live or stalled holder keeps the lane `journal-busy`, as does any lock nothing proves gone (written by an earlier version, from another boot, with no identity, or with an unreadable lease). `inspectLocks()` reports each lock's `holder` class, and `releaseAbandonedLock({ key, instance, fence })` stays the explicit repair for those, after you have established that the holder is gone. Taking over a lock changes no record, so an issued lane still refuses a second send. Where more than one lock is needed the order is: the connection fence, then the wallet lane, then the per-address claim and refusal keys.
 The factory and operations throw/reject `DurableWalletJournalError` with a `code`: `journal-invalid` for invalid arguments/records, `journal-exists`/`journal-absent` for mode/path mismatch, `journal-integrity` for damaged or unexpected journal identity, `journal-capacity` for limits, `journal-busy` for contention/active work, and `journal-closed` for use after close. Lock operations can also report `journal-reentrant`, `journal-fenced`, `journal-lock-live`, or `journal-lock-mismatch`; `appendUnderLock` reports `journal-key-exists` for an existing key and `journal-fenced` when the lane is not held or the key is locked by another holder; `withOwnedOrAcquiredLane` reports `journal-fenced` when a retained lane context no longer owns its lock row; opening reports `journal-lease-unavailable` when the process lease cannot be taken; other SQLite failures use `journal-error` and preserve their cause. Reopen with `expectedJournalId` to bind the retained journal; never recreate an absent journal to resume a lane.
 
-Delta records also check parent continuity against the newest ancestor records for each path, or the publication baseline when no earlier record exists. A later record cannot legitimize a stale merge, deletion or restoration. Divergent parallel records require an explicit record of the merge resolution; that choice then constrains descendant records.
+The same subpath exports the wallet-lane view: the face the client's storage-anchor bridge gives the wallet as its `anchorJournal`.
+`walletLane({ network, chainIdentity, address })` returns `JSON.stringify([network, chainIdentity, address])`, with the chain identity exactly as the wallet's transport binding carries it.
+`walletLaneKey(lane)` returns `'sr2/wallet/' + lane`, and throws `TypeError('wallet_lane_invalid')` for an empty or non-string lane.
+`createWalletLaneView({ journal })` returns `{ get(lane), put(lane, record), withWalletLock(lane, work) }` over your journal, and throws `TypeError('wallet_lane_journal_required')` unless it has those three methods.
+`get` returns a copy of the lane record, or `undefined`. `put` stores a copy and reads it back, rejecting with `journal-error` when it differs.
+It stores a `broadcast-accepted` stage as `sr2-readback-pending`, because only the client's own receipt readback releases the lane.
+Call `put` inside `withWalletLock`, which holds the journal's lock on that key and passes its opaque owner to `work(owner)`.
+Journal errors reach you unchanged. The native transfer lane is a separate lane.
+
+Delta records also check parent continuity against the newest ancestor records for each path, or the publication baseline when no earlier record exists. A later record cannot legitimize a stale merge, deletion or restoration. Divergent parallel records require an explicit record of the merge resolution; that choice then constrains descendant records. This README is the one package file whose changes need no delta record; Git history shows who changed it.
 
 ## Public API
 
 A plugin composes a purchase from the root names only. Each export's doc comment in `src/index.mjs` names what it returns and what it throws or rejects with; this section lists the factories' methods and the error contract.
 
-The admission option: `admission: { binding, currentLocal }` is required by the three factories below.
+The admission option: `admission: { binding, currentLocal }` is required by each factory below.
 - Construction throws `TypeError('admission_required')` without exactly those two members, `TypeError('admission_input_untrusted')` for a `profile`, `record`, `identityRecord` or `actionsAdmitted` option, and `OperationError('runtime_unsupported')` below the Node floor.
 - An active method returns a Promise. It rejects `OperationError('profile_not_admitted')` while the hold constant is `held`, or when the binding check fails, with the original error as `cause` (`tp1_authority_timeout` after 10,000 ms). Otherwise it resolves to, or rejects with, the original action's own result or error.
 - A passive method keeps its original signature and is never wrapped. `actionsAdmitted` is a construction-time snapshot and never authorizes.
+
+The stop option: `createProtocolPurchases` and `createPurchaseService` take an optional `stopped: () => boolean`, the host's synchronous stop check. Without it, nothing changes.
+- Construction throws `TypeError('stop_seam_invalid')` when `stopped` is not a synchronous function. A service given a `protocol` must carry the same function that protocol was built with, or construction throws `TypeError('stop_seam_mismatch')`; a service with no `protocol` may carry its own.
+- The check is called on every use and never cached. While it returns `true`, an active method rejects `OperationError('writes_stopped')` before any authority read, and writes nothing except, on the service, the suspension of queued work on the purchase its request authenticates for, checked as that method checks it: by handoff token, or by account for `cancel` (see Seller answer classification). A request that does not authenticate records nothing. A check that throws rejects `stop_check_failed` with the error as `cause`; any other answer, including a promise, rejects `stop_check_invalid`. A promise's outcome is never read. `profile_not_admitted` comes first when both apply.
+- The same check runs where a seller request is stored, before its pre-send check and at the wire signer, so nothing is signed with the session key and nothing is sent while the host is stopped. A stop that turns on in the middle of a call rejects it with the same `OperationError`, not a `SellerUnavailableError`; a service method that rejects this way suspends queued work as above. The agreement exchange catches seller-client errors, so `agreementSubmit` resolves with an indeterminate agreement note instead of rejecting.
+- Passive methods never call it, except `verifyDeal`. Under a stop it starts no seller work: it suspends queued work and returns its readback. Its protocol checks of a native payment still read the stop: for a native-payment purchase in `payment_handoff` whose buyer nonce has moved, the stop refuses `nativePaymentRefused` and `verifyDeal` rejects `writes_stopped`; a refused release of native source intents at a settled nonce is recorded as pending and left for a later `verifyDeal`.
+- It does not stop wallet effects or the wallet's own signatures; pass the same function to the wallet session. `createDeliveryDeadlineWatch` has no stop check: a stopped host must not start it, or must give it a delivery check that goes through the service.
 
 ### createProtocolPurchases
 
@@ -65,6 +81,14 @@ Passive: `status`, `portalOperation`, `portalEvidence`, `verifyDeal`, `planRunni
 Active: `verify`
 
 Passive: none
+
+### createPublicSellerClient
+
+`createPublicSellerClient({ admission, publicEndpoint, authentication, timeoutMs, commitOnSignature })` sends signed POSTs to one public HTTPS seller origin. It accepts no other option: no fetch function, resolver, certificate authority, connector or transmit callback. `authentication` is the purchase's wire authentication. `timeoutMs`, when given, is an integer from 1000 through 300000, and `commitOnSignature` is a boolean; any other value throws `TypeError`. The client keeps no request records.
+
+Active: `propose`, `agreementState`, `commit`, `submitPayment`, `bundleRequest`, `countersign`, `confirmBuyerCopy`, and `commitOnSignature` when that option is true
+
+Passive: `origin` (a string)
 
 ### Other exports
 
@@ -147,7 +171,7 @@ The complete facade inventory is below. Active calls return Promises and run the
 
 | Facade member class | Complete member list |
 |---|---|
-| Facade active | `rpc`, `walletBinding`, `recoverStorageWrite`, `cancelNativeTransfer` |
+| Facade active | `rpc`, `walletBinding`, `recoverStorageWrite`, `cancelNativeTransfer`, `withWalletNonceLock` |
 | Facade passive | `pins`, `transportBinding`, `journal`, `settlementPublication`, `deliveryPublication`, `demoArtifactPublication`, `readRpc`, `observeBinding`, `chainReader`, `nativeTransferClaimed`, `nativeTransferCancelled`, `nativeTransferRefused`, `nativeNonceConsumer`, `isWalletIdle`, `profile`, `onPurchaseStep`, `onStorageWriteResend`, `reserveRpcAuth`, `close` |
 | Facade phase dependent | `binding` |
 
@@ -163,13 +187,26 @@ What the option does not cover:
 - It does not apply to `walletBinding`, `binding`, `recoverStorageWrite` or `cancelNativeTransfer`. `walletBinding` sends no transaction, and a lease it grants is useless until a relayed `rpc` send, which runs the check.
 - It can run twice for one broadcast: once before the lane and intent records are written and once right before the request. Keep it cheap and free of side effects.
 
+### Wallet nonce lane
+
+The seller composition's `transport.withWalletNonceLock({owner, network, chainIdentity}, work)` runs `work` while it holds the wallet's native lane. That is the lock row every native write of that wallet takes on the same client journal file, a buyer composition's writes included. A seller artifact anchor takes it from its nonce read to its broadcast, so two writes of one wallet never take the same nonce.
+
+- The scope is exactly those three keys: the wallet's `0x` address, `transport.pins.network` and `transport.pins.chainIdentity`. Anything else is refused `invalid_params`.
+- It is an active member. While the purchase hold is held it refuses `profile_not_admitted`, and it reads the connection authority once per call.
+- Inside `work`, the transport's readback, CREATE recovery and broadcast for that wallet continue in the held lane. A lease that names a native transfer, that transfer's confirmation and `cancelNativeTransfer` refuse `journal-reentrant`.
+- It waits at most the journal's lock timeout (2 s by default) and then refuses `journal-busy`, before `work` runs. Nothing queues or retries.
+- It is taken before any effect pass and refuses `nonce_lane_order` inside one. A readback, recovery or leased broadcast that holds the connection fence and then meets a held lane refuses `journal-busy` after the same wait.
+- The lane is released when `work` settles, whatever its outcome. The call rejects with `work`'s own error, or with `journal-fenced` when the lock row was removed while `work` ran. Steps inside `work` that need the lane after that removal refuse `journal-fenced` before they send.
+- It reads nothing from the node, writes no journal record and signs nothing. `transport.close()` waits for it.
+- It does not serialize writers of the same wallet that use another journal file.
+
 The entry also re-exports the boolean capability checks `isDevnetAgreementTransport`, `isDevnetSettlementTransport` and `isDevnetDemoTransport`, and the declarations `DEVNET_AGREEMENT_PROFILE`, `DEVNET_AGREEMENT_KIND`, `DEVNET_AGREEMENT_SOURCE`, `DEVNET_SETTLEMENT_KIND`, `DEVNET_SETTLEMENT_POLICY`, `DEVNET_DELIVERY_KIND`, `DEVNET_DELIVERY_POLICY`, `DEVNET_DEMO_ARTIFACT_KIND`, `DEVNET_DEMO_ARTIFACT_POLICY` and `DEVNET_DEMO_ARTIFACT_TYPES`. No raw transport constructor is exported.
 
 ## Seller transport composition
 
-`createSourceDemoSellerTransport({authority, sessionSignerFor, sessionPolicyFor, endpointProofFor})` takes three functions of the purchase: the session signer `{claim, sign}`, the expiry policy `{expiresAt}` and the endpoint proof that the wire's `verifyEndpointProof` returned (verified with the buyer's own commitment receipt reader). Its `authority` is a `TEST-` label or an authority token admitted for `binding` (also passed as an option).
+`createSourceDemoSellerTransport({authority, sessionSignerFor, sessionPolicyFor, endpointProofFor})` takes three functions of the purchase: the session signer `{claim, sign}`, the expiry policy `{expiresAt}` and the endpoint proof that the wire's `verifyEndpointProof` returned (verified with the buyer's own commitment receipt reader). Its `authority` is a `TEST-` label or an authority token admitted for `binding` (also passed as an option). Prepare declares this transport in the terms only together with `nativeAgreementPayment` and `nativePaymentEvidence`; without all three it rejects with `OperationError('seller_agent_unavailable')` before anything is signed or saved, because no seller request could be authenticated.
 
-`createSellerAgentClient({url, authentication, ...})` reaches a loopback endpoint, or, when it is given a wire authentication, a public HTTPS origin: `https://` and an authority, with no credentials, path prefix, query or fragment (the wire's `isPublicEndpoint`). Any other `url` throws before anything is signed or sent. Purchase actions are still refused while the release gate holds them.
+The seller client sends only to a public HTTPS origin: `https://` and an authority, with no credentials, path prefix, query or fragment (the wire's `isPublicEndpoint`), and not a private or loopback address. Any other endpoint, and any option the client does not take, throws before anything is signed or sent. There is no plain-HTTP or loopback transport. Every call goes through one pinned connector: it resolves the host, admits only public addresses, verifies TLS for the host name, reads at most 512 KiB of body and 16 KiB of headers, never follows a redirect (a 3xx is unavailable with cause `redirect`) and reports whether any request byte was written. Purchase actions, and `createPublicSellerClient`, are still refused while the release gate holds them.
 Requests, delegation bytes and received response bytes go through `@kynesyslabs/dacs/wire` under the purchase's kept TP-1 profile. The client saves the delegation payload before it returns the wallet message, stores the wallet signature as canonical base64url, and refuses a purchase prepared under the old transport declaration with `seller_transport_changed`. The seller request timeout also bounds the wire's authority reads and the session signer: a seller call that has not finished signing by then sends nothing and fails with cause `timeout`, and a wallet message or delegation check that is still waiting for the authority fails with `seller_authority_timeout`.
 Payment and bundle requests (the wire's continuing routes) and the two ordinary read routes (`agreements/state`, `bundles/buyer-copy`) of a committed purchase are signed with the job's finalized commitment, its two-party Agreement and the signed Listing, as canonical bytes rebuilt from the purchase row. The commitment's anchored tuple is kept with its SHA-256 when the commitment verifies. A verified row with no usable kept bytes keeps them once from a fresh authenticated readback that matches the stored summary, and otherwise nothing is signed (`commitment_unverified`). The proof's receipt reader authenticates the commitment at every signing, so these requests sign under a `ready: false` proof and after the Listing's window ends, with no continuation capability. Challenge, context, proposals and commitment requests carry no commitment evidence, and a read before commitment keeps the wire's live Listing checks. `bundles/buyer-copy` has no such read before commitment, so the wire refuses it without evidence.
 
@@ -186,13 +223,13 @@ After a restart the registry is empty, and a purchase whose saved delegation nam
 3. `sessionRenewalAccept` takes that signature, verifies it against the purchase's own scope, and replaces the saved delegation. It never accepts an unsigned or unverified delegation.
 4. The host then continues through the existing entries, passing no `delegationSignature` to `agreementPlan`.
 
-`sessionRenewal` answers `session_live` while the saved key is still held, `session_not_started` before `start`, `seller_session_ended` after the seller session ended, `invalid_state` when the purchase has no saved delegation, and `seller_delegation_expiring` when the delegation is inside its safety margin of its expiry. `sessionRenewalAccept` answers `session_gone_reapprove` when there is no pending renewal or its key is no longer the live key. `signerFor` answers `session_gone_reapprove` or `session_not_started` for a purchase with or without a saved delegation. `start` throws `TypeError('session_operation_invalid')` for an id that is not a non-empty string.
+`sessionRenewal` answers `session_live` while the saved key is still held, `session_not_started` before `start`, `seller_session_ended` after the seller session ended, `invalid_state` when the purchase has no saved delegation, `seller_delegation_expiring` when the delegation of an unpaid purchase (no transfer can have been sent) is inside its safety margin of its expiry, `seller_delegation_expiring_payment_unresolved` inside that margin when a transfer may already have been sent but is not verified (`payment_handoff`, `broadcast_reported`, `payment_uncertain`): the buyer must not pay again or prepare a new purchase, but verify or recover the payment first, and `seller_delegation_expired` when the delegation of a paid (`settled_verified`) purchase has expired or its expiry is unknown; a paid purchase renews right up to that expiry, since the renewal is how the seller hears of the payment after a restart. `sessionRenewalAccept` answers `session_gone_reapprove` when there is no pending renewal or its key is no longer the live key, and `seller_delegation_expired` (the wire's `peer_delegation_expired` kept as its `cause`) when the delegation of a paid purchase expired before the renewal was accepted; nothing is saved. `signerFor` answers `session_gone_reapprove` or `session_not_started` for a purchase with or without a saved delegation. `start` throws `TypeError('session_operation_invalid')` for an id that is not a non-empty string.
 
 ### Seller answer classification
 
-With an authentication adapter, each answer is verified on its exact received bytes, then classified by its HTTP status and `error` code, the route, and the request's provenance. The transport builds the record `{status, signed: true, body}` only after verification; an answer that fails verification is `unknown`. A `result` or `progress` answer is returned. Every other class throws: `definite` and `failed-bootstrap` as `SellerRefusedError` (`code` is the seller's code), the rest as `SellerUnavailableError` (`answerCode` is the seller's code). Both carry `answerClass`. Each seller route stores its exact request bytes under the purchase revision (`state.protocol.sellerRequests`) before the first send; the two read routes store nothing. An authenticated call with a stored attempt retries an unknown dispatch at most twice, 5 seconds apart, using the same bytes and fresh wire nonces. Legacy callers and unrecorded reads send once. One absolute deadline (15 seconds by default; context 240–300 seconds) includes storage, authority reads, signing and fetch; an exhausted budget signs and sends nothing further. Unknown outcomes remain unknown, and a later explicit call reuses stored bytes. Failures before dispatch clear only their own attempt; swallowed failures retain their bounded class and cause. Without an adapter (loopback fixtures only), answers are not classified: a 4xx other than 408 or 429 with an `error` code is `SellerRefusedError`, any other non-2xx answer is `SellerUnavailableError`, and a 2xx body is returned.
+Each answer is verified on its exact received bytes, then classified by its HTTP status and `error` code, the route, and the request's provenance. The transport builds the record `{status, signed: true, body}` only after verification; an answer that fails verification is `unknown`. A `result` or `progress` answer is returned. Every other class throws: `definite` and `failed-bootstrap` as `SellerRefusedError` (`code` is the seller's code), the rest as `SellerUnavailableError` (`answerCode` is the seller's code). Both carry `answerClass`. In a protocol purchase, each seller route stores its exact request bytes under the purchase revision (`state.protocol.sellerRequests`) before the first send; the two read routes store nothing. A call with a stored attempt retries an unknown dispatch at most twice, 5 seconds apart, using the same bytes and fresh wire nonces. Unrecorded reads send once. One absolute deadline (15 seconds by default; context 240–300 seconds) includes storage, authority reads, signing and transport; an exhausted budget signs and sends nothing further. Unknown outcomes remain unknown, and a later explicit call reuses stored bytes. Failures before dispatch clear only their own attempt; swallowed failures retain their bounded class and cause. `createPublicSellerClient` keeps no request records: each call signs and sends once, nothing is stored or retried, and nothing about an unknown outcome survives a restart.
 
-A verified `seller_stopped` answer (class `suspended`) and a re-hold seen while work is queued durably record `state.protocol.sellerSuspension: {id, cause, path, at}`. Retries and queued continuations stop, the outcome stays unknown and a dispatched payment is never marked failed. The record and the stored request bytes survive restart and every later save, and re-admission alone resumes nothing. `verifyDeal` keeps its readback and bookkeeping but does not continue a suspended purchase. The protocol view exposes the suspension. To resume, make a new explicit `protocolRecheck({operationId, token, resumeSuspensionId})` request with the suspension's `id`: it checks admission and buyer access again, then clears only the suspension it names, so an older request cannot clear a newer stop. Do not pay again.
+A verified `seller_stopped` answer (class `suspended`), a re-hold and a host stop (`writes_stopped`, `stop_check_failed`, `stop_check_invalid` or `stop_check_timeout` as `cause`) seen while work is queued durably record `state.protocol.sellerSuspension: {id, cause, path, at}`. When a method rejects with a re-hold or host stop refusal whose suspension write failed, the refusal keeps its own `cause` and carries the write's error as `details.suspensionWriteError`. Retries and queued continuations stop, the outcome stays unknown and a dispatched payment is never marked failed. The record and the stored request bytes survive restart and every later save, and re-admission alone resumes nothing. `verifyDeal` keeps its readback and bookkeeping but does not continue a suspended purchase. The protocol view exposes the suspension. To resume, make a new explicit `protocolRecheck({operationId, token, resumeSuspensionId})` request with the suspension's `id`: it checks admission and buyer access again, then clears only the suspension it names, so an older request cannot clear a newer stop. Do not pay again.
 
 | Answer | Class |
 |---|---|
@@ -212,7 +249,7 @@ A verified `seller_stopped` answer (class `suspended`) and a re-hold seen while 
 
 ## Factory integration
 
-Supply application inputs through host, including a synchronous operations-store factory. On a fresh database, apply the schema, construct the purchase store first, then prepare all statements (reads as well as writes). Existing databases need application-owned migrations preserving the schema constraints. Use the same connection for operation and coordinate writes.
+Supply application inputs through host, including a synchronous operations-store factory; the package ships one, with the approval challenges and a local account (see Shipped host adapters). On a fresh database, apply the schema, construct the purchase store first, then prepare all statements (reads as well as writes). Existing databases need application-owned migrations preserving the schema constraints. Use the same connection for operation and coordinate writes.
 
 ```js
 import { DatabaseSync } from 'node:sqlite';
@@ -247,6 +284,28 @@ const diagnostic = purchases.status(host.accountId, host.operation.id, host.toke
 ```
 
 The synchronous `store.transaction` commits both writes or rolls both back on an error. Nested synchronous calls use savepoints. Keep transaction control, database configuration and schema changes outside callbacks; asynchronous callbacks and results refuse. Call diagnostics outside the transaction. This example records host bookkeeping and grants no purchase or settlement authority.
+
+### Shipped host adapters
+
+`createPurchaseOperations`, `createPurchaseChallenges` and `createLocalPurchaseAccount` build `ops`, `challenges` and `accounts` on the same database and store as the factories. They write only inside the store's transaction.
+
+```js
+const ops = createPurchaseOperations({
+  db, store, handoffSecret: host.handoffSecret, handoffTtlMs: host.handoffTtlMs,
+});
+const accounts = createLocalPurchaseAccount({ db, store, wallet: host.walletAddress });
+const challenges = createPurchaseChallenges({
+  db, store, origin: host.origin, purpose: 'approve-purchase', ttlMs: 300_000,
+});
+// Pass ops, accounts and challenges to both factories, and
+// purposes: { APPROVE_PURCHASE: 'approve-purchase' } to createPurchaseService.
+```
+
+- `handoffSecret` (at least 32 characters) and `handoffTtlMs` are required and have no default. A purchase's handoff token is an HMAC of its id under the secret; it is never stored, and the handoff lifetime is never extended. Keep the secret across restarts: with another secret, earlier purchases can no longer be read through their tokens. `isPurchaseOperationId` is true exactly for the ids its `createIdempotent` mints.
+- A host that writes its own `ops` keeps what the shipped one does: one operation per account, key and request (`idempotency_conflict` for another request), `job_id` and `handoff_expires_at` written in the same insert, the saved status compared in `transition`, and only a hash of the handoff token stored.
+- The account id is derived from the wallet: `local:` followed by the normalized address, one `accounts` row per wallet. A saved row for that wallet that does not match refuses `local_account_mismatch`.
+- `issue` needs an account id (`challenge_account_required`). Every challenge is signed under the one `origin` the host passes at construction; an `origin` given to `issue` refuses `challenge_origin_not_accepted`. `purchaseApprovalChallengeText` rebuilds the signed text from the fields `issue` returns and that origin.
+- `verifyAndConsume` reads, checks and consumes a challenge in one store transaction, so a challenge is consumed at most once, and only for a signature by its own wallet.
 
 ### Database admission
 
@@ -299,7 +358,7 @@ The fields marked included are required when status is included; other statuses 
 
 ### Operations
 
-`ops` is synchronous, returns fresh hydrated operations, preserves original errors and uses the same database connection. Diagnostics use only `get`, `getByHandoff` and `history`. The additional `transition` method is used only by `watch.observe`; it must compare the saved status and atomically update state and append its event, refusing a stale status.
+`ops` is synchronous, returns fresh hydrated operations, preserves original errors and uses the same database connection. Diagnostics use only `get`, `getByHandoff` and `history`. The additional `transition` method is used only by `watch.observe`; it must compare the saved status and atomically update state and append its event, refusing a stale status. The package ships one (see Shipped host adapters).
 
 ### Diagnostics
 

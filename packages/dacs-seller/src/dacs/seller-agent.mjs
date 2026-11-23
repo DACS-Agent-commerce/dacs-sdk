@@ -1150,7 +1150,7 @@ export async function createSellerAgent({ effectSigner, integritySigner, effectB
             session.commitmentPublishAsked = true;
             persist(session);
             const out=await nativeArtifactAnchor.publish({logicalAddress,artifact:commitmentRecord,artifactKind:'FinalityCommitmentRecord',authorize:heldFor(jobId),authorizeSigning:heldFor(jobId),
-              ...jobCreatePass(jobId,contentHash(agreement),(current)=>contentHash(current.agreement))});
+              ...jobCreatePass(jobId,session.agreementHash,(current)=>current.agreementHash)});
             if(out.status!=='present') throw new Error(out.reason ?? 'native commitment publication is indeterminate');
             nativeCommitmentProjection=out.signedProjection;
             return {record:commitmentRecord,nativeAddress:out.receipt.nativeAddress,anchorTxRef:out.txRef,anchorReceipt:out.receipt};

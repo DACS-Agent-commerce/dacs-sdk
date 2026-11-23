@@ -1,0 +1,24 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record a suspension when a stopped host refuses a session renewal",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "7ce24547868d450cc0726f0f1d0494b6a9205a63",
+      "after": "18ee45b20922db9880c5c4c809f79532dc408f99"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-suspension.test.mjs",
+      "before": "5c53a7dcaa67f66fe26b02665ed2cda7e7a88000",
+      "after": "4bc9e533a2d472ec4d15025b86a201193df65cd2"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-cca427dcb833.json",
+    "packages/dacs-client/src/purchases.mjs",
+    "packages/dacs-client/test/seller-suspension.test.mjs"
+  ],
+  "note": "sessionRenewal and sessionRenewalAccept authenticate their request with the purchase's handoff token but were missing from the service's list of token actions, so a stopped host refused them writes_stopped without suspending the purchase's queued work, and verifyDeal continued that work once the stop was lifted. Both are now token actions: a stopped host refusing either suspends the queued work of the purchase the token authenticates, as agreementSubmit does, and only protocolRecheck naming the suspension continues it."
+}

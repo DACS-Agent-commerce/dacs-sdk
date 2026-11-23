@@ -344,13 +344,15 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     }
   };
   const artifactAnchor = { writer: sellerKey.claim, source: 'TEST-host-native-delivery/artifacts',
-    publish: async ({ logicalAddress, artifact, artifactKind, authorize, authorizeSigning }) => {
+    publish: async ({ logicalAddress, artifact, artifactKind, authorize, authorizeSigning, currentAuthorization }) => {
       effects.publishCalls.push({ artifactKind, logicalAddress });
       // As the shipped anchor: `authorize` before the intent, then the wallet's approval wait
       // (`faults.artifactApproval`), then `authorizeSigning` (when given) right before the CREATE.
       const permitCreate = async () => {
         if (authorize && authorize() !== true) throw new Error('TEST the seller withdrew this write');
         await faults.artifactApproval?.(artifactKind);
+        // The job pass's own check, which the kit boundary asks right before the signature (only when a test turns it on).
+        if (faults.runPassCheck && artifactKind === 'FinalityCommitmentRecord' && currentAuthorization() !== true) throw new Error('TEST the commitment pass check refused');
         if (authorizeSigning && authorizeSigning() !== true) throw new Error('TEST the seller withdrew this write at signing');
       };
       // A plain wallet creates a new program on every call. Exercise that
@@ -806,6 +808,14 @@ test('the host takes a native payment to anchored, read-back payment evidence an
   assert.deepEqual(w.effects.signCreate, [address], 'a confirmed anchor is not signed again');
   assert.equal(w.effects.broadcast.length, 1, 'nor sent again');
   assert.equal(w.createsAt(address), 1);
+});
+
+test('a commitment CREATE through agent.commit passes the job pass\'s current-authorization check, which binds the Agreement hash', async (t) => {
+  const w = await world(t);
+  w.faults.runPassCheck = true;
+  const p = await w.purchase();
+  assert.deepEqual(w.effects.published.filter((kind) => kind === 'FinalityCommitmentRecord'), ['FinalityCommitmentRecord']);
+  assert.equal((await p.client().commit(p.jobId)).status, 'committed');
 });
 
 test('an anchor whose answer was lost after the write is read back, not sent again', async (t) => {

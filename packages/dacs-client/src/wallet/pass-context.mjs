@@ -50,6 +50,9 @@ export function runInPassContext(context, work) {
 /** The context of the running pass, or the plain context when none is running. */
 export const currentPassContext = () => stored.getStore() ?? PLAIN_CONTEXT;
 
+/** True while `runInPassContext` runs: inside an effect pass's work or an explicit reopen. Never throws. */
+export const insideEffectPass = () => stored.getStore() !== undefined;
+
 /**
  * Throws unless the pass may still transmit: a plain pass always may; a job pass needs a check that
  * returns `true`. A missing check refuses `context_authorization_required`, any other answer

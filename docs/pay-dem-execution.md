@@ -46,20 +46,28 @@ match the retained permanent proof. Configured network labels such as
 `demos:testnet` are bound by the rail's recovery context and durable outcome.
 
 When the rail authenticates the payer's total debit, a successful result may
-include `networkFeeOs`, a canonical non-negative integer OS string. The rail's
-durable settlement log retains this fee across restart, and the application
-copies it into its own session checkpoints if it needs it there; the evidence's
-payment amount continues to describe the agreed transfer amount.
+include `networkFeeOs`, a canonical non-negative integer OS string. The
+settlement store records it with the outcome. The evidence's payment amount
+continues to describe the agreed transfer amount.
 
-The durable `payDemSettle` bridge reauthenticates a recorded native-payment
-success after every restart: it calls the `reconcile` function you built it with,
-and refuses a recorded success that the reconciliation contradicts, including a
-permanent failure for the same transaction. Built without `reconcile`, it refuses
-a recorded outcome that it has not itself authenticated. Keep the original
-signed-transfer journal. Absent, indeterminate or conflicting observations
-withhold success and never authorize a replacement debit.
+After a restart, a recorded outcome is not trusted on its own. When the
+settlement store returns an outcome that this bridge has not itself produced or
+authenticated in this process, `payDemSettle` calls the `reconcile` function you
+built it with and returns the reconciled result. That result must carry the
+recorded transaction hash and block. The bridge refuses a recorded success that
+the reconciliation contradicts, including a permanent failure for the same
+transaction, and it refuses when `reconcile` returns `null`. Built without
+`reconcile`, it refuses a recorded outcome that it has not itself authenticated.
+Keep the original signed-transfer journal. Absent, indeterminate or conflicting
+observations withhold success and never authorize a replacement debit.
 
-The bridge keeps no durable mark of that authentication.
+The reconciled result is what the bridge returns after a restart, and it does
+not compare `networkFeeOs` with the recorded fee. A restarted payment therefore
+reports a fee only if your `reconcile` function returns one. Copy the fee into
+your own session checkpoints when you first receive it.
+
+The bridge keeps no durable mark of that authentication, so every new process
+repeats it.
 
 For a request carrying `priorAttempts`, `payDemSettle` performs only this audit;
 it never calls the submit-capable idempotency claim, even if the rail log has

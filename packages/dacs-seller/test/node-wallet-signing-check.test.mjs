@@ -187,25 +187,27 @@ async function listingAnchor(world) {
   return { anchor, listing: fixtureListing(signer, { now: T0 }) };
 }
 
-// Asserts that `publish` rejects `code` with no node or authority read, journal entry, signature or lock left behind.
-async function assertPublishRefused(world, signatures, publish, code) {
+// Asserts that `publish` rejects `code` after exactly `authorityReads` connection-authority reads, with no node read, journal entry,
+// signature or lock left behind.
+async function assertPublishRefused(world, signatures, publish, code, authorityReads = 0) {
   const before = { authority: world.authority.state.calls, reads: world.node.reads.length };
   await assert.rejects(publish(), { code });
-  assert.deepEqual({ authority: world.authority.state.calls, reads: world.node.reads.length }, before, 'no authority or node read');
+  assert.deepEqual({ authority: world.authority.state.calls, reads: world.node.reads.length }, { ...before, authority: before.authority + authorityReads }, 'no node read');
   assert.deepEqual(await world.wallet.artifactJournal.entries(), [], 'no journal entry');
   assert.equal(signatures.length, 0, 'no signature');
   assert.deepEqual(world.wallet.artifactJournal.inspectLocks(), [], 'no artifact journal lock');
   assert.deepEqual(world.wallet.sourceCapability.journal.inspectLocks(), [], 'no transport journal lock');
 }
 
-test('an artifact anchor over the composed wallet takes a Listing publish with authorizeSigning past its signing-check gate: it refuses nonce_lane_unavailable, as the same publish without the check does, with no node or authority read, journal entry or signature', async t => {
+test('an artifact anchor over the composed wallet takes a Listing publish with authorizeSigning past its signing-check gate and onto the wallet nonce lane: it refuses deployment_unqualified before the deployment pin, as the same publish without the check does, after exactly one connection-authority read, with no node read, journal entry, signature or lock row left', async t => {
   const signatures = await spyTransactionSignatures(t.mock);
   const world = await loggedWorld(t);
   const { anchor, listing } = await listingAnchor(world);
   const publish = extra => () => anchor.publish({ logicalAddress: LISTING_ADDRESS, artifact: listing, artifactKind: 'Listing', operationClass: 'job-create',
     currentAuthorization: () => true, ...extra });
-  await assertPublishRefused(world, signatures, publish({ authorizeSigning: () => true }), 'nonce_lane_unavailable');
-  await assertPublishRefused(world, signatures, publish({}), 'nonce_lane_unavailable');
+  // The one authority read is the transport facade's admission of withWalletNonceLock, an active member.
+  await assertPublishRefused(world, signatures, publish({ authorizeSigning: () => true }), 'deployment_unqualified', 1);
+  await assertPublishRefused(world, signatures, publish({}), 'deployment_unqualified', 1);
 });
 
 test('a guarded CREATE outside any effect pass is asked its check once as its approval answer returns and then refused effect_pass_required at its signature, and a pass made through the composed wallet whose synchronousChecks is not an array or has a hole is refused effect_pass_invalid, with nothing signed or sent', async t => {

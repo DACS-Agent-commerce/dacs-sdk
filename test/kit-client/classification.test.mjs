@@ -1,11 +1,13 @@
 // How the client's seller POST classifies a signed answer. The seller side signs each answer under the old transport
-// domain (fixtures.mjs `signedAnswerHeader`); the exchange is an in-process fetch, so no socket is opened.
+// domain (fixtures.mjs `signedAnswerHeader`); the exchange is answered in process by a stand-in connector, so no socket is opened.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createSellerAgentClient } from '../../packages/dacs-client/src/dacs/seller-http.mjs';
+import { createSellerHttpsClient } from '../../packages/dacs-client/src/dacs/seller-http.mjs';
+import { fetchClient } from '../../packages/dacs-client/test/helpers/seller-https-rig.mjs';
 import { JOB, sellerTransportPair, signedAnswerHeader } from './fixtures.mjs';
 
-const SELLER_URL = 'http://127.0.0.1:9';
+const SELLER_URL = 'https://seller.example.test';
+const clientOverFetch = fetchClient(createSellerHttpsClient);
 const PEER_HEADER = 'x-dacs-seller-peer';
 const NO_DELAY = { now: () => 0, sleep: async () => {} };
 
@@ -23,7 +25,7 @@ async function clientAnswered(t, answers) {
     const signed = signedAnswerHeader(headers[PEER_HEADER], status, text);
     return new Response(text, { status, headers: { 'content-type': 'application/json', [PEER_HEADER]: signed } });
   };
-  return { sent, client: createSellerAgentClient({ url: SELLER_URL, authentication: clientAuth, fetchImpl, requestRecords: fixedRecords(), clock: NO_DELAY }) };
+  return { sent, client: clientOverFetch({ url: SELLER_URL, authentication: clientAuth, fetchImpl, requestRecords: fixedRecords(), clock: NO_DELAY }) };
 }
 
 test('K12-H5 target: a signed 409 peer_request_replayed is unknown and retried with the stored bytes', async (t) => {

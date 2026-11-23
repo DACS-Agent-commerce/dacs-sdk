@@ -20,7 +20,7 @@ const HTTPS_PORT = 443;
 const MIN_STATUS = 200;
 const MAX_STATUS = 599;
 const USER_AGENT = 'dacs-seller-https/v1';
-const ALLOWED_REQUEST_HEADERS = new Set(['accept', 'content-type', 'x-dacs-seller-peer']);
+const ALLOWED_REQUEST_HEADERS = new Set(['accept', 'content-type', 'x-dacs-seller-peer', 'x-dacs-seller-resume']);
 // Before `transmit` nothing has been written, so a failure there proves nothing was sent.
 const PHASES_BEFORE_TRANSMIT = new Set(['resolve', 'admit', 'connect', 'tls', 'prepare']);
 const DEFAULT_DEPENDENCIES = Object.freeze({ resolveHost: resolveDacsPublicHostV1, request: https.request });

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchBoundedJson } from '../src/util/http.mjs';
-import { createSellerAgentClient } from '../src/dacs/seller-http.mjs';
+import { createSellerHttpsClient } from '../src/dacs/seller-http.mjs';
+import { startHttpsSeller } from './helpers/seller-https-rig.mjs';
 import { passiveNativeWorld, HASH } from './helpers/passive-native-world.mjs';
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
@@ -73,27 +74,16 @@ test('bounded fetch reports an oversized body without waiting for the body to ca
   await assert.rejects(settles(bounded(async () => new Response(body, { headers: JSON_HEADERS }))), { kind: 'invalid' });
 });
 
-const SELLER_URL = 'http://127.0.0.1:9/';
-const sellerPost = fetchImpl => createSellerAgentClient({ url: SELLER_URL, fetchImpl, timeoutMs: 1 });
-const sellerCall = client => client.propose({});
-test('seller client settles on its deadline when fetchImpl ignores abort', async () => {
-  const client = sellerPost(never);
-  await assert.rejects(settles(sellerCall(client)), { name: 'SellerUnavailableError' });
-  assert.equal(client.failureCause, 'timeout');
-});
-test('seller client settles on its deadline when the response body ignores abort', async () => {
-  const client = sellerPost(async () => stuckResponse());
-  await assert.rejects(settles(sellerCall(client)), { name: 'SellerUnavailableError' });
-  assert.equal(client.failureCause, 'timeout');
-});
-test('seller client cancels the body of a response that arrives after its deadline', async () => {
-  const { state, body } = trackedStream();
-  let deliver;
-  const client = sellerPost(() => new Promise(resolve => { deliver = resolve; }));
-  await assert.rejects(settles(sellerCall(client)), { name: 'SellerUnavailableError' });
-  deliver(new Response(body, { headers: JSON_HEADERS }));
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(state.cancelled, true);
+// The seller's signed-answer step is never reached: the server stalls before a complete answer exists.
+const stallAuthentication = { request: async () => ({ header: 'TEST-header', payload: {} }), verifyResponse: async () => assert.fail('a stalled answer is never verified') };
+test('seller client settles on its deadline when the server stalls headers or body', async (t) => {
+  let stall = 'headers';
+  const seller = await startHttpsSeller(t, (_req, res) => { if (stall === 'body') { res.writeHead(200, { ...JSON_HEADERS, 'content-length': 100 }); res.flushHeaders(); } });
+  for (stall of ['headers', 'body']) {
+    const client = createSellerHttpsClient({ publicEndpoint: seller.origin, authentication: stallAuthentication, connector: seller.connector, timeoutMs: 300 });
+    await assert.rejects(settles(client.propose({})), { name: 'SellerUnavailableError', causeCode: 'timeout' }, stall);
+    assert.equal(client.failureCause, 'timeout', stall);
+  }
 });
 
 for (const method of ['observePassiveTransfer', 'observeTransfer']) {

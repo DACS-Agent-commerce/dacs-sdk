@@ -8,6 +8,7 @@ import {
   createInMemoryWalletSpendStateStore,
   createWalletSpendAuthorityV1,
   type WalletSpendPolicyV1,
+  type WalletSpendAuthorityDependenciesV1,
   type WalletSpendReservationV1,
 } from "@kynesyslabs/dacs";
 import { canonicalize, sha256Hex } from "@kynesyslabs/dacs/canonical";
@@ -117,6 +118,7 @@ function server(
 async function serverV2(
   now: () => number = () => 1_000,
   selected: WalletSpendPolicyV1 = policy(),
+  bindAuthorizationValidBefore?: WalletSpendAuthorityDependenciesV1["bindAuthorizationValidBefore"],
 ) {
   const reference = createInMemoryDacsWalletSpendContinuityWitnessV1({
     authorityId: "wallet-authority-production", epoch: "epoch-2026-09",
@@ -136,6 +138,7 @@ async function serverV2(
     policy: selected,
     store,
     dependencies: {
+      ...(bindAuthorizationValidBefore ? { bindAuthorizationValidBefore } : {}),
       readBalance: async () => "1000",
       authenticateRecovery: async () => true,
       owner: "remote-service",
@@ -1691,4 +1694,56 @@ describe("remote PostgreSQL wallet authority boundary", () => {
       allowInsecureLoopback: true,
     })).rejects.toMatchObject({ reasonCode: "wallet-spend-authority-tls-required" });
   });
+});
+
+
+it("the V2 permit carries the bound validBefore to the buyer and back", async () => {
+  const bind = vi.fn(async () => 1_900_000_000);
+  let now = 1_000;
+  const local = await serverV2(() => now, policy(), bind);
+  let malformed = false;
+  const requests: Array<{ operation: string; payload: { permit?: { authorizationValidBefore?: number } } }> = [];
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const request = new Request(input, init);
+    if (request.method === "POST") requests.push(await request.clone().json());
+    const response = await local.handler(request);
+    if (!malformed || request.method !== "POST") return response;
+    const body = await response.json() as { result: { permit: { authorizationValidBefore: number } } };
+    body.result.permit.authorizationValidBefore = 0;
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  const remote = await createDacsRemoteWalletSpendAuthorityV2({
+    policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath: await tokenFile(),
+    authorityId: local.authorityId, epoch: local.epoch,
+    witnessVerificationKey: local.verificationKey, allowInsecureLoopback: true, fetch: fetchImpl,
+  });
+  const claim = await remote.reserve(reservation(), { authorizationWindowSeconds: 120 });
+  expect(bind).toHaveBeenCalledWith({ reservation: reservation(), authorizationWindowSeconds: 120 });
+  if (claim.status !== "reserved") throw new Error("expected reservation");
+  expect(claim.permit.authorizationValidBefore).toBe(1_900_000_000);
+  await claim.permit.beginEffect();
+  expect(requests.find((request) => request.operation === "begin")?.payload.permit)
+    .toMatchObject({ authorizationValidBefore: 1_900_000_000 });
+  if (local.bindingInput.store.read === undefined) throw new Error("expected readable store");
+  const state = await local.bindingInput.store.read(dacsWalletSpendLineageKeyV1(policy().wallet, policy().chainId));
+  expect(state?.reservations[0]?.stage).toBe("effect-pending");
+  now = 61_001;
+  await remote.reconcile(reservation(), { disposition: "terminal-absent", evidenceHash: "d".repeat(64) });
+  malformed = true;
+  // Use a different reservation so the service returns a new permit.
+  await expect(remote.reserve({ ...reservation(), reservationId: "remote-two" }))
+    .rejects.toMatchObject({ reasonCode: "wallet-spend-authority-permit-invalid" });
+});
+
+it("a remote authority without an expiry binder denies a window request and keeps its slot free", async () => {
+  const local = await serverV2(() => 1_000, policy());
+  const remote = await createDacsRemoteWalletSpendAuthorityV2({
+    policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath: await tokenFile(),
+    authorityId: local.authorityId, epoch: local.epoch,
+    witnessVerificationKey: local.verificationKey, allowInsecureLoopback: true,
+    fetch: async (input, init) => local.handler(new Request(input, init)),
+  });
+  await expect(remote.reserve(reservation(), { authorizationWindowSeconds: 120 }))
+    .resolves.toEqual({ status: "denied", reason: "authorization-window-unsupported" });
+  expect((await remote.reserve(reservation())).status).toBe("reserved");
 });

@@ -10,7 +10,7 @@ import { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 const require = createRequire(import.meta.url);
-const { readBoundedResponse, installBoundedNpmHttp, NPM_JSON_MAX_ENTRIES, NPM_TARBALL_MAX_UNPACKED_BYTES } = require("../../scripts/bounded-npm-http.cjs");
+const { readBoundedResponse, installBoundedNpmHttp, jsonScanner, NPM_JSON_MAX_ENTRIES, NPM_TARBALL_MAX_UNPACKED_BYTES } = require("../../scripts/bounded-npm-http.cjs");
 const response = (bytes: Buffer[], headers = {}) => Object.assign(Readable.from(bytes), { headers });
 const read = (body: string) => readBoundedResponse(response([Buffer.from(body)]), 64 * 1024 * 1024);
 const deep = "[".repeat(130) + "0" + "]".repeat(130);
@@ -76,6 +76,32 @@ describe("raw-token admission", () => {
       expect(dense.equals(await readBoundedResponse(response([dense.subarray(0, at), dense.subarray(at)]), 65536)), `split at ${at}`).toBe(true);
       await expect(readBoundedResponse(response([denseThenDeep.subarray(0, at), denseThenDeep.subarray(at)]), 65536)).rejects.toMatchObject({ code: "ELIMIT" });
     }
+  });
+  // The tests above check verdicts and bytes, which stay right whether or not a
+  // pause ends. Here the scanner's native search (RegExp.prototype.test) is
+  // watched while it runs: a dense stretch pauses the search, and the plain run
+  // after it must be searched again rather than checked byte by byte to the end.
+  it.each([0, 300])("resumes the native search after a dense stretch (chunk size %i, 0 = whole body)", size => {
+    const body = Buffer.from(JSON.stringify(["é".repeat(100) + "a".repeat(4096)]));
+    const plainStart = body.indexOf("a");
+    const chunks = size ? Array.from({ length: Math.ceil(body.length / size) }, (_, i) => body.subarray(i * size, (i + 1) * size)) : [body];
+    const searchStarts: number[] = [];
+    const search = RegExp.prototype.test;
+    const scan = jsonScanner();
+    let offset = 0;
+    RegExp.prototype.test = function (this: RegExp, text: string) {
+      searchStarts.push(offset + this.lastIndex);
+      return search.call(this, text);
+    };
+    try {
+      for (const chunk of chunks) { scan(chunk); offset += chunk.length; }
+    } finally {
+      RegExp.prototype.test = search;
+    }
+    // The dense stretch is not searched at each of its 100 boundaries...
+    expect(searchStarts.filter(at => at < plainStart).length).toBeLessThan(10);
+    // ...and the search is used again on the plain run once the pause ends.
+    expect(searchStarts.some(at => at >= plainStart)).toBe(true);
   });
   it("fails on an oversized valid prefix before reading its tail", async () => {
     let tailRead = false;

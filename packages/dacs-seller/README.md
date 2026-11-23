@@ -662,8 +662,15 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   boundary's checks, under its fence, inside one effect pass of the wallet
   session. That pass asks the lane's synchronous `currentAuthorization` check
   last before the signature and before each transmission, so `publish` needs
-  `operationClass` and `currentAuthorization` for every artifact kind. An
-  operator-supplied anchor must enforce the contract itself.
+  `operationClass` and `currentAuthorization` for every artifact kind. The
+  operator's approval of a write runs inside that pass, so a manual approval
+  must finish within the pass's deadline, 10 seconds at most: a slower
+  `APPROVE` answers `tp1_authority_timeout` and nothing is signed. Moving the
+  approval outside the pass is planned. The kit's own fee and approval-hold
+  checks run only when the caller passes `debitOs` or `approvalRef`; the
+  seller's anchor passes neither, so the session pass's fee ceiling is the
+  fee check that applies to these CREATEs. An operator-supplied anchor must
+  enforce the contract itself.
 - Without the next option, a Deliverable CREATE the capability signed but did
   not broadcast (or that the node dropped) reads back as a plain absence, and the
   order stays held: only the capability's own journal could send it again.
