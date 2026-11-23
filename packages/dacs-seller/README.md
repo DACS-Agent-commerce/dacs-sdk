@@ -381,9 +381,13 @@ blocks R+1 and R+2 are confirmed and do not list the CREATE, the seller's accoun
 nonce has not reached its nonce, and a last status read no longer knows it. The
 answer is then `indeterminate`, with a reason that says the CREATE is excluded.
 A readback with no reference block never proves exclusion. A `publish` after a
-restart within those 30 minutes resumes the wait with reads only. Meanwhile the
-seller's other writes wait behind the pending write, up to that bound, instead
-of failing at once with a retryable error. `readBackRecords({ jobId,
+restart within those 30 minutes resumes the wait with reads only. Separately,
+the durable wallet journal holds a wallet's nonce lane while a write owns it.
+Another write contending for that same lane waits up to `lockTimeoutMs` (2,000
+milliseconds by default), then fails with retryable `journal-busy`. A caller may
+retry after the holder releases the lane. Writes to other wallet lanes can
+continue. A configured `lockTimeoutMs` sets a custom wait limit.
+`readBackRecords({ jobId,
 buyer })` reads a job's two retained Vet records back without signing or
 sending anything; it answers `present` only when both records read back as
 included, and `indeterminate` when one is not written yet or does not read
