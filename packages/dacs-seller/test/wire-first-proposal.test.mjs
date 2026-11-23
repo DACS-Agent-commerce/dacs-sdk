@@ -23,6 +23,7 @@ const { exchangeAgreement, planAgreement, listingPin } = await import('../../dac
 const { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttpHandler } = await import('../src/dacs/seller-http.mjs');
 const { createSellerWireClientAuth } = await import('../src/dacs/seller-wire-client-auth.mjs');
 const { createWireContext } = await import('../src/dacs/seller-wire-requests.mjs');
+const { readOnlyRoleOf, testEffectBoundary } = await import('./helpers/agent-signing.mjs');
 const T0 = Date.UTC(2026, 9, 27, 12);
 const JOURNAL_LEASE_MS = 300_000;
 
@@ -67,7 +68,8 @@ async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) 
   const journal = openWireRequestJournal(await mkdtemp(join(directory, 'wire-')), { leaseMs: JOURNAL_LEASE_MS, clock });
   const { store: rawStore, capacity } = boundPurchaseOf(store);
   const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
-  const hostWire = createWireContext({ binding: wire.binding, tp1Network: { connection, readAuthority: authorityReader() }, signer: sellerSigner,
+  const hostWire = createWireContext({ binding: wire.binding, tp1Network: { connection, readAuthority: authorityReader() }, signer: { ...sellerSigner, readOnlyAnswerSigner: readOnlyRoleOf(sellerSigner) },
+    effectBoundary: testEffectBoundary({ binding: wire.binding, currentLocal: connection }).effectBoundary,
     journal, store, ready: () => true, now: clock, agent, requireDelegation: false, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }),
     readCommitmentReceipt: () => { throw new Error('TEST commitment read must not run'); } });
   const handler = createSellerHttpHandler(agent, { wire: hostWire });

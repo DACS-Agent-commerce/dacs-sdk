@@ -6,7 +6,8 @@ import { compositeVerificationAddress, contentHash, createInMemoryFencedSessionS
 import { addressForClaim } from '../dacs/demos-claims.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { operatorBuyerAccessConfig } from './buyer-access.mjs';
-import { currentAuthorizationFor } from './create-pass.mjs';
+import { currentAuthorizationFor, isSellerCreatePass } from './create-pass.mjs';
+import { signInPass, signRetainedInPass } from './wallet-signature-pass.mjs';
 import { OperationError } from '../operations.mjs';
 import { sellerDiagnostic } from '../seller-diagnostics.mjs';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -297,8 +298,15 @@ function durableOperationStore(state,job,role,{now,clock,wait={pending:false},re
 // here and cannot be changed by a request, a bundle or the Listing. Any other
 // value, or an anchor composed in another mode, throws a TypeError before the
 // store is used. The returned capability exposes the mode.
-export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,buyerAccess=null,retainedScope=null,counterparty=null,vetMode:vetModeOption,now=()=>Date.now(),monotonicNow=()=>performance.now(),log=(line)=>process.stderr.write(line)}) {
+// runCreate: the wallet-session port's `runCreate` (or another runCreate
+// createSellerCreatePass issued); any other value throws a TypeError after the
+// guard check. Each Vet component signature and the identity presentation is
+// made in its pass, right after the effect boundary's final checks, and the
+// presentation is retained in the job's effect history. resolveBuyer,
+// recoverBuyer and resolveSeller check the kit operation guard at each call.
+export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,store,runCreate,buyerAccess=null,retainedScope=null,counterparty=null,vetMode:vetModeOption,now=()=>Date.now(),monotonicNow=()=>performance.now(),log=(line)=>process.stderr.write(line)}) {
   assertKitOperationAdmitted('createDevnetDemoAgreementContextProvider');
+  if(!isSellerCreatePass(runCreate))throw new TypeError('runCreate must be a pass that createSellerCreatePass or the wallet-session port issued');
   const vetMode=sellerFulfilmentVetModeOf(vetModeOption);
   if(vetMode===null) throw new TypeError('unsupported Vet mode');
   if(sellerFulfilmentVetModeOf(anchor?.vetMode)!==vetMode) throw new TypeError('the native anchor and the Vet provider are composed in different Vet modes');
@@ -424,18 +432,24 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     catch(cause){return Object.assign(new AggregateError([error,cause],'the seller presentation reservation could not be restored; it stays held',{cause}),{code:'indeterminate'});}
   }
   // The checks before the signer run again after the reservation (the purchase
-  // or the challenge may have ended while it was written); a failing check, or
-  // the wallet's definitive refusal, restores the reservation: nothing was signed.
+  // or the challenge may have ended while it was written); a failing check, a
+  // pass refusal before the wallet is called, or the wallet's definitive
+  // refusal, restores the reservation: nothing was signed. The signature is
+  // made in a pass of runCreate and retained under the reservation's operation.
   async function signUnderReservation(job,kept,request) {
     try{
       guard(job,'seller presentation');await authorizeEffect(job);
       if(!usableChallenge(kept.challenge))fail('seller_challenge_expired','seller challenge expired before presentation');
       guard(job,'seller presentation');
     }catch(error){throw await restoredOrHeld(job,request.reservation,error);}
-    let raw;
-    try{raw=await wallet.signBytes(Buffer.from(request.signedBytes,'hex'),request);}
-    catch(error){throw DEFINITIVE_REFUSAL_CODES.has(error?.code)?await restoredOrHeld(job,request.reservation,error):error;}
-    return typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
+    let called=false;
+    const signValue=async()=>{
+      called=true;
+      const raw=await wallet.signBytes(Buffer.from(request.signedBytes,'hex'),request);
+      return typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
+    };
+    try{return await signRetainedInPass({runCreate,operationId:`presentation-${request.reservation}`,lane:`job-${job.jobId}`,...vetCreatePass(job)},signValue);}
+    catch(error){throw !called||DEFINITIVE_REFUSAL_CODES.has(error?.code)?await restoredOrHeld(job,request.reservation,error):error;}
   }
   async function signPresentation(job,kept) {
     const completed=retainedPresentation(kept);if(completed)return completed;
@@ -765,9 +779,13 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
       // signer: one cancelled while the mark, the bytes or the durable row
       // were read signs nothing. A retained signature is replayed; an
       // interrupted reservation holds instead of calling the signer again.
+      // The wallet is called in a pass of runCreate, right after the boundary's
+      // final checks; a pass refusal comes before the mark, so the step knows
+      // nothing was signed.
       if(stored)return stored;
-      durable.markSignerCall();
-      const raw=await wallet.signBytes(bytes),signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
+      const walletSign=(message)=>{durable.markSignerCall();return wallet.signBytes(message);};
+      const raw=await signInPass({runCreate,operationId:`vet-signature-${sha256Hex(bytes)}`,lane:`job-${jobId}`,...vetCreatePass(job)},walletSign,bytes);
+      const signature=typeof raw==='string'?raw:Buffer.from(raw).toString('base64url');
       try{await durable.recordSignature(bytes,signature);}catch(error){writerFailed(error);throw error;}
       return signature;
     };
@@ -1033,6 +1051,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
   const buyerAnswer=value=>({disposition:'present',value:{scope:clone(value.scope),input:clone(value.input)}});
   // writable must re-read the caller's durable purchase state before effects.
   async function resolveBuyer({scope,buyerIdentityBundle},{writable}={}){
+    assertKitOperationAdmitted('agreementContextProvider.resolveBuyer');
     requested=true;validate(scope);
     if(typeof writable!=='function')throw new TypeError('a durable purchase-state check is required');
     if(writable()!==true)fail('not-pending','the purchase is no longer pending');
@@ -1061,6 +1080,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     try{return await finish(scope.jobId,ticket,candidate);}catch(error){if(!['context_released','binding-changed','conflict'].includes(error?.code))throw error;return null;}
   }
   async function recoverBuyer({scope,buyerIdentityBundle}){
+    assertKitOperationAdmitted('agreementContextProvider.recoverBuyer');
     requested=true;
     const candidate=await readCandidate(scope,buyerIdentityBundle);return candidate?.refused??(candidate?buyerAnswer(candidate):null);
   }
@@ -1082,6 +1102,7 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     return{disposition:'indeterminate',reason:(held?`a retained Vet record does not read back yet (${held.status}: ${held.reason ?? 'no reason'})`:'a Vet record is not written yet, or a retained one gave no readback answer').slice(0,240)};
   }
   async function resolveSeller({jobId,listingPin:pin,buyerIdentityBundle,generatedAt}){
+    assertKitOperationAdmitted('agreementContextProvider.resolveSeller');
     requested=true;validate({jobId,generatedAt});assertAccess(buyerIdentityBundle.presentedBy);
     const row=await state.read(jobId);
     if(!row?.binding||!row.lifecycle)return{disposition:'indeterminate',reason:'buyer context is not retained'};

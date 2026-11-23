@@ -158,10 +158,14 @@ async function effectEntries() {
   await attempt('signAnchorWrite', () => signAnchorWrite(signBytes, 'logical', 'hash'));
   await attempt('submitNativeDemDelivery', () => submitNativeDemDelivery({}, {}));
   await attempt('signatureCommitmentAnchor', () => signatureCommitmentAnchor({ onCreateAuthorized: () => { effects.sends++; }, anchorAgreement: async () => { effects.sends++; } }, {}, true).anchorAgreement({}));
-  await attempt('createDevnetDemoListingPublisher', () => createDevnetDemoListingPublisher({ sign: signBytes, scanOwnListings: async () => [], loadRailResolution: async () => null,
-    anchor: { publish: async () => { effects.sends++; }, read: async () => { effects.sends++; }, verifyReceipt: async () => { effects.sends++; } } })({}));
   const probeBoundary = createEffectBoundary({ stopped: () => { effects.sends++; return false; }, binding: { profile: { pinVersion: 'probe' }, localDigest: 'probe' }, currentLocal: () => ({}),
     history: { read: async () => { effects.sends++; return []; }, append: async () => { effects.sends++; } }, clock: { now: () => 0, after: () => () => {} } });
+  // The publisher is built with an issued runCreate over the probe boundary, so its call, not its construction, reaches the guard.
+  const { createSellerCreatePass } = await import('../../src/devnet-demo/create-pass.mjs');
+  const probeSession = { acquireConnectionFence: async () => { effects.sends++; }, effectPass: () => { effects.sends++; }, runInEffectPass: async () => { effects.sends++; } };
+  const { runCreate } = createSellerCreatePass({ effectBoundary: probeBoundary, session: probeSession, stopped: () => false, feeCeilingOs: null, clock: { now: () => 0 } });
+  await attempt('createDevnetDemoListingPublisher', () => createDevnetDemoListingPublisher({ sign: signBytes, scanOwnListings: async () => [], loadRailResolution: async () => null, runCreate,
+    anchor: { publish: async () => { effects.sends++; }, read: async () => { effects.sends++; }, verifyReceipt: async () => { effects.sends++; } } })({}));
   await attempt('effectBoundary', () => probeBoundary.pass({}, () => { effects.signs++; }, () => { effects.sends++; }));
   await attempt('storageWriteRpcSigner', () => storageWriteRpcSigner({ claim: 'writer', sign: signBytes }, 'writer')('message'));
   const { createSellerNodeWallet } = await import('../../src/devnet-demo/seller-node-wallet.mjs');

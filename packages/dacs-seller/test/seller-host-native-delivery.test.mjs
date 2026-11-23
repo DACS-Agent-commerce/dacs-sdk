@@ -11,6 +11,7 @@
 import test from 'node:test';
 import { Readable } from 'node:stream';
 import assert from 'node:assert/strict';
+import { causeOf } from './helpers/refusal-body.mjs';
 import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync,readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -3404,7 +3405,7 @@ for(const failure of ['none','unavailable','changed'])test(`disabling evidence p
  if(failure==='changed')w.faults.evidenceRead=read=>{read.receipt.transactionRef.value='e'.repeat(64);return read;};
  const observed=await post();
  if(failure==='none'){assert.equal(observed.status,200);assert.equal(observed.body.delivery?.status,'delivered',shown(observed.body));}
- else{assert.deepEqual([observed.status,observed.body.error],[503,'seller_source_unavailable'],shown(observed.body));assert.equal(observed.body.cause,failure);}
+ else{assert.deepEqual([observed.status,observed.body.error],[503,'seller_source_unavailable'],shown(observed.body));assert.equal(causeOf(observed.body),failure);}
  w.node.faults.transactionDown=()=>false;w.faults.evidenceRead=null;
  for(let refresh=0;refresh<2;refresh++){
   const done=await w.refreshPayment(p,tx);assert.equal(done.delivery?.status,'delivered',shown(done));

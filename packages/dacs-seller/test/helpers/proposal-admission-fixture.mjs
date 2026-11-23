@@ -13,7 +13,7 @@ import {seller,buyer,JOB,NOW} from './protocol-fixture.mjs';
 import {fixtureListing,fixtureIdentityBundle} from '../fixtures/listings.mjs';
 import {railSteward} from './rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './session-admission-fixture.mjs';
-import {integrityRoleOf,testEffectBoundary} from './agent-signing.mjs';
+import {integrityRoleOf,readOnlyRoleOf,testEffectBoundary} from './agent-signing.mjs';
 import {createSellerTransportStore} from './bound-transport-store.mjs';
 import {createDemDeliveryContext} from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import {HOST_CONTEXT_CALLBACKS,presentContextAnswer} from './host-context-callbacks.mjs';
@@ -41,9 +41,10 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
  // (`signing`), under one boundary whose history lasts as long as the fixture.
  const sellerSigner={claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}};
  sellerSigner.integritySigner=integrityRoleOf(sellerSigner);
+ sellerSigner.readOnlyAnswerSigner=readOnlyRoleOf(sellerSigner);
  // `stop.requested` is the boundary's stop check: set it to stop the seller.
  const stop={requested:false},{effectBoundary,dataDirectory:effectsDirectory}=testEffectBoundary({stopped:()=>stop.requested});
- const signingNow=()=>({effectSigner:config.signer,integritySigner:integrityRoleOf(config.signer),effectBoundary});
+ const signingNow=()=>({effectSigner:config.signer,integritySigner:integrityRoleOf(config.signer),readOnlyAnswerSigner:readOnlyRoleOf(config.signer),effectBoundary});
  const config={get challengeLedger(){return ledger===null?store.challenges:ledger();},maxJobs,...vetMode===undefined?{}:{vetMode},signer:sellerSigner,listing,durableDirectory:dir,now:()=>time,
   agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission,
   nativePaymentEvidence:createNativePaymentEvidenceConsumer({rpcUrl:'http://127.0.0.1:1',anchorEvidence:unreachable,fetchImpl:unreachable}),demDeliveryContext:capability(vetMode)};

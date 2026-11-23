@@ -2,6 +2,7 @@
 // final answer is read against. The native profile runs the same controls on the native wire world at the end of the file.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { causeOf } from './helpers/refusal-body.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { paymentEvidenceAddress } from '@kynesyslabs/dacs';
@@ -187,7 +188,7 @@ test('a final payment answer completes only after transfer, evidence, permit and
     arrange(w);
     const answer = await w.pay();
     assert.equal(answer.signed, true, label);
-    assert.deepEqual([answer.status, answer.body.error, answer.body.cause], [503, 'seller_source_unavailable', cause], label);
+    assert.deepEqual([answer.status, answer.body.error, causeOf(answer.body)], [503, 'seller_source_unavailable', cause], label);
     assert.equal(stateOf(w), 'pending', `${label}: the attempt stays open`);
     assert.deepEqual(paymentCompletions(w), [], `${label}: no outcome is stored`);
     assertDeliveredOnce(w);
@@ -214,7 +215,7 @@ test('a first completion source check that times out during recovery leaves the 
   }
   t.mock.timers.tick(SOURCE_READ_TIMEOUT_MS);
   const answer = await answering;
-  assert.deepEqual([answer.status, answer.body.error, answer.body.cause, answer.signed], [503, 'seller_source_unavailable', 'timeout', true]);
+  assert.deepEqual([answer.status, answer.body.error, causeOf(answer.body), answer.signed], [503, 'seller_source_unavailable', 'timeout', true]);
   assert.equal(stateOf(w), 'pending');
   assert.deepEqual(paymentCompletions(w), []);
   assertDeliveredOnce(w);
@@ -523,7 +524,7 @@ test('a completed native payment reads changed when its permit is gone or its sp
     const stored = w.wireState(p);
     recordReceiptEdit(w, change);
     const withheld = await p.send(txHash);
-    assert.deepEqual([withheld.status, withheld.body.error, withheld.body.cause], [503, 'seller_source_unavailable', 'changed'], label);
+    assert.deepEqual([withheld.status, withheld.body.error, causeOf(withheld.body)], [503, 'seller_source_unavailable', 'changed'], label);
     assert.deepEqual(w.wireState(p), stored, `${label}: the stored outcome is unchanged`);
   }
 });
@@ -823,7 +824,7 @@ async function checkFixturePassiveSources(t) {
   }
   t.mock.timers.tick(SOURCE_READ_TIMEOUT_MS);
   const refused = await answering;
-  assert.deepEqual([refused.status, refused.body.error, refused.body.cause], [503, 'seller_source_unavailable', 'timeout']);
+  assert.deepEqual([refused.status, refused.body.error, causeOf(refused.body)], [503, 'seller_source_unavailable', 'timeout']);
   assert.deepEqual(effects(), before, 'a read that timed out recovers, signs and writes nothing');
   undo();
   t.mock.timers.reset();

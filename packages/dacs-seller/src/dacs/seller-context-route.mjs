@@ -11,6 +11,7 @@ import { DEM_RAIL, canonicalize, purchaseSupport, verifyComponent } from './list
 import { listingPin } from './purchase-protocol.mjs';
 import { deepFreeze } from './seller-challenge-ledger.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
+import { refusalMessage } from './seller-http.mjs';
 import { openWireRequest } from './seller-wire-requests.mjs';
 import { createContextAttempt } from './seller-context-attempt.mjs';
 import { createAcceptedContinuation, createContextOutcomeRevalidation, createContinuationCheck } from './seller-context-continuation.mjs';
@@ -173,7 +174,7 @@ export function createSellerContextRoute({ listing, assertBuyerAccess, knownJob 
 }
 
 // A refusal's code and status for the answer: a refusal keeps its own, the guard maps to 503 and any other error is an uncertain operation.
-// `cause` is the code of the error that caused it, when it names one.
+// `cause` is the code of the error that caused it, when it names one; the answer carries it inside its message.
 function refusalOf(error) {
   const causeCode = typeof error?.cause === 'string' ? error.cause : error?.cause?.code;
   const cause = typeof causeCode === 'string' ? causeCode : undefined;
@@ -396,7 +397,7 @@ export function createWireSellerContextRoute({ listing, wire, store, ledger, adm
       return { status: final.status, text: final.text, request };
     } catch (error) {
       const { code, status, message, cause } = refusalOf(error);
-      return { status, text: JSON.stringify({ error: code, message, ...(cause === undefined ? {} : { cause }) }), request };
+      return { status, text: JSON.stringify({ error: code, message: refusalMessage(message, cause) }), request };
     }
   }
 

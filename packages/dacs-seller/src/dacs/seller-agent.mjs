@@ -200,7 +200,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // when the seller durably admitted exactly that context request for the job.
 // What the agent needs of the kit's one challenge ledger (the transport store's `challenges`).
 const CHALLENGE_LEDGER_METHODS = Object.freeze(['retained', 'jobBinding']);
-export async function createSellerAgent({ effectSigner, integritySigner, effectBoundary, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, jobSlotReleased, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, vetMode: vetModeOption, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, closedBootstrapGate = null, railAuthority = null, sessionAdmission = null, challengeLedger = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
+export async function createSellerAgent({ effectSigner, integritySigner, readOnlyAnswerSigner, effectBoundary, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, jobSlotReleased, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, vetMode: vetModeOption, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, closedBootstrapGate = null, railAuthority = null, sessionAdmission = null, challengeLedger = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
   assertKitOperationAdmitted('createSellerAgent');
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
@@ -211,6 +211,8 @@ export async function createSellerAgent({ effectSigner, integritySigner, effectB
   // Every effect signature is made inside a pass of the host's effect boundary; the durable state gets only the integrity role.
   if (!effectSigner?.claim || typeof effectSigner.sign !== 'function') throw new TypeError('effectSigner must be the seller key\'s effect role (claim + sign)');
   if (integritySigner?.claim !== effectSigner.claim || typeof integritySigner.sign !== 'function') throw new TypeError('integritySigner must be the same seller key\'s integrity role');
+  // Each direct composition names all three of the key's roles, so none can fall back on another.
+  if (typeof readOnlyAnswerSigner !== 'function') throw new TypeError('readOnlyAnswerSigner must be the same seller key\'s read-only answer role');
   const boundaryBinding = effectBoundaryBinding(effectBoundary);
   if (boundaryBinding === undefined) throw new TypeError('effectBoundary must be the host\'s effect boundary (createEffectBoundary)');
   if (agreementAnchor !== null && (typeof agreementAnchor?.readAgreement !== 'function' || typeof agreementAnchor.source !== 'string')) throw new Error('agreementAnchor must expose source and readAgreement');

@@ -2,6 +2,7 @@
 // store. Rule tests use the counting stand-in agent; revalidation and bundle tests put the real durable agent behind the handler.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { causeOf } from './helpers/refusal-body.mjs';
 import { DACS_SELLER_HTTP_PATHS as PATHS } from '@kynesyslabs/dacs/wire';
 import { SELLER_EFFECT_ROUTES, createSellerEffectRoutes } from '../src/dacs/seller-effect-routes.mjs';
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
@@ -317,7 +318,7 @@ test('completed revalidation: route {proposals, commitments, commitments/signatu
     admission.resolveVetRecord = async () => { throw new Error('TEST source unavailable'); };
     try {
       const refused = await w.request(PATHS.proposals);
-      assert.deepEqual({ status: refused.status, signed: refused.signed, error: refused.body.error, cause: refused.body.cause }, { status: 503, signed: true, error: 'seller_source_unavailable', cause: 'unavailable' });
+      assert.deepEqual({ status: refused.status, signed: refused.signed, error: refused.body.error, cause: causeOf(refused.body) }, { status: 503, signed: true, error: 'seller_source_unavailable', cause: 'unavailable' });
     } finally { admission.resolveVetRecord = read; }
     assert.equal(w.calls.receive, received, 'receiveProposal never ran again');
     assert.deepEqual(operationOf(w, w.jobId, PATHS.proposals).state, 'completed');
@@ -384,7 +385,7 @@ test('completed revalidation: route {proposals, commitments, commitments/signatu
     anchor.readRetained = async () => { throw new Error('TEST source unavailable'); };
     try {
       const refused = await c.commitmentRequest();
-      assert.deepEqual({ status: refused.status, signed: refused.signed, error: refused.body.error, cause: refused.body.cause }, { status: 503, signed: true, error: 'seller_source_unavailable', cause: 'unavailable' });
+      assert.deepEqual({ status: refused.status, signed: refused.signed, error: refused.body.error, cause: causeOf(refused.body) }, { status: 503, signed: true, error: 'seller_source_unavailable', cause: 'unavailable' });
     } finally { anchor.readRetained = read; }
     assert.equal(operationOf(c, c.jobId, c.commitmentPath).state, 'completed');
     assert.equal((await c.commitmentRequest()).text, c.first.text, 'the stored outcome was not rewritten');
@@ -485,12 +486,12 @@ test('an early commitment completed before the buyer\'s Agreement anchor exists 
   const row = structuredClone(c.fixture.rows.get(c.address));
   c.fixture.rows.set(c.address, { ...row, artifact: { ...row.artifact, agreementHash: derive('another agreement') } });
   const changed = await c.commitmentRequest();
-  assert.deepEqual({ status: changed.status, error: changed.body.error, cause: changed.body.cause }, { status: 503, error: 'seller_source_unavailable', cause: 'changed' });
+  assert.deepEqual({ status: changed.status, error: changed.body.error, cause: causeOf(changed.body) }, { status: 503, error: 'seller_source_unavailable', cause: 'changed' });
   c.fixture.rows.set(c.address, row);
   anchor.readRetained = async () => { throw new Error('TEST commitment unreadable'); };
   try {
     const unreadable = await c.commitmentRequest();
-    assert.deepEqual({ status: unreadable.status, error: unreadable.body.error, cause: unreadable.body.cause }, { status: 503, error: 'seller_source_unavailable', cause: 'unavailable' });
+    assert.deepEqual({ status: unreadable.status, error: unreadable.body.error, cause: causeOf(unreadable.body) }, { status: 503, error: 'seller_source_unavailable', cause: 'unavailable' });
   } finally { anchor.readRetained = read; }
   assert.equal(agreementReads, 0);
   assert.deepEqual(commitmentSnapshot(c), settled, 'durable state, anchor rows and the outcome are unchanged');
@@ -505,7 +506,7 @@ test('native passive read and readRetained never recover a pending accepted CREA
     anchor.publish = async () => assert.fail('a completed-answer check never publishes');
     const replay = async (cell) => {
       const answered = await c.commitmentRequest();
-      assert.deepEqual({ status: answered.status, error: answered.body.error, cause: answered.body.cause }, { status: 503, error: 'seller_source_unavailable', cause: 'unavailable' }, cell);
+      assert.deepEqual({ status: answered.status, error: answered.body.error, cause: causeOf(answered.body) }, { status: 503, error: 'seller_source_unavailable', cause: 'unavailable' }, cell);
     };
     await replay('immediately');
     await replay('a second time');
@@ -618,7 +619,7 @@ async function assertWithheldThenRestored(label, { send, snapshot, stored, cause
   const before = snapshot(), undo = arrange();
   for (const call of [1, 2]) {
     const refused = await send();
-    assert.deepEqual([refused.status, refused.body.error, refused.body.cause], [503, 'seller_source_unavailable', cause], `${label}, call ${call}`);
+    assert.deepEqual([refused.status, refused.body.error, causeOf(refused.body)], [503, 'seller_source_unavailable', cause], `${label}, call ${call}`);
     assert.notEqual(refused.text, stored, `${label}, call ${call}: the stored text is withheld`);
     assert.deepEqual(snapshot(), before, `${label}, call ${call}: nothing changed`);
   }
@@ -648,7 +649,7 @@ async function checkFixtureSources(t) {
     }
     t.mock.timers.tick(ADMISSION_READ_TIMEOUT_MS);
     const refused = await answering;
-    assert.deepEqual([refused.status, refused.body.error, refused.body.cause], [503, 'seller_source_unavailable', 'timeout'], `a transfer read that never answers, call ${call}`);
+    assert.deepEqual([refused.status, refused.body.error, causeOf(refused.body)], [503, 'seller_source_unavailable', 'timeout'], `a transfer read that never answers, call ${call}`);
     hung();
   }
   t.mock.timers.reset();

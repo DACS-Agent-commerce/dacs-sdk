@@ -12,6 +12,9 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/accounting-reconciliation.mjs': { effect: {  }, pure: ['createAccountingReconciler'] },
   // Its signer signs only inside a pass of the guarded effect boundary, with the key's guarded effect role.
   'src/dacs/agent-effect-signer.mjs': { effect: {}, pure: ['agentEffectOperation', 'createAgentEffectSigner'] },
+  // Constructing it signs nothing; its answers are signed only through the roles it is given: the effect role inside a pass of the
+  // guarded effect boundary, and the closed read-only role otherwise. Its returned signAnswer is classified in RETURNED_CLASSIFICATION.
+  'src/dacs/answer-signers.mjs': { effect: {}, pure: ['createAnswerSigners'] },
   'src/dacs/authority-reader.mjs': { effect: {}, pure: ['createSellerAuthorityReader'] },
   'src/dacs/bootstrap-scope.mjs': { effect: {}, pure: ['createBootstrapScopes'] },
   'src/dacs/bounded-call.mjs': { effect: {  }, pure: ['boundedCall', 'isBoundedCallTimeout'] },
@@ -52,7 +55,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-context-route.mjs': { effect: {  }, pure: ['completedContextOutcome', 'contextOperationView', 'createSellerContextRecords', 'createSellerContextRoute', 'createWireSellerContextRoute'] },
   'src/dacs/seller-durable-state.mjs': { effect: { createSellerDurableState: ['signOnce', 'anchor'] }, pure: ['SellerRecoveryError'] },
   'src/dacs/seller-effect-routes.mjs': { effect: {  }, pure: ['createSellerEffectRoutes'] },
-  'src/dacs/seller-http.mjs': { effect: { createSellerHttpHandler: ['createSellerHttpHandler'], createSellerAgentClient: ['createSellerAgentClient'] }, pure: ['SellerRefusedError', 'SellerTlsUnusableError', 'SellerUnavailableError', 'createCompletedOutcomeReader', 'createOrdinaryCompletionPort', 'endWireAttempt', 'loopbackSocket', 'sellerFailureAttempt', 'sellerFailureCause'] },
+  'src/dacs/seller-http.mjs': { effect: { createSellerHttpHandler: ['createSellerHttpHandler'], createSellerAgentClient: ['createSellerAgentClient'] }, pure: ['SellerRefusedError', 'SellerTlsUnusableError', 'SellerUnavailableError', 'createCompletedOutcomeReader', 'createOrdinaryCompletionPort', 'endWireAttempt', 'loopbackSocket', 'refusalMessage', 'sellerFailureAttempt', 'sellerFailureCause'] },
   'src/dacs/seller-obsolete-store-tables.mjs': { effect: {  }, pure: ['dropEmptyObsoleteTables'] },
   'src/dacs/seller-planned-agreement.mjs': { effect: {  }, pure: ['createPlannedAgreementReader', 'plannedStateRecords'] },
   'src/dacs/seller-proposal-time.mjs': { effect: {  }, pure: ['proposalTimeProblem'] },
@@ -72,7 +75,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/approval-ledger-append.mjs': { effect: {  }, pure: ['appendApprovalLedgerLine', 'assertApprovalLedgerDirectoryCreatable', 'syncApprovalLedger'] },
   'src/devnet-demo/artifact-anchor.mjs': { effect: { createDevnetDemoArtifactAnchor: ['publish'] }, pure: [] },
   'src/devnet-demo/buyer-access.mjs': { effect: {  }, pure: ['createOperatorBuyerAccess', 'operatorBuyerAccessConfig'] },
-  'src/devnet-demo/create-pass.mjs': { effect: { createSellerCreatePass: ['effectBoundary'] }, pure: ['currentAuthorizationFor'] },
+  'src/devnet-demo/create-pass.mjs': { effect: { createSellerCreatePass: ['effectBoundary'], lateSellerCreatePass: ['effectBoundary'] }, pure: ['currentAuthorizationFor', 'isSellerCreatePass'] },
   'src/devnet-demo/deliverable.mjs': { effect: {  }, pure: ['createDevnetPurchasedReportProducer', 'isDevnetPurchasedReport'] },
   'src/devnet-demo/deployment-qualification.mjs': { effect: {  }, pure: ['assertQualifiedDeployment'] },
   'src/devnet-demo/durable-file.mjs': { effect: {  }, pure: ['publishFileExclusive', 'syncDirectory', 'syncFile'] },
@@ -87,6 +90,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/seller-wallet-session.mjs': { effect: { createSellerWalletSession: ['createSellerWalletSession', 'sellerWalletSession.finalize', 'publish'] }, pure: ['isSellerWalletSession'] },
   'src/devnet-demo/stop-request.mjs': { effect: {  }, pure: ['requestStop', 'stopRequested'] },
   'src/devnet-demo/storage-write-recovery.mjs': { effect: { storageWriteRpcSigner: ['storageWriteRpcSigner'] }, pure: ['classifyStorageWriteSubmission', 'rpcEnvelope', 'storageWriteAbsent', 'storageWriteAccountNonce', 'storageWriteConfirmationMatches', 'storageWriteIdentityMatches'] },
+  'src/devnet-demo/wallet-signature-pass.mjs': { effect: { signInPass: ['effectBoundary'], signRetainedInPass: ['effectBoundary'] }, pure: [] },
   'src/devnet-demo/write-exclusion.mjs': { effect: {  }, pure: ['createWriteExclusionRule'] },
   'src/host.mjs': { effect: { startSellerHost: ['startSellerHost'] }, pure: [] },
   'src/kit-operation-guard.mjs': { effect: {}, pure: ['KitOperationGuardError', 'assertKitOperationAdmitted', 'kitOperationAdmitted'] },

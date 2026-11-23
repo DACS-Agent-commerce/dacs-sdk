@@ -19,7 +19,7 @@ const { agentFixture, fixtureProposal } = await import('./helpers/seller-agent-i
 const { countedKeyRoles } = await import('./helpers/counted-key-roles.mjs');
 const { proposalWireWorld } = await import('./helpers/proposal-wire-world.mjs');
 const { PATHS } = await import('./helpers/wire-routes-world.mjs');
-const { MONOTONIC_CLOCK, TEST_BINDING, integrityRoleOf } = await import('./helpers/agent-signing.mjs');
+const { MONOTONIC_CLOCK, TEST_BINDING, integrityRoleOf, readOnlyRoleOf } = await import('./helpers/agent-signing.mjs');
 const { TEST_CONNECTION } = await import('./helpers/wire-authority-fixture.mjs');
 const { JOBS } = await import('./helpers/bilateral-vet-fixture.mjs');
 const guard = await import('../src/kit-operation-guard.mjs');
@@ -61,11 +61,14 @@ const NOTHING = Object.freeze({ authorityReads: 0, nodeReads: [], signatures: 0 
 // An admitted publish makes one authority read, the node's block read behind the binding check, and then refuses the unqualified
 // deployment, before any nonce read or signature.
 const BINDING_READ_ONLY = Object.freeze({ authorityReads: 1, nodeReads: ['getBlockByNumber'], signatures: 0 });
+// The Listing's own signature pass checks the binding three times before its signer (the boundary's pre-checks, the session
+// pass's refresh and signPass's pre-checks), each with one authority read and its block read; then its publish reads as above.
+const SIGNED_LISTING_BINDING_READS = Object.freeze({ authorityReads: 4, nodeReads: Array(4).fill('getBlockByNumber'), signatures: 0 });
 
-// The Listing publisher over `anchor`, with the world's signer, and the Listing draft it publishes.
+// The Listing publisher over `anchor`, with the world's signer and the port's runCreate, and the Listing draft it publishes.
 function listingPublisher(world, anchor) {
   const publish = createDevnetDemoListingPublisher({ anchor, sign: (bytes) => world.signer.signBytes(bytes), scanOwnListings: async () => ({ status: 'ok', anchors: [] }),
-    loadRailResolution: railAuthority });
+    loadRailResolution: railAuthority, runCreate: world.port.runCreate });
   const draft = fixtureListing(world.signer, { now: T0 });
   delete draft.signature;
   return { publish, draft };
@@ -126,7 +129,7 @@ test('the Listing publisher passes operationClass job-create and its publication
   delete withoutPass.operationClass;
   delete withoutPass.currentAuthorization;
   await assert.rejects(anchor.publish(withoutPass), { code: 'invalid' }, 'the same publish without them');
-  assert.deepEqual(world.effects(), BINDING_READ_ONLY);
+  assert.deepEqual(world.effects(), SIGNED_LISTING_BINDING_READS);
   assert.equal(await anchor.hasIntent(inputs[0].logicalAddress), false, 'no intent was stored');
 });
 
@@ -233,7 +236,7 @@ test('an agent composed without the host\'s effect boundary refuses at construct
     ['no integrity role', { effectSigner, effectBoundary: boundaryOver(TEST_CONNECTION) }],
   ]) await assert.rejects(createSellerAgent({ ...w.config, ...signing }), TypeError, label);
   const negotiate = async (effectBoundary) => {
-    const agent = await createSellerAgent({ ...w.config, effectSigner, integritySigner, effectBoundary });
+    const agent = await createSellerAgent({ ...w.config, effectSigner, integritySigner, readOnlyAnswerSigner: readOnlyRoleOf(effectSigner), effectBoundary });
     try { return await agent.receiveProposal((await fixtureProposal(w.listing, JOBS[0])).body); } finally { agent.close(); }
   };
   const refused = await negotiate(boundaryOver({ ...TEST_CONNECTION, connectionId: 'TEST-other-connection' }));
@@ -266,7 +269,7 @@ test('journal-authentication signatures sign only their local domain, never ente
     assert.deepEqual(roles.counts, beforeSignOnce, 'refused before its intent: nothing was signed');
     assert.throws(() => state.signOnce(`signature:${core.sha256Hex(agreementBytes)}`, agreementBytes, roles.integritySigner.sign), { code: 'seller_key_role_refused' }, 'the integrity role signs no effect');
   });
-  assert.deepEqual(roles.counts, { effect: beforeSignOnce.effect, integrity: beforeSignOnce.integrity + 1 }, 'the only signature was the intent\'s journal record');
+  assert.deepEqual(roles.counts, { effect: beforeSignOnce.effect, integrity: beforeSignOnce.integrity + 1, readOnly: 0 }, 'the only signature was the intent\'s journal record');
   const counts = { ...roles.counts };
   const wireBytes = Buffer.from(`${DACS_SELLER_HTTP_DOMAINS.response}{}`);
   for (const bytes of [...roles.effectBytes, wireBytes]) assert.throws(() => roles.integritySigner.sign(bytes), { code: 'seller_key_role_refused' });

@@ -30,7 +30,8 @@ const unsupportedRoute = (path) => new WireError('wire_client_route_unsupported'
  * (`wire_client_route_unsupported`) for a route it has no signer for, with `peer_job_invalid` (409) for a context request whose
  * scope has no canonical job, and with the wire's own refusal when the connection or authority changed after binding, or with
  * `wire_client_signing_timeout` (500) when signing, the caller's lookups included, takes longer than `signingTimeoutMs`
- * (default 10,000 ms): nothing is dispatched then. Throws on an invalid configuration, and while the kit guard is off.
+ * (default 10,000 ms): nothing is dispatched then. Throws on an invalid configuration, and while the kit guard is off; `request`
+ * also checks the guard each time it is called, so a signer built while admitted signs nothing after a re-hold.
  */
 export function createSellerWireClientAuth({ signer, delegation = null, binding, connection, endpointProof, publicEndpoint, seller, resolveJob, evidenceFor = async () => ({}), now = () => Date.now(), lifetimeMs, signingTimeoutMs = SIGNING_TIMEOUT_MS }) {
   assertKitOperationAdmitted('createSellerWireClientAuth');
@@ -57,6 +58,7 @@ export function createSellerWireClientAuth({ signer, delegation = null, binding,
 
   return {
     async request(path, body, text) {
+      assertKitOperationAdmitted('createSellerWireClientAuth.request');
       if (!WIRE_ROUTE_PATHS.includes(path) && !CONTEXT_PATHS.includes(path)) throw unsupportedRoute(path);
       if (!record(body)) throw new WireError('peer_body_invalid', 500, 'the request body is not an object');
       return withinSigningDeadline(() => signOnWire(path, body, text));

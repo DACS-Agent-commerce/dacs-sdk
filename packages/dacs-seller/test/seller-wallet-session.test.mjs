@@ -25,7 +25,7 @@ const { contextHostFixture } = await import('./helpers/host-context-client.mjs')
 const { anchorOptions, importSpiedWalletSession } = await import('./helpers/artifact-anchor-spy.mjs');
 const CRASH_CHILD = new URL('./helpers/seller-wallet-session-crash-child.mjs', import.meta.url);
 
-const PORT_MEMBERS = ['authority', 'connectionAuthority', 'artifactAnchor', 'finalize', 'close'];
+const PORT_MEMBERS = ['authority', 'connectionAuthority', 'artifactAnchor', 'runCreate', 'finalize', 'close'];
 const SESSION_MEMBERS = ['effectPass', 'runInEffectPass', 'walletFactory', 'transport', 'acquireConnectionFence', 'address', 'observer', 'artifactJournal',
   'paymentEvidence', 'readBalance', 'close'];
 const ANCHOR_METHODS = ['publish', 'read', 'readRetained', 'retainedSignedCreate', 'hasIntent', 'verifyReceipt'];

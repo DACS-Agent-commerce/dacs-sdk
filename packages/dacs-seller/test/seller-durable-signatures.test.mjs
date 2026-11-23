@@ -15,7 +15,7 @@ import { JOBS } from './helpers/bilateral-vet-fixture.mjs';
 import { seller as sellerKey, NOW } from './helpers/protocol-fixture.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
 import { localAnchor } from './helpers/local-anchor-fixture.mjs';
-import { testEffectBoundary } from './helpers/agent-signing.mjs';
+import { readOnlyRoleOf, testEffectBoundary } from './helpers/agent-signing.mjs';
 import { anchorWriteMessage } from '../src/dacs/fixture-anchors.mjs';
 import { createEffectHistory } from '../src/dacs/effect-history.mjs';
 import { SELLER_STATE_SIGNING_DOMAIN } from '../src/dacs/seller-durable-state.mjs';
@@ -83,7 +83,7 @@ async function restartedSeller(t, directory, jobId) {
   const effectSigner = { claim: sellerKey.claim, sign: (bytes) => { if (Buffer.from(bytes).toString() === agreementBytes) calls.agreementSignatures++; return sellerKey.signBytes(bytes); } };
   const integritySigner = { claim: sellerKey.claim, sign: (bytes) => { if (!Buffer.from(bytes).subarray(0, journal.length).equals(journal)) calls.integrityOutsideJournal++; return sellerKey.signBytes(bytes); } };
   const open = async () => {
-    const agent = await createSellerAgent({ effectSigner, integritySigner, effectBoundary: testEffectBoundary({ dataDirectory: `${directory}-effects` }).effectBoundary,
+    const agent = await createSellerAgent({ effectSigner, integritySigner, readOnlyAnswerSigner: readOnlyRoleOf(effectSigner), effectBoundary: testEffectBoundary({ dataDirectory: `${directory}-effects` }).effectBoundary,
       listing, anchors: localAnchor({ now: () => NOW + 2000 }), durableDirectory: directory, now: () => NOW + 2000, simulatedFixture: true });
     t.after(() => agent.close());
     return agent;

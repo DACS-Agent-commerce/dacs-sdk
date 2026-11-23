@@ -6,6 +6,7 @@
 // registered capability (helpers/context-wire-world.mjs).
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { causeOf } from './helpers/refusal-body.mjs';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { AGREEMENT_CONTEXT_SOURCE } from '../src/dacs/agreement-context-consumer.mjs';
@@ -429,7 +430,7 @@ test('a bundle that names another presenter under an issued nonce fails the chal
   assert.equal(w.counts.validations, 0, 'the presenter is checked before the profile admission');
   assertNothingStarted(w);
   const again = await w.post(request);
-  assert.deepEqual([...summary(again), again.body.cause], [409, 'context_challenge_failed', 'peer_context_mismatch']);
+  assert.deepEqual([...summary(again), causeOf(again.body)], [409, 'context_challenge_failed', 'peer_context_mismatch']);
   const corrected = await w.startContext({ nonce: request.nonce });
   assert.deepEqual(summary(await w.post(corrected)), [409, 'context_challenge_consumed']);
   assertNothingStarted(w);
@@ -472,7 +473,7 @@ test('a context request while stopped is refused seller_stopped 503 before the a
     const w = await contextWireWorld(t), request = await w.startContext();
     w.state.stop = stop;
     const answer = await w.post(request);
-    assert.deepEqual([...summary(answer), answer.body.cause], [503, 'seller_stopped', cause]);
+    assert.deepEqual([...summary(answer), causeOf(answer.body)], [503, 'seller_stopped', cause]);
     assertConsumedNothing(w, request.nonce);
   }
 });
@@ -596,7 +597,7 @@ test('a provider error after the reservation answers 503 operation_uncertain, wr
   w.behaviour.provider = async () => { throw Object.assign(new Error('TEST provider failed'), { code: 'provider_failed' }); };
   const answer = await w.post(request);
   await w.settleJob();
-  assert.deepEqual([...summary(answer), answer.body.cause], [503, 'operation_uncertain', 'provider_failed']);
+  assert.deepEqual([...summary(answer), causeOf(answer.body)], [503, 'operation_uncertain', 'provider_failed']);
   await request.verify(answer);
   assert.equal(w.operationOf(WIRE_JOB).state, 'pending', 'no end record');
   assert.equal(w.completions.length, 0);
@@ -909,7 +910,7 @@ async function passDeadline(t, { w, request, pending }, atMs = DEADLINE_MS) {
   w.tick(atMs);
   t.mock.timers.tick(atMs);
   const answer = await pending;
-  assert.deepEqual([...summary(answer), answer.body.cause], [503, 'operation_uncertain', 'context_deadline']);
+  assert.deepEqual([...summary(answer), causeOf(answer.body)], [503, 'operation_uncertain', 'context_deadline']);
   await request.verify(answer);
   assert.equal(w.openHolds().length, 1, 'the hold is kept');
   assert.equal(w.operationOf(WIRE_JOB).state, 'pending', 'the attempt stays open');
@@ -1061,7 +1062,7 @@ test('context first-validation gate × one failing check under an issued nonce',
       assert.equal(w.challengeOf(request.nonce).state, 'failed');
       assert.equal(w.challengeOf(request.nonce).failure.code, expected[1]);
       const again = await w.post(request);
-      assert.deepEqual([...summary(again), again.body.cause], [409, 'context_challenge_failed', expected[1]]);
+      assert.deepEqual([...summary(again), causeOf(again.body)], [409, 'context_challenge_failed', expected[1]]);
       await w.settleJob();
       assertNothingStarted(w);
     });
@@ -1236,7 +1237,7 @@ test('a first admission keeps the purchase tuple with its acceptance, a failed a
     const before = { holds: w.counts.holds.length, files: w.journalFiles(), reserves: w.reserved.calls, challenge: w.challengeOf(request.nonce) };
     const sql = watchSql(t);
     const answer = await w.post(request);
-    assert.deepEqual([...summary(answer), answer.body.cause], [500, 'tp1_purchase_profile_mismatch', 'missing']);
+    assert.deepEqual([...summary(answer), causeOf(answer.body)], [500, 'tp1_purchase_profile_mismatch', 'missing']);
     assert.equal(sql.writes(), 0);
     assert.deepEqual({ holds: w.counts.holds.length, files: w.journalFiles(), reserves: w.reserved.calls, challenge: w.challengeOf(request.nonce) }, before);
   });
