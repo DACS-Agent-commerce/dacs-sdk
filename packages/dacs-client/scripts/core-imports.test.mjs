@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, posix } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { DERIVED_RULE_MODULES } from './check-hold.mjs';
 import { CORE_FILES, isCorePath } from './delta-record.mjs';
 
 const pkg = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -14,13 +15,16 @@ const RUNNER = 'every *.test.mjs file under scripts/ and test/';
 // Each child Node process and computed import() in a core file, in source
 // order, with the package files it runs.
 const LAUNCHES = {
+  'scripts/check-hold.mjs': ['scripts/delta-freeze.mjs'],
   'scripts/test.mjs': [RUNNER],
   'scripts/check-hold.test.mjs': ['scripts/check-hold.mjs'],
   'scripts/check-provenance.test.mjs': ['scripts/check-provenance.mjs', 'scripts/check-provenance.mjs', 'scripts/check-provenance.mjs', 'scripts/check-provenance.mjs', 'scripts/check-hold.mjs', 'scripts/check-provenance.mjs', 'scripts/import-cut-map.mjs'],
   'scripts/delta-assemble.test.mjs': ['scripts/delta-map.mjs'],
   'scripts/delta-continuity.test.mjs': ['scripts/delta-map.mjs', 'scripts/delta-map.mjs'],
   'scripts/delta-frontier.test.mjs': ['scripts/delta-map.mjs', 'scripts/check-provenance.mjs', 'scripts/check-provenance.mjs'],
-  'scripts/delta-provenance.test.mjs': ['scripts/check-provenance.mjs', 'scripts/delta-map.mjs', 'scripts/delta-map.mjs', 'scripts/delta-map.mjs', 'scripts/delta-map.mjs', 'scripts/delta-map.mjs'],
+  'scripts/delta-anchor.test.mjs': ['scripts/check-provenance.mjs'],
+  'scripts/delta-switch.test.mjs': [['scripts/check-hold.mjs', 'scripts/check-provenance.mjs', 'scripts/delta-map.mjs', 'scripts/pin-delta.mjs', 'scripts/check-provenance.test.mjs']],
+  'scripts/delta-provenance.test.mjs': ['scripts/check-provenance.mjs', 'scripts/check-hold.mjs', 'scripts/check-hold.mjs', 'scripts/delta-map.mjs', 'scripts/delta-map.mjs'],
   'scripts/test-layout.test.mjs': ['scripts/test.mjs', 'scripts/test.mjs'],
   'test/delta-ledger-gate.test.mjs': ['scripts/check-provenance.mjs', ['scripts/delta-provenance.test.mjs', 'scripts/delta-frontier.test.mjs', 'scripts/delta-continuity.test.mjs']],
 };
@@ -64,4 +68,15 @@ test('every child process and computed import in a core file is listed, and runs
 
 test('check-hold loads no package module before it has checked the package', () => {
   assert.deepEqual(specifiers(code('scripts/check-hold.mjs')).filter(specifier => !specifier.startsWith('node:')), []);
+});
+
+test('check-hold checks every module the derived freeze rule loads against its pin first', () => {
+  const closure = new Set(), pending = ['scripts/delta-freeze.mjs'];
+  while (pending.length) {
+    const path = pending.pop();
+    if (closure.has(path)) continue;
+    closure.add(path);
+    for (const specifier of specifiers(code(path)).filter(specifier => specifier.startsWith('.'))) pending.push(posix.normalize(posix.join(posix.dirname(path), specifier)));
+  }
+  assert.deepEqual([...DERIVED_RULE_MODULES].sort(), [...closure].sort());
 });

@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
-import { world, request, code, encode, OLD_REQUEST, setPurchaseAdmission } from './helpers/wire-client-fixture.mjs';
-const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
+import { world, request, code, encode, OLD_REQUEST, setPurchaseAdmission, T0 } from './helpers/wire-client-fixture.mjs';
+import { fetchClient } from './helpers/seller-https-rig.mjs';
+const { createSellerHttpsClient } = await import('../src/dacs/seller-http.mjs');
+const clientOverFetch = fetchClient(createSellerHttpsClient);
 const response = async (w, signed, { offset = 0, text = '{"ok":true}', expiresAt } = {}) => {
   const payload = {
     ...signed.payload, kind: 'response', bodyHash: sha256Hex(text), requestHash: wire.wireRequestHash(signed.payload), status: 200, expiresAt: expiresAt ?? w.state.time + offset + 30000
@@ -49,7 +51,7 @@ test("a response signed under dacs-chatgpt-plugin:loopback-seller-peer:v1: is re
 test("an old-transport seller answering a wire request is refused and the client sends nothing under the old domain", async (t) => {
   const w = await world(t);
   let calls = 0;
-  const client = createSellerAgentClient({
+  const client = clientOverFetch({
     url: w.publicEndpoint, authentication: w.auth, fetchImpl: async (_url, init) => {
       calls++;
       const envelope = JSON.parse(Buffer.from(init.headers[wire.DACS_SELLER_HTTP_HEADER], 'base64url'));
@@ -82,13 +84,14 @@ test("the response passed to verification is the exact received bytes and the ad
   let exact;
   const auth = {
     request: (...args) => w.auth.request(...args), async verifyResponse(payload, received) {
-      assert.deepEqual(received.body, exact);
+      assert.ok(received.body instanceof Uint8Array);
+      assert.ok(Buffer.from(received.body).equals(exact));
       assert.equal(received.text, undefined);
       const receipt = await w.auth.verifyResponse(payload, received);
       return { ...receipt, body: { admitted: true } };
     }
   };
-  const client = createSellerAgentClient({
+  const client = clientOverFetch({
     url: w.publicEndpoint, authentication: auth, fetchImpl: async (_url, init) => {
       const envelope = JSON.parse(Buffer.from(init.headers[wire.DACS_SELLER_HTTP_HEADER], 'base64url'));
       const r = await response(w, envelope, { text: '{ "ok" : true }' });
@@ -100,7 +103,7 @@ test("the response passed to verification is the exact received bytes and the ad
 });
 test('a signed response with changed body bytes is refused before its status is used', async (t) => {
   const w = await world(t);
-  const client = createSellerAgentClient({ url: w.publicEndpoint, authentication: w.auth, fetchImpl: async (_url, init) => {
+  const client = clientOverFetch({ url: w.publicEndpoint, authentication: w.auth, fetchImpl: async (_url, init) => {
     const envelope = JSON.parse(Buffer.from(init.headers[wire.DACS_SELLER_HTTP_HEADER], 'base64url'));
     const signed = await response(w, envelope, { text: '{"ok":true}' });
     return new Response('{"ok":false}', { headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: signed.header } });
@@ -153,7 +156,7 @@ test('a failed session signature sends no HTTP request', async (t) => {
         signatures++;
         throw Error('TEST-signature-failed');
       } } });
-  const client = createSellerAgentClient({ url: w.publicEndpoint, authentication, fetchImpl: async () => {
+  const client = clientOverFetch({ url: w.publicEndpoint, authentication, fetchImpl: async () => {
       sends++;
       throw Error('unexpected dispatch');
     } });
@@ -164,7 +167,7 @@ test('a failed session signature sends no HTTP request', async (t) => {
 test('a lost HTTP response does not replay or fall back to the old domain', async (t) => {
   const w = await world(t);
   let sends = 0;
-  const client = createSellerAgentClient({ url: w.publicEndpoint, authentication: w.auth, fetchImpl: async () => {
+  const client = clientOverFetch({ url: w.publicEndpoint, authentication: w.auth, fetchImpl: async () => {
       sends++;
       throw Error('TEST-response-lost');
     } });
@@ -181,7 +184,7 @@ test('response verification remains within the HTTP deadline', async (t) => {
       return new Promise(() => {
       });
     } };
-  const client = createSellerAgentClient({ url: w.publicEndpoint, authentication, fetchImpl: async () => new Response('{}', { headers: { 'content-type': 'application/json' } }) });
+  const client = clientOverFetch({ url: w.publicEndpoint, authentication, fetchImpl: async () => new Response('{}', { headers: { 'content-type': 'application/json' } }) });
   await assert.rejects(client.agreementState({ jobId: w.payload.jobId }));
   assert.equal(client.failureCause, 'timeout');
 });
@@ -195,7 +198,7 @@ test('an authority read that never answers ends at the HTTP deadline with cause 
   const w = await world(t), expire = deadline(t);
   let release, sends = 0;
   w.state.gate = () => new Promise(resolve => release = resolve);
-  const client = createSellerAgentClient({ url: w.publicEndpoint, authentication: w.auth, fetchImpl: async () => {
+  const client = clientOverFetch({ url: w.publicEndpoint, authentication: w.auth, fetchImpl: async () => {
       sends++;
       throw Error('unexpected dispatch');
     } });
@@ -213,7 +216,7 @@ test('a signature that finishes after the HTTP deadline is dropped and nothing i
   const w = await world(t), expire = deadline(t);
   let release, sends = 0;
   const authentication = w.createSellerWireAuthentication({ ...w.options, sessionSigner: { claim: w.session.claim, sign: (bytes) => new Promise(resolve => release = () => resolve(w.session.sign(bytes))) } });
-  const client = createSellerAgentClient({ url: w.publicEndpoint, authentication, fetchImpl: async () => {
+  const client = clientOverFetch({ url: w.publicEndpoint, authentication, fetchImpl: async () => {
       sends++;
       throw Error('unexpected dispatch');
     } });
@@ -225,4 +228,45 @@ test('a signature that finishes after the HTTP deadline is dropped and nothing i
   release();
   await turn();
   assert.equal(sends, 0);
+});
+const SLOW_AUTHORITY_READ_MS = 30000;
+// The first authority read of each attempt takes `ms`; the clock starts each attempt at T0.
+const slowAuthorityRead = (w, ms) => {
+  w.state.time = T0;
+  let slow = true;
+  w.state.gate = async () => {
+    if (slow) w.state.time += ms;
+    slow = false;
+  };
+};
+const assertNothingSent = async (w) => {
+  let sends = 0;
+  const client = clientOverFetch({ url: w.publicEndpoint, authentication: w.auth, fetchImpl: async () => {
+      sends++;
+      throw Error('unexpected dispatch');
+    } });
+  await assert.rejects(client.agreementState({ jobId: w.payload.jobId }));
+  assert.equal(sends, 0);
+};
+test('a request whose authority read outlasts the 30 s request lifetime is refused peer_expired and nothing is sent', async (t) => {
+  const w = await world(t);
+  slowAuthorityRead(w, SLOW_AUTHORITY_READ_MS);
+  await assert.rejects(request(w), code('peer_expired'));
+  slowAuthorityRead(w, SLOW_AUTHORITY_READ_MS);
+  await assertNothingSent(w);
+});
+test('a request whose authority read passes the delegation expiry by 10 ms is refused peer_expired and nothing is sent', async (t) => {
+  const w = await world(t);
+  w.delegation.payload.expiresAt = T0 + 5;
+  w.delegation.signature = w.buyer.sign(Buffer.from(wire.DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(w.payload))).toString('base64url');
+  slowAuthorityRead(w, 10);
+  await assert.rejects(request(w), code('peer_expired'));
+  slowAuthorityRead(w, 10);
+  await assertNothingSent(w);
+});
+test('a request whose authority read finishes before it expires is returned', async (t) => {
+  const w = await world(t);
+  slowAuthorityRead(w, SLOW_AUTHORITY_READ_MS - 1);
+  const signed = await request(w);
+  assert.equal(signed.payload.expiresAt, T0 + SLOW_AUTHORITY_READ_MS);
 });

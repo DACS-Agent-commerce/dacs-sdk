@@ -20,17 +20,19 @@ const GUARD_EXPORTS = ['KIT_OPERATION_GUARD', 'KitOperationGuardError', 'assertK
 // Exported only by the fixture loader's copy of the guard.
 const LOADER_SETTER = 'setKitOperationGuardForTest';
 const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs'];
-// Guarded entries that exist only on a capability the guarded `reserveContext` issues, so the off-state probe cannot reach them;
-// context-admission-transaction.test.mjs flips the guard off after the capability exists and pins each.
-const REACHED_BY_ISSUED_CAPABILITY = ['complete'];
+// Guarded entries that exist only on a capability the guarded `reserveContext` issues, or on the store's internal adapter, so the
+// off-state probe cannot reach them; context-admission-transaction.test.mjs flips the guard off after the capability exists and pins
+// `complete`, and helpers/coordinator-guard-off-probe.mjs pins `terminalSession`. The wallet-session port's `finalize` exists only on
+// a port built while the guard is on; seller-wallet-session.test.mjs flips the guard off after construction and pins it.
+const REACHED_BY_ISSUED_CAPABILITY = ['complete', 'terminalSession', 'sellerWalletSession.finalize'];
 // The entries each module guards, named as the error's `entry` (51-2, 51-3).
 const GUARD_SITES = {
   'src/host.mjs': ['startSellerHost'],
   'src/dacs/seller-agent.mjs': ['createSellerAgent'],
   'src/dacs/seller-admission-transaction.mjs': ['begin', 'runningCheck', 'reserveContext', 'complete', 'compensate'],
-  'src/dacs/seller-challenge-ledger.mjs': ['issue', 'issueForOperator'],
+  'src/dacs/seller-challenge-ledger.mjs': ['issue'],
   'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient'],
-  'src/dacs/seller-transport-auth.mjs': ['createSellerTransportServerAuth', 'createSellerTransportClientAuth'],
+  'src/dacs/seller-transport-auth.mjs': ['terminalSession'],
   'src/dacs/seller-reservation-accounting.mjs': ['reserveAccounted', 'reserveCoordinated'],
   'src/dacs/seller-wire-client-auth.mjs': ['createSellerWireClientAuth'],
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],
@@ -44,6 +46,8 @@ const GUARD_SITES = {
   'src/devnet-demo/artifact-anchor.mjs': ['publish'],
   'src/devnet-demo/listing.mjs': ['createDevnetDemoListingPublisher'],
   'src/devnet-demo/native-delivery.mjs': ['createDevnetDemoDeliveryCapability.submit'],
+  'src/devnet-demo/seller-node-wallet.mjs': ['createSellerNodeWallet'],
+  'src/devnet-demo/seller-wallet-session.mjs': ['createSellerWalletSession', 'sellerWalletSession.finalize'],
   'src/devnet-demo/storage-write-recovery.mjs': ['storageWriteRpcSigner'],
   'src/seller-key.mjs': ['sellerKey.sign', 'sellerKey.readOnlyAnswerSigner'],
 };

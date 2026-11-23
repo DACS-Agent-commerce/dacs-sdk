@@ -12,6 +12,8 @@ import { DEM_RAIL } from './listing.mjs';
 import { agreementContextScope } from './agreement-context-consumer.mjs';
 import { listingPin, protocolSupport } from './purchase-protocol.mjs';
 import { cutText } from '../util/text.mjs';
+import { isTp1AuthorityLabel } from './tp1-authority-label.mjs';
+import { authorityLabel } from './tp1-authority-token.mjs';
 
 export const DEM_DELIVERY_CONTEXT_SOURCE = 'dacs-chatgpt-plugin/dem-delivery-context/v1';
 // A buyer resolver may publish seller Vet records. Only an absent capability,
@@ -35,21 +37,42 @@ const HELD_CODES = new Set(['legacy_party_vet_state_missing']);
 // escape as a server error with no attempt recorded for a possible write.
 const failureText = (error) => { try { return String(error?.message ?? error); } catch { return 'unreadable error'; } };
 
-// The capability's authority label: one `TEST-` line of at most 120 characters (an
-// operator run authority `TEST-RUN-…` fits). The purchase receipt accepts a stored
-// resolution marker only with this label.
-export const isDemDeliveryContextAuthority = (value) => typeof value === 'string' && /^TEST-[A-Za-z0-9._:-]{1,115}$/.test(value);
+// A fixture label: one `TEST-` line of at most 120 characters (an operator run authority `TEST-RUN-…` fits).
+const isFixtureLabel = (value) => typeof value === 'string' && /^TEST-[A-Za-z0-9._:-]{1,115}$/.test(value);
+
+/** Returns true for a canonical `TEST-` or `TP1-` label string, the labels a capability can declare, and false for a token or any other value. Never throws. It grants nothing: only a constructor given a token admits one. */
+export const isDemDeliveryContextAuthority = (value) => isFixtureLabel(value) || isTp1AuthorityLabel(value);
 
 // release (optional): told when a job's plan is saved or its purchase ended,
 // so the provider can drop that job's entries. usage (optional): the
-// provider's store capacity, for the health report.
-export function createDemDeliveryContext({ authority, resolveBuyer, resolveSeller, release = null, usage = null }) {
-  if (!isDemDeliveryContextAuthority(authority) || typeof resolveBuyer !== 'function' || typeof resolveSeller !== 'function' || (release !== null && typeof release !== 'function') || (usage !== null && typeof usage !== 'function')) {
-    throw new TypeError('DEM delivery context requires explicit TEST authority and buyer/seller resolvers');
+// provider's store capacity, for the health report. readBack (optional):
+// reads a job's retained seller Vet record writes back, and signs or sends
+// nothing ({jobId, buyer} -> {disposition, reason}).
+export function createDemDeliveryContext({ authority, binding, resolveBuyer, resolveSeller, release = null, usage = null, readBack = null }) {
+  const label = authorityLabel(authority, binding, isFixtureLabel, 'DEM delivery context requires a TEST authority or an authority token');
+  if (typeof resolveBuyer !== 'function' || typeof resolveSeller !== 'function' || [release, usage, readBack].some((hook) => hook !== null && typeof hook !== 'function')) {
+    throw new TypeError('DEM delivery context requires buyer/seller resolvers');
   }
-  const capability = Object.freeze({ source: DEM_DELIVERY_CONTEXT_SOURCE, authority });
-  capabilities.set(capability, { authority, resolveBuyer, resolveSeller, release, usage });
+  const capability = Object.freeze({ source: DEM_DELIVERY_CONTEXT_SOURCE, authority: label });
+  capabilities.set(capability, { authority: label, resolveBuyer, resolveSeller, release, usage, readBack });
   return capability;
+}
+
+// The provider's readback-only pass over a job's retained seller Vet record
+// writes. Answers {disposition: 'present', reason} only when the provider
+// says every retained record reads back; a missing readBack, a throw or any
+// other answer is held.
+export async function readBackDemDeliveryContext(capability, { jobId, buyer }) {
+  const readBack = capabilityFor(capability)?.readBack;
+  if (!readBack) return held('indeterminate', 'DEM delivery context has no readback');
+  let answer;
+  try { answer = await readBack({ jobId, buyer }); }
+  catch (error) { return held('indeterminate', `DEM delivery context readback failed: ${failureText(error)}`); }
+  try {
+    const disposition = answer?.disposition, reason = answer?.reason;
+    const text = typeof reason === 'string' ? reason : 'no reason';
+    return disposition === 'present' ? { disposition, reason: cutText(text, 240) } : held(disposition, text);
+  } catch { return held('indeterminate', 'DEM delivery context readback answer is unreadable'); }
 }
 
 // The provider store's used and remaining capacity, or null.

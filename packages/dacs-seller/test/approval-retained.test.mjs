@@ -25,13 +25,15 @@ const secondEvidence=()=>evidence({job:JOBS[1],nonce:2});
 const artifactWrite=()=>requestFor({artifactKind:'Deliverable',job:JOBS[2],nonce:3});
 const sessionWrite=()=>requestFor({artifactKind:'Deliverable',job:JOBS[3],nonce:4});
 const executed=(request)=>confirmationFor(request,{executed:true});
+// The fixture's writes debit 4 DEM, and a 5 DEM write is its waivable fee-cap refusal, so its policy caps one write at 4 DEM unless a test sets another cap.
+const FIXTURE_WRITE_CAP='4000000000';
 async function ledgerFixture(t,{limits={},maxTotalOs=MAX_TOTAL_OS}={}){
  const directory=await mkdtemp(join(tmpdir(),'p21b1-'));t.after(()=>rm(directory,{recursive:true,force:true}));
  const evidencePath=join(directory,'approvals.jsonl'),state={purchase:purchase(),resolved:0,hook:()=>{}};
  const resolvePurchase=async(jobId)=>{state.resolved++;await state.hook();return state.purchase&&{jobId,...state.purchase};};
  const policyInputs={address,seller,sourceBinding,artifactAuthority,listingPin:()=>pin,resolvePurchase,paymentPhaseIndex:()=>2,deliveryPhaseIndex:()=>3,deliveredPayloadHash:deliveredHashFor};
  // A restart is a new approval over the same file.
- const restart=()=>{const approval=createExactOperatorApproval({maxTotalOs,evidencePath,now:()=>T0,sellerApproval:{mode:'policy',...limits},policy:policyInputs});t.after(()=>approval.stop());return approval;};
+ const restart=()=>{const approval=createExactOperatorApproval({maxTotalOs,evidencePath,now:()=>T0,sellerApproval:{mode:'policy',maxWriteTotalOs:FIXTURE_WRITE_CAP,...limits},policy:policyInputs});t.after(()=>approval.stop());return approval;};
  const compose=(policy,manual=()=>assert.fail('the operator was asked'))=>composeSellerApproval({mode:'policy',policy,manual});
  return {evidencePath,directory,state,restart,compose,maxTotalOs,policyInputs};
 }
@@ -613,7 +615,7 @@ test('settle(id, unknown) needs an open retained authorization, and a confirm or
  assert.equal(await text(fixture.evidencePath),before);
 });
 
-// A refusal the operator may waive: 5 DEM against the default 4 DEM fee cap, so the policy refuses only write-fee-cap.
+// A refusal the operator may waive: 5 DEM against the fixture's 4 DEM fee cap, so the policy refuses only write-fee-cap.
 const waivable=(options={})=>evidence({rpcFeeDem:'2',...options});
 
 test('a waived refusal is gated again after the operator\'s yes: a purchase that closes or becomes unpaid, or another limit reached during the answer, refuses approval_refused with its own reason, asks the operator once and appends no sign line; a waiver no caller was given is invalid_params',async t=>{

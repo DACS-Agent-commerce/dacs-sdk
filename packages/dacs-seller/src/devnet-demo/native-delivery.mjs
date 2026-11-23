@@ -51,12 +51,13 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
     const value=await anchor.read({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding},resendOptions);
     return value.status==='present' ? {...value,status:'present'} : value;
   };
-  // Guarded: authorize is asked before the intent is stored, and by the wallet after its approval, right before it signs.
+  // Guarded: authorize is asked before the intent is stored, by the wallet after its approval, and, as the CREATE pass's
+  // current-authorization check, right before it signs and before each transmission. Without authorize the anchor refuses.
   const submit=async(input,authorize)=>{
     assertKitOperationAdmitted('createDevnetDemoDeliveryCapability.submit');
     if(!expected(input)) return {status:'rejected',reason:'native purchased report scope differs'};
-    const value=await anchor.publish({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding,
-      ...(authorize?{authorize:()=>authorize('intent'),authorizeSigning:()=>authorize('signing')}:{})});
+    const value=await anchor.publish({logicalAddress:input.logicalAddress,artifact:input.report,artifactKind:'Deliverable',deliveryBinding:input.deliveryBinding,operationClass:'job-create',
+      ...(authorize?{authorize:()=>authorize('intent'),authorizeSigning:()=>authorize('signing'),currentAuthorization:()=>authorize('signing')}:{})});
     return value.status==='present' ? {status:'accepted',reconciliationId:value.receipt.transactionRef.value} : {status:value.status==='rejected'?'rejected':'indeterminate',reason:value.reason};
   };
   const capability=createNativeDemDeliveryCapability({authority,submit:(input)=>submit(input),submitAuthorized:submit,

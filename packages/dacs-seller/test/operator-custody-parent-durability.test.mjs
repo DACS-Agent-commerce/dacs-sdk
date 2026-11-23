@@ -61,7 +61,7 @@ for (const [name, access, retained] of operations) {
         // exercised; its stat still exposes the old unreadable-parent bypass.
         else custody.state.afterLstat = (path, info) => { if (path === parent) info.mode &= ~0o400; };
         try {
-          await assert.rejects(access(custody, directory), error => error === failure);
+          await assert.rejects(access(custody, directory), error => error.cause === failure);
           assert.ok(custody.state.events.includes(`open ${parent} r`));
           assert.equal(custody.state.events.some(credentialEvent), false);
           assert.equal(custody.state.generated, generated);
@@ -129,7 +129,7 @@ for (const role of ['buyer', 'seller']) {
         custody.state.afterLstat = (parent, info) => { if (parent === directory) info.mode &= ~0o400; };
       }
     };
-    await assert.rejects(bootstrap(custody, directory), error => error === failure);
+    await assert.rejects(bootstrap(custody, directory), error => error.cause === failure);
     assert.equal(custody.state.events.includes(`unlink ${path}`), false);
     assert.equal(await readFile(path, 'utf8'), '');
     assert.equal(await readFile(other, 'utf8'), retained);

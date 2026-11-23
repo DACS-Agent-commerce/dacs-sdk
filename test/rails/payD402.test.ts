@@ -506,7 +506,7 @@ describe("payD402Settle bridge destination binding", () => {
     expect(calls).toBe(0);
   });
 
-  test("the runSession bridge hands over a pending payment as ok:false with its hash and no pending key", async () => {
+  test("the settlement bridge hands over a pending payment as ok:false with its hash and no pending key", async () => {
     const rail: PayD402Rail = {
       address: PAYER,
       settle: async () => ({

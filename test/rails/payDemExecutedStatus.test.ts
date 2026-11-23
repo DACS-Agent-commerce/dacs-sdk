@@ -5,6 +5,7 @@ import {
   createPayDemRail,
   payDemSettle,
   type PayDemRail,
+  type PayDemRailConfig,
 } from "../../src/rails/payDem.js";
 
 // #338: the status index reports `included` for a transaction the node records
@@ -106,7 +107,9 @@ const FAST = {
   transactionRecordTimeoutMs: 30,
 };
 
-async function rail(options: Partial<typeof FAST> = {}) {
+async function rail(
+  options: Partial<typeof FAST> & Pick<PayDemRailConfig, "journalPreparedTransfer"> = {},
+) {
   return createPayDemRail({
     rpc: "https://node.test",
     secret: "test-secret",
@@ -210,7 +213,8 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
   });
 
   it("settles through the bridge with the real factory execution authority", async () => {
-    const payDem = await rail();
+    const journalPreparedTransfer = vi.fn(async () => undefined);
+    const payDem = await rail({ journalPreparedTransfer });
     const pending = payDemSettle(payDem, {}, { store: createIdempotencyStore(createInMemorySettlementLog()) })({
       rail: "pay-dem", phase: "pay-dem", amount: "9.5", asset: "DEM",
       payee: `did:demos:agent:${PAYEE_HEX}`, expectedPayee: RECIPIENT,
@@ -218,6 +222,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     });
     await vi.advanceTimersByTimeAsync(2_000);
     await expect(pending).resolves.toMatchObject({ ok: true, txHash: TX_HASH, blockNumber: BLOCK });
+    expect(journalPreparedTransfer).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 
@@ -633,7 +638,8 @@ describe("no failed or indeterminate execution causes another broadcast (#338)",
     }],
   ])("retains a failed or uncertain payment without rebroadcast after %s", async (_case, arrange) => {
     arrange();
-    const settleOnce = payDemSettle(await rail(), { network: "demos" }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
+    const journalPreparedTransfer = vi.fn(async () => undefined);
+    const settleOnce = payDemSettle(await rail({ journalPreparedTransfer }), { network: "demos" }, { store: createIdempotencyStore(createInMemorySettlementLog()) });
 
     const expected = {
       ok: false,
@@ -655,6 +661,7 @@ describe("no failed or indeterminate execution causes another broadcast (#338)",
     } else {
       await expect(settleOnce(request)).rejects.toThrow(/refusing to resubmit/);
     }
+    expect(journalPreparedTransfer).toHaveBeenCalledTimes(1);
     expect(sdk.transfer).toHaveBeenCalledTimes(1);
     expect(sdk.confirm).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
@@ -689,3 +696,67 @@ describe("SDK record-verifying capability identity", () => {
     expect(Object.isFrozen(result.failureProof)).toBe(true);
   });
 });
+
+for (const jump of [-60_000, 60_000]) {
+  it(`inclusion polling keeps its original budget after a ${jump} ms wall jump`, async () => {
+    const payDem = await createPayDemRail({ rpc: "https://node.test", secret: "test-secret", inclusionTimeoutMs: 10,
+      inclusionPollIntervalMs: 2, statusRequestTimeoutMs: 50 });
+    sdk.nodeCall.mockResolvedValue({ state: "pending" });
+    let outcome: unknown;
+    const pending = payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }).then(value => { outcome = value; });
+    await vi.advanceTimersByTimeAsync(1);
+    vi.setSystemTime(1_001 + jump);
+    await vi.advanceTimersByTimeAsync(8);
+    expect(outcome).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toMatchObject({ ok: false, txHash: TX_HASH });
+    expect(sdk.nodeCall).toHaveBeenCalledTimes(5);
+    await pending;
+  });
+}
+
+for (const jump of [-60_000, 60_000]) {
+  it(`execution record request budget ignores a ${jump} ms wall jump`, async () => {
+    const payDem = await createPayDemRail({ rpc: "https://node.test", secret: "test-secret", transactionRecordTimeoutMs: 10,
+      inclusionPollIntervalMs: 2, statusRequestTimeoutMs: 50 });
+    sdk.getTxByHash.mockImplementation(recordReturning(record => { record.status = "pending"; }));
+    let outcome: unknown;
+    const pending = payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }).then(value => { outcome = value; });
+    await vi.advanceTimersByTimeAsync(1);
+    vi.setSystemTime(1_001 + jump);
+    await vi.advanceTimersByTimeAsync(8);
+    expect(outcome).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toMatchObject({ ok: false, txHash: TX_HASH });
+    expect(sdk.getTxByHash).toHaveBeenCalledTimes(5);
+    await pending;
+  });
+}
+
+for (const jump of [-60_000, 60_000]) {
+  it(`execution record transport abort ignores a ${jump} ms wall jump`, async () => {
+    let reads = 0, abortedAt: number | undefined, outcome: unknown;
+    vi.stubGlobal("fetch", vi.fn(async (_url, init: RequestInit) => {
+      reads += 1;
+      if (reads === 1) return new Response(JSON.stringify({ result: 200, response: { ...broadcastRecord(), status: "pending" } }));
+      const signal = init.signal;
+      if (!signal) throw new Error("record request must have a deadline signal");
+      return new Promise<Response>(resolve => signal.addEventListener("abort", () => {
+        abortedAt = performance.now();
+        resolve(new Response("{}"));
+      }, { once: true }));
+    }));
+    const payDem = await createPayDemRail({ rpc: "https://node.test", secret: "test-secret", transactionRecordTimeoutMs: 10,
+      inclusionPollIntervalMs: 2, statusRequestTimeoutMs: 50 });
+    const pending = payDem.settle({ recipient: RECIPIENT, amount: AMOUNT_OS }).then(value => { outcome = value; });
+    await vi.advanceTimersByTimeAsync(1);
+    vi.setSystemTime(1_001 + jump);
+    await vi.advanceTimersByTimeAsync(8);
+    expect(outcome).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toMatchObject({ ok: false, txHash: TX_HASH });
+    expect(abortedAt).toBe(10);
+    expect(reads).toBe(2);
+    await pending;
+  });
+}

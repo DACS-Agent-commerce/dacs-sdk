@@ -107,8 +107,8 @@ export function createOperatorApprovalAttempt(approve){
   const scope=new AsyncLocalStorage();
   const checkWrite=(when)=>{
     const authorize=scope.getStore()?.authorize;if(!authorize)return;
-    let allowed;try{allowed=authorize();}catch(error){allowed=error;}
-    if(allowed!==true)throw Object.assign(new Error(`the write was withdrawn ${when}; nothing was signed`),{code:'not-authorized'});
+    let allowed,thrown;try{allowed=authorize();}catch(cause){thrown={cause};}
+    if(allowed!==true)throw Object.assign(new Error(`the write was withdrawn ${when}; nothing was signed`,thrown),{code:'not-authorized'});
   };
   return{
     approve:typeof approve==='function'?async(request)=>{
@@ -126,17 +126,22 @@ export function createOperatorApprovalAttempt(approve){
     // again before its key signs, so the check runs at entry and once more at the key's signature. For a write
     // that carries its own check (authorizeSigning), a refusal in that time signs nothing (the wallet answers a
     // throw here as an unsigned sdk_error); a write without one signs as before.
+    // Each key is wrapped once and stays wrapped, so repeated signatures add no layers and a key set later is
+    // wrapped on its first use. A wallet class whose crypto setter returns a different object than it was given
+    // is also handled, because the wrapper is never compared against or restored. The check runs only for a
+    // signature made inside sign(), so the key's other signatures (RPC authentication) pass unchecked.
     guardSigning(DemosCtor){
+      const insideSign=new AsyncLocalStorage(),guardedKeys=new WeakMap();
       return class extends DemosCtor{
         async sign(...args){
           checkWrite('before it was signed');
           const crypto=this.crypto;
-          if(!crypto)return super.sign(...args);
-          const guarded=new Proxy(crypto,{get:(target,key)=>key==='sign'?(...signArgs)=>{checkWrite('before it was signed');return target.sign(...signArgs);}
-            :typeof target[key]==='function'?target[key].bind(target):target[key]});
-          this.crypto=guarded;
-          try{return await super.sign(...args);}
-          finally{if(this.crypto===guarded)this.crypto=crypto;}
+          if(crypto&&crypto!==guardedKeys.get(this)){
+            this.crypto=new Proxy(crypto,{get:(target,key)=>key==='sign'?(...signArgs)=>{if(insideSign.getStore())checkWrite('before it was signed');return target.sign(...signArgs);}
+              :typeof target[key]==='function'?target[key].bind(target):target[key]});
+            guardedKeys.set(this,this.crypto);
+          }
+          return insideSign.run(true,()=>super.sign(...args));
         }
       };
     },

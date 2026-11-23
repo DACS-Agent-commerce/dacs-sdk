@@ -24,6 +24,7 @@ import {
   type X402BuyerEvmIntentAuthority,
   type X402BuyerPaymentRequirements,
   type X402BuyerSettlementIntent,
+  type X402BuyerUnsignedIntentScope,
   type SellerFixedPriceAgreementContextQuery,
   type SellerFixedPriceAgreementContextResolution,
   type UnsignedAgreementArtifact,
@@ -878,6 +879,22 @@ export async function loadDacsFixedPriceX402BuyerAgreementPublicationV1(
   return record;
 }
 
+/**
+ * Report a failure that happened before the Agreement write was handed to
+ * Demos. A typed local refusal keeps its own reason code; anything else is
+ * indeterminate because the cause is not known.
+ */
+function localAnchorRefusal(error: unknown) {
+  if (error instanceof DacsFixedPriceX402ProfileError) {
+    // The runtime builds "prefix-stage-reason" and limits the whole string to
+    // 80 characters, so its prefix and stage use part of that space. Pass the
+    // bare code to leave as much of it as possible for the reason.
+    return { disposition: "rejected" as const, reason: error.reasonCode };
+  }
+  return { disposition: "indeterminate" as const,
+    reason: "agreement publication failed before submission" };
+}
+
 function createAgreementAnchorProvider(
   context: Readonly<DacsLiveRoleOperationContextV1>,
 ): Readonly<FixedPriceAgreementAnchorProvider> {
@@ -961,13 +978,7 @@ function createAgreementAnchorProvider(
           return { disposition: "indeterminate" as const,
             reason: "agreement publication outcome is ambiguous" };
         }
-        if (error instanceof DacsFixedPriceX402ProfileError) {
-          // The runtime caps reason codes at 80 characters after its own
-          // prefix, so pass the bare code: a longer phrase would cut it off.
-          return { disposition: "rejected" as const, reason: error.reasonCode };
-        }
-        return { disposition: "indeterminate" as const,
-          reason: "agreement publication failed before submission" };
+        return localAnchorRefusal(error);
       }
     },
     async reconcileAgreementAnchor(input, fence) {
@@ -982,15 +993,23 @@ function createAgreementAnchorProvider(
         return { disposition: "absent" as const,
           reason: "agreement publication intent is absent" };
       }
+      // A refusal found before the write is handed to Demos is reported as it
+      // is on the first attempt, not as an unavailable reconciliation.
+      let anchorOptions: ReturnType<typeof dacsFixedPricePurchaseAnchorOptionsV1>;
+      try {
+        anchorOptions = dacsFixedPricePurchaseAnchorOptionsV1(context, record.jobId, {
+          logicalAddress: record.logicalAddress,
+          contentHash: record.agreementHash,
+          envelopeHash: sha256Hex(canonicalize(record.artifact)),
+        });
+      } catch (error) {
+        return localAnchorRefusal(error);
+      }
       try {
         const anchor = await context.demos.adapter.anchorWriteOnce(
           record.logicalAddress,
           record.artifact,
-          dacsFixedPricePurchaseAnchorOptionsV1(context, record.jobId, {
-            logicalAddress: record.logicalAddress,
-            contentHash: record.agreementHash,
-            envelopeHash: sha256Hex(canonicalize(record.artifact)),
-          }),
+          anchorOptions,
         );
         const receipt = anchor.demosEvidence === undefined
           ? await context.demos.adapter.resolveDemosAnchorReceipt({
@@ -1576,7 +1595,7 @@ function paymentPreparation(
 }
 
 function intentMatchesPreparation(
-  intent: Readonly<X402BuyerSettlementIntent>,
+  intent: Readonly<X402BuyerUnsignedIntentScope>,
   preparation: Readonly<DacsX402BuyerRuntimePreparationV1>,
 ): boolean {
   const authority = preparation.authority;

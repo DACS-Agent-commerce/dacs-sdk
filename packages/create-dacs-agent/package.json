@@ -2,6 +2,15 @@
   "name": "create-dacs-agent",
   "version": "0.1.0-alpha.0",
   "description": "Create bounded offline or guarded live DACS agent projects.",
+  "keywords": [
+    "dacs",
+    "ai-agents",
+    "agent-commerce",
+    "agent-payments",
+    "verified-data",
+    "procurement",
+    "demos"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",

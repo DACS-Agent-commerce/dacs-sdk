@@ -9,9 +9,37 @@ const mocks = vi.hoisted(() => ({
   evmErc20Settle: vi.fn(),
 }));
 
-vi.mock("../../src/rails/payDem.js", () => ({
-  createPayDemRail: mocks.createPayDemRail,
-  payDemSettle: mocks.payDemSettle,
+vi.mock("../../src/rails/payDem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/rails/payDem.js")>();
+  return {
+    createPayDemRail: mocks.createPayDemRail,
+    payDemSettle: mocks.payDemSettle,
+    requireUnjournaledOptOut: actual.requireUnjournaledOptOut,
+  };
+});
+// The Demos SDK seen by the real pay-dem rail, for the tests that dispatch through it.
+const demosSdk = vi.hoisted(() => ({
+  connect: vi.fn(async (): Promise<undefined> => undefined),
+  connectWallet: vi.fn(async (): Promise<undefined> => undefined),
+  getNetworkInfo: vi.fn(),
+  transfer: vi.fn(),
+}));
+vi.mock("@kynesyslabs/demosdk/websdk", () => ({
+  Demos: class FakeDemos {
+    _doPost = vi.fn();
+    readonly tx = { confirm: vi.fn() };
+    readonly broadcast = vi.fn();
+    readonly connect = demosSdk.connect;
+    readonly connectWallet = demosSdk.connectWallet;
+    readonly getNetworkInfo = demosSdk.getNetworkInfo;
+    readonly nodeCall = vi.fn();
+    readonly transfer = demosSdk.transfer;
+    readonly waitForNonce = vi.fn();
+
+    getAddress(): string {
+      return `0x${"ab".repeat(32)}`;
+    }
+  },
 }));
 vi.mock("../../src/rails/x402.js", () => ({
   createX402Rail: mocks.createX402Rail,
@@ -22,10 +50,10 @@ vi.mock("../../src/rails/evmErc20.js", () => ({
   evmErc20Settle: mocks.evmErc20Settle,
 }));
 
+import { DacsError } from "../../src/errors.js";
 import {
-  isSettlementBridge,
-  declareSettlementBridge,
-  settlementBridgeTraits,
+  createIdempotencyStore,
+  createInMemorySettlementLog,
   type SettlementBinding,
   type SettlementIdempotencyStore,
 } from "../../src/rails/idempotency.js";
@@ -346,25 +374,6 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(mocks.payDemSettle).not.toHaveBeenCalled();
   });
 
-  test("the descriptor wrapper carries the registration and declared traits of the executor it binds", async () => {
-    mocks.createPayDemRail.mockResolvedValue({ address: "aa".repeat(32), settle: vi.fn() });
-    const descriptor = await authenticatedDefinition();
-    const dispatch = async (executor: (req: never) => Promise<never>) => {
-      mocks.payDemSettle.mockReturnValue(executor);
-      return settleFromRail(descriptor, {
-        demosRpc: "https://demos.example",
-        demosSecret: "test-secret",
-        payDem: { settlementStore: testStore },
-      });
-    };
-    const unused = async (): Promise<never> => { throw new Error("unused"); };
-
-    const unjournaled = await dispatch(declareSettlementBridge(async () => unused(), { journaled: false }));
-    expect(settlementBridgeTraits(unjournaled)).toEqual({ journaled: false });
-    expect(settlementBridgeTraits(await dispatch(declareSettlementBridge(async () => unused())))).toEqual({});
-    expect(isSettlementBridge(await dispatch(async () => unused()))).toBe(false);
-  });
-
   test("captures recovery authorities before the optional peer connects", async () => {
     let finishConnect!: (rail: unknown) => void;
     mocks.createPayDemRail.mockReturnValue(new Promise((resolve) => {
@@ -527,7 +536,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     await settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
-      payDem: { settlementStore: store },
+      payDem: { settlementStore: store, allowUnjournaled: true },
     });
     const captured = mocks.payDemSettle.mock.calls[0]![2].store!;
     const outcome = {
@@ -576,7 +585,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const options: RailDispatchOptions = {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
-      payDem: { settlementStore: store },
+      payDem: { settlementStore: store, allowUnjournaled: true },
     };
     await settleFromRail(descriptor, options);
     await settleFromRail(descriptor, options);
@@ -788,7 +797,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const options: RailDispatchOptions = {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
-      payDem: { settlementStore: testStore },
+      payDem: { settlementStore: testStore, allowUnjournaled: true },
       availabilityPolicy: {
         environment: "production",
         authorize: firstAuthorize,
@@ -815,7 +824,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const dispatched = await settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
-      payDem: { settlementStore: testStore },
+      payDem: { settlementStore: testStore, allowUnjournaled: true },
       payment: { phaseIndex: 4 },
     });
 
@@ -857,7 +866,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       await expect(settleFromRail(descriptor, {
         demosRpc: "https://demos.example",
         demosSecret: "test-secret",
-        payDem: { settlementStore: testStore },
+        payDem: { settlementStore: testStore, allowUnjournaled: true },
         availabilityPolicy: { environment: "production", authorize },
       })).resolves.toEqual(expect.any(Function));
       expect(authorize).toHaveBeenCalledWith({
@@ -896,7 +905,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     await expect(settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
-      payDem: { settlementStore: testStore },
+      payDem: { settlementStore: testStore, allowUnjournaled: true },
       availabilityPolicy: {
         environment: "non-production",
         authorize: async () => true,
@@ -912,7 +921,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       options: {
         demosRpc: "https://demos.example",
         demosSecret: "test-secret",
-        payDem: { settlementStore: testStore },
+        payDem: { settlementStore: testStore, allowUnjournaled: true },
         payment: { phaseIndex: 4 },
       },
       create: mocks.createPayDemRail,
@@ -993,7 +1002,7 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     const dispatched = await settleFromRail(descriptor, {
       demosRpc: "https://demos.example",
       demosSecret: "test-secret",
-      payDem: { settlementStore: testStore },
+      payDem: { settlementStore: testStore, allowUnjournaled: true },
       payment: { phaseIndex: 4 },
     });
 
@@ -1002,5 +1011,62 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
       rail: DEM_RAIL_ID,
       phase: "pay-dem",
     }));
+  });
+});
+
+describe("pay-DEM registry dispatch requires a prepared-transfer journal unless allowed", () => {
+  const signingReached = new Error("the payment reached signing");
+
+  beforeEach(async () => {
+    const actual = await vi.importActual<typeof import("../../src/rails/payDem.js")>(
+      "../../src/rails/payDem.js",
+    );
+    mocks.createPayDemRail.mockReset().mockImplementation(actual.createPayDemRail);
+    mocks.payDemSettle.mockReset().mockImplementation(actual.payDemSettle);
+    demosSdk.getNetworkInfo.mockReset().mockResolvedValue({
+      forks: { osDenomination: { activated: true } },
+    });
+    demosSdk.transfer.mockReset().mockRejectedValue(signingReached);
+    demosSdk.connect.mockClear();
+    demosSdk.connectWallet.mockClear();
+  });
+
+  const options = (payDem: Partial<NonNullable<RailDispatchOptions["payDem"]>> = {}) => ({
+    demosRpc: "https://demos.example",
+    demosSecret: "test-secret",
+    payment: { phaseIndex: 4 },
+    payDem: {
+      settlementStore: createIdempotencyStore(createInMemorySettlementLog()),
+      ...payDem,
+    },
+  });
+
+  test("settleFromRail refuses a pay-dem route without a prepared-transfer journal before signing", async () => {
+    const descriptor = await authenticatedDefinition();
+
+    const refused = settleFromRail(descriptor, options());
+    await expect(refused).rejects.toBeInstanceOf(DacsError);
+    await expect(refused).rejects.toMatchObject({ code: "settlement.unjournaled_rail" });
+    expect(demosSdk.transfer).not.toHaveBeenCalled();
+  });
+
+  test("settleFromRail refuses a pay-dem route without a journal before any RPC connection or wallet load", async () => {
+    const descriptor = await authenticatedDefinition();
+
+    await expect(settleFromRail(descriptor, options())).rejects.toMatchObject({
+      code: "settlement.unjournaled_rail",
+    });
+    expect(demosSdk.connect).not.toHaveBeenCalled();
+    expect(demosSdk.connectWallet).not.toHaveBeenCalled();
+    expect(mocks.createPayDemRail).not.toHaveBeenCalled();
+  });
+
+  test("settleFromRail runs a pay-dem route without a journal when payDem.allowUnjournaled is set", async () => {
+    const descriptor = await authenticatedDefinition();
+
+    const settle = await settleFromRail(descriptor, options({ allowUnjournaled: true }));
+    await expect(settle(request())).rejects.toThrow(signingReached.message);
+    expect(demosSdk.transfer).toHaveBeenCalledTimes(1);
+    expect(demosSdk.transfer).toHaveBeenCalledWith(`0x${"bb".repeat(32)}`, 1_000_000_000n);
   });
 });

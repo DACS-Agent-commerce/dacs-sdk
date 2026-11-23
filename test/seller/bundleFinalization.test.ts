@@ -162,9 +162,12 @@ function fixture(
     sellerVetDecision?: "pass" | "fail" | "indeterminate" | "error";
     resolvedPayment?: boolean;
     repeatedPayment?: boolean;
+    extraSignerIsLosingBidder?: boolean;
+    buyerVetPartyWithParameter?: boolean;
   } = {},
 ) {
   const attested = deliveryMode === "attested";
+  const buyerVetParty = options.buyerVetPartyWithParameter ? `${BUYER}?alias=work` : BUYER;
   const procurement = options.procurement === true;
   const listingPublisher =
     options.listingPublisherOverride ?? (procurement ? BUYER : SELLER);
@@ -371,7 +374,7 @@ function fixture(
       verifier,
     );
   const buyerVet = makeVetRecord(
-    BUYER,
+    buyerVetParty,
     "b".repeat(64),
     buyerVerifyRef,
     buyerVetRequirement,
@@ -414,6 +417,14 @@ function fixture(
         primaryClaim: SELLER,
         vetRecordRef: sellerVetRef,
       },
+      ...(options.extraSignerIsLosingBidder
+        ? [{
+            role: "bidder-non-winning" as const,
+            bundleHash: "c".repeat(64),
+            primaryClaim: OUTSIDER,
+            vetRecordRef: buyerVetRef,
+          }]
+        : []),
     ],
     terms: {
       deliverable: {
@@ -933,7 +944,7 @@ function fixture(
       vetRequirements: [
         {
           vetRecordRef: buyerVetRef,
-          evaluatedParty: BUYER,
+          evaluatedParty: buyerVetParty,
           requirement: buyerVetRequirement,
           verifier: SELLER,
           freshness: [],
@@ -2169,6 +2180,29 @@ describe("DACS-5 ST-11 seller completed-bundle finalization", () => {
 
     await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
       /resolved agreement|unauthorized or incomplete signer set/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects a sealed-envelope agreement carrying a losing bidder signature", async () => {
+    const f = fixture("pure", "storage", false, false, true, {
+      procurement: true,
+      extraSignerIsLosingBidder: true,
+    });
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /resolved agreement|unauthorized or incomplete signer set/,
+    );
+    expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
+  });
+
+  test("rejects a Vet record whose evaluated party differs from the session party by a parameter", async () => {
+    const f = fixture("pure", "storage", false, false, false, {
+      buyerVetPartyWithParameter: true,
+    });
+
+    await expect(finalizeCompletedSellerBundleCore(f.input, f.provider)).rejects.toThrow(
+      /invalid Vet record\/requirement invocation/,
     );
     expect(f.provider.submitSellerBundle).not.toHaveBeenCalled();
   });

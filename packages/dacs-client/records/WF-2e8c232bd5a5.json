@@ -1,0 +1,20 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged README with the evidence broadcast chain check and move the record anchor to the merge",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "619924405f6048e18f068e63f73095ead6dce60d",
+      "after": "619924405f6048e18f068e63f73095ead6dce60d"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-2e8c232bd5a5.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "Both sides of the merge recorded the README; this record chooses the merged copy, which keeps every change of both sides. The commit also moves the anchor to the merge, so the anchored files start from their merged copies."
+}

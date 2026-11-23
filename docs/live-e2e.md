@@ -14,6 +14,11 @@ mainnet keys, commit wallet material, paste it into an issue or log, or put it
 directly in shell history. Treat testnet mnemonics and private keys as secrets
 even when the balances are small.
 
+`docs/fixed-price-x402-walkthrough.md` walks through a generated live project on testnet. The page
+marks each step script, manual or not run, and lists what does not work yet, including the buy's
+doctor and its blocked checks. §1, §2 and the Base Sepolia
+RPC list in §3 apply to it; the rest of this page describes this test's own harness.
+
 ## 1. Node version (required)
 
 demosdk's ESM packaging + `avsc` break on Node ≥ 25 (`buffer.SlowBuffer is not a
@@ -28,7 +33,7 @@ npx vitest run test/integration/funded-two-agent.e2e.test.ts
 ```
 
 If your shell's `nvm use` doesn't stick in a non-interactive context, invoke the
-matching Node binary explicitly (`"$(nvm which 20)" node_modules/.bin/vitest …`)
+matching Node binary explicitly (`"$(nvm which 22)" node_modules/.bin/vitest …`)
 rather than hard-coding an absolute path.
 
 ## 2. Funding (all public, no captcha)

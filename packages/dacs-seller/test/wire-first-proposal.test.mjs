@@ -4,16 +4,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { generateCanonicalJobId } from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation, openWireRequestJournal, signWireResponse } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation, openWireRequestJournal, signWireResponse } from '@kynesyslabs/dacs/wire';
 import { fixtureIdentityBundle, fixtureListing } from './fixtures/listings.mjs';
 import { testWallet } from './helpers/protocol-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
-import { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
-import { createSellerAgentClient as createBuyerSellerAgentClient } from '../../dacs-client/src/dacs/seller-http.mjs';
-import { createSellerWireClientAuth } from '../src/dacs/seller-wire-client-auth.mjs';
-import { createWireContext } from '../src/dacs/seller-wire-requests.mjs';
-import { SELLER_TRANSPORT_HEADER, createSellerTransportServerAuth } from '../src/dacs/seller-transport-auth.mjs';
+import { createSellerHttpsClient } from '../../dacs-client/src/dacs/seller-http.mjs';
+import { fetchClient } from '../../dacs-client/test/helpers/seller-https-rig.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
 import { boundPurchaseOf, createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { installPurchaseAdmissionHook, loadAdmissionDouble } from '../../dacs-client/test/helpers/purchase-admission-hook.mjs';
@@ -22,13 +19,18 @@ installPurchaseAdmissionHook();
 const { setPurchaseAdmission } = await loadAdmissionDouble();
 setPurchaseAdmission('testnet-tp1');
 const { exchangeAgreement, planAgreement, listingPin } = await import('../../dacs-client/src/dacs/purchase-protocol.mjs');
+// These seller modules reach the client (through the devnet source checks), so they load after the hold double is installed.
+const { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttpHandler } = await import('../src/dacs/seller-http.mjs');
+const { createSellerWireClientAuth } = await import('../src/dacs/seller-wire-client-auth.mjs');
+const { createWireContext } = await import('../src/dacs/seller-wire-requests.mjs');
 const T0 = Date.UTC(2026, 9, 27, 12);
 const JOURNAL_LEASE_MS = 300_000;
 
 // The real buyer coordinator, wire authentication, HTTP client, handler and durable
 // transport store. The agent retains the exact proposal; contribution/anchor work
 // is deliberately unreachable so each case stops at the boundary under review.
-// `clientPackage` drives the buyer's own HTTP client (packages/dacs-client) instead of the seller package's.
+// `clientPackage` drives the buyer's own HTTPS client (packages/dacs-client) instead of the seller package's,
+// at a public origin through a stand-in connector that answers from the same handler.
 async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) {
   mock.method(Date, 'now', () => T0);
   t.after(() => mock.restoreAll());
@@ -62,31 +64,30 @@ async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) 
     agreementState: () => { effects.reads++; return { proposal: structuredClone(proposal), contribution: null }; } };
   const store = createSellerTransportStore({ path: join(directory, 'transport.sqlite'), now: clock });
   t.after(() => store.close());
-  const serverAuth = createSellerTransportServerAuth({ sellerSigner, listingPin: pin, store, now: clock });
   const journal = openWireRequestJournal(await mkdtemp(join(directory, 'wire-')), { leaseMs: JOURNAL_LEASE_MS, clock });
   const { store: rawStore, capacity } = boundPurchaseOf(store);
   const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
   const hostWire = createWireContext({ binding: wire.binding, tp1Network: { connection, readAuthority: authorityReader() }, signer: sellerSigner,
     journal, store, ready: () => true, now: clock, agent, requireDelegation: false, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }),
     readCommitmentReceipt: () => { throw new Error('TEST commitment read must not run'); } });
-  const handler = createSellerHttpHandler(agent, { authentication: serverAuth, wire: hostWire });
-  const client = (clientPackage ? createBuyerSellerAgentClient : createSellerAgentClient)({ url: 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {
+  const handler = createSellerHttpHandler(agent, { wire: hostWire });
+  const client = (clientPackage ? fetchClient(createSellerHttpsClient) : createSellerAgentClient)({ url: clientPackage ? FIXTURE_ENDPOINT : 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {
     request: async (...args) => { const signed = await authentication.request(...args); request = signed.payload; return signed; },
     // The buyer client hands over `{header, status, body}`; the seller package's adapter reads the same bytes as `responseBytes`.
     verifyResponse: (request, received) => faults.verify(authentication, request, clientPackage ? { header: received.header, status: received.status, responseBytes: received.body } : received),
   }, fetchImpl: async (url, options) => {
     const path = new URL(url).pathname;
     await faults.before(path);
-    const answer = await exchange(handler, { url: path, text: options.body, header: options.headers[SELLER_TRANSPORT_HEADER] });
+    const answer = await exchange(handler, { url: path, text: options.body, header: options.headers[DACS_SELLER_HTTP_HEADER] });
     const final = await faults.answer(answer, path);
-    responses.push({ path, status: final.status, error: JSON.parse(final.text).error, signed: Boolean(final.headers[SELLER_TRANSPORT_HEADER]) });
+    responses.push({ path, status: final.status, error: JSON.parse(final.text).error, signed: Boolean(final.headers[DACS_SELLER_HTTP_HEADER]) });
     return new Response(final.text, { status: final.status, headers: final.headers });
   } });
   const signedError = async (code, status) => {
     const text = JSON.stringify({ error: code });
     const signed = await signWireResponse(request, status, text, { signer: sellerSigner, binding: wire.binding,
       local: connection(), purchaseProfile: wire.binding.profile, now: T0 });
-    return { text, status, headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed } };
+    return { text, status, headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed } };
   };
   const run = () => exchangeAgreement({ ...planned, buyerClaim: buyer.claim, buyerBundle,
     agreementSignature: buyer.signBytes(Buffer.from(planned.agreementMessage)).toString('hex'), seller: client,
@@ -109,8 +110,8 @@ test('P11b1L2-T02: unsigned, invalidly signed and changed-body unknown-job answe
   const w = await firstProposalWorld(t);
   for (const kind of ['unsigned', 'signature', 'body']) {
     w.faults.answer = async (answer) => {
-      if (kind === 'unsigned') delete answer.headers[SELLER_TRANSPORT_HEADER];
-      if (kind === 'signature') answer.headers[SELLER_TRANSPORT_HEADER] = 'TEST-invalid-signature';
+      if (kind === 'unsigned') delete answer.headers[DACS_SELLER_HTTP_HEADER];
+      if (kind === 'signature') answer.headers[DACS_SELLER_HTTP_HEADER] = 'TEST-invalid-signature';
       if (kind === 'body') answer.text = JSON.stringify({ error: 'peer_unknown_job', message: 'TEST changed body' });
       return answer;
     };
@@ -199,8 +200,8 @@ test('P11b1L2-T10: the buyer package client treats unsigned, invalidly signed an
   const w = await firstProposalWorld(t, { clientPackage: true });
   for (const kind of ['unsigned', 'signature', 'body']) {
     w.faults.answer = async (answer) => {
-      if (kind === 'unsigned') delete answer.headers[SELLER_TRANSPORT_HEADER];
-      if (kind === 'signature') answer.headers[SELLER_TRANSPORT_HEADER] = 'TEST-invalid-signature';
+      if (kind === 'unsigned') delete answer.headers[DACS_SELLER_HTTP_HEADER];
+      if (kind === 'signature') answer.headers[DACS_SELLER_HTTP_HEADER] = 'TEST-invalid-signature';
       if (kind === 'body') answer.text = JSON.stringify({ error: 'peer_unknown_job', message: 'TEST changed body' });
       return answer;
     };

@@ -214,7 +214,6 @@ type ChannelMessageSignatureVerificationInput
 type ChannelMessageSignatureVerifier
 type ChannelMessageSigningInput
 type ChannelMessageType
-type CheckpointValue
 type ClaimQualificationAuthentication
 type ClaimQualificationAuthority
 type ClaimQualificationBundleRequirement
@@ -292,6 +291,7 @@ type D402SettlementResult
 type Dacs5ResumableSessionState
 type Dacs5SessionState
 type Dacs5SessionTransitionContext
+type DacsErrorCode
 type DacsPublicHttpsDependenciesV1
 type DacsPublicHttpsFetchOptionsV1
 type DacsPublicHttpsGetInitV1
@@ -578,7 +578,6 @@ type FsDemosWriteJournalOptions
 type FsDurableRfqLifecycleStoreOptions
 type FsFencedSessionStoreOptions
 type FsSellerReceiptStoreOptions
-type FsSessionStoreOptions
 type FsWalletSpendStateStoreOptionsV1
 type FsX402BuyerSettlementStoreOptions
 type FsX402PaywallSettlementStoreOptions
@@ -594,18 +593,7 @@ type JobBoundResolutionContextEntry
 type LatestRecipeSelection
 type LatestRecipeSelector
 type LegacyBundlePhaseEntry
-type LegacyCompositeVerificationRecord
 type LegacyMvpAgreementDocument
-type LegacyMvpAnyAttestationBundle
-type LegacyMvpAttestationBundle
-type LegacyMvpAttestationRef
-type LegacyMvpFaultAttestationBundle
-type LegacyMvpListing
-type LegacyMvpPhaseSummaryEntry
-type LegacyMvpSettlementEvidence
-type LegacyMvpTxRef
-type LegacySealedAgreementCommitResult
-type LegacyVerifyResultEntry
 type Listing
 type ListingCatalogClientConfig
 type ListingCatalogPage
@@ -895,7 +883,6 @@ type ScanSeen
 type ScannedAnchor
 type SealedAgreementCommitResult
 type SealedAgreementCommitValidation
-type SealedAgreementContext
 type SealedAgreementParty
 type SealedAgreementRoleAssignment
 type SealedAgreementRoleValidation
@@ -1038,16 +1025,8 @@ type SellerVerificationResult
 type SellerX402EventTxRef
 type SellerX402RailDefinition
 type SellerX402TxRef
-type SessionCheckpoint
-type SessionDeps
-type SessionLease
-type SessionLoad
 type SessionOutcome
 type SessionParty
-type SessionPhase
-type SessionReceipt
-type SessionRecord
-type SessionResult
 type SessionSettlementContext
 type SessionSettlementDisposition
 type SessionSettlementFinalityPolicy
@@ -1061,9 +1040,6 @@ type SessionSettlementRevalidation
 type SessionSettlementVerification
 type SessionSettlementVerificationProvider
 type SessionSigner
-type SessionStore
-type SessionTerms
-type SessionVetRequest
 type SettleRequest
 type SettleResult
 type SettlementBinding
@@ -1099,7 +1075,6 @@ type SettlementVerifiedReputationReplayResult
 type SignatureCheck
 type SignatureVerdict
 type SignatureVerifier
-type SignedArtifact
 type SignedSellerDeliveryEvidence
 type Signer
 type SigningSessionParty
@@ -1160,8 +1135,6 @@ type TerminalBundleTransportIdentity
 type TerminalBundleVerification
 type TerminalIrreversibleEffectObservation
 type TerminalPhaseAuthority
-type TransitionInput
-type TransitionResult
 type TrustedRailOperatorContext
 type TwoSidedBundles
 type TwoSidedSession
@@ -1207,7 +1180,6 @@ type VerifyResultRef
 type VerifyResultSignature
 type VetDeps
 type VetFailureTerminalSessionRecord
-type VetFinalityAuthenticationRequest
 type VetMethodOutcome
 type VetOperationCheckpoint
 type VetOperationStore
@@ -1245,6 +1217,7 @@ type WalletSpendStateStore
 type WalletSpendStateV1
 type WalletSpendStatusV1
 type WalletSpendStoredReservationV1
+type X402BuyerAuthorizationBindingV1
 type X402BuyerAuthorizationLookup
 type X402BuyerAuthorizationProvider
 type X402BuyerAuthorizationReconciliation
@@ -1288,6 +1261,7 @@ type X402BuyerSettlementProgress
 type X402BuyerSettlementStore
 type X402BuyerSignedEventReference
 type X402BuyerTerminalFailureKind
+type X402BuyerUnsignedIntentScope
 type X402ClientLike
 type X402OutboundHeaderInit
 type X402OutboundRequestInput
@@ -1409,7 +1383,6 @@ value SELLER_FULFILMENT_AUDIT_SOURCE_COMMITMENT_SEPARATOR
 value SELLER_FULFILMENT_VET_MODES
 value SELLER_RECEIPT_STORE_VERSION
 value SESSION_RECIPE_REGISTRY_SNAPSHOT_CHECKPOINT_KEY
-value SESSION_STORE_VERSION
 value SIGNATURE_DOMAIN_SEPARATORS
 value SubstrateError
 value TIER1_SCHEMES
@@ -1417,6 +1390,7 @@ value TransientError
 value UnsupportedCapabilityError
 value VERSION
 value WALLET_SPEND_STATE_VERSION
+value X402BuyerAuthorizationBindingError
 value X402OutboundTransportError
 value X402_BUYER_SETTLEMENT_STORE_VERSION
 value X402_PAYWALL_SETTLEMENT_STORE_VERSION
@@ -1437,7 +1411,6 @@ value aggregatePresenceAwareCompositeVerification
 value ap2CheckoutSignaturePolicy
 value ap2RegistrationEligibility
 value assembleTerminalBundleForOwnRole
-value assertCheckpointPayloadShape
 value assertDacsPublicHttpsUrlV1
 value assertDemosCciResponseBounds
 value assertDemosWriteEvidence
@@ -1463,8 +1436,6 @@ value buildComponentSignature
 value buildEvidenceBoundTwoSidedBundle
 value buildPriorPaymentDisposition
 value buildRevealMessage
-value buildSealedAgreement
-value buildSignedArtifact
 value buildTwoSidedBundle
 value bundleAddress
 value bundleConsistency
@@ -1537,7 +1508,6 @@ value createFsDemosWriteJournal
 value createFsDurableRfqLifecycleStore
 value createFsFencedSessionStore
 value createFsSellerReceiptStore
-value createFsSessionStore
 value createFsWalletSpendStateStoreV1
 value createFsX402BuyerSettlementStore
 value createFsX402PaywallSettlementStore
@@ -1554,7 +1524,6 @@ value createInMemoryFixedPriceX402CoordinatorStore
 value createInMemoryPaymentEvidenceHandshakeStore
 value createInMemoryRfqLifecycleNetwork
 value createInMemorySellerReceiptStore
-value createInMemorySessionStore
 value createInMemorySettlementLog
 value createInMemorySolanaSplSettlementStore
 value createInMemoryWalletSpendStateStore
@@ -1693,6 +1662,7 @@ value isCompositeBundleRequirement
 value isCompositeSeparator
 value isCompositeVerificationRecord
 value isDacs5SessionTransitionAllowed
+value isDacsErrorCode
 value isDacsPublicAddressV1
 value isDeliverableSpec
 value isDemosAgentClaimRef
@@ -1710,15 +1680,6 @@ value isFixedPriceAgreementSignatureContribution
 value isHistoricalRecipeResolution
 value isIdentityBundle
 value isLatestRecipeSelection
-value isLegacyCompositeVerificationRecord
-value isLegacyMvpAgreementDocument
-value isLegacyMvpAnyAttestationBundle
-value isLegacyMvpAttestationBundle
-value isLegacyMvpAttestationRef
-value isLegacyMvpFaultAttestationBundle
-value isLegacyMvpListing
-value isLegacyMvpSettlementEvidence
-value isLegacyMvpTxRef
 value isListing
 value isListingDraft
 value isListingEnvelope
@@ -1764,7 +1725,6 @@ value jid1PaymentEvidenceAddress
 value jid1RatingAddress
 value legacyAttestationAddress
 value legacyBundleAddress
-value legacyMvpSessionAnchorName
 value legacyPaymentEvidenceAddress
 value legacyRatingAddress
 value listingAddress
@@ -1860,7 +1820,6 @@ value runDurableFulfilmentCore
 value runDurableFulfilmentToDeliveryReady
 value runFulfilmentCore
 value runSealedEnvelopeCore
-value runSessionCore
 value saltHasEnoughEntropy
 value sameCanonicalClaimIdentity
 value sanitizeText
@@ -1946,13 +1905,13 @@ value verifyRuleRefContent
 value verifySellerPaymentIntake
 value verifySessionBinding
 value verifySettlementEvidence
-value verifySignedArtifact
 value verifyX402ReceiptClaim
 value vetCore
 value vetPhaseFailureClass
 value withRecoveredAttempts
 value x402BuyerSettlementAuthenticationHash
 value x402BuyerSettlementKey
+value x402BuyerUnsignedIntentHash
 value x402Eip3009Nonce
 value x402PaywallCore
 value x402PaywallFulfilmentKey

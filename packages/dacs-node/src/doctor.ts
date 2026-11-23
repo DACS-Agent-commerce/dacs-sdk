@@ -138,6 +138,8 @@ export interface DacsLiveDoctorOptionsV1 {
   /** Exact rail selected by a setup/buy invocation, if one is being admitted. */
   operationRailProfile?: DacsLiveDoctorRailProfileV1;
   now?: () => number;
+  /** Clock for local probe durations; defaults to performance.now(). */
+  monotonicNow?: () => number;
   probeTimeoutMs?: number;
   signal?: AbortSignal;
 }
@@ -307,9 +309,9 @@ async function runProbe(
   probe: DacsLiveDoctorProbeV1 | undefined,
   options: Readonly<DacsLiveDoctorOptionsV1>,
   timeoutMs: number,
-  now: () => number,
+  monotonicNow: () => number,
 ): Promise<Readonly<DacsLiveDoctorCheckV1>> {
-  const startedAt = now();
+  const startedAt = monotonicNow();
   const enabledRailProfiles = new Set<DacsLiveDoctorRailProfileV1>(
     options.enabledRailProfiles ?? ["x402"],
   );
@@ -364,7 +366,7 @@ async function runProbe(
       }))).then((value) => captureProbeResult(value)).catch(() => undefined),
       timeout,
     ]);
-    const completedAt = now();
+    const completedAt = monotonicNow();
     const durationMs = Number(Math.max(0, completedAt - startedAt).toFixed(3));
     const result: Readonly<DacsLiveDoctorProbeResultV1> = observed ?? Object.freeze({
       status: "blocked" as const,
@@ -396,6 +398,7 @@ function validateOptions(options: Readonly<DacsLiveDoctorOptionsV1>): void {
       !boundedText(options.standardRevision, 128) ||
       !boundedText(options.profile, 128) ||
       (options.now !== undefined && typeof options.now !== "function") ||
+      (options.monotonicNow !== undefined && typeof options.monotonicNow !== "function") ||
       (options.operationRailProfile !== undefined &&
         options.operationRailProfile !== "x402" && options.operationRailProfile !== "pay-dem") ||
       (options.probes !== undefined && !closedRecord(options.probes))) {
@@ -430,12 +433,13 @@ export async function runDacsLiveDoctorV1(
     throw new TypeError("live doctor timeout is invalid");
   }
   const now = options.now ?? Date.now;
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
   const generatedAt = now();
   if (!Number.isSafeInteger(generatedAt) || generatedAt < 0) {
     throw new TypeError("live doctor clock is invalid");
   }
   const checks = Object.freeze(await Promise.all(DEFINITIONS.map((definition) =>
-    runProbe(definition, options.probes?.[definition.id], options, timeoutMs, now))));
+    runProbe(definition, options.probes?.[definition.id], options, timeoutMs, monotonicNow))));
   const required = checks.filter((item) => item.required);
   const failed = required.filter((item) => item.status === "fail").length;
   const blocked = required.filter((item) => item.status === "blocked").length;
@@ -479,7 +483,11 @@ export function formatDacsLiveDoctorTextV1(
     `gate: ${report.gate.status}`,
     ...report.checks.map((item) =>
       `${item.required ? "required" : "informational"} ${item.id}: ${item.status}` +
-      `${item.reasonCode === undefined ? "" : ` (${item.reasonCode})`}`),
+      `${item.reasonCode === undefined ? "" : ` (${item.reasonCode})`}` +
+      `${typeof item.facts?.causeCode === "string" &&
+          item.facts.causeCode.trim() === item.facts.causeCode &&
+          REASON_CODE_RE.test(item.facts.causeCode)
+        ? ` [cause: ${item.facts.causeCode}]` : ""}`),
     `report: ${report.reportHash}`,
     `exit: ${report.exitCode}`,
   ];

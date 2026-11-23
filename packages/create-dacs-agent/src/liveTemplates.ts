@@ -602,6 +602,7 @@ import {
   loadRoleConfig,
   serviceEndpoint,
 } from "./config.js";
+import { generatedRoleConfig } from "../dacs.config.js";
 
 const ROLES = Object.freeze(["buyer", "seller"] as const);
 const AUTHORITY_RE = /^did:demos:agent:[0-9a-f]{64}$/;
@@ -1619,6 +1620,11 @@ export async function runGeneratedDoctor(
     enabledRailProfiles = dacsLiveRailProfiles(buyer);
     dacsLiveRailProfiles(seller);
   } catch {
+    let networkRefused = false;
+    try {
+      const network = generatedRoleConfig("buyer").rail.requestedNetwork;
+      networkRefused = network !== "eip155:84532" && network !== "demos";
+    } catch { /* the network cannot be read, so only the generic reason applies */ }
     const probes: DacsLiveDoctorProbesV1 = Object.freeze({
       "local.node-version": () => supportedNode() ? pass({ nodeVersion: process.version })
         : fail("node-version-unsupported"),
@@ -1626,6 +1632,9 @@ export async function runGeneratedDoctor(
       "local.version-bindings": versionBindings,
       "local.configuration": () => fail("configuration-invalid"),
       "local.deployment-runtime": (context) => dockerRuntime(context, operation?.servicesRunning),
+      ...(networkRefused
+        ? { "x402.testnet-policy": () => fail("x402-mainnet-or-unsupported-network") }
+        : {}),
     });
     const report = await runDacsLiveDoctorV1({
       phase,
@@ -2526,9 +2535,9 @@ async function safeLog(role: Role) {
 }
 
 async function endpointAvailable(role: Role, timeoutMs = 30_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = performance.now() + timeoutMs;
   const endpoint = new URL("/health", serviceEndpoint(role));
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
     try {
       const response = await fetch(endpoint, { signal: AbortSignal.timeout(1_000) });
       if (response.ok) return true;
@@ -2547,8 +2556,8 @@ async function stopRecord(record: LocalProcessRecord): Promise<"stopped" | "stal
   }
   if (!ownedCommand(record)) throw new Error("local-runtime-process-identity-mismatch");
   process.kill(record.pid, "SIGTERM");
-  const deadline = Date.now() + 15_000;
-  while (alive(record.pid) && Date.now() < deadline) {
+  const deadline = performance.now() + 15_000;
+  while (alive(record.pid) && performance.now() < deadline) {
     await new Promise((done) => setTimeout(done, 100));
   }
   if (alive(record.pid)) throw new Error("local-runtime-process-stop-timeout");
@@ -4919,9 +4928,14 @@ that exact retained purchase, repeat the same inputs with
 Funded doctor is a separate, optional one-anchor Demos smoke using a named
 disposable wallet. It is plan-only unless \`DACS_DOCTOR_FUNDED_CONFIRM=1\` is
 supplied for that invocation, always requires \`--max-cost-dem\`, and never
-authorizes setup or purchase. Reconcile an ambiguous exact run with
-\`--resume-run <printed-run-id>\`; reconciliation is read-only and cannot
-rebroadcast the smoke.
+authorizes setup or purchase. Recover an unfinished run by repeating the same
+\`--wallet\` and \`--max-cost-dem\` with \`--resume-run <printed-run-id>\`.
+When an earlier write's outcome is unknown, a resume first reconciles; that
+reconciliation is read-only. If it finds no landed write it reports
+\`reconciliation-cleared\`, and the next resume performs the write again.
+That write first settles any earlier broadcast kept in the wallet's write
+journal, reuses it if it landed and stops if it is still unresolved. Do not
+start a new run while an earlier one is unfinished.
 
 Upgrade check is read-only. It queries the public npm \`next\` manifests for all
 three exact-version DACS packages, compares their declared Standard, config and

@@ -5,6 +5,8 @@ import type { X402BuyerEvmDisclosureRecovery } from "./x402BuyerEvmAuthorization
 import {
   createX402BuyerSettlementIntent,
   x402BuyerSettlementStoreInternals,
+  x402BuyerSettlementKey,
+  type X402BuyerUnsignedIntentScope,
   type X402BuyerJson,
   type X402BuyerEffectFence,
   type X402BuyerPaidRequestTransport,
@@ -33,6 +35,18 @@ export type X402BuyerPreparationAuthority = Omit<
   | "authorizationNonce"
 >;
 
+/** Authorization expiry returned by the wallet hold, in Unix seconds. */
+export interface X402BuyerAuthorizationBindingV1 { validBefore: number; }
+
+/** Refuses an unbound or changed hold expiry before payment can proceed. */
+export class X402BuyerAuthorizationBindingError extends Error {
+  override readonly name = "X402BuyerAuthorizationBindingError";
+  constructor(readonly reasonCode:
+    "x402-authorization-valid-before-unbound" | "x402-authorization-valid-before-mismatch") {
+    super(reasonCode);
+  }
+}
+
 /** Structural subset shared by `x402Client` and `x402HTTPClient`. */
 export interface X402BuyerChallengeClient {
   /** Optional local authority filter applied before any signing operation. */
@@ -43,7 +57,9 @@ export interface X402BuyerChallengeClient {
     getHeader: (name: string) => string | null | undefined,
     body?: unknown,
   ): unknown;
-  createPaymentPayload(paymentRequired: unknown): Promise<unknown>;
+  createPaymentPayload(
+    paymentRequired: unknown, binding?: Readonly<X402BuyerAuthorizationBindingV1>,
+  ): Promise<unknown>;
   encodePaymentSignatureHeader(paymentPayload: unknown): Record<string, string>;
 }
 
@@ -52,6 +68,9 @@ export interface PrepareX402BuyerSettlementInput {
   authority: Readonly<X402BuyerPreparationAuthority>;
   /** Optional `Accept` header for the unpaid GET; every other caller header is refused. */
   challengeHeaders?: X402BuyerHeaderInit;
+  /** Reserve the authorization expiry after selecting terms and before signing. */
+  bindAuthorization?(scope: Readonly<X402BuyerUnsignedIntentScope>):
+    Promise<Readonly<X402BuyerAuthorizationBindingV1>>;
 }
 
 export interface PrepareX402BuyerSettlementDeps {
@@ -345,7 +364,11 @@ export async function prepareX402BuyerSettlement(
 ): Promise<X402BuyerSettlementPreparation> {
   let rawAuthority: unknown;
   let rawChallengeHeaders: unknown;
+  let bindAuthorization: PrepareX402BuyerSettlementInput["bindAuthorization"];
   try {
+    bindAuthorization = optionalStableBoundMethod<
+      NonNullable<PrepareX402BuyerSettlementInput["bindAuthorization"]>
+    >(input, "bindAuthorization", "x402 authorization binding");
     rawAuthority = stableDataProperty(
       input,
       "authority",
@@ -465,26 +488,58 @@ export async function prepareX402BuyerSettlement(
     return { disposition: "rejected", reason: "x402-payment-required-response-invalid" };
   }
   const selected = chosenRequirements(paymentRequired, authority, client);
-  if (!selected) {
+  // The signer refuses a challenge with extensions, so none may reach a wallet hold.
+  if (!selected || (bindAuthorization !== undefined && selected.paymentRequired.extensions !== undefined)) {
     return { disposition: "rejected", reason: "x402-payment-requirements-mismatch" };
   }
+  if (bindAuthorization !== undefined) {
+    // The signed payload carries these members; the settlement intent refuses
+    // any that are not canonical JSON, so refuse them before a wallet hold.
+    try {
+      x402BuyerSettlementStoreInternals.captureJson(selected.paymentRequired.resource, "x402 challenge resource");
+      x402BuyerSettlementStoreInternals.captureJson(selected.requirements, "x402 challenge requirements");
+    } catch {
+      return { disposition: "rejected", reason: "x402-payment-requirements-mismatch" };
+    }
+  }
 
+  const scope: X402BuyerUnsignedIntentScope = {
+    intentVersion: "1", settlementKey: x402BuyerSettlementKey(authority),
+    ...authority, chosenRequirements: selected.requirements,
+    authorizationNonce: expectedNonce(authority.jobId, authority.phaseIndex),
+  };
+  const binding = bindAuthorization === undefined ? undefined : await bindAuthorization(scope);
+  if (bindAuthorization !== undefined && (!isRecord(binding) ||
+      Object.keys(binding).length !== 1 || !Number.isSafeInteger(binding.validBefore) ||
+      binding.validBefore <= 0)) {
+    return { disposition: "rejected", reason: "x402-authorization-valid-before-unbound" };
+  }
   let signedPaymentPayload: unknown;
   let paymentHeader: string | null;
   try {
     signedPaymentPayload = structuredClone(
-      await client.createPaymentPayload(selected.paymentRequired),
+      await (binding === undefined
+        ? client.createPaymentPayload(selected.paymentRequired)
+        : client.createPaymentPayload(selected.paymentRequired, binding)),
     );
     paymentHeader = capturePaymentHeader(
       client.encodePaymentSignatureHeader(signedPaymentPayload),
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof X402BuyerAuthorizationBindingError) {
+      return { disposition: "rejected", reason: error.reasonCode };
+    }
     return { disposition: "indeterminate", reason: "x402-payment-signing-unavailable" };
   }
   if (!paymentHeader || !isRecord(signedPaymentPayload)) {
     return { disposition: "rejected", reason: "x402-payment-signature-invalid" };
   }
 
+  if (binding !== undefined && (!isRecord(signedPaymentPayload.payload) ||
+      !isRecord(signedPaymentPayload.payload.authorization) ||
+      signedPaymentPayload.payload.authorization.validBefore !== String(binding.validBefore))) {
+    return { disposition: "rejected", reason: "x402-authorization-valid-before-mismatch" };
+  }
   try {
     return {
       disposition: "prepared",

@@ -16,6 +16,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import {testWallet,NOW}from './helpers/protocol-fixture.mjs';
+import { HOST_CONTEXT_CALLBACKS, presentContextAnswer } from './helpers/host-context-callbacks.mjs';
+import { hostBuyer } from './helpers/host-context-client.mjs';
 import * as core from '@kynesyslabs/dacs';
 import {sellerApi as seller}from './helpers/seller-internal-api.mjs';
 import { createDemDeliveryContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
@@ -25,15 +27,18 @@ import { createNativePaymentEvidenceConsumer, NATIVE_PAYMENT_EVIDENCE } from '..
 import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, DEMOS_SR2_FIXTURE_CHAIN_IDENTITY } from '../src/dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
-import { DACS_SELLER_HTTP_DOMAINS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
 import { wireRouteFixture } from './helpers/wire-continuation-fixture.mjs';
-import { SELLER_TRANSPORT_HEADER } from '../src/dacs/seller-transport-auth.mjs';
 import { createSessionAdmissionFixture } from './helpers/session-admission-fixture.mjs';
-import { mixedAuthentication, wireBuyer } from './helpers/wire-buyer.mjs';
+import { createOldDomainRequestSigner } from './helpers/old-domain-request.mjs';
+import { wireAuthentication, wireBuyer } from './helpers/wire-buyer.mjs';
+import { fetchAsHost, proxyListener } from './helpers/listener-host.mjs';
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
+import { INACTIVE_FORK_NETWORK_INFO, readInactiveForkNetworkInfo } from './helpers/network-info.mjs';
 import { privateModule, privateModuleUrl } from './helpers/private-module.mjs';
 import { createNativeRetrySeam } from './helpers/native-retry-seam.mjs';
-import { testNetwork, FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
+import { hostAuthority } from './helpers/kit-wallet-session.mjs';
+import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 import { hostJobCapacityTests } from './helpers/host-job-capacity-cases.mjs';
@@ -55,12 +60,6 @@ function key(tag){const wallet=testWallet(tag);return{...wallet,sign:wallet.sign
 const identityFor = (party, presentedAt, sessionSeed = 'host-native-delivery') => {
   const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed });
   return seller.attachIdentityPresentation(unsigned, party.signWallet(unsigned.message));
-};
-// The buyer's presentation of the challenge the seller host issued (CORE SN-1/SN-3).
-const presentChallenge = (party, presentedAt, sessionNonce) => {
-  const unsigned = seller.buildUnsignedIdentityBundle({ address: party.address, presentedAt, sessionSeed: 'host-native-delivery' });
-  const bundle = { ...unsigned.bundle, sessionNonce }, bundleHash = core.sha256Hex(core.canonicalize(bundle));
-  return seller.attachIdentityPresentation({ bundle, bundleHash }, party.signWallet(unsigned.message.replace(unsigned.bundleHash, bundleHash)));
 };
 
 // One Demos node: confirmed blocks bound to the fixture chain identity, native
@@ -99,6 +98,7 @@ function demosNode(now = () => NOW) {
   const nodeCall = (message, data) => {
     switch (message) {
       case 'getBlockByNumber': return clone(blocks[data.blockNumber] ?? null);
+      case 'getNetworkInfo': return clone(INACTIVE_FORK_NETWORK_INFO);
       case 'getTransactionStatus': { const tx = txs.get(String(data.hash).toLowerCase()); return tx ? { state: 'included', blockNumber: tx.blockNumber } : { state: 'not-found' }; }
       case 'getTxByHash': return clone(txs.get(String(data.hash).toLowerCase()) ?? null);
       case 'searchStoragePrograms': return faults.indexEmpty(data.query) ? []
@@ -209,7 +209,7 @@ const report = (change = {}) => ({ agreement, settlementId }) => ({ reportVersio
 // before signing, 'land-lose-lock' lands the Deliverable and then the job's
 // seller-state lock row is lost, so nothing after it is recorded; 'sign-then-lose'
 // signs and keeps the CREATE, then fails before it is broadcast; 'refuse-broadcast' signs and keeps it and the node refuses it (see refusedCreates).
-async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true }, contextSessionState = () => null } = {}) {
+async function world(t, { guardedDelivery = true, deliveryJournal = false, buyerRequirement = null, agentTransform = null, deliverableProducer = null, schemaUrl = true, reconcile = true, projectionReader = true, sellerPresentation = null, deliverableExtension = {}, deliverySchemaVerifier = undefined, maxJobs = 10000, deliveryEvidenceEnabled = false, compatibilityObserver = true, idempotentArtifacts = true, omitExpectedSize = false, buyerAccessOptions = { openBuyerAccess: true }, contextSessionState = () => null, hostOptions = {}, deadlineSecAfterCommit } = {}) {
   // Armed by the 'reservation-before-work' cut: the next payment claim is reserved and then lost before any work, as by a process that
   // died there. The 'work-before-completion' cut loses the response of the claim whose work is done, so nothing completes it.
   let lostBeforeWork = false, lostBeforeCompletion = false;
@@ -224,7 +224,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const agentUrl = agentTransform ? await privateModuleUrl(new URL('../src/dacs/seller-agent.mjs', import.meta.url), [], agentTransform) : null;
   const hostModule = await privateModule(new URL('../src/host.mjs', import.meta.url), ['setCutAgent'], source => {
     const cut = source.replace('const REQUIRED =', 'let cutAgent = (agent) => agent; function setCutAgent(value) { cutAgent = value; }\nconst REQUIRED =')
-      .replace('createSellerHttpHandler(agent, { authentication, wire })', 'createSellerHttpHandler(cutAgent(agent, wire), { authentication, wire })');
+      .replace('createSellerHttpHandler(agent, { wire, context, ', 'createSellerHttpHandler(cutAgent(agent, wire), { wire, context, ');
     return agentUrl === null ? cut : cut.replace("from './dacs/seller-agent.mjs'", `from '${agentUrl}'`);
   });
   hostModule.setCutAgent(cutAgent);
@@ -240,7 +240,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey,now:clock });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, now - 1000), displayName: 'Native host seller', publicEndpoint: 'https://seller.invalid',
     listingId: 'host-native-delivery', listingVersion: 1, title: 'Native host report', description: 'Payment evidence to delivery through the standalone host.',
-    category: 'services.market-report', tags: ['native'], priceDem: '2.5', notBefore: now - 60000 });
+    category: 'services.market-report', tags: ['native'], priceDem: '2.5', notBefore: now - 60000, ...(deadlineSecAfterCommit === undefined ? {} : { deadlineSecAfterCommit }) });
   if (buyerRequirement) draft.buyerRequirement = clone(buyerRequirement);
   if (!schemaUrl) delete draft.offering.deliverable.schemaUrl;
   // All binding strings have fixed canonical lengths. Declare the exact
@@ -255,8 +255,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const buyerBundles = new Map();
   const buyerBundleFor = async (jobId) => {
     if (!buyerBundles.has(jobId)) {
-      const challenge = await host.issueSessionChallenge({ jobId, buyer: buyerKey.claim });
-      buyerBundles.set(jobId, presentChallenge(buyerKey, now, challenge.sessionNonce));
+      buyerBundles.set(jobId, await (await hostBuyer(host, listing, { jobId, buyer: buyerKey, seller: sellerKey, clock })).admit(jobId));
     }
     return buyerBundles.get(jobId);
   };
@@ -343,13 +342,15 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     }
   };
   const artifactAnchor = { writer: sellerKey.claim, source: 'TEST-host-native-delivery/artifacts',
-    publish: async ({ logicalAddress, artifact, artifactKind, authorize, authorizeSigning }) => {
+    publish: async ({ logicalAddress, artifact, artifactKind, authorize, authorizeSigning, currentAuthorization }) => {
       effects.publishCalls.push({ artifactKind, logicalAddress });
       // As the shipped anchor: `authorize` before the intent, then the wallet's approval wait
       // (`faults.artifactApproval`), then `authorizeSigning` (when given) right before the CREATE.
       const permitCreate = async () => {
         if (authorize && authorize() !== true) throw new Error('TEST the seller withdrew this write');
         await faults.artifactApproval?.(artifactKind);
+        // The job pass's own check, which the kit boundary asks right before the signature (only when a test turns it on).
+        if (faults.runPassCheck && artifactKind === 'FinalityCommitmentRecord' && currentAuthorization() !== true) throw new Error('TEST the commitment pass check refused');
         if (authorizeSigning && authorizeSigning() !== true) throw new Error('TEST the seller withdrew this write at signing');
       };
       // A plain wallet creates a new program on every call. Exercise that
@@ -449,6 +450,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       if (fault === 'throw') throw new Error('TEST account nonce read failed');
       return { nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() };
     },
+    readNetworkInfo: readInactiveForkNetworkInfo,
     readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }),
     broadcast: async ({ signedTransaction, txHash }) => {
       effects.broadcast.push(signedTransaction);
@@ -466,7 +468,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const evidenceConsumer = (anchorEvidence) => createNativePaymentEvidenceConsumer({ rpcUrl: RPC, fetchImpl: node.fetchImpl, anchorEvidence, now: clock,
     ...(projectionReader ? { readSignedProjection: async ({ logicalAddress }) => (signedCreates.has(logicalAddress) ? clone(signedCreates.get(logicalAddress)) : undefined) } : {}) });
   const demDeliveryContext = createDemDeliveryContext({ authority: 'TEST-host-native-delivery', vetMode: KIT_TP1_VET_MODE,
-    resolveBuyer: async () => { throw new Error('TEST the buyer resolver is not the seller\'s'); },
+    resolveBuyer: async (input) => presentContextAnswer(input), ...HOST_CONTEXT_CALLBACKS,
     resolveSeller: async ({ jobId }) => {
       const input = await vettedInput(jobId);
       // One requirement invocation per Vet record the Agreement references,
@@ -500,6 +502,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
       await faults.beforeDeliveryNonce?.();
       return { nonce: node.accountNonce(sellerKey.address), blockHeight: node.blockHeight() };
     },
+    readNetworkInfo: readInactiveForkNetworkInfo,
     readTransactionState: async ({ txHash }) => ({ state: node.transactionState(txHash), checkedThroughBlock: node.blockHeight() }),
     broadcast: async ({ signedTransaction, txHash }) => {
       effects.deliveryBroadcast.push(signedTransaction);
@@ -607,15 +610,17 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     return { commitment: Buffer.from(JSON.stringify({ record: row.artifact, nativeAddress: row.receipt.nativeAddress, anchorTxRef: row.txRef, anchorReceipt: row.receipt })),
       agreement: Buffer.from(JSON.stringify(agreements.get(core.fixedPriceAgreementLogicalAddress(jobId)))), signedListing: Buffer.from(JSON.stringify(listing)) };
   };
+  // Every request reaches the host under the Host its Listing's endpoint names.
+  const hostFetch = fetchAsHost({ authority: new URL(listing.seller.publicEndpoint).host });
   const capabilities = () => ({ readCommitmentReceipt, signer: sellerSigner, listing,
     buyerAccess: seller.createOperatorBuyerAccess({ buyerForJob: jobId => buyerBundles.has(jobId) ? buyerKey.address : null, ...buyerAccessOptions }), agreementAnchor, deliverableProducer: producer, maxJobs, deliveryEvidenceEnabled,
     deliverySchemaVerifier: deliverySchemaVerifier ?? { schemaUrl: listing.offering.deliverable.schemaUrl, verify: ({ cleartextPayload: p }) => ({ disposition: p.reportVersion === '1' && typeof p.kind === 'string' && Array.isArray(p.body) && p.body.every(v => typeof v === 'string') ? 'valid' : 'invalid' }) },
     ...(compatibilityObserver ? { observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); } } : {}),
     nativePaymentEvidence: evidenceConsumer(journal.anchorEvidence), demDeliveryContext, nativeDemDelivery: deliveryCapability(), railAuthority: rails.authority,
-    sessionAdmission: admission.sessionAdmission, tp1Network: testNetwork(), now: clock, contextSessionState, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}),
+    sessionAdmission: admission.sessionAdmission, ...hostAuthority(), listener: proxyListener({ publicOrigin: listing.seller.publicEndpoint }), now: clock, contextSessionState, ...(reconcile ? { reconcilePaymentEvidence: journal.reconcilePaymentEvidence } : {}),
     ...(journalInUse ? { resumeDeliverableCreate: deliveryJournalWallet.resume } : {}) });
   const start = async () => {
-    const host = await startHost({ ...capabilities(), dataDirectory, artifactAnchor });
+    const host = await startHost({ ...capabilities(), dataDirectory, artifactAnchor, ...hostOptions });
     hosts.push(host);
     return host;
   };
@@ -623,7 +628,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
 
   // One buyer purchase: the buyer signs, finalizes and anchors the Agreement,
   // asks the seller to commit, and pays the Agreement's payee.
-  const purchase = async ({ commit = true, expectSigned = true } = {}) => {
+  const purchase = async ({ commit = true, expectSigned = true, anchored = true } = {}) => {
     const jobId = '01J8N4YV7YVYQ4DB7M8T'+String(++jobSequence).padStart(6,'0');
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(await vettedInput(jobId)));
     const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
@@ -631,9 +636,8 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     const transportIdentity = { jobId, planHash: plan.planHash, agreementHash: plan.agreementHash, buyer: buyerKey.claim, seller: sellerKey.claim, proposalHash: proposal.proposalHash };
     // Every route used by this purchase is signed and verified through wire.
     const client = () => {
-      const api = seller.createSellerAgentClient({ url: host.url, timeoutMs:NATIVE_FLOW_TIMEOUT_MS, authentication: mixedAuthentication(
-      { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash, seller.createSellerTransportClientAuth({
-        buyerSigner: { claim: buyerKey.claim, sign: buyerKey.sign }, seller: sellerKey.claim, resolveJob: () => ({ listingPin: pin, agreementHash: plan.agreementHash }), now: clock })) });
+      const api = seller.createSellerAgentClient({ url: host.url, timeoutMs:NATIVE_FLOW_TIMEOUT_MS, fetchImpl: hostFetch, authentication: wireAuthentication(
+      { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash) });
       return { ...api, commit: (...args) => { retrySeam.beforeRetry(); return api.commit(...args); } };
     };
     const proposalRequest = { proposal, transportIdentity, buyerIdentityBundle: await buyerBundleFor(jobId) };
@@ -641,10 +645,11 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     if (!expectSigned) return answer;
     assert.equal(answer.disposition, 'complete', `the seller signs the vetted Agreement: ${JSON.stringify(answer)}`);
     const agreement = await core.finalizeFixedPriceAgreementContributions(plan, [buyerContribution, answer.contribution], seller.contributionVerifier);
-    agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
+    const anchor = () => agreements.set(core.fixedPriceAgreementLogicalAddress(jobId), agreement);
+    if (anchored) anchor();
     if (commit) assert.equal((await client().commit(jobId)).status, 'committed');
     const payout = agreement.terms.payoutBindings[0], amountOs = demToOs(agreement.terms.price.amount);
-    return { jobId, agreement, agreementHash: plan.agreementHash, transportIdentity, payout, amountOs, client, proposalRequest, proposalAnswer: answer,
+    return { jobId, agreement, anchor, agreementHash: plan.agreementHash, transportIdentity, payout, amountOs, client, proposalRequest, proposalAnswer: answer,
       pay: () => node.pay({ from: buyerKey.address, to: payout.payeeAddress, amountOs }),
       // A claim sent while an earlier attempt of the same payment is open first waits out that attempt's lease.
       claim: async (txHash) => { retrySeam.beforeRetry(); try { return await client().submitPayment({ jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE }); }
@@ -660,12 +665,12 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // read with the host stopped, from the host's own durable state.
   const retainedSession = async (jobId) => {
     await stop();
-    const agent = await seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, challengeLedger: hostLedger() });
+    const agent = await seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, challengeLedger: hostLedger(), closedBootstrapGate: () => null });
     try { return agent.durableSessionOf(jobId); } finally { agent.close(); }
   };
   const PAYMENTS_PATH = '/dacs/v1/payments';
   const claimBody = (p, txHash) => ({ jobId: p.jobId, txHash, payerPayingKey: buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE });
-  const wireState = (p) => inspectWireOperation(hostWire.journal, { seller: sellerKey.claim, jobId: p.jobId, path: PAYMENTS_PATH });
+  const wireState = (p, path = PAYMENTS_PATH) => inspectWireOperation(hostWire.journal, { seller: sellerKey.claim, jobId: p.jobId, path });
   // The journal-specific setup of each cut, behind the seam. 'reservation-before-work' sends the claim to the running host, which
   // reserves its attempt in the wire journal and is then lost before any work: the attempt stays open. 'work-before-completion'
   // lets the work finish and loses the response, so nothing completes the attempt until the cut ends.
@@ -714,7 +719,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const agentFor = async ({ stopHost = true, readIssued = null, deliveryEvidenceEnabled: publishEvidence = deliveryEvidenceEnabled, beforePublish = null } = {}) => {
     if (stopHost) await stop();
     const anchor = beforePublish ? { ...artifactAnchor, publish: async input => { await beforePublish(); return artifactAnchor.publish(input); } } : artifactAnchor;
-    return seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: anchor, readIssued, deliveryEvidenceEnabled: publishEvidence, challengeLedger: hostLedger() });
+    return seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: anchor, readIssued, deliveryEvidenceEnabled: publishEvidence, challengeLedger: hostLedger(), closedBootstrapGate: () => null });
   };
   // Model an authenticated checkpoint written by an older agent before its
   // adapter recovery fix, using the store's own fenced save and signature.
@@ -747,7 +752,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   };
   // Another write of the seller's account takes the nonce a kept CREATE signed.
   const overtakeWallet = () => node.create(sellerKey, { logicalAddress: 'dacs4:TEST-other-write', artifact: { TEST: 'another write of the seller wallet' }, artifactKind: 'TEST-other' });
-  return { node, effects, faults, purchase, restart, restartWallet, replaceWallet, replaceDeliveryWallet, openDeliveryJournal, overtakeWallet, deliveryWallet: () => deliveryJournalWallet, retainedSession, crashMidClaim, cutClaim, endFinishCut, beforeRetry: retrySeam.beforeRetry, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
+  return { node, effects, faults, hostFetch, purchase, restart, restartWallet, replaceWallet, replaceDeliveryWallet, openDeliveryJournal, overtakeWallet, deliveryWallet: () => deliveryJournalWallet, retainedSession, crashMidClaim, cutClaim, endFinishCut, beforeRetry: retrySeam.beforeRetry, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
     host: () => host, capabilities, dataDirectory, loseJobLock, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, refreshPayment, wireState, advance, editRetainedSession,
     unguardedCapability: () => deliveryCapability(false), useGuardedDelivery: (guarded) => { guardedStart = guarded; },
     useDeliveryJournal: (on) => { journalInUse = on; } };
@@ -801,6 +806,14 @@ test('the host takes a native payment to anchored, read-back payment evidence an
   assert.deepEqual(w.effects.signCreate, [address], 'a confirmed anchor is not signed again');
   assert.equal(w.effects.broadcast.length, 1, 'nor sent again');
   assert.equal(w.createsAt(address), 1);
+});
+
+test('a commitment CREATE through agent.commit passes the job pass\'s current-authorization check, which binds the Agreement hash', async (t) => {
+  const w = await world(t);
+  w.faults.runPassCheck = true;
+  const p = await w.purchase();
+  assert.deepEqual(w.effects.published.filter((kind) => kind === 'FinalityCommitmentRecord'), ['FinalityCommitmentRecord']);
+  assert.equal((await p.client().commit(p.jobId)).status, 'committed');
 });
 
 test('an anchor whose answer was lost after the write is read back, not sent again', async (t) => {
@@ -977,8 +990,8 @@ test('a paid outside buyer recovers an uncertain payment after access closes and
   w.beforeRetry();
   assert.equal(w.capabilities().buyerAccess.allowsWallet(w.buyerKey.address), false);
   const signed = await w.signedClaim(p, tx);
-  const response = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST',
-    headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody });
+  const response = await w.hostFetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST',
+    headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header }, body: signed.rawBody });
   const pending = await response.json();
   assert.equal(response.status, 200, shown(pending));
   assert.equal(pending.status, 'payment-evidenced', 'the rebroadcast is read back on this retry');
@@ -2540,7 +2553,7 @@ test('read-only commitment reconciliation cannot start provably unsent work', as
  const agent = await w.agentFor();
  try {
   const body = { jobId: p.jobId }, text = JSON.stringify(body);
-  const { payload } = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.sellerKey.claim,
+  const { payload } = await createOldDomainRequestSigner({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.sellerKey.claim,
    resolveJob: () => ({ listingPin: seller.listingPin(w.listing), agreementHash: p.agreementHash }), now: w.capabilities().now }).request('/dacs/v1/commitments', body, text);
   const answer = await agent.reconcileTransport({ request: payload, body, rawBody: Buffer.from(text), readOnly: true });
   assert.equal(answer.disposition, 'indeterminate');
@@ -2558,7 +2571,7 @@ test('commitment transport reconciliation reads an uncertain retained commitment
  const agent = await w.agentFor();
  try {
   const body = { jobId: p.jobId }, text = JSON.stringify(body);
-  const { payload } = await seller.createSellerTransportClientAuth({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.sellerKey.claim,
+  const { payload } = await createOldDomainRequestSigner({ buyerSigner: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.sellerKey.claim,
    resolveJob: () => ({ listingPin: seller.listingPin(w.listing), agreementHash: p.agreementHash }), now: w.capabilities().now }).request('/dacs/v1/commitments', body, text);
   const readsBefore = w.effects.retainedReads.length;
   w.faults.artifactRead.push('unknown');
@@ -2598,15 +2611,10 @@ test('a pending commitment CREATE is not sent again once the seller-state check,
   assert.equal(commitmentResends(w, p), 0, 'a failed check sends nothing');
 });
 
-// The public host forwards issuance to the same verifier-owned generator.
-test('the host refuses caller-chosen challenges and accepts a buyer presentation of its own challenge', async (t) => {
-  const w = await world(t), jobId = '01J8N4YV7YVYQ4DB7M8T'+String(++jobSequence).padStart(6,'0');
-  const chosen = identityFor(w.buyerKey, NOW);
-  await assert.rejects(w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: chosen.sessionNonce }), { code: 'challenge_invalid' });
-  await assert.rejects(w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim, sessionNonce: '01'.repeat(16) }), { code: 'challenge_invalid' });
-  const issued = await w.host().issueSessionChallenge({ jobId, buyer: w.buyerKey.claim });
-  assert.match(issued.sessionNonce, /^[0-9a-f]{64}$/);
-  assert.notEqual(issued.sessionNonce, chosen.sessionNonce);
+// The host issues challenges only through its signed challenge route, and a presentation of one is first admitted by the context route.
+test('the host has no operator issuance and accepts a buyer presentation of the challenge its wire issued', async (t) => {
+  const w = await world(t);
+  assert.equal(Object.hasOwn(w.host(), 'issueSessionChallenge'), false);
   const purchase = await w.purchase({ commit: false });
   assert.match(purchase.agreementHash, /^[0-9a-f]{64}$/, 'the seller accepted the presentation and signed its Agreement');
 });
@@ -2755,8 +2763,8 @@ test('a retained delivery is rechecked by the agent while a repeated wire reques
   const p = await w.purchase(), tx = p.pay(), deliverable = `dacs4:deliverable:${p.jobId}`;
   const signed = await w.signedClaim(p, tx);
   const post = async (expectedStatus = 200) => {
-    const response = await fetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST',
-      headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header }, body: signed.rawBody });
+    const response = await w.hostFetch(`${w.host().url}/dacs/v1/payments`, { method: 'POST',
+      headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header }, body: signed.rawBody });
     assert.equal(response.status, expectedStatus);
     return response.json();
   };
@@ -3121,7 +3129,7 @@ test('enabling publication after a delivery-ready order changes nothing: a repla
 
   await w.host().close();
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
-  const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
+  const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await w.hostFetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
   const done = await post();
   assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
   assert.equal(done.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
@@ -3138,7 +3146,7 @@ test('a delivery-ready session retained without its own evidence copy is replaye
   await w.editRetainedSession(p.jobId, (session) => { delete session.deliveryReady.evidence; });
   await w.host().close();
   const on = await w.startShipped({ deliveryEvidenceEnabled: true }); t.after(() => on.close());
-  const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await fetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
+  const post = async () => { const wireRequest = await w.signedClaim(p, tx);  const res = await w.hostFetch(`${on.url}/dacs/v1/payments`, { method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: wireRequest.header }, body: wireRequest.rawBody }); assert.equal(res.status, 200); return res.json(); };
   const done = await post();
   assert.equal(done.delivery?.status, 'delivery-ready', shown(done));
   assert.equal(done.delivery.evidencePublication, 'deferred-to-explicit-sdk-finaliser');
@@ -3389,7 +3397,7 @@ for(const failure of ['none','unavailable','changed'])test(`disabling evidence p
  const first=await p.claim(tx);assert.equal(first.delivery?.status,'delivered',shown(first));
  const signed=await w.signedClaim(p,tx);await w.host().close();
  const off=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>off.close());
- const post=async(request)=>{request ??= await w.signedClaim(p,tx);const res=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:request.header},body:request.rawBody});return{status:res.status,body:await res.json()};};
+ const post=async(request)=>{request ??= await w.signedClaim(p,tx);const res=await w.hostFetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[DACS_SELLER_HTTP_HEADER]:request.header},body:request.rawBody});return{status:res.status,body:await res.json()};};
  if(failure==='unavailable')w.node.faults.transactionDown=hash=>hash===w.signedCreate(address).hash;
  if(failure==='changed')w.faults.evidenceRead=read=>{read.receipt.transactionRef.value='e'.repeat(64);return read;};
  const observed=await post();
@@ -3408,7 +3416,7 @@ test('disabling publication recovers an already landed evidence CREATE with a lo
  w.faults.artifactPublish.push('SettlementEvidence:land-throw');const held=await p.claim(tx);
  assert.equal(held.delivery?.evidencePublication,'held-readback-only');assert.equal(w.createsAt(address),1);
  const signed=await w.signedClaim(p,tx);await w.host().close();const off=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>off.close());
- const response=await fetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:signed.rawBody});
+ const response=await w.hostFetch(`${off.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[DACS_SELLER_HTTP_HEADER]:signed.header},body:signed.rawBody});
  assert.equal(response.status,200);const done=await response.json();assert.equal(done.delivery?.status,'delivered',shown(done));
  assert.equal(done.delivery.evidenceRef.anchor.locator,address);assert.equal(w.createsAt(address),1);
 });
@@ -3417,7 +3425,7 @@ test('disabling publication holds absent prior work without a new CREATE and ena
  const w=await world(t,{deliveryEvidenceEnabled:true}),p=await w.purchase(),tx=p.pay(),address=evidenceAddress(p);
  w.faults.artifactPublish.push('SettlementEvidence');assert.equal((await p.claim(tx)).delivery?.evidencePublication,'held-readback-only');assert.equal(w.createsAt(address),0);
  await w.host().close();let running=await w.startShipped({deliveryEvidenceEnabled:false});t.after(()=>running.close());
- const post=async()=>{const signed=await w.signedClaim(p,tx);const response=await fetch(`${running.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[SELLER_TRANSPORT_HEADER]:signed.header},body:signed.rawBody});assert.equal(response.status,200);return response.json();};
+ const post=async()=>{const signed=await w.signedClaim(p,tx);const response=await w.hostFetch(`${running.url}/dacs/v1/payments`,{method:'POST',headers:{'content-type':'application/json',[DACS_SELLER_HTTP_HEADER]:signed.header},body:signed.rawBody});assert.equal(response.status,200);return response.json();};
  for(let attempt=0;attempt<2;attempt++){const held=await post();assert.equal(held.delivery?.evidencePublication,'held-readback-only',shown(held));assert.equal(w.createsAt(address),0);}
  await running.close();running=await w.startShipped({deliveryEvidenceEnabled:true});assert.equal((await post()).delivery?.status,'delivered');assert.equal(w.createsAt(address),1);
 });
@@ -3483,9 +3491,7 @@ for (const stage of ['entry', 'restore', 'publish', 'approval']) for (const expi
   } };
   const { wire, createBuyer } = await wireRouteFixture(t, { agent: facade, listing: w.listing, buyer: w.buyerKey, seller: w.sellerKey, store, now,
     readCommitmentReceipt: w.capabilities().readCommitmentReceipt, requireDelegation: true });
-  const handler = seller.createSellerHttpHandler(facade, { wire, authentication: seller.createSellerTransportServerAuth({
-    sellerSigner: w.sellerKey, listingPin: pin, store, now, requireDelegation: true,
-  }) });
+  const handler = seller.createSellerHttpHandler(facade, { wire });
   const body = { jobId: p.jobId, txHash: tx, payerPayingKey: w.buyerKey.claim, nativePaymentEvidence: NATIVE_PAYMENT_EVIDENCE };
   const rawBody = JSON.stringify(body);
   const signedRequest = async () => {
@@ -3499,8 +3505,8 @@ for (const stage of ['entry', 'restore', 'publish', 'approval']) for (const expi
   };
   const post = async (signed) => {
     const req = Readable.from([Buffer.from(rawBody)]);
-    Object.assign(req, { url: '/dacs/v1/payments', method: 'POST', headers: { 'content-type': 'application/json', [SELLER_TRANSPORT_HEADER]: signed.header },
-      socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
+    Object.assign(req, { url: '/dacs/v1/payments', method: 'POST', headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header },
+      headersDistinct: { 'content-type': ['application/json'], [DACS_SELLER_HTTP_HEADER]: [signed.header] }, socket: { remoteAddress: '127.0.0.1', localAddress: '127.0.0.1' } });
     const res = { destroyed: false, writableEnded: false, headersSent: false,
       writeHead(status) { this.status = status; this.headersSent = true; }, end(text) { this.body = JSON.parse(text); this.writableEnded = true; } };
     await handler(req, res);
@@ -3560,4 +3566,123 @@ test('wire-payment-retained-work-before-finish', async (t) => {
     assert.equal((await p.claim(tx)).status, 'payment-evidenced');
     assert.equal(w.effects.deliverySubmit.length, delivered, 'no repeated delivery start');
   }
+});
+
+// A default host (no operator `contextSessionState`) reads a purchase that has paid nothing as abandoned once its Agreement's deadline has passed.
+const ABANDONED_PURCHASE_MS = 3_600_000;
+const MARGIN_MS = 5 * 60_000;
+const allocationOf = (w, jobId) => {
+  const db = new DatabaseSync(join(w.dataDirectory, 'transport', 'transport.sqlite'), { readonly: true });
+  try { return db.prepare('SELECT state FROM kit_allocations WHERE jobId = ?').get(jobId)?.state ?? null; } finally { db.close(); }
+};
+// Moves the host clock to `afterDeadlineMs` past the purchase's Agreement deadline and restarts, which releases the units of every ended purchase.
+const restartPastDeadline = async (w, p, afterDeadlineMs) => {
+  w.advance(p.agreement.terms.deadline - NOW + afterDeadlineMs);
+  await w.restart();
+};
+
+test('a default host frees the units of a purchase whose proposal the seller refused an hour after its admission, retaining no Agreement, and keeps them before', async (t) => {
+  const member = { scheme: 'did', verificationRequired: false };
+  const buyerRequirement = { requirementVersion: '1', required: [member], preferredPresentation: 'any' };
+  const w = await world(t, { contextSessionState: null, buyerRequirement });
+  assert.equal((await w.purchase({ expectSigned: false })).disposition, 'rejected');
+  const db = new DatabaseSync(join(w.dataDirectory, 'transport', 'transport.sqlite'), { readonly: true });
+  let allocations;
+  try { allocations = db.prepare('SELECT jobId, state FROM kit_allocations').all(); } finally { db.close(); }
+  assert.equal(allocations.length, 1);
+  const [{ jobId }] = allocations;
+  assert.notEqual(w.wireState({ jobId }, DACS_SELLER_HTTP_PATHS.proposals).state, 'none', 'the refused proposal leaves an operation in the journal');
+  assert.equal(allocationOf(w, jobId), 'live');
+  w.advance(ABANDONED_PURCHASE_MS / 2);
+  await w.restart();
+  assert.equal(allocationOf(w, jobId), 'live', 'the purchase is not yet an hour old');
+  w.advance(ABANDONED_PURCHASE_MS);
+  await w.restart();
+  assert.equal(allocationOf(w, jobId), 'released');
+});
+
+test('a default host frees the units of a purchase that stopped after its proposal once the Agreement deadline has passed', async (t) => {
+  const w = await world(t, { contextSessionState: null }), p = await w.purchase({ commit: false });
+  assert.equal(allocationOf(w, p.jobId), 'live');
+  await restartPastDeadline(w, p, -MARGIN_MS);
+  assert.equal(allocationOf(w, p.jobId), 'live', 'the buyer can still commit until the deadline');
+  w.advance(2 * MARGIN_MS);
+  await w.restart();
+  assert.equal(allocationOf(w, p.jobId), 'released');
+});
+
+test('a default host keeps the units of a committed, unpaid purchase long past its Agreement deadline, and a payment made before the deadline is still accepted when claimed late', async (t) => {
+  const w = await world(t, { contextSessionState: null }), p = await w.purchase();
+  w.advance(p.agreement.terms.deadline - NOW - 5 * 60_000);
+  const tx = p.pay();
+  await restartPastDeadline(w, p, 2 * ABANDONED_PURCHASE_MS);
+  assert.equal(allocationOf(w, p.jobId), 'live', 'a payment included before the deadline may still be claimed');
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(allocationOf(w, p.jobId), 'released');
+});
+
+test('a default host keeps the units of a purchase whose payment claim was cut short, long after its Agreement deadline, and the buyer\'s retry is delivered', async (t) => {
+  const w = await world(t, { contextSessionState: null }), p = await w.purchase(), tx = p.pay();
+  await w.crashMidClaim(p, tx);
+  await restartPastDeadline(w, p, 10 * ABANDONED_PURCHASE_MS);
+  assert.equal(allocationOf(w, p.jobId), 'live');
+  w.beforeRetry();
+  assert.equal((await p.claim(tx)).status, 'payment-evidenced');
+});
+
+// A host with room for one purchase's units, whose periodic sweep the test runs by hand.
+const ONE_PURCHASE_UNITS = 100;
+async function oneRoomHost(t, worldOptions = {}) {
+  const timers = [], setInterval = globalThis.setInterval;
+  t.mock.method(globalThis, 'setInterval', (callback, ms, ...rest) => { timers.push({ callback, ms }); return setInterval(callback, ms, ...rest); });
+  const w = await world(t, { contextSessionState: null, hostOptions: { maxReservationUnits: ONE_PURCHASE_UNITS }, ...worldOptions });
+  // Runs the periodic sweep once and lets it settle, then waits until `done()` holds.
+  const sweep = async (done = () => true) => {
+    timers.filter(({ ms }) => ms === 60_000).at(-1).callback();
+    for (let turn = 0; turn < 200 && (turn < 20 || !done()); turn++) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(done(), true, 'the sweep did not finish its work');
+  };
+  return { w, sweep };
+}
+
+test('a default host gives back the units of a purchase whose commitment was refused with no effect once its Agreement deadline has passed, with no restart, and admits the next buyer', async (t) => {
+  const { w, sweep } = await oneRoomHost(t);
+  const p = await w.purchase({ commit: false, anchored: false });
+  await assert.rejects(p.client().commit(p.jobId), (error) => error.code === 'agreement_not_anchored');
+  assert.notEqual(w.wireState(p, DACS_SELLER_HTTP_PATHS.commitments).state, 'none', 'the refused commitment leaves an operation in the journal');
+  await assert.rejects(w.purchase({ commit: false }), (error) => error.code === 'seller_not_ready', 'the first purchase\'s units leave none for a second');
+  w.advance(p.agreement.terms.deadline - NOW - MARGIN_MS);
+  await sweep();
+  assert.equal(allocationOf(w, p.jobId), 'live', 'the buyer can still anchor and commit until the deadline');
+  w.advance(2 * MARGIN_MS);
+  await sweep(() => allocationOf(w, p.jobId) === 'released');
+  p.anchor();
+  await assert.rejects(p.client().commit(p.jobId), 'a commitment after the deadline is not accepted, since it could not be paid');
+  assert.equal((await w.purchase({ commit: false })).proposalAnswer.disposition, 'complete', 'the next buyer is admitted');
+});
+
+test('a commitment made after the Agreement deadline but within an hour of admission is refused with 409, leaves no pending attempt, and its units are given back after the hour', async (t) => {
+  const { w, sweep } = await oneRoomHost(t, { deadlineSecAfterCommit: ABANDONED_PURCHASE_MS / 2000 });
+  const p = await w.purchase({ commit: false });
+  const lateBy = 1_000;
+  assert.ok(p.agreement.terms.deadline - NOW + lateBy < ABANDONED_PURCHASE_MS, 'the commitment comes within an hour of admission');
+  w.advance(p.agreement.terms.deadline - NOW + lateBy);
+  await assert.rejects(p.client().commit(p.jobId), (error) => error.code === 'agreement_deadline_passed' && error.status === 409);
+  assert.equal(w.wireState(p, DACS_SELLER_HTTP_PATHS.commitments).state, 'ended', 'the refusal had no effect, so its attempt is not left pending');
+  assert.equal(allocationOf(w, p.jobId), 'live', 'an hour has not passed since admission');
+  w.advance(ABANDONED_PURCHASE_MS);
+  await sweep(() => allocationOf(w, p.jobId) === 'released');
+  assert.equal((await w.purchase({ commit: false })).proposalAnswer.disposition, 'complete', 'the next buyer is admitted');
+});
+
+test('a commitment refused with no effect is made once the buyer anchors the Agreement, and its units stay long after the deadline', async (t) => {
+  const { w, sweep } = await oneRoomHost(t);
+  const p = await w.purchase({ commit: false, anchored: false });
+  await assert.rejects(p.client().commit(p.jobId), (error) => error.code === 'agreement_not_anchored');
+  p.anchor();
+  assert.equal((await p.client().commit(p.jobId)).status, 'committed');
+  w.advance(p.agreement.terms.deadline - NOW + 3 * ABANDONED_PURCHASE_MS);
+  await sweep();
+  assert.equal(allocationOf(w, p.jobId), 'live', 'a committed purchase keeps its units, since a payment made before the deadline may be claimed late');
 });

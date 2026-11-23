@@ -1,0 +1,20 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF move the record anchor past the merged package manifest choice with the stabilised genesis read and keep a README record after it",
+  "kind": "checkpoint",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "73d0105200cb8ccc9991eb7748d1a192034e49c0",
+      "after": "73d0105200cb8ccc9991eb7748d1a192034e49c0"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-8f9048fca013.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "Both sides of the merge changed the package manifest, so neither parent of the merge holds the merged copy. The anchor moves to the commit after the merge, whose one parent holds every anchored file as the anchor names it; the anchored blobs are unchanged. This record names the unchanged README so the anchored README keeps a record after the anchor."
+}

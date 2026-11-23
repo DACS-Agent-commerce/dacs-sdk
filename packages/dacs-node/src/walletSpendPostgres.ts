@@ -183,6 +183,9 @@ export function createDacsWalletSpendContinuityAuthorityV2(input: Readonly<{
     store,
     readBalance: input.dependencies.readBalance,
     authenticateRecovery: input.dependencies.authenticateRecovery,
+    ...(input.dependencies.bindAuthorizationValidBefore === undefined ? {} : {
+      bindAuthorizationValidBefore: input.dependencies.bindAuthorizationValidBefore,
+    }),
     ...(input.dependencies.verifyOperatorApproval === undefined ? {} : {
       verifyOperatorApproval: input.dependencies.verifyOperatorApproval,
     }),
@@ -230,6 +233,35 @@ function continuityIdentity(value: string, label: string): string {
     throw new Error(`wallet-spend-continuity-${label}-invalid`);
   }
   return value;
+}
+
+/**
+ * Signs continuity receipts with an Ed25519 key derived from a 32-byte seed,
+ * using the one signing rule the verifier checks.
+ *
+ * @returns The unpadded base64url public key and a function that signs a receipt statement.
+ * @throws Error `wallet-spend-continuity-seed-invalid` when the seed is not 32 bytes.
+ */
+export function createDacsWalletSpendContinuitySignerV1(input: Readonly<{
+  seed: Uint8Array;
+}>): Readonly<{
+  verificationKey: string;
+  sign(statement: Readonly<ContinuityStatement>): Readonly<DacsWalletSpendContinuityReceiptV1>;
+}> {
+  if (!(input.seed instanceof Uint8Array) || input.seed.length !== 32) {
+    throw new Error("wallet-spend-continuity-seed-invalid");
+  }
+  const privateKey = privateKeyFromSeed(Uint8Array.from(input.seed));
+  const verificationKey = canonicalBase64Url(rawPublicKey(publicKeyFromSeed(input.seed)));
+  const sign = (statement: Readonly<ContinuityStatement>):
+    Readonly<DacsWalletSpendContinuityReceiptV1> => Object.freeze({
+      ...statement,
+      signature: Object.freeze({
+        algorithm: "ed25519" as const,
+        value: canonicalBase64Url(ed25519Sign(continuitySignedBytes(statement), privateKey)),
+      }),
+    });
+  return Object.freeze({ verificationKey, sign });
 }
 
 function continuityHead(
@@ -722,11 +754,7 @@ export function createInMemoryDacsWalletSpendContinuityWitnessV1(input: Readonly
 }> {
   const authorityId = continuityIdentity(input.authorityId, "authority-id");
   const epoch = continuityIdentity(input.epoch, "epoch");
-  if (!(input.seed instanceof Uint8Array) || input.seed.length !== 32) {
-    throw new Error("wallet-spend-continuity-seed-invalid");
-  }
-  const privateKey = privateKeyFromSeed(Uint8Array.from(input.seed));
-  const verificationKey = canonicalBase64Url(rawPublicKey(publicKeyFromSeed(input.seed)));
+  const { verificationKey, sign } = createDacsWalletSpendContinuitySignerV1({ seed: input.seed });
   const heads = new Map<string, DacsWalletSpendContinuityHeadV1>();
   const advances = new Map<string, DacsWalletSpendContinuityReceiptV1>();
   const key = (transition: Readonly<{
@@ -740,14 +768,6 @@ export function createInMemoryDacsWalletSpendContinuityWitnessV1(input: Readonly
     requestHash: transition.requestHash,
     mutationIndex: transition.mutationIndex,
   });
-  const sign = (statement: Readonly<ContinuityStatement>):
-    Readonly<DacsWalletSpendContinuityReceiptV1> => Object.freeze({
-      ...statement,
-      signature: Object.freeze({
-        algorithm: "ed25519" as const,
-        value: canonicalBase64Url(ed25519Sign(continuitySignedBytes(statement), privateKey)),
-      }),
-    });
   const witness: DacsWalletSpendContinuityWitnessV1 = {
     async readCurrent(request) {
       if (request.authorityId !== authorityId || request.epoch !== epoch) {
@@ -802,17 +822,81 @@ export function createInMemoryDacsWalletSpendContinuityWitnessV1(input: Readonly
   return Object.freeze({ witness: Object.freeze(witness), verificationKey });
 }
 
-/**
- * Process-local reference store for deterministic protocol tests. It is
- * library-branded so tests exercise the same cohesive V2 binding gate, but it
- * is not a production durability, fencing, or topology implementation.
- */
-export async function createInMemoryDacsWalletSpendContinuityStateStoreV1(
+/** Where a durable continuity store keeps its states, keyed by state hash. */
+export interface DacsWalletSpendContinuitySnapshotPortV1 {
+  /** The value stored for this state hash, or undefined when none exists. */
+  load(stateHash: string): Promise<unknown | undefined>;
+  /** Must be durable before it resolves. Called before every compare-and-set. */
+  persist(stateHash: string, state: Readonly<WalletSpendStateV1>): Promise<void>;
+}
+
+/** The operation a store view acts for; its identity goes into every receipt the view causes. */
+export interface DacsWalletSpendContinuityOperationV1 {
+  roleId: string;
+  /** A UUID. */
+  operationId: string;
+  /** 64 lowercase hex characters. */
+  requestHash: string;
+}
+
+type ContinuityStateStoreViews = Readonly<{
+  /** A branded view over the one shared state. Views share one mutation queue. */
+  bind(operation?: Readonly<DacsWalletSpendContinuityOperationV1>): DacsPostgresWalletSpendStateStoreV1;
+}>;
+
+function boundOperation(
+  operation: Readonly<DacsWalletSpendContinuityOperationV1>,
+): Readonly<DacsWalletSpendContinuityOperationV1> {
+  if (typeof operation.roleId !== "string" || typeof operation.operationId !== "string" ||
+      !UUID_RE.test(operation.operationId) || typeof operation.requestHash !== "string" ||
+      !HASH_RE.test(operation.requestHash)) {
+    throw new Error("wallet-spend-continuity-operation-identity-invalid");
+  }
+  continuityIdentity(operation.roleId, "operation-identity");
+  return Object.freeze({ ...operation });
+}
+
+async function persistSnapshot(
+  snapshots: DacsWalletSpendContinuitySnapshotPortV1,
+  state: Readonly<WalletSpendStateV1>,
+): Promise<void> {
+  try {
+    await snapshots.persist(stateHash(state), state);
+  } catch (cause) {
+    throw new Error("wallet-spend-continuity-snapshot-unavailable", { cause });
+  }
+}
+
+async function loadHeadState(
+  snapshots: DacsWalletSpendContinuitySnapshotPortV1,
+  policy: Readonly<WalletSpendPolicyV1>,
+  head: Readonly<DacsWalletSpendContinuityHeadV1>,
+): Promise<Readonly<WalletSpendStateV1>> {
+  const loaded = await snapshots.load(head.stateHash);
+  if (loaded === undefined) throw new Error("wallet-spend-continuity-state-missing");
+  if (typeof loaded === "object" && loaded !== null && "policyHash" in loaded &&
+      loaded.policyHash !== dacsWalletSpendPolicyHashV1(policy)) {
+    throw new Error("wallet-spend-continuity-policy-mismatch");
+  }
+  let state: Readonly<WalletSpendStateV1>;
+  try {
+    state = validateWalletSpendStateV1(loaded as WalletSpendStateV1, policy);
+  } catch (cause) {
+    throw new Error("wallet-spend-continuity-state-damaged", { cause });
+  }
+  if (state.generation !== head.revision || stateHash(state) !== head.stateHash) {
+    throw new Error("wallet-spend-continuity-state-damaged");
+  }
+  return state;
+}
+
+async function continuityStateStore(
   input: Readonly<{
     policy: Readonly<WalletSpendPolicyV1>;
     continuity: Readonly<DacsWalletSpendContinuityPinV1>;
   }>,
-): Promise<DacsPostgresWalletSpendStateStoreV1> {
+  snapshots?: DacsWalletSpendContinuitySnapshotPortV1,
+): Promise<ContinuityStateStoreViews> {
   const pin = continuityPin(input.continuity);
   const lineage = dacsWalletSpendLineageKeyV1(input.policy.wallet, input.policy.chainId);
   let state = validateWalletSpendStateV1(
@@ -839,6 +923,7 @@ export async function createInMemoryDacsWalletSpendContinuityStateStoreV1(
     clientNonce: initializationReadNonce,
   });
   if (current === null) {
+    if (snapshots !== undefined) await persistSnapshot(snapshots, state);
     await compareAndSetContinuity(pin, {
       ...initializationIdentity,
       predecessor: null,
@@ -846,13 +931,19 @@ export async function createInMemoryDacsWalletSpendContinuityStateStoreV1(
       clientNonce: advanceNonce(initializationIdentity),
     });
   } else {
+    // With a snapshot port the head comes from the signed receipt and the state
+    // is loaded to match it; without one the state must be the empty state.
+    const head = snapshots === undefined
+      ? { revision: state.generation, stateHash: stateHash(state) }
+      : { revision: current.revision, stateHash: current.stateHash };
     requireCurrentReceipt(current, pin, {
       lineageKey: lineage,
-      head: { revision: state.generation, stateHash: stateHash(state) },
+      head,
       operationId: initializationIdentity.operationId,
       requestHash: initializationIdentity.requestHash,
       clientNonce: initializationReadNonce,
     });
+    if (snapshots !== undefined) state = await loadHeadState(snapshots, input.policy, head);
   }
   let tail: Promise<void> = Promise.resolve();
   const requireHead = async (
@@ -880,70 +971,109 @@ export async function createInMemoryDacsWalletSpendContinuityStateStoreV1(
       requestHash: sha256Hex(canonicalize({ purpose, lineage, operationId, clientNonce })),
     };
   };
-  const store: DacsPostgresWalletSpendStateStoreV1 = {
-    lineageScope(selectedPolicy) {
-      if (selectedPolicy.wallet !== canonicalWalletSpendWalletV1(input.policy.wallet) ||
-          selectedPolicy.chainId !== input.policy.chainId) {
-        throw new Error("wallet-spend-lineage-policy-mismatch");
-      }
-      return lineage;
-    },
-    async read(scope) {
-      if (scope !== lineage) throw new Error("wallet-spend-lineage-scope-mismatch");
-      await requireHead(internalBinding("reference-read"));
-      return structuredClone(state);
-    },
-    async transact<T>(
-      scope: string,
-      operation: (
-        current: Readonly<WalletSpendStateV1> | null,
-      ) => Readonly<{ state: Readonly<WalletSpendStateV1>; value: T }>,
-    ): Promise<T> {
-      if (scope !== lineage) throw new Error("wallet-spend-lineage-scope-mismatch");
-      const priorTail = tail;
-      let release!: () => void;
-      tail = new Promise<void>((resolve) => { release = resolve; });
-      await priorTail;
-      try {
-        await requireHead(internalBinding("reference-mutation-read"));
-        const prior = structuredClone(state);
-        const result = operation(prior);
-        const next = validateWalletSpendStateV1(result.state, input.policy);
-        if (canonicalize(next) === canonicalize(prior)) return result.value;
-        if (next.generation !== prior.generation + 1) {
-          throw new Error("wallet-spend-postgres-revision-not-monotonic");
+  const bind = (
+    operation?: Readonly<DacsWalletSpendContinuityOperationV1>,
+  ): DacsPostgresWalletSpendStateStoreV1 => {
+    const bound = operation === undefined ? undefined : boundOperation(operation);
+    const store: DacsPostgresWalletSpendStateStoreV1 = {
+      lineageScope(selectedPolicy) {
+        if (selectedPolicy.wallet !== canonicalWalletSpendWalletV1(input.policy.wallet) ||
+            selectedPolicy.chainId !== input.policy.chainId) {
+          throw new Error("wallet-spend-lineage-policy-mismatch");
         }
-        const operationId = randomUUID();
-        const requestHash = sha256Hex(canonicalize({
-          operation: "reference-mutation", lineage, state: next,
-        }));
-        const identity = {
-          authorityId: pin.authorityId,
-          epoch: pin.epoch,
-          lineageKey: lineage,
-          candidateId: randomUUID(),
-          roleId: "reference:mutation",
-          operationId,
-          requestHash,
-          mutationIndex: next.generation,
-        };
-        await compareAndSetContinuity(pin, {
-          ...identity,
-          predecessor: { revision: prior.generation, stateHash: stateHash(prior) },
-          next: { revision: next.generation, stateHash: stateHash(next) },
-          clientNonce: advanceNonce(identity),
-        });
-        state = structuredClone(next);
-        await requireHead(internalBinding("reference-mutation-readback"));
-        return result.value;
-      } finally {
-        release();
-      }
-    },
-    attestCurrent: requireHead,
+        return lineage;
+      },
+      async read(scope) {
+        if (scope !== lineage) throw new Error("wallet-spend-lineage-scope-mismatch");
+        await requireHead(internalBinding("reference-read"));
+        return structuredClone(state);
+      },
+      async transact<T>(
+        scope: string,
+        operation: (
+          current: Readonly<WalletSpendStateV1> | null,
+        ) => Readonly<{ state: Readonly<WalletSpendStateV1>; value: T }>,
+      ): Promise<T> {
+        if (scope !== lineage) throw new Error("wallet-spend-lineage-scope-mismatch");
+        const priorTail = tail;
+        let release!: () => void;
+        tail = new Promise<void>((resolve) => { release = resolve; });
+        await priorTail;
+        try {
+          await requireHead(internalBinding("reference-mutation-read"));
+          const prior = structuredClone(state);
+          const result = operation(prior);
+          const next = validateWalletSpendStateV1(result.state, input.policy);
+          if (canonicalize(next) === canonicalize(prior)) return result.value;
+          if (next.generation !== prior.generation + 1) {
+            throw new Error("wallet-spend-postgres-revision-not-monotonic");
+          }
+          const identity = {
+            authorityId: pin.authorityId,
+            epoch: pin.epoch,
+            lineageKey: lineage,
+            candidateId: randomUUID(),
+            roleId: bound?.roleId ?? "reference:mutation",
+            operationId: bound?.operationId ?? randomUUID(),
+            requestHash: bound?.requestHash ?? sha256Hex(canonicalize({
+              operation: "reference-mutation", lineage, state: next,
+            })),
+            mutationIndex: next.generation,
+          };
+          if (snapshots !== undefined) await persistSnapshot(snapshots, next);
+          await compareAndSetContinuity(pin, {
+            ...identity,
+            predecessor: { revision: prior.generation, stateHash: stateHash(prior) },
+            next: { revision: next.generation, stateHash: stateHash(next) },
+            clientNonce: advanceNonce(identity),
+          });
+          state = structuredClone(next);
+          await requireHead(internalBinding("reference-mutation-readback"));
+          return result.value;
+        } finally {
+          release();
+        }
+      },
+      attestCurrent: requireHead,
+    };
+    continuityStateStores.add(store);
+    return Object.freeze(store);
   };
-  continuityStateStores.add(store);
-  return Object.freeze(store);
+  return Object.freeze({ bind });
+}
+
+/**
+ * Process-local reference store for deterministic protocol tests. It is
+ * library-branded so tests exercise the same cohesive V2 binding gate, but it
+ * is not a production durability, fencing, or topology implementation.
+ */
+export async function createInMemoryDacsWalletSpendContinuityStateStoreV1(
+  input: Readonly<{
+    policy: Readonly<WalletSpendPolicyV1>;
+    continuity: Readonly<DacsWalletSpendContinuityPinV1>;
+  }>,
+): Promise<DacsPostgresWalletSpendStateStoreV1> {
+  return (await continuityStateStore(input)).bind();
+}
+
+/**
+ * Opens a branded state store whose states are kept by a snapshot port and
+ * whose head is anchored in the continuity witness. Every changed state is
+ * written to the port before the witness compare-and-set, so a restart finds
+ * the state the witness head names.
+ *
+ * @returns Views over one shared state; each view is accepted by the V2 authority binding.
+ * @throws Error with the `wallet-spend-continuity-*` code naming why the head or its
+ *   snapshot cannot be used, or the port's own error when `load` fails.
+ */
+export async function createDurableDacsWalletSpendContinuityStateStoreV1(
+  input: Readonly<{
+    policy: Readonly<WalletSpendPolicyV1>;
+    continuity: Readonly<DacsWalletSpendContinuityPinV1>;
+    snapshots: DacsWalletSpendContinuitySnapshotPortV1;
+  }>,
+): Promise<ContinuityStateStoreViews> {
+  return continuityStateStore(input, input.snapshots);
 }
 
 function safeRevision(value: unknown): number {

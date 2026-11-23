@@ -15,7 +15,7 @@ import { DACS_SELLER_HTTP_PATHS as PATHS, inspectWireOperation } from '@kynesysl
 import { createPurchaseCapacity } from '../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
 import { createCompletedOutcomeReader, createOrdinaryCompletionPort, createSellerHttpHandler, endWireAttempt } from '../src/dacs/seller-http.mjs';
-import { SellerTransportError, createSellerTransportServerAuth, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
+import { SellerTransportError, sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { BUYER, JOB, JOB2, PIN, SELLER, T0, accountingFixture, nonceKey } from './helpers/reservation-accounting-fixture.mjs';
 
 // The ordinary completion port runs on the real reservation coordinator, purchase capacity, SQL store and wire journal: no route
@@ -419,6 +419,19 @@ test('a completed payment answers only the claim it was made for: another transa
   assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed');
 });
 
+test('a completed payments operation answers a later claim for another transaction with its first outcome and runs no intake', async t => {
+  const w = await continuingWorld(t);
+  const first = await w.request(PATHS.payments);
+  assert.equal(first.status, 200);
+  const attemptFiles = () => w.journalFiles().filter(name => name.startsWith('o-'));
+  const calls = { ...w.agent.calls }, attempts = attemptFiles();
+  const later = await w.post(PATHS.payments, { ...w.bodyFor(PATHS.payments), txHash: derive('another-transaction') }, { jobId: w.jobId, agreementHash: w.agreementHash });
+  assert.deepEqual([later.status, later.text], [200, first.text], 'the first outcome is sent again');
+  assert.deepEqual(w.agent.calls, calls, 'the payment ran once');
+  assert.deepEqual(attemptFiles(), attempts, 'no new attempt file');
+  assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed');
+});
+
 test('a completed payments replay reads the request\'s authority once more before it is answered', async t => {
   const w = await continuingWorld(t);
   assert.equal((await w.request(PATHS.payments)).status, 200);
@@ -740,12 +753,12 @@ test('the state and buyer-copy routes reserve nothing and touch no journal', asy
 
 test('an agent without callable retainsPaymentWork or assertSettlementCredit is refused at construction', async t => {
   const w = await routeWorld(t);
-  const { wire } = w.handle, authentication = createSellerTransportServerAuth({ sellerSigner: { claim: WORLD_SELLER.claim, sign: WORLD_SELLER.sign }, listingPin: WORLD_PIN, store: w.handle.store, now: w.clock });
+  const { wire } = w.handle;
   for (const name of ['retainsPaymentWork', 'assertSettlementCredit']) for (const value of [undefined, 'not a function', {}]) {
     const agent = { ...w.agent, [name]: value };
-    assert.throws(() => createSellerHttpHandler(agent, { authentication, wire }), TypeError, `${name} ${typeof value}`);
+    assert.throws(() => createSellerHttpHandler(agent, { wire }), TypeError, `${name} ${typeof value}`);
   }
-  assert.equal(typeof createSellerHttpHandler(w.agent, { authentication, wire }), 'function', 'the complete agent constructs');
+  assert.equal(typeof createSellerHttpHandler(w.agent, { wire }), 'function', 'the complete agent constructs');
   assert.equal(w.journalFiles().length, 0);
 });
 

@@ -9,9 +9,10 @@ import { boundedCall } from './bounded-call.mjs';
 import { isSmallOrderPublicKey } from './demos-claims.mjs';
 import { paymentTxHash } from './seller-agent.mjs';
 import { endWireAttempt } from './seller-http.mjs';
+import { plannedStateRecords } from './seller-planned-agreement.mjs';
 import { SELLER_EFFECT_ROUTES } from './seller-effect-routes.mjs';
 import { requestNonceKey } from './seller-reservation-accounting.mjs';
-import { SellerTransportError, sellerStoreInternals, transportStoreOf, validateBody } from './seller-transport-auth.mjs';
+import { SellerTransportError, sellerStoreInternals, validateBody } from './seller-transport-auth.mjs';
 
 // The routes that continue a committed purchase: the wire admits them only on the purchase's commitment, Agreement and Listing.
 const CONTINUING_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.payments, DACS_SELLER_HTTP_PATHS.bundleRequest, DACS_SELLER_HTTP_PATHS.bundleCountersignature, DACS_SELLER_HTTP_PATHS.bundleBuyerCopy]);
@@ -19,14 +20,14 @@ const COMMITMENT_RECEIPT_TIMEOUT_MS = 10000;
 
 /**
  * The routes the wire opens and signs. `commitments/signature` is one only where the handler mounts it (`commitOnSignature`);
- * the context step keeps the old server auth, and the challenge is opened by `challengeOnWire` (it has no Agreement and no
+ * the context step is served by `handleContext`, and the challenge is opened by `challengeOnWire` (it has no Agreement and no
  * journal), not through this list.
  */
 export const WIRE_ROUTE_PATHS = Object.freeze([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.state, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature, ...CONTINUING_PATHS]);
 // The routes that start or commit a purchase carry the host's own `allocated` flag (false unless the purchase holds a live allocation).
 const STAGE_PATHS = new Set([DACS_SELLER_HTTP_PATHS.proposals, DACS_SELLER_HTTP_PATHS.commitments, DACS_SELLER_HTTP_PATHS.commitmentSignature]);
-// The contexts createWireContext made, each with the agent and raw store it was made over: the handler takes no other, and
-// only a pair it serves with the same agent and the same store.
+// The contexts createWireContext made, each with the agent it was made for: the handler takes no other, and
+// only for that agent.
 const wireContexts = new WeakMap();
 
 const partyClaim = (artifact, role) => artifact.parties?.find((party) => party?.role === role)?.primaryClaim;
@@ -122,24 +123,42 @@ function admitAnswerText(text) {
  * `signedListing`; `binding` (whose authority reader carries its own deadline), `signer`, `journal`, `store` (the raw transport
  * store, which backs accounting and retained purchases), `reservations` (the reservation coordinator every effect route reserves
  * through), `completion` (the completion port that ends the attempts it issued), `readCommitmentReceipt` and `requireDelegation` are
- * values. `stopped()` is the host's stop
- * check, which the challenge route (`context` with `wire`) requires: it is `null` when none is given. `publicEndpoint` is the origin
- * the handler's discovery document names; it is `null` when none is given, and then no discovery document is served. A `signer`
+ * values. `admitPresentation(input)` is the agent's first admission of a presentation (its Listing revocation check and profile
+ * admission), which the context route's validation calls; it is `null` for an agent without one. `stopped()` is the host's stop
+ * check, which the challenge route (`context` with `wire`) requires: it is `null` when none is given. `bindPlannedAgreementReader(reader)` is how
+ * the context route gives the context one reader of a job's planned Agreement (once; a TypeError for a second or a non-function; it returns the reader), and
+ * `plannedAgreementOf(jobId)` calls it, or answers null while none is bound. `publicEndpoint` is the origin
+ * the handler's discovery document names; it is `null` when none is given, and then no discovery document is served. `bootstrap` is the
+ * host's request-local bootstrap scopes (`createBootstrapScopes`), which the handler enters for each request before the wire opens it;
+ * it is `null` when none is given, and then no scope is entered. A `signer`
  * with `readOnlyAnswerSigner` signs read answers and discovery through that role; one without it signs them as itself. Returns the
- * frozen context, the only `wire` option `createSellerHttpHandler` takes. Throws a TypeError for a member of the wrong kind.
+ * frozen context, the only `wire` option `createSellerHttpHandler` takes. Binds `store` to the signer's seller and the agent's Listing pin. Throws a TypeError
+ * for a member of the wrong kind, and an Error when `store` already belongs to another seller or Listing.
  */
-export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, reservations, completion, stopped = null, publicEndpoint = null }) {
-  const callables = [tp1Network?.connection, signer?.sign, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
+export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, reservations, completion, stopped = null, publicEndpoint = null, bootstrap = null }) {
+  const callables = [tp1Network?.connection, signer?.sign, store?.bind, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
       [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
   if (stopped !== null && typeof stopped !== 'function') throw new TypeError('the wire context\'s stop check must be a function');
   if (publicEndpoint !== null && typeof publicEndpoint !== 'string') throw new TypeError('the wire context\'s public endpoint must be a string');
+  if (bootstrap !== null && typeof bootstrap?.enter !== 'function') throw new TypeError('the wire context\'s bootstrap scopes need enter()');
+  // The transport store belongs to one seller and Listing from its first bind on: a store made for another one is refused here.
+  store.bind({ seller: signer.claim, listingPin: agent.listingPin });
+  // Set once by the context route; a state read before any session asks it for the draft the job's completed context plans.
+  let readPlannedAgreement = null;
   const readSigner = (purpose, body) => (typeof signer.readOnlyAnswerSigner === 'function' ? signer.readOnlyAnswerSigner({ purpose, binding, local: tp1Network.connection(), body }) : signer);
-  const context = Object.freeze({ binding, signer, journal, store, reservations, completion, requireDelegation, readCommitmentReceipt, publicEndpoint, readSigner,
+  const context = Object.freeze({ binding, signer, journal, store, reservations, completion, requireDelegation, readCommitmentReceipt, publicEndpoint, readSigner, bootstrap,
     local: () => tp1Network.connection(), tuple: (jobId) => store.purchaseProfile(jobId), now: () => now(), ready: () => ready(),
+    admitPresentation: typeof agent.admitSessionPresentation === 'function' ? (input) => agent.admitSessionPresentation(input) : null,
     stopped: stopped === null ? null : () => stopped(),
-    retainedFor: (input) => retainedFor(agent, input, { store, capacity }), continuationFor: (input) => continuationFor(agent, input, signedListing) });
-  wireContexts.set(context, { agent, store });
+    retainedFor: (input) => retainedFor(agent, input, { store, capacity }), continuationFor: (input) => continuationFor(agent, input, signedListing),
+    bindPlannedAgreementReader: (reader) => {
+      if (typeof reader !== 'function' || readPlannedAgreement !== null) throw new TypeError('the wire context takes one planned Agreement reader, a function');
+      readPlannedAgreement = reader;
+      return reader;
+    },
+    plannedAgreementOf: (jobId) => (readPlannedAgreement === null ? null : readPlannedAgreement({ jobId })) });
+  wireContexts.set(context, agent);
   return context;
 }
 
@@ -165,18 +184,26 @@ export async function openWireRequest(wire, header, onOpened) {
  * expired delegation authenticated the request, `recheck()`, which admits the same request again on a fresh clock for work that
  * follows without a reservation (a cached refresh), and whether the host retains a purchase stage of this route for the job.
  * Records in `limits` the times the admitted request and its delegation expire, for the store calls that follow admission.
+ * A state read of a job the agent holds no session for is admitted against the draft the job's completed context plans, when there is one.
  * Throws the wire's own refusal with its code, status and cause, `peer_unknown_job` 404 for a job the host holds nothing for
- * (only after the exchange checks pass), `tp1_purchase_profile_mismatch` 500 (cause `missing`) for a held job with neither
+ * (only after the exchange checks pass), `seller_source_unavailable` 503 for such a state read whose context cannot be read back (after the
+ * same checks), `tp1_purchase_profile_mismatch` 500 (cause `missing`) for a held job with neither
  * a kept tuple nor a bound completed operation after retirement, or the seller's body refusal.
  */
 async function admitWireRoute(wire, agent, limits, { header, method, path, rawBody, body, onOpened }) {
   const opened = await openWireRequest(wire, header, onOpened);
   const request = opened.payload;
   // An initial proposal whose draft cannot be derived is refused after the exchange checks, so that a prefix refusal keeps its own code.
-  let records = null, invalidDraft = null;
+  let records = null, invalidDraft = null, unreadablePlan = null;
   try { records = wire.retainedFor({ path, request, body }); } catch (error) {
     if (error?.code !== 'peer_proposal_invalid') throw error;
     invalidDraft = error;
+  }
+  // A state read of a job the agent holds no session for is admitted against the draft its completed context plans, if there is one.
+  if (records === null && path === DACS_SELLER_HTTP_PATHS.state) {
+    const planned = await wire.plannedAgreementOf(request.jobId);
+    if (planned?.kind === 'present') records = plannedStateRecords(planned);
+    else if (planned?.kind === 'unavailable') unreadablePlan = new SellerTransportError('seller_source_unavailable', 503, { cause: planned.cause });
   }
   // A job the host holds nothing for has no record to compare the request with. This one lets the exchange checks run and
   // grants nothing: the answer is the refusal or the 404 below, and it is never passed on to a route.
@@ -189,6 +216,7 @@ async function admitWireRoute(wire, agent, limits, { header, method, path, rawBo
   // Admission never publishes. Effect requests keep the wire's deferred reservation for accounting's step 7.
   const checked = await checkWireRequest(opened, check());
   if (invalidDraft !== null) throw invalidDraft;
+  if (unreadablePlan !== null) throw unreadablePlan;
   if (records === null) throw new SellerTransportError('peer_unknown_job', 404);
   // Retirement removes the active purchase tuple. Only a completed operation whose journal
   // binds this request can replay without it; other held jobs still need their kept tuple.
@@ -205,22 +233,20 @@ async function admitWireRoute(wire, agent, limits, { header, method, path, rawBo
 }
 
 /**
- * The authenticator of the wire routes, in the shape the handler takes from either auth: `open` admits a request
+ * The authenticator of the wire routes, in the shape the handler uses: `open` admits a request
  * (`{ body, read, readbackOnly(), recheck(), assertLive() }`; a read route reserves nowhere, an effect route reserves with the
  * request's tuple; `assertLive()` throws once the request or its delegation has expired), `sign` signs an answer under the tuple
  * kept for the job (`undefined` for a request that names another seller, which cannot be signed for: its refusal goes out
  * unsigned), `encode` admits the text a stored answer keeps, and `store` is the wire-effect adapter: it reserves through the
  * reservation coordinator and ends each attempt through the completion port. Deferred reserve rechecks expiry; an expired recovery
- * claim grants read-only work and settles no retry or null end. `readbackOnly()` reads the clock each time too. Throws for a `wire` that createWireContext
- * did not make, whose seller or delegation rule differs from
- * `authentication`'s, or that was made for another agent than `agent` or another transport store than `authentication`'s:
- * its checks would read one agent's and one store's records while the other serves and journals the request.
+ * claim grants read-only work and settles no retry or null end. `readbackOnly()` reads the clock each time too. Throws a TypeError
+ * for a `wire` that createWireContext did not make, and an Error for one made for another agent than `agent`: its checks would read
+ * one agent's records while the other serves the request.
  */
-export function wireAuthenticator(wire, agent, authentication) {
-  const owner = wireContexts.get(wire);
-  if (owner === undefined) throw new TypeError('the wire option must be a createWireContext context');
-  if (wire.signer.claim !== authentication?.seller || wire.requireDelegation !== authentication.requireDelegation) throw new Error('the wire context and the old authentication must name the same seller and delegation rule');
-  if (owner.agent !== agent || owner.store !== transportStoreOf(authentication)) throw new Error('the wire context must be made for the handler\'s agent and the old authentication\'s transport store');
+export function wireAuthenticator(wire, agent) {
+  const madeFor = wireContexts.get(wire);
+  if (madeFor === undefined) throw new TypeError('the wire option must be a createWireContext context');
+  if (madeFor !== agent) throw new Error('the wire context must be made for the handler\'s agent');
   // A retained effect is claimed and settled inside the agent's job fence after asynchronous waits. Recovery is
   // read-only once the request or delegation expires. A request this authenticator did not admit is expired.
   // An expiry once seen is kept, as the old guard's read-back set kept it: a clock that later reads earlier (a correction)

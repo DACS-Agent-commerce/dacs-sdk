@@ -3,12 +3,14 @@
 //   node scripts/ci-test-names.mjs <file>     prints the file's top-level test names as a JSON array
 //
 // listTests lists the names without running any test; runSome runs the file with every other test skipped by exact
-// name and reports whether exactly the given tests ran (this module is also the reporter that records them).
+// name and reports whether exactly the given tests ran (scripts/ci-test-reporter.mjs is the reporter that records them).
 //
 // The file is loaded in a child process in which "node:test" resolves to this module, whose test() only records the
-// name. The file's own top-level code runs; test bodies never do. Anything else the file imports from node:test
-// (describe, it, before, mock, ...) does not exist here, so loading fails instead of listing the wrong tests. A name
-// that is not a string, or a test registered with test.only/skip/todo, is refused for the same reason.
+// name; it is both the named and the default export, so `import { test } from "node:test"` and
+// `import test from "node:test"` both work. The file's own top-level code runs; test bodies never do. Anything else
+// the file imports from node:test (describe, it, before, mock, ...) does not exist here, so loading fails instead of
+// listing the wrong tests. A name that is not a string, or a test registered with test.only/skip/todo (or any other
+// property of the default export, such as test.describe), is refused for the same reason.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +31,9 @@ export function test(name) {
   if (typeof name !== "string" || name === "") throw new Error(`ci-test-names: a test name is not a non-empty string: ${String(name)}`);
   process.stdout.write(`${MARK}${JSON.stringify(name)}\n`);
 }
+
+// The default import of node:test is the same test() (it has no only/skip/todo or other properties here).
+export default test;
 
 /** The top-level test names registered by file (absolute, or relative to cwd), in registration order. */
 export function listTests(file, cwd = process.cwd()) {
@@ -62,7 +67,7 @@ export function runSome(file, all, given, { cwd, env = process.env, args = [] } 
   try {
     const skip = all.filter((name) => !given.includes(name)).map((name) => `--test-skip-pattern=${exactPattern(name)}`);
     const result = spawnSync(process.execPath, ["--test", ...args, ...skip, "--test-reporter=tap", "--test-reporter-destination=stdout",
-      `--test-reporter=${fileURLToPath(self)}`, `--test-reporter-destination=${join(out, "ran.jsonl")}`, file],
+      `--test-reporter=${fileURLToPath(new URL("./ci-test-reporter.mjs", self))}`, `--test-reporter-destination=${join(out, "ran.jsonl")}`, file],
     { cwd, env: childEnv, encoding: "utf8", maxBuffer: 16 << 20 });
     let ran;
     try {
@@ -89,17 +94,5 @@ if (process.argv[1] && fileURLToPath(self) === resolvePath(process.argv[1])) {
     process.exitCode = 2;
   } else {
     process.stdout.write(`${JSON.stringify(listTests(process.argv[2]))}\n`);
-  }
-}
-
-/**
- * node:test reporter (--test-reporter=<this file>): one JSON line per top-level test that ran, {"name", "ok"}.
- * Skipped and todo tests are left out, so the lines are the tests that actually ran.
- */
-export default async function* ranTests(source) {
-  for await (const event of source) {
-    if ((event.type !== "test:pass" && event.type !== "test:fail") || event.data.nesting !== 0) continue;
-    if (event.data.skip !== undefined || event.data.todo !== undefined) continue;
-    yield `${JSON.stringify({ name: event.data.name, ok: event.type === "test:pass" })}\n`;
   }
 }

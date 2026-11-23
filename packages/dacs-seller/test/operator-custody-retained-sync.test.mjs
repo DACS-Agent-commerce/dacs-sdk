@@ -60,7 +60,7 @@ for (const role of ROLES) {
     const failure = Object.assign(new Error('TEST record sync refused'), { code: 'EIO' });
     state.filesystemError = failure;
     state.failSync = candidate => candidate === path;
-    await assert.rejects(bootstrap(), error => error === failure);
+    await assert.rejects(bootstrap(), error => error.cause === failure);
     assert.equal(await readFile(path, 'utf8'), records[role]);
     state.failSync = null;
     state.events.length = 0;
@@ -86,7 +86,7 @@ for (const role of ROLES) {
     const failure = Object.assign(new Error('TEST record sync refused'), { code: 'EIO' });
     state.filesystemError = failure;
     state.failSync = candidate => candidate === path;
-    await assert.rejects(openRole(role), error => error === failure);
+    await assert.rejects(openRole(role), error => error.cause === failure);
   });
 
   test(`publish-race winner ${role} wallet record is synced before bootstrap returns it`, async (t) => {
@@ -115,7 +115,7 @@ test('retained operator secret sync failure refuses the key and a retry syncs it
   const failure = Object.assign(new Error('TEST secret sync refused'), { code: 'EIO' });
   state.filesystemError = failure;
   state.failSync = candidate => candidate === path;
-  await assert.rejects(secret(), error => error === failure);
+  await assert.rejects(secret(), error => error.cause === failure);
   assert.equal(await readFile(path, 'utf8'), secretRecord());
   state.failSync = null;
   state.events.length = 0;
@@ -165,7 +165,7 @@ for (const [name, access] of [['wallets', run => run.custody.bootstrapTestWallet
     const failure = Object.assign(new Error('TEST higher parent sync refused'), { code: 'EIO' });
     run.state.filesystemError = failure;
     run.state.failSync = candidate => candidate === higher;
-    await assert.rejects(access(run), error => error === failure);
+    await assert.rejects(access(run), error => error.cause === failure);
     assert.equal(run.state.events.some(credentialEvent), false);
     run.state.failSync = null;
     await access(run);

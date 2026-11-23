@@ -112,7 +112,6 @@ async function effectEntries() {
   const ledger = createSellerChallengeLedger({ db: ledgerDb, transaction: never('the transaction'), now: never('the clock'), generation: 'guard-probe',
     sessionState: never('a terminal observation'), admissionCounts: never('the counts'), ready: never('readiness'), stopped: never('the stop check') });
   const { createSellerAgentClient, createSellerHttpHandler } = await import('../../src/dacs/seller-http.mjs');
-  const { createSellerTransportClientAuth, createSellerTransportServerAuth } = await import('../../src/dacs/seller-transport-auth.mjs');
   const { createSellerWireClientAuth } = await import('../../src/dacs/seller-wire-client-auth.mjs');
   const { createSellerDurableState } = await import('../../src/dacs/seller-durable-state.mjs');
   const { createSignedCreateJournal, createPaymentEvidenceWalletJournal } = await import('../../src/dacs/payment-evidence-wallet-journal.mjs');
@@ -135,7 +134,6 @@ async function effectEntries() {
   await attempt('startSellerHost', () => startSellerHost({}));
   await attempt('createSellerAgent', () => createSellerAgent({}));
   await attempt('issue', () => ledger.issue());
-  await attempt('issueForOperator', () => ledger.issueForOperator());
   ledgerDb.close();
   const { createContextAdmissionTransaction } = await import('../../src/dacs/seller-admission-transaction.mjs');
   const { createSellerTransportStore: createAdmissionStore, sellerStoreInternals } = await import('../../src/dacs/seller-transport-auth.mjs');
@@ -152,8 +150,6 @@ async function effectEntries() {
   admissionStore.close();
   await attempt('createSellerHttpHandler', () => createSellerHttpHandler({}));
   await attempt('createSellerAgentClient', () => createSellerAgentClient({}));
-  await attempt('createSellerTransportServerAuth', () => createSellerTransportServerAuth({}));
-  await attempt('createSellerTransportClientAuth', () => createSellerTransportClientAuth({}));
   await attempt('createSellerWireClientAuth', () => createSellerWireClientAuth({}));
   await attempt('reserveAccounted', () => accounting.reserveAccounted({}));
   await attempt('reserveCoordinated', () => coordinator.reserveCoordinated({}));
@@ -168,6 +164,10 @@ async function effectEntries() {
     history: { read: async () => { effects.sends++; return []; }, append: async () => { effects.sends++; } }, clock: { now: () => 0, after: () => () => {} } });
   await attempt('effectBoundary', () => probeBoundary.pass({}, () => { effects.signs++; }, () => { effects.sends++; }));
   await attempt('storageWriteRpcSigner', () => storageWriteRpcSigner({ claim: 'writer', sign: signBytes }, 'writer')('message'));
+  const { createSellerNodeWallet } = await import('../../src/devnet-demo/seller-node-wallet.mjs');
+  await attempt('createSellerNodeWallet', () => createSellerNodeWallet({ dataDirectory: directory, keyRecord: new Uint8Array(1) }));
+  const { createSellerWalletSession } = await import('../../src/devnet-demo/seller-wallet-session.mjs');
+  await attempt('createSellerWalletSession', () => createSellerWalletSession({ loadKeyRecord: () => { effects.signs++; } }));
 
   const delivery = { authority: 'TEST-native', writer: seller.claim, publish: async () => { effects.sends++; }, read: async () => ({ status: 'absent' }), readRetained: async () => ({ status: 'absent' }), verifyReceipt: async () => 'valid' };
   await attempt('createDevnetDemoDeliveryCapability.submit', () => nativeDemDeliverySubmitsOf(createDevnetDemoDeliveryCapability({ authority: delivery.authority, anchor: delivery })).submit({}));
@@ -194,7 +194,7 @@ async function effectEntries() {
   refusedWithoutInput.anchor = await refusalOf(() => store.withJob(SECOND_JOB, () => store.anchor()));
   store.close?.();
 
-  const journalOptions = (name) => ({ path: join(directory, name), signCreate: async () => { effects.signs++; }, broadcast: async () => { effects.sends++; }, readAccountNonce: async () => { effects.sends++; }, readTransactionState: async () => { effects.sends++; } });
+  const journalOptions = (name) => ({ path: join(directory, name), signCreate: async () => { effects.signs++; }, broadcast: async () => { effects.sends++; }, readAccountNonce: async () => { effects.sends++; }, readTransactionState: async () => { effects.sends++; }, readNetworkInfo: async () => { effects.sends++; } });
   const evidence = createPaymentEvidenceWalletJournal(journalOptions('evidence.sqlite'));
   await attempt('anchorEvidence', () => evidence.anchorEvidence({}));
   await attempt('reconcilePaymentEvidence', () => evidence.reconcilePaymentEvidence({}));

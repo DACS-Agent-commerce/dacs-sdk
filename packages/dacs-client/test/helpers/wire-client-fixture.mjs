@@ -8,6 +8,7 @@ import * as wire from '@kynesyslabs/dacs/wire';
 import { installPurchaseAdmissionHook, loadAdmissionDouble } from './purchase-admission-hook.mjs';
 import { LOCAL } from '../fixtures/tp1-authority-reader.mjs';
 import { fixtureListing } from '../fixtures/listings.mjs';
+import { readOnlyBoundary } from './read-only-boundary.mjs';
 installPurchaseAdmissionHook();
 export const { setPurchaseAdmission } = await loadAdmissionDouble();
 const { openDatabase } = await import('./purchase-integrity-database.mjs');
@@ -24,7 +25,7 @@ export function party(seed) {
 }
 export const encode = (payload, signer, domain) => Buffer.from(canonicalize({ payload, signature: signer.sign(Buffer.from(domain + canonicalize(payload))).toString('base64url') })).toString('base64url');
 export const code = (expected) => (error) => error.code === expected;
-export const PUBLIC_ENDPOINT = 'https://127.0.0.1:19001';
+export const PUBLIC_ENDPOINT = 'https://seller.example.test';
 export const validReceipt =Object.assign(async () => 'valid', { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
 // pin, agreementHash, ready and readCommitmentReceipt (null: a proof without a receipt reader) let a test commit a real purchase.
 // publicEndpoint is the seller origin the discovery proof and the signed requests name.
@@ -75,12 +76,12 @@ export async function world(t, { pin: committedPin, agreementHash = sha256Hex('a
   return { buyer, seller, session, other, local, state, binding, admission, pin, endpointProof, publicEndpoint, payload, delegation, job, options, auth, createSellerWireAuthentication };
 }
 export const request = (w, path = wire.DACS_SELLER_HTTP_PATHS.state) => w.auth.request(path, { transportIdentity: { jobId: JOB } }, JSON.stringify({ transportIdentity: { jobId: JOB } }));
-export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing, configureTerms = () => {} } = {}) {
+export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000 }), declaration, protocolPatch = {}, status = 'agreement_pending', paid = false, signedListing, configureTerms = () => {}, sessionSignerFor = () => w.options.sessionSigner } = {}) {
   const { createSourceDemoSellerTransport } = await import('../../src/dacs/source-demo-seller-transport.mjs');
   const { createProtocolPurchases } = await import('../../src/index.mjs');
   let policies = 0;
   const transport = createSourceDemoSellerTransport({
-    authority: 'TEST-wire', sessionSignerFor: () => w.options.sessionSigner, sessionPolicyFor: (op) => {
+    authority: 'TEST-wire', sessionSignerFor, sessionPolicyFor: (op) => {
       policies++;
       return policy(op);
     }, endpointProofFor: () => w.endpointProof
@@ -106,7 +107,7 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
         return [];
       }, withWalletLock: (_key, work) => work()
     };
-    const sourceCapability = createDevnetSettlementTransport({
+    const sourceCapability = createDevnetSettlementTransport({ boundary: readOnlyBoundary,
       settlementPublication: { policy: DEVNET_SETTLEMENT_POLICY, artifactKind: 'SettlementEvidence', phase: 'pay-dem', railId: 'demos-native:DEM', phaseIndex: 2, authority: 'TEST-wire' },
       expected: {
         network: 'testnet', chainIdentity: w.binding.profile.chainIdentity, pinVersion: w.binding.profile.pinVersion, endpoint: w.local.endpoint, transportAuthority: w.local.transportAuthority

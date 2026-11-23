@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { api, agreementRequest, mnemonicBytes, setPurchaseAdmission, world } from './helpers/tp1-node-fixture.mjs';
+import { api, agreementRequest, finalization, mnemonicBytes, setPurchaseAdmission, world } from './helpers/tp1-node-fixture.mjs';
 import { inPass, sellerPublications as publications } from './helpers/effect-gate-world.mjs';
 import { confirmThroughFacade, listingCreate, retainAcceptedCreate, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
 import { createWorld } from './helpers/native-create-world.mjs';
@@ -13,7 +13,7 @@ import * as nativeTransport from '../src/wallet/devnet-native-transport.mjs';
 const trap = installNoEgress();
 test.after(() => trap.restore());
 const refused = error => error.code === 'profile_not_admitted';
-const ACTIVE = ['rpc', 'walletBinding', 'recoverStorageWrite', 'cancelNativeTransfer'];
+const ACTIVE = ['rpc', 'walletBinding', 'recoverStorageWrite', 'cancelNativeTransfer', 'withWalletNonceLock'];
 // Written independently of Object.keys or the implementation's wrapper configuration.
 const PASSIVE = ['pins', 'transportBinding', 'journal', 'settlementPublication', 'deliveryPublication', 'demoArtifactPublication',
   'readRpc', 'observeBinding', 'chainReader', 'nativeTransferClaimed', 'nativeTransferCancelled', 'nativeTransferRefused',
@@ -25,7 +25,7 @@ async function seller(t, options = {}) {
     sessionOptions: { approveConfirmedWrite: null, publications: publications(), ...options.sessionOptions } });
 }
 
-test('held, each active facade member (rpc, walletBinding, binding bind/signature/release, recoverStorageWrite, cancelNativeTransfer) rejects profile_not_admitted with node calls 0', async t => {
+test('held, each active facade member (rpc, walletBinding, binding bind/signature/release, recoverStorageWrite, cancelNativeTransfer, withWalletNonceLock) rejects profile_not_admitted with node calls 0', async t => {
   const w = await seller(t, { held: true }), facade = w.session.transport;
   for (const name of ACTIVE) {
     const pending = facade[name]({});
@@ -93,8 +93,8 @@ test("the facade's member inventory equals the separately documented complete in
 test('the node-wallet entry and every composition it returns expose no raw transport and no unwrapped effect method', async t => {
   const w = await seller(t, { held: true }), buyer = await world(t, { held: true });
   for (const name of Object.keys(api)) assert.doesNotMatch(name, /^(?:createDevnet|registerHeld)/);
-  assert.deepEqual(Object.keys(w.session).sort(), ['close', 'effectPass', 'internalCauseOf', 'observer', 'paymentEvidenceAdapter', 'runInEffectPass', 'transport', 'wallet', 'walletFactory']);
-  assert.deepEqual(Object.keys(buyer.session).sort(), ['close', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'wallet', 'walletFactory']);
+  assert.deepEqual(Object.keys(w.session).sort(), ['close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'observer', 'paymentEvidenceAdapter', 'runInEffectPass', 'transport', 'wallet', 'walletFactory', 'withheldReopen']);
+  assert.deepEqual(Object.keys(buyer.session).sort(), ['close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'transport', 'wallet', 'walletFactory', 'withheldReopen']);
   for (const composition of [w.session, buyer.session]) {
     for (const wallet of [composition.wallet, composition.walletFactory({ anchorJournal: w.journal() })]) {
       assert.deepEqual(Object.keys(wallet).sort(), ['actionsAdmitted', 'getPublicAccount', 'getWriteProfile', 'isLocked', 'lock', 'request']);
@@ -250,13 +250,13 @@ test('seller construction validates admission, runtime, publications and confirm
   const w = await seller(t);
   for (const value of [undefined, false, true, {}, 'TEST-policy']) {
     const key = mnemonicBytes();
-    await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), key, publications: publications(), approveConfirmedWrite: value }), /approveConfirmedWrite/);
+    await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), key, ...finalization, publications: publications(), approveConfirmedWrite: value }), /approveConfirmedWrite/);
     assert.ok(key.every(byte => byte === 0));
   }
   const stateOwnership = { directory: dirname(w.path), held: () => true };
   for (const extra of [{ admission: undefined }, { publications: {} }, { key: new Uint8Array([255]) }]) {
     const key = extra.key ?? mnemonicBytes();
-    await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), publications: publications(), approveConfirmedWrite: null, stateOwnership, paymentEvidenceApproval: recordingApproval(), ...extra, key }),
+    await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), ...finalization, publications: publications(), approveConfirmedWrite: null, stateOwnership, paymentEvidenceApproval: recordingApproval(), ...extra, key }),
       error => error.code !== 'state_ownership_required');
     assert.ok(key.every(byte => byte === 0));
   }
@@ -265,7 +265,7 @@ test('seller construction validates admission, runtime, publications and confirm
     for (const version of ['v22.12.0', 'v23.3.0']) {
       Object.defineProperty(process, 'version', { value: version, configurable: true });
       const key = mnemonicBytes();
-      await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), key, publications: publications(), approveConfirmedWrite: null }), { code: 'runtime_unsupported' });
+      await assert.rejects(api.createNodeSellerComposition({ admission: w.admission, owner: w.owner, journal: w.journal(), key, ...finalization, publications: publications(), approveConfirmedWrite: null }), { code: 'runtime_unsupported' });
       assert.ok(key.every(byte => byte === 0));
     }
   } finally { Object.defineProperty(process, 'version', original); }

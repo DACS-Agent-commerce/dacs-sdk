@@ -1,6 +1,7 @@
-// OFFLINE bridge to the frozen wallet's explicit storage-anchor kind. The
-// wallet owns approval, SDK signing, confirmation and its one fixture send.
-// This module owns the retained logical plan and independent native/block
+// Bridge to the Node wallet session's explicit storage-anchor kind. The
+// session owns approval, SDK signing, confirmation and dispatch, each through
+// its effect boundary, and its native transport runs recovery through the same
+// boundary. This module owns the retained logical plan and independent native/block
 // readback. Only an injected operator signer permits identical recovery of a
 // seller evidence CREATE; the user's wallet path remains readback-only.
 import {
@@ -18,6 +19,7 @@ import {
 import { addressForClaim, verifyDemosSignature } from '../signatures.mjs';
 import { storageWriteRpcSigner } from '../devnet-demo/storage-write-recovery.mjs';
 import { OPERATOR_CLOSING } from '../devnet-demo/operator-approval.mjs';
+import { createWalletLaneView, walletLane, walletLaneKey } from '../wallet/wallet-lane.mjs';
 import { createDemosSr2Adapter, demosSr2Contradiction, isDemosSr2Contradiction } from './demos-sr2-adapter.mjs';
 import { isDevnetAgreementTransport, isDevnetSettlementTransport, isDevnetDeliveryTransport, DEVNET_AGREEMENT_KIND, DEVNET_AGREEMENT_PROFILE, DEVNET_SETTLEMENT_KIND, DEVNET_DELIVERY_KIND, DEVNET_DELIVERY_POLICY } from '../wallet/devnet-native-transport.mjs';
 
@@ -117,21 +119,14 @@ export function createDemosSr2WalletBridge({ rpcUrl, network, journal, walletFac
   if (typeof walletFactory !== 'function') fail('wallet-required', 'an explicit packaged-wallet factory is required');
   if (typeof network !== 'string' || !/^[a-z0-9._-]{1,64}$/.test(network)) fail('invalid', 'an explicit fixture network label is required');
   const adapterPrefix = 'sr2/adapter/';
-  const walletPrefix = 'sr2/wallet/';
-  const lane = (address) => JSON.stringify([network, sourceCapability.pins.chainIdentity, address]);
-  const laneKey = (address) => walletPrefix + lane(address);
+  const lane = (address) => walletLane({ network, chainIdentity: sourceCapability.pins.chainIdentity, address });
+  const laneKey = (address) => walletLaneKey(lane(address));
   async function exactPut(key, record) {
     await journal.put(key, clone(record));
     const retained = await journal.get(key);
     if (!retained || canonicalize(retained) !== canonicalize(record)) fail('journal-error', 'the exact issued stage was not retained');
   }
-  const walletJournal = {
-    get: async (key) => clone(await journal.get(walletPrefix + key)),
-    // Node acceptance does not release the shared nonce lane. The unmodified
-    // wallet recognizes any stage other than broadcast-accepted as fenced.
-    put: async (key, record) => exactPut(walletPrefix + key, record.stage === 'broadcast-accepted' ? { ...record, stage: 'sr2-readback-pending' } : record),
-    withWalletLock: (key, work) => journal.withWalletLock(walletPrefix + key, work),
-  };
+  const walletJournal = createWalletLaneView({ journal });
   const adapterJournal = {
     get: async (id) => clone(await journal.get(adapterPrefix + id)),
     put: async (record) => exactPut(adapterPrefix + record.planId, record),

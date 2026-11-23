@@ -190,7 +190,7 @@ describe("hasDefinitiveDemosFailure", () => {
     expect(hasDefinitiveDemosFailure(failedResult())).toBe(false);
   });
 
-  // Type-level only. Session result validation is covered by runSession.test.ts.
+  // Type-level only.
   it("carries a failure proof in the public result type", () => {
     const result: SettleResult = {
       ok: false,

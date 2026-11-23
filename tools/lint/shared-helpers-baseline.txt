@@ -20,7 +20,6 @@ src/agent/ratingPhase.ts exactKeys
 src/agent/runDurableFulfilmentCore.ts hasExactKeys
 src/agent/runDurableFulfilmentCore.ts isRecord
 src/agent/runFulfilmentCore.ts isRecord
-src/agent/runSessionCore.ts hasExactKeys
 src/agent/sessionSettlement.ts exactKeys
 src/agent/sessionSettlement.ts isRecord
 src/agent/settlementIdentity.ts exactKeys
@@ -32,7 +31,6 @@ src/agent/terminalBundleFinalization.ts isRecord
 src/agent/verifyBundleCore.ts isRecord
 src/agent/vetCore.ts hasExactKeys
 src/agent/vetCore.ts isRecord
-src/artifacts/legacyMvp.ts isRecord
 src/artifacts/signatures.ts isRecord
 src/commerce/fixedPriceOfflineProtocol.ts exactKeys
 src/commerce/fixedPriceOfflineProtocol.ts nonEmpty

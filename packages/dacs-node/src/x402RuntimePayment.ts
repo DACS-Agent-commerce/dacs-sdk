@@ -10,7 +10,7 @@ import {
   type X402BuyerEvmUnusedConfirmer,
   type X402BuyerPaymentRequirements,
   type X402BuyerPreparationAuthority,
-  type X402BuyerSettlementIntent,
+  type X402BuyerUnsignedIntentScope,
   type WalletSpendAuthorityV1,
 } from "@kynesyslabs/dacs";
 
@@ -50,7 +50,7 @@ export interface DacsX402BuyerRuntimePaymentTrackOptionsV1 {
   authorizePreparedIntent(input: Readonly<{
     operation: Readonly<FixedPriceX402TrackOperationInput>;
     retained: Readonly<DacsLiveOrderInputV1>;
-    intent: Readonly<X402BuyerSettlementIntent>;
+    intent: Readonly<X402BuyerUnsignedIntentScope>;
   }>): Promise<boolean> | boolean;
   walletSpendAuthority: Readonly<WalletSpendAuthorityV1>;
   confirmUnused?: X402BuyerEvmUnusedConfirmer;
@@ -257,7 +257,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
     transport,
     walletSpendAuthority: options.walletSpendAuthority,
     finalityBlocks: options.minimumConfirmations,
-    async prepareIntent(operation) {
+    async prepareIntent(operation, bindAuthorization) {
       const retained = loadDacsLiveOrderInputForTrackV1(operation, context.database);
       let preparation: Readonly<DacsX402BuyerRuntimePreparationV1>;
       try {
@@ -297,6 +297,7 @@ export function createDacsX402BuyerRuntimePaymentTrackV1(
         );
       }
       const result = await prepareX402BuyerSettlement({
+        bindAuthorization,
         authority: preparation.authority,
         ...(preparation.challengeHeaders === undefined
           ? {} : { challengeHeaders: preparation.challengeHeaders }),

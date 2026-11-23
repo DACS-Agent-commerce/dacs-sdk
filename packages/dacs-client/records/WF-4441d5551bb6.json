@@ -1,0 +1,32 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged network binder, native transport, broadcast-once test and lock-order test",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+      "before": "c9ef3239d5de4ca186c2fb6e18cad3deb68fe456",
+      "after": "c9ef3239d5de4ca186c2fb6e18cad3deb68fe456"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "5c69615f0b7efb50ae1eb346ad24c25eb4ff4e64",
+      "after": "5c69615f0b7efb50ae1eb346ad24c25eb4ff4e64"
+    },
+    {
+      "path": "packages/dacs-client/test/native-broadcast-once.test.mjs",
+      "before": "30b2d355a63babe81d810865028578e3395d9944",
+      "after": "30b2d355a63babe81d810865028578e3395d9944"
+    },
+    {
+      "path": "packages/dacs-client/test/native-lock-order.test.mjs",
+      "before": "508d65b4011876c849b9fde7589e77d92d1fbac3",
+      "after": "508d65b4011876c849b9fde7589e77d92d1fbac3"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-4441d5551bb6.json"
+  ],
+  "note": "Both sides of the merge recorded these files; this record chooses the merged copies. The native transport keeps the base's rewritten code with the monotonic clock re-applied to its durations and waits; the two tests keep the base's tests and add the clock injection. The network binder keeps the base's code with the monotonic deadline comment. No anchored file changed on this side of the merge, so the anchor stays where the base put it."
+}

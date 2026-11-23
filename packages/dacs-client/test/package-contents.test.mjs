@@ -32,7 +32,7 @@ test('npm pack ships the four entry points, their reviewed import closure and th
   for (const path of ['src/dacs/seller-agent-error.mjs', 'src/dacs/seller-transport-auth.mjs', 'src/dacs/seller-session-limits.mjs']) {
     assert.ok(!files.includes(path), `${path} stays outside the buyer closure`);
   }
-  for (const path of ['src/dacs/purchase-admission-state.mjs', 'src/public-admission.mjs']) assert.ok(files.includes(path), `${path} ships`);
+  for (const path of ['src/dacs/purchase-admission-state.mjs', 'src/public-admission.mjs', 'src/host-stop.mjs']) assert.ok(files.includes(path), `${path} ships`);
 });
 
 test('the packed archive offers no admission bypass and every packed module sees PURCHASE_ADMISSION held', t => {
@@ -298,4 +298,39 @@ test("no test double or authority fixture is in the client's files or exports", 
     assert.equal(typeof createEffectBoundary, 'function');
   `);
   run(process.execPath, ['eb-contents.mjs'], app);
+});
+
+test('packed and installed outside the checkout, the client ships authority-reader.mjs and every runtime file it imports, no authority or enrollment fixture, and its installed reader runs against a bounded offline transport', t => {
+  const { app, run } = installPackedPair(t);
+  writeFileSync(join(app, 'authority-contents.mjs'), `
+    import assert from 'node:assert/strict';
+    import { existsSync, readdirSync, readFileSync } from 'node:fs';
+    import { dirname, join, relative, resolve } from 'node:path';
+    import { fileURLToPath } from 'node:url';
+    import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD as record } from '@kynesyslabs/dacs/wire';
+    import { createAuthorityReader } from '@kynesyslabs/dacs-client';
+    const root = fileURLToPath(new URL('./node_modules/@kynesyslabs/dacs-client/', import.meta.url));
+    for (const file of readdirSync(root, { recursive: true })) assert.doesNotMatch(file, /fixture|double|test\\//);
+    const seen = new Set();
+    const visit = path => {
+      if (seen.has(path)) return;
+      seen.add(path);
+      assert.ok(existsSync(join(root, path)), path + ' ships');
+      for (const [, specifier] of readFileSync(join(root, path), 'utf8').matchAll(/\\b(?:from|import)\\s*['"](\\.[^'"]+)['"]/g)) visit(relative(root, resolve(root, dirname(path), specifier)));
+    };
+    visit('src/wallet/authority-reader.mjs');
+    assert.ok(seen.has('src/wallet/authority-reader.mjs'));
+    const claim = 'did:demos:agent:' + '4'.repeat(64);
+    const context = { network: record.network, endpoint: 'https://rpc.example.invalid/', transportAuthority: 'TEST-offline-authority', connectionId: 'TEST-offline-connection' };
+    const requests = [];
+    const authority = { context: () => context, connectionGeneration: () => 'TEST-generation',
+      authorityRpc: async body => { requests.push(body.params[0].message); return { result: 200, response: { number: 0, status: 'confirmed', hash: record.chainIdentity, content: {} }, require_reply: false, extra: null }; } };
+    const readAuthority = createAuthorityReader({ authority, identityRecord: record, claim: () => claim, listings: { isRegistered: () => false },
+      purchases: { findByJobId: () => null }, participantImplementations: { entriesFor: () => [] } });
+    const { endpoint, transportAuthority, connectionId } = context;
+    const binding = await bindTp1Profile({ record, local: { endpoint, transportAuthority, connectionId }, readAuthority });
+    assert.equal(binding.profile.chainIdentity, record.chainIdentity);
+    assert.deepEqual([...new Set(requests)], ['getBlockByNumber']);
+  `);
+  run(process.execPath, ['authority-contents.mjs'], app);
 });
