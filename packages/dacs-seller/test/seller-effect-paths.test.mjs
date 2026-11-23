@@ -379,6 +379,70 @@ test('a co-signature answer sent outside the agent\'s job lock (a repeated propo
   assert.equal((await laneStates(w.f.effectsDirectory, w.jobId)).at(-1), 'dispatch-acknowledged');
 });
 
+// Wraps the world's handler: `at.states` collects the job's last boundary record at each write of an answer, and `at.response` is the
+// response being answered.
+const watchResponses = (w) => {
+  const at = { states: [], response: null };
+  const handler = w.handle.handler;
+  w.handle.handler = (req, res) => {
+    at.response = res;
+    const end = res.end;
+    res.end = function (text) { at.states.push(lastLaneState(w.f.effectsDirectory, w.jobId)); return end.call(this, text); };
+    return handler(req, res);
+  };
+  return at;
+};
+
+test('a first proposal answer and a recovered one are written inside their answer pass, while the dispatch is recorded as started and before it is acknowledged', async (t) => {
+  const first = await proposalWireWorld(t);
+  const atFirst = watchResponses(first);
+  assert.deepEqual([(await first.post()).status], [200]);
+  assert.deepEqual(atFirst.states, ['dispatch-started'], 'the first answer went out while its pass held the dispatch open');
+  assert.equal((await laneStates(first.f.effectsDirectory, first.jobId)).at(-1), 'dispatch-acknowledged');
+
+  const recovered = await proposalWireWorld(t);
+  changeBeforeAnswerWritten(recovered, (w) => { w.f.stop.requested = true; });
+  assert.equal((await recovered.post()).body.error, 'seller_stopped');
+  recovered.f.stop.requested = false;
+  pastLease(recovered);
+  const atRecovered = watchResponses(recovered);
+  const answered = await recovered.post();
+  assert.deepEqual([answered.status, typeof answered.body.contribution?.signature?.value], [200, 'string']);
+  assert.deepEqual(atRecovered.states, ['dispatch-started'], 'the recovered answer went out while its pass held the dispatch open');
+  assert.equal(recovered.agreementSignatures(), 1, 'nothing new was signed');
+});
+
+test('an answer carrying the co-signature whose response is already closed is never acknowledged: a first proposal, a cached repeat and a state read are refused inside their pass and the next request is answered', async (t) => {
+  const answeredLater = async (w, request) => {
+    assert.equal((await laneStates(w.f.effectsDirectory, w.jobId)).includes('dispatch-acknowledged'), false, 'a closed response is never acknowledged as sent');
+    pastLease(w);
+    const answered = await request();
+    assert.deepEqual([answered.status, typeof answered.body.contribution?.signature?.value], [200, 'string']);
+    assert.equal(w.agreementSignatures(), 1, 'nothing new was signed');
+  };
+
+  const first = await proposalWireWorld(t);
+  const atFirst = watchResponses(first);
+  changeBeforeAnswerWritten(first, () => { atFirst.response.destroyed = true; });
+  await first.post().catch(() => {});
+  assert.deepEqual(atFirst.states, [], 'nothing was written to the closed response');
+  await answeredLater(first, () => first.post());
+
+  for (const [label, request] of [['a cached repeat', (w) => w.post()], ['a state read', readState]]) {
+    const w = await proposalWireWorld(t);
+    assert.equal((await w.post()).status, 200);
+    const recorded = (await laneStates(w.f.effectsDirectory, w.jobId)).length;
+    const state = w.agent.agreementState;
+    const at = watchResponses(w);
+    w.agent.agreementState = (...args) => { const answer = state(...args); at.response.destroyed = true; return answer; };
+    await request(w).catch(() => {});
+    w.agent.agreementState = state;
+    assert.deepEqual(at.states, [], `${label}: nothing was written to the closed response`);
+    assert.equal((await laneStates(w.f.effectsDirectory, w.jobId)).slice(recorded).includes('dispatch-acknowledged'), false, `${label}: a closed response is never acknowledged as sent`);
+    assert.equal(w.agreementSignatures(), 1, label);
+  }
+});
+
 for (const [label, change, refusal] of [
   ...['aborted-by-other', 'finalised', 'aborted-by-self'].map((terminal) => [`the context session ending as ${terminal}`, (w) => { w.state.session = terminal; }, 'context_session_terminal']),
   ['the transport reservation lapsing to a new owner', pastLease, 'peer_reconciliation_conflict'],
@@ -406,7 +470,7 @@ for (const [label, change, refusal] of [
     const withheld = await after.post();
     assert.deepEqual([withheld.body.error, withheld.body.contribution], [refusal, undefined], 'the answer is withheld');
     assert.equal(after.agreementSignatures(), 1);
-    assert.deepEqual((await laneStates(after.f.effectsDirectory, after.jobId)).slice(0, 2), ['signed', 'dispatch-started'], 'the retained signature stays evidence only');
+    assert.deepEqual(await laneStates(after.f.effectsDirectory, after.jobId), ['signed'], 'the retained signature stays evidence only, never dispatched');
 
     const control = await proposalWireWorld(t);
     const answered = await control.post();

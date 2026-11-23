@@ -41,7 +41,8 @@ else: each Agreement co-signature, commitment, evidence and audit-source
 signature of the seller agent is made inside one pass of the host's effect
 boundary, with the key's effect role. Every answer that carries the Agreement
 co-signature (the first one, a repeat served from the cache and a state read)
-is sent only through a dispatch pass of that boundary.
+is written to the response inside a dispatch pass of that boundary, after the
+pass's checks and before its acknowledgement is recorded.
 
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
