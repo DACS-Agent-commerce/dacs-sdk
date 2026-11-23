@@ -153,7 +153,8 @@ export function replacementAnswerProblem(operation,protocol){
 }
 
 const ENDED=new Set(['expired','terms_changed','superseded','agreement_rejected','payment_failed','payment_mismatch']);
-const PAYMENT_OPEN=new Set(['payment_handoff','broadcast_reported','payment_uncertain']);
+// Statuses whose transfer may already have been sent but is not verified: the payment outcome is unresolved.
+export const PAYMENT_OPEN=new Set(['payment_handoff','broadcast_reported','payment_uncertain']);
 export function sellerSessionEnd(operation,payload,time){
   const changed=Date.parse(operation.updatedAt),status=operation.status;
   if(!Number.isFinite(changed))return{since:null,reason:'purchase has no readable last-change time'};

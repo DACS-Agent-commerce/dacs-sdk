@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
+import { bindHostStop, createHostStop, isHostStopRefusal } from '../host-stop.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
 import { deliveryDeadlineView, DELIVERY_TIME_SOURCE, verifiedDelivery } from './delivery-deadline-watch.mjs';
@@ -27,7 +28,8 @@ import { isDevnetAgreementTransport, DEVNET_AGREEMENT_KIND } from '../wallet/dev
 import { NotWiredError, OperationError } from '../client-errors.mjs';
 import { verifyDemosSignature, claimForAddress, decodeSignature } from '../signatures.mjs';
 import { attachIdentityPresentation, buildUnsignedIdentityBundle, verifyComponent } from './listing.mjs';
-import { createSellerAgentClient, sellerEndpointOrigin, SELLER_REQUEST_POLICY, SellerRefusedError, SellerTlsUnusableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
+import { createSellerHttpsClient, sellerEndpointOrigin, SELLER_REQUEST_POLICY, SellerRefusedError, SellerTlsUnusableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
+import { createSellerHttpsConnector } from './seller-https-connector.mjs';
 import { createDemosSr2WalletBridge, SR2_WALLET_KIND } from './demos-sr2-wallet-bridge.mjs';
 import { DemosSr2Error } from './demos-sr2-adapter.mjs';
 import {
@@ -57,7 +59,7 @@ import { SELLER_ANSWER_CLASS } from './seller-response-class.mjs';
 import { createSellerWireAuthentication } from './seller-wire-authentication.mjs';
 import { anchoredTupleMembers, createContinuationEvidence, keepCommitmentTuple, matchesCommitmentSummary } from './continuation-evidence.mjs';
 import { readDemDeliveryReady } from './dem-delivery-consumer.mjs';
-import { CHAIN_POINTER_ASK_LIMIT, CHAIN_READBACK_OPERATOR_ACTION, chainPointerAskDue, deliveryPointerDiffers, missingChainPointers, replacementAnswerProblem } from './seller-session-lifecycle.mjs';
+import { CHAIN_POINTER_ASK_LIMIT, CHAIN_READBACK_OPERATOR_ACTION, chainPointerAskDue, deliveryPointerDiffers, missingChainPointers, PAYMENT_OPEN, replacementAnswerProblem } from './seller-session-lifecycle.mjs';
 import { NATIVE_DEM_DELIVERY_SOURCE, nativeDemDeliveryConfig } from './native-dem-delivery-consumer.mjs';
 import { DEVNET_NATIVE_COMMITMENT_MARKER, devnetNativeCommitmentConfig } from '../devnet-demo/commitment-consumer.mjs';
 import { BuyerChainReadbackUnsupported, createBuyerChainReadback, POINTER_MISSING, signedCreateBytes, signedCreateFor } from './buyer-chain-readback.mjs';
@@ -334,10 +336,12 @@ function storedRequestBody(record, path) {
  * `finish('suspended', cause)` records the suspension with the outcome in one write). Throws StaleProtocolCheck when
  * the row moved on, stored_request_mismatch when the body differs from the stored one, stored_request_corrupt when the
  * stored bytes fail their hash, and invalid_state when the purchase is ended, expired or suspended. A profile_not_admitted
- * refusal with queued work also records a suspension (K8). `suspendQueued(cause)` records one for a caller that saw the re-hold, `resume(id)` clears it.
+ * refusal, or a host stop refusal (writes_stopped, stop_check_failed, stop_check_invalid, stop_check_timeout), with queued work also records a suspension (K8).
+ * `hostStop` is the factory's stop gate: `start` and the pre-send `check()` read it after the hold, and `assertNotStopped(path)` reads it for the wire signer.
+ * `suspendQueued(cause)` records one for a caller that saw the re-hold, `resume(id)` clears it.
  * `failure(error)` records a swallowed failure for the operator, retaining its bounded class and cause.
  */
-export function createSellerRequestRecords({ db, ops, transaction, holder, now }) {
+export function createSellerRequestRecords({ db, ops, transaction, holder, now, hostStop = createHostStop() }) {
   // The stored row; changes made only by request records or kept pointers are adopted, any other change is stale.
   function reload() {
     const seen = holder.get(), stored = ops.get(seen.accountId, seen.id);
@@ -346,6 +350,7 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
   }
   function assertAuthorizes(row, path) {
     assertPurchaseActionsAdmitted();
+    hostStop.assert();
     const settled = row.status === 'settled_verified';
     if ((ENDED_STATUSES.has(row.status) && !settled) || (['agreement_pending', 'awaiting_approval'].includes(row.status) && !(Date.parse(row.expiresAt) > now()))
       || (row.state.protocol.sellerSuspension && SELLER_REQUEST_POLICY[path]?.durable)) throw new OperationError('invalid_state', 'the purchase no longer authorizes this seller request');
@@ -376,10 +381,13 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
     });
     if (sameProgress(holder.get(), saved)) holder.set(saved);
   }
-  // An observed re-hold suspends queued work. The refusal keeps its own cause, and a failed suspension write does not replace it.
+  // An observed re-hold or host stop suspends queued work. The refusal keeps its own cause; a failed suspension write
+  // is kept as `error.details.suspensionWriteError`.
   function suspendOnHold(path, work) {
     try { return work(); } catch (error) {
-      if (error?.code === 'profile_not_admitted') { try { recordSuspension(error.code, path, { queuedOnly: true }); } catch (cause) { error.cause ??= cause; } }
+      if (error?.code === 'profile_not_admitted' || isHostStopRefusal(error)) {
+        try { recordSuspension(error.code, path, { queuedOnly: true }); } catch (cause) { error.details = { ...error.details, suspensionWriteError: cause }; }
+      }
       throw error;
     }
   }
@@ -414,6 +422,8 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now }
     },
     /** Records a re-hold's suspension on the latest row, only when the purchase has queued work; throws StaleProtocolCheck when the row is gone. */
     suspendQueued: (cause) => recordSuspension(cause, null, { queuedOnly: true }),
+    /** Reads the host stop for the wire signer and records a suspension when it refuses; throws the stop's OperationError. */
+    assertNotStopped: (path) => suspendOnHold(path, () => hostStop.assert()),
     start(path, body) {
       const result = suspendOnHold(path, () => transaction(db, () => {
         const row = reload();
@@ -448,7 +458,11 @@ const EFFECT_ROUTE_PATHS = new Set(DACS_SELLER_HTTP_ROUTES.filter(route => route
 // D11: `store` is the host's PurchaseStore; `buyerAccess` is the host's
 // already-resolved operator capability (null when it has none, so the paths
 // that need one refuse with buyer_access_closed).
-export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission }) {
+// `stopped` is the host's synchronous stop check (host-stop.mjs): every place that reads the hold also reads it, so
+// while it answers stopped no request is signed with the session key and none is sent.
+export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, stopped }) {
+  const hostStop = createHostStop(stopped);
+  const assertPurchaseOpen = () => { assertPurchaseActionsAdmitted(); hostStop.assert(); };
   const { transaction } = purchaseStore(store);
   if (deliveryDeadlineWatch !== null) throw new TypeError('deliveryDeadlineWatch is not wired; invoke the separate watch.observe method explicitly');
   if (dacsProtocol?.buyerAccess !== undefined) throw new TypeError('buyerAccess moved to the top-level createProtocolPurchases option');
@@ -464,6 +478,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     }
   };
   const walletConfig = dacsProtocol?.walletAgreement;
+  const sellerConnector = createSellerHttpsConnector();
   const sellerRequestTimeoutMs = dacsProtocol?.sellerRequestTimeoutMs ?? AUTHENTICATED_SELLER_TIMEOUT_MS;
   if (!Number.isSafeInteger(sellerRequestTimeoutMs) || sellerRequestTimeoutMs < 1000 || sellerRequestTimeoutMs > 300000) throw new TypeError('sellerRequestTimeoutMs must be an integer from 1000 through 300000');
   const planWaitMs = dacsProtocol?.planWaitMs ?? PLAN_WAIT_MS;
@@ -526,22 +541,21 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // holder: the calling flow's `{get(), set(next)}` over its own `current`, so the request records advance the flow's row.
   function sellerFor(holder) {
     const operation = holder.get();
-    const declared = assertSellerDeclaration(operation);
+    // Seller requests are authenticated only through the declared seller transport; without one nothing can be sent.
+    if (!assertSellerDeclaration(operation)) throw new OperationError('seller_agent_unavailable', 'this purchase declares no seller transport to authenticate seller requests; nothing was sent to the seller');
     const url = dacsProtocol.sellerEndpoint(operation.terms.seller.claim);
     if (!url) throw new OperationError('seller_agent_unavailable', 'no seller agent endpoint is known for this seller; nothing was signed or paid');
-    let authentication;
-    if (declared) {
-      const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
-      if (!agreement) throw new OperationError('seller_plan_required', 'a retained Agreement plan is required');
-      const sessionSigner = sellerTransport.sessionSignerFor(operation);
-      assertDelegationNamesKey(p.sessionDelegation, sessionSigner);
-      authentication = createSellerWireAuthentication({ admission, sessionSigner, delegation: p.sessionDelegation,
-        seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
-        job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
-          deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
-    }
-    const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now });
-    const client = createSellerAgentClient({ url, fetchImpl, commitOnSignature, requestRecords, ...(declared ? { authentication, timeoutMs: sellerRequestTimeoutMs, explicitResume: explicitResumeTaker() } : {}) });
+    const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now, hostStop });
+    const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
+    if (!agreement) throw new OperationError('seller_plan_required', 'a retained Agreement plan is required');
+    const sessionSigner = sellerTransport.sessionSignerFor(operation);
+    assertDelegationNamesKey(p.sessionDelegation, sessionSigner);
+    const authentication = createSellerWireAuthentication({ admission, sessionSigner, delegation: p.sessionDelegation,
+      seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
+      assertNotStopped: requestRecords.assertNotStopped,
+      job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
+        deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
+    const client = createSellerHttpsClient({ publicEndpoint: url, connector: sellerConnector, commitOnSignature, requestRecords, authentication, timeoutMs: sellerRequestTimeoutMs, explicitResume: explicitResumeTaker() });
     if (client.origin !== operation.terms.protocol.sellerAgent) throw new OperationError('seller_agent_changed', 'the seller agent endpoint changed since this purchase was prepared; nothing was signed or paid');
     return client;
   }
@@ -568,7 +582,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   function prepareTerms({ verification, domain, sellerClaim, mode = OFFLINE_AGREEMENT_MODE }) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     if (!supportsMode(mode)) throw unavailable();
     if(sourceCapability && (mode!==OFFLINE_AGREEMENT_MODE || domain.mode!=='public-chain-read' || domain.network!==sourceCapability.pins.network || domain.chainIdentity!==sourceCapability.pins.chainIdentity)) throw new OperationError('network_identity_mismatch','the separate source capability admits only newly bound native Agreement terms');
     if (!sourceCapability || domain.mode !== 'public-chain-read' || domain.chainIdentity !== sourceCapability.pins.chainIdentity || domain.network !== sourceCapability.pins.network) throw new OperationError('network_identity_mismatch', 'native purchase requires its source-bound chain domain');
@@ -578,10 +592,12 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (!url) throw new OperationError('seller_agent_unavailable', 'no seller agent endpoint is known for this seller; nothing was prepared');
     if (mode === OFFLINE_AGREEMENT_MODE && domain.network !== walletConfig.network) throw new OperationError('network_identity_mismatch', 'the injected wallet bridge is not bound to the prepared fixture network');
     if (!nativeSellerCommitment) throw new OperationError('seller_commitment_unavailable', 'native seller commitment capability required');
-    // The declared seller transport below is what makes later calls authenticated, which is what allows a public https endpoint.
-    const authenticated = Boolean(mode === OFFLINE_AGREEMENT_MODE && nativePayment && nativeEvidence && sellerTransport);
+    // A seller endpoint is always a public https origin, and the seller client sends only with the wire authentication
+    // that the declared seller transport below provides. The terms declare one only with native payment and its evidence;
+    // terms without one would fail at their first Agreement submit, after the buyer signed, so they are refused here.
+    if (!(nativePayment && nativeEvidence && sellerTransport)) throw new OperationError('seller_agent_unavailable', 'the seller agent endpoint needs a declared seller transport to authenticate requests; nothing was prepared');
     return {
-      terms: { wireProfile: admission.binding.profile, profile: OFFLINE_AGREEMENT_PROFILE, orchestration: ORCHESTRATION, sellerAgent: sellerEndpointOrigin(url, authenticated), substrate: 'source-pinned-native-fixed-price-demo; finality-held',
+      terms: { wireProfile: admission.binding.profile, profile: OFFLINE_AGREEMENT_PROFILE, orchestration: ORCHESTRATION, sellerAgent: sellerEndpointOrigin(url), substrate: 'source-pinned-native-fixed-price-demo; finality-held',
         ...(mode === OFFLINE_AGREEMENT_MODE && sourceCapability ? {transportBinding:sourceCapability.transportBinding} : {}),
         ...(mode === OFFLINE_AGREEMENT_MODE && (agreementContext || demDeliveryContext) ? { agreementContext: demDeliveryContext ? DEM_DELIVERY_CONTEXT_SOURCE : AGREEMENT_CONTEXT_SOURCE } : {}),
         ...(mode === OFFLINE_AGREEMENT_MODE && nativeDemDelivery ? {nativeDelivery:NATIVE_DEM_DELIVERY_SOURCE}:{}),
@@ -713,17 +729,22 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // The wire reads its authority with no deadline of its own: stop waiting for a read after the seller request timeout.
   const withinSellerDeadline = (pending) => settleOnAbort(pending, AbortSignal.timeout(sellerRequestTimeoutMs))
     .catch((error) => { throw error?.name === 'TimeoutError' ? new OperationError('seller_authority_timeout', 'the wire authority read did not finish in time; nothing was signed or sent', undefined, { cause: error }) : error; });
-  function requireDelegationMargin(operation, step) {
+  // paymentOpen: a transfer for this purchase may already have been sent and is not verified, so the refusal must not invite a second payment.
+  function requireDelegationMargin(operation, step, { paymentOpen = false } = {}) {
     if (!operation.terms.protocol?.sellerTransport?.delegation) return;
     const expiresAt = operation.state.protocol?.sessionDelegation?.payload?.expiresAt;
     if (Number.isSafeInteger(expiresAt) && expiresAt - now() >= SELLER_DELEGATION_SAFETY_MARGIN_MS) return;
     const when = Number.isSafeInteger(expiresAt) ? new Date(expiresAt).toISOString() : 'unknown';
-    throw new OperationError('seller_delegation_expiring', `the seller session delegation expires at ${when}, less than ${SELLER_DELEGATION_SAFETY_MARGIN_MS / 60000} minutes from now, so ${step} would need a seller write it may not finish; nothing was signed or sent. Prepare a new purchase.`);
+    const why = `the seller session delegation expires at ${when}, less than ${SELLER_DELEGATION_SAFETY_MARGIN_MS / 60000} minutes from now, so ${step} would need a seller write it may not finish; nothing was signed or sent.`;
+    if (paymentOpen) throw new OperationError('seller_delegation_expiring_payment_unresolved', `${why} A payment for this purchase may already have been sent and is not verified yet (status ${operation.status}): do not pay again and do not prepare a new purchase. Verify or recover the payment first (verify_deal, given the transaction hash from your wallet history if none was reported); once it is verified, the purchase can renew its seller session until the delegation expires.`);
+    throw new OperationError('seller_delegation_expiring', `${why} Prepare a new purchase.`);
   }
+  // A paid purchase whose seller session delegation has expired: the seller takes no renewed key under it, and the buyer must not pay again.
+  const paidDelegationExpired = (expiresAt, options) => new OperationError('seller_delegation_expired', `the seller session delegation of this paid purchase has expired (its expiry is ${Number.isSafeInteger(expiresAt) ? new Date(expiresAt).toISOString() : 'unknown'}), so the seller will not take a renewed key under it; nothing was signed or sent. Do not pay again; keep the transaction hash.`, undefined, options);
 
   // ---- DACS-1 identity presentation (wallet signature) ----
   async function identityRequest(operation, address) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     try {
       return await identityRequestOnce(operation, address);
@@ -770,7 +791,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   async function delegationWalletMessage(payload) {
     const local = admission.currentLocal(), localDigest = canonicalize(local);
     const bytes = await withinSellerDeadline(sellerSessionDelegationSigningBytes(payload, admission.binding, local));
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     if (canonicalize(admission.currentLocal()) !== localDigest) throw new OperationError('tp1_local_binding_changed', 'the actor connection changed before the wallet message');
     return Buffer.from(bytes).toString('utf8');
   }
@@ -781,6 +802,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // and `notBefore` change, so approving restores the authority approved before and never a longer or wider one. Nothing is signed or sent here.
   async function sessionRenewal(operation) {
     assertPurchaseActionsAdmitted();
+    hostStop.assert();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     try {
       return await sessionRenewalOnce(operation);
@@ -794,7 +816,11 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     const p = operation.state.protocol, retained = p.sessionDelegation;
     if (!operation.terms.protocol.sellerTransport?.delegation || !retained) throw new OperationError('invalid_state', 'this purchase has no retained seller session delegation to renew');
     if (p.sellerSessionFinalAt !== undefined) throw new OperationError('seller_session_ended', 'the seller session of this purchase has ended; there is nothing to renew');
-    requireDelegationMargin(operation, 'a session renewal');
+    // A paid purchase (settled_verified) renews until the delegation itself expires: the renewal is how the seller hears of the payment after a
+    // restart, and the seller still takes a request under a delegation that has not expired. Every other purchase keeps the safety margin; one
+    // whose transfer may already have been sent (PAYMENT_OPEN) is told to verify that payment, never to pay again or prepare a new purchase.
+    if (operation.status !== 'settled_verified') requireDelegationMargin(operation, 'a session renewal', { paymentOpen: PAYMENT_OPEN.has(operation.status) });
+    else if (!Number.isSafeInteger(retained.payload?.expiresAt) || retained.payload.expiresAt <= now()) throw paidDelegationExpired(retained.payload?.expiresAt);
     let signer;
     try { signer = sellerTransport.sessionSignerFor(operation); }
     catch (error) { throw isSessionGone(error) ? new OperationError('session_not_started', 'no seller session key was started in this process; start one before asking for a renewal', undefined, { cause: error }) : error; }
@@ -812,6 +838,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // The buyer's signature over the pending payload is verified against the purchase's own scope before it is saved; nothing else grants a renewed key.
   async function sessionRenewalAccept(operation, delegationSignature) {
     assertPurchaseActionsAdmitted();
+    hostStop.assert();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     try {
       return await sessionRenewalAcceptOnce(operation, delegationSignature);
@@ -829,7 +856,12 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     try { signature = decodeSignature(delegationSignature).toString('base64url'); }
     catch (cause) { throw new OperationError('bad_signature', 'the wallet delegation signature encoding is invalid', undefined, { cause }); }
     const delegation = { payload: pending.payload, signature }, agreement = p.agreement?.artifact ?? p.planned?.draft;
-    await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { ...delegationScope(operation), ...(agreement ? { deadline: agreement.terms.deadline } : {}) }));
+    try { await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), { ...delegationScope(operation), ...(agreement ? { deadline: agreement.terms.deadline } : {}) })); }
+    catch (error) {
+      // The delegation of a paid purchase expired after its renewal was prepared: the same refusal sessionRenewal gives, and nothing is saved.
+      if (operation.status === 'settled_verified' && error?.code === 'peer_delegation_expired' && !(pending.payload.expiresAt > now())) throw paidDelegationExpired(pending.payload.expiresAt, { cause: error });
+      throw error;
+    }
     const next = save(operation, { sessionDelegation: delegation, pendingSessionDelegation: undefined },
       { event: 'protocol_seller_session_renewed', data: { previousSessionPublicKey: p.sessionDelegation.payload.sessionPublicKey, sessionPublicKey: pending.payload.sessionPublicKey } });
     return { operation: next };
@@ -875,7 +907,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // them like its admitted requests. Each settles when its step ends.
   const planFlightsRunning = () => [...planFlights.values()].map((running) => running.flight);
   async function planRequest(operation, presentationSignature, delegationSignature, intentGeneratedAt) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertSellerDeclaration(operation);
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
@@ -1011,7 +1043,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   }
 
   function signRequest(operation) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertSellerDeclaration(operation);
     const p = operation.state.protocol;
@@ -1036,7 +1068,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
 
   // ---- DACS-3 exchange, anchor, commitment readback ----
   async function submitAgreement(operation, { agreementSignature, anchorSignature } = {}) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertSellerDeclaration(operation);
     if (isOfflineWalletAgreement(operation)) {
@@ -1215,7 +1247,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // purchase readback cache on, its Agreement hit re-reads the current program
   // state only, reusing this purchase's authenticated transaction/block proof.
   async function recheckCommitment(operation, { reuseVerified = false } = {}) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertAgreementPaymentHeld(operation);
     if (!available) throw unavailable();
@@ -1466,7 +1498,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     return explicitResumeScope.run(resume, () => recheckOnce(operation, coords, options, resume));
   }
   async function recheckOnce(operation, coords, { resumeSuspensionId } = {}, resume = null) {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     try{assertBuyerAccess(operation.terms.buyer.wallet, operation);}
     catch(error){
       if(error.code==='buyer_access_closed'&&!error.details?.buyerAccessMissing&&sourceCapability){
@@ -1477,7 +1509,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     }
     if (resumeSuspensionId) {
       const suspension = ops.get(operation.accountId, operation.id)?.state?.protocol?.sellerSuspension;
-      createSellerRequestRecords({ db, ops, transaction, holder: { get: () => operation, set: (row) => { operation = row; } }, now }).resume(resumeSuspensionId);
+      createSellerRequestRecords({ db, ops, transaction, holder: { get: () => operation, set: (row) => { operation = row; } }, now, hostStop }).resume(resumeSuspensionId);
       if (suspension?.id === resumeSuspensionId && EFFECT_ROUTE_PATHS.has(suspension.path)) resume.path = suspension.path;
     } else {
       const stored = ops.get(operation.accountId, operation.id);
@@ -1675,13 +1707,13 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       }));
     },
     withNativePaymentLane: (operation, work) => {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
       if (!nativePayment) throw unavailable();
       return nativePayment.withWorkflow(operation, () => nativePayment.withPaymentLane(operation, async () => { await nativePayment.assertReady(operation); return work(); }));
     },
     readNativePaymentLane: (operation, key) => {
-    assertPurchaseActionsAdmitted();
+    assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
       if (!nativePayment || !usesNativeAgreementPayment(operation)) throw unavailable();
       return nativePayment.withWorkflow(operation, () => nativePayment.withPaymentLane(operation, async () => {
@@ -1700,7 +1732,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     countersign: endIfStale(countersign),
   };
   flightReaders.set(purchases, planRunning);
-  return purchases;
+  return bindHostStop(purchases, stopped);
 }
 
 export function holdCompletedBundle(protocol) {

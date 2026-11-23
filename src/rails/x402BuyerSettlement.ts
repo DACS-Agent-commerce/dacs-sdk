@@ -72,6 +72,17 @@ export interface X402BuyerSettlementIntent {
   authorizationNonce: `0x${string}`;
 }
 
+/** Fields known after challenge selection, before payment signing. */
+export type X402BuyerUnsignedIntentScope = Omit<X402BuyerSettlementIntent,
+  "bindingHash" | "signedPaymentPayload" | "paymentHeader">;
+
+/** Hash unsigned intent fields equally before and after payment signing. */
+export function x402BuyerUnsignedIntentHash(value: Readonly<X402BuyerUnsignedIntentScope>): string {
+  const scope = Object.fromEntries(Object.entries(value).filter(([key]) =>
+    !["bindingHash", "signedPaymentPayload", "paymentHeader"].includes(key)));
+  return sha256Hex(`dacs-x402-buyer-unsigned-intent:v1:${canonicalize(scope)}`);
+}
+
 export type X402BuyerSettlementIntentDraft = Omit<
   X402BuyerSettlementIntent,
   "intentVersion" | "settlementKey" | "bindingHash"
@@ -2291,6 +2302,7 @@ export async function advanceX402BuyerSettlement<TObservation = unknown>(
 /** Internal strict record helpers shared by the filesystem implementation. */
 export const x402BuyerSettlementStoreInternals = Object.freeze({
   captureIntent,
+  captureJson: snapshotJson,
   captureDisclosure,
   captureOutcome,
   captureStoredRecord,

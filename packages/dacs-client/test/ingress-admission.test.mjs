@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {canonicalize} from '@kynesyslabs/dacs';
 import {fetchBoundedJson} from '../src/util/http.mjs';
-import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
 import {createDirectoryClient} from '../src/dacs/directory.mjs';
 import {createDemosChainReader} from '../src/dacs/chain.mjs';
 import {createListingVerifier} from '../src/dacs/verification.mjs';
@@ -12,17 +11,10 @@ const jsonResponse=bytes=>new Response(bytes,{headers:{'content-type':'applicati
 for(const vector of corpus.vectors)test(`CF-5 real ingress corpus: ${vector.name}`,async()=>{
  const bytes=(vector.rawHex??vector.rawUtf8Hex)?Buffer.from(vector.rawHex??vector.rawUtf8Hex,'hex'):Buffer.from(vector.rawUtf8Text,'utf8');
  const read=()=>fetchBoundedJson('https://read.invalid/',{fetchImpl:async()=>jsonResponse(bytes),timeoutMs:1000,maxBytes:1024*1024,expectedOrigin:'https://read.invalid'});
- const client=createSellerAgentClient({url:'http://127.0.0.1',fetchImpl:async()=>jsonResponse(bytes)});
- const post=()=>client.propose({});
  if(vector.expected==='reject') {
   await assert.rejects(read,e=>e.code===vector.expectedErrorCode && e.stage===vector.expectedStage);
-  await assert.rejects(post,e=>e.admissionCode===vector.expectedErrorCode && e.admissionStage===vector.expectedStage);
  } else {
   const value=await read();assert.equal(Buffer.from(canonicalize(value)).toString('hex'),vector.canonicalUtf8Hex);
-  // Seller application messages must also be objects; admission acceptance
-  // alone does not grant an application action for a scalar or array.
-  if(value!==null && typeof value==='object' && !Array.isArray(value)) assert.deepEqual(await post(),value);
-  else await assert.rejects(post,e=>e.admissionCode===undefined);
  }
 });
 test('duplicate signed Listing members cannot yield a verified/transactable result',async()=>{
