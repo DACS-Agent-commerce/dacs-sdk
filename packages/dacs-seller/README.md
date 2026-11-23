@@ -39,8 +39,9 @@ authenticated record (reopening a store or taking a lock signs nothing). The
 kit publishes none of these signatures. The store holds no signer for anything
 else: each Agreement co-signature, commitment, evidence and audit-source
 signature of the seller agent is made inside one pass of the host's effect
-boundary, with the key's effect role, and the answer that carries a new
-Agreement co-signature is written only inside that boundary's dispatch pass.
+boundary, with the key's effect role. Every answer that carries the Agreement
+co-signature (the first one, a repeat served from the cache and a state read)
+is sent only through a dispatch pass of that boundary.
 
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets

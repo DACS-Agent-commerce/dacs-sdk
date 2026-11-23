@@ -462,6 +462,7 @@ async function commitmentWire(t, { early, leaseMs }) {
     // The host holds a job from the proposal its wire route admitted, which is when the transport store keeps the job's tuple.
     transportAgreementOf: (id) => (admitted.has(id) ? agent.transportAgreementOf(id) : null),
     receiveProposal: (body, settings) => agent.receiveProposal(body, settings),
+    agreementState: (identity) => agent.agreementState(identity),
     reconcileTransport: (input) => agent.reconcileTransport(input),
     retainsProposalWork: (id) => agent.retainsProposalWork(id),
     retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target),
@@ -512,6 +513,7 @@ async function proposalCell(t, kind) {
   Object.assign(w.agent, {
     transportAgreementOf: (id) => agent.transportAgreementOf(id),
     receiveProposal: (body, settings) => agent.receiveProposal(body, settings),
+    agreementState: (identity) => agent.agreementState(identity),
     reconcileTransport: (input) => agent.reconcileTransport(input),
     retainsProposalWork: (id) => agent.retainsProposalWork(id),
     retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target),

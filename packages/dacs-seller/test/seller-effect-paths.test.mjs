@@ -3,7 +3,7 @@
 // The agent's signatures and the answer that carries its Agreement co-signature, through the host's effect boundary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as core from '@kynesyslabs/dacs';
@@ -310,7 +310,6 @@ test('durable and non-durable simulated fixture anchoring awaits the shared auth
 
 test('an answer withheld after its co-signature was retained leaves held evidence in its job\'s history; after a restart neither the retried proposal nor the Agreement state read returns the held signature while the seller is stopped, and a lost answer makes no new Agreement signature', async (t) => {
   const w = await proposalWireWorld(t);
-  w.agent.agreementState = (identity) => w.realAgent().agreementState(identity);
   changeBeforeAnswerWritten(w, () => { w.f.stop.requested = true; });
   assert.equal((await w.post()).body.error, 'seller_stopped');
   assert.deepEqual(await laneStates(w.f.effectsDirectory, w.jobId), ['signed'], 'the signature is held, never dispatched');
@@ -324,6 +323,54 @@ test('an answer withheld after its co-signature was retained leaves held evidenc
   assert.equal(state.status, 200);
   assert.equal(typeof state.body.contribution?.signature?.value, 'string', 'once admitted, the state read returns the retained signature');
   assert.equal(w.agreementSignatures(), 1, 'the lost answer made no new Agreement signature');
+});
+
+test('a repeated proposal answered from the completed-answer cache carries its co-signature only through its answer pass: while the seller is stopped it is refused with no co-signature and nothing recorded, and once admitted the same answer is sent with its dispatch recorded and no new signature', async (t) => {
+  const w = await proposalWireWorld(t);
+  const first = await w.post();
+  assert.deepEqual([first.status, typeof first.body.contribution?.signature?.value], [200, 'string']);
+  const recorded = await laneStates(w.f.effectsDirectory, w.jobId);
+  w.f.stop.requested = true;
+  const stopped = await w.post();
+  assert.deepEqual([stopped.body.error, stopped.signed, stopped.body.contribution], ['seller_stopped', true, undefined], 'a signed refusal, with no co-signature');
+  assert.deepEqual(await laneStates(w.f.effectsDirectory, w.jobId), recorded, 'the refused repeat recorded nothing');
+  w.f.stop.requested = false;
+  const repeated = await w.post();
+  assert.deepEqual([repeated.status, repeated.text], [200, first.text], 'the completed answer, as it was first sent');
+  assert.deepEqual((await laneStates(w.f.effectsDirectory, w.jobId)).slice(recorded.length), ['dispatch-started', 'dispatch-acknowledged']);
+  assert.equal(w.agreementSignatures(), 1, 'nothing new was signed');
+});
+
+test('a repeated proposal whose cached answer carries a co-signature the agent no longer names for that proposal is refused, never sent without its answer pass', async (t) => {
+  const w = await proposalWireWorld(t);
+  assert.equal((await w.post()).status, 200);
+  const recorded = await laneStates(w.f.effectsDirectory, w.jobId);
+  w.agent.agreementState = () => ({ proposal: null, contribution: null });
+  const refused = await w.post();
+  assert.deepEqual([refused.status, refused.body.error, refused.body.contribution], [409, 'cosignature_answer_unavailable', undefined]);
+  assert.deepEqual(await laneStates(w.f.effectsDirectory, w.jobId), recorded);
+});
+
+// The state of the job's last boundary record, read synchronously at the moment an answer is written.
+const lastLaneState = (directory, jobId) => {
+  const lane = join(directory, 'effects', `job-${jobId}`);
+  return JSON.parse(readFileSync(join(lane, readdirSync(lane).filter((name) => name.endsWith('.json')).sort().at(-1)), 'utf8')).state;
+};
+
+test('a co-signature answer sent outside the agent\'s job lock (a repeated proposal served from the cache, and a state read) is written inside its answer pass, after the pass\'s checks and before its acknowledgement is recorded', async (t) => {
+  const w = await proposalWireWorld(t);
+  assert.equal((await w.post()).status, 200);
+  const atWrite = [];
+  const handler = w.handle.handler;
+  w.handle.handler = (req, res) => {
+    const end = res.end;
+    res.end = function (text) { atWrite.push(lastLaneState(w.f.effectsDirectory, w.jobId)); return end.call(this, text); };
+    return handler(req, res);
+  };
+  const answers = [await w.post(), await readState(w)];
+  assert.deepEqual(answers.map((answer) => [answer.status, typeof answer.body.contribution?.signature?.value]), [[200, 'string'], [200, 'string']]);
+  assert.deepEqual(atWrite, ['dispatch-started', 'dispatch-started'], 'each answer went out while its pass held the dispatch open');
+  assert.equal((await laneStates(w.f.effectsDirectory, w.jobId)).at(-1), 'dispatch-acknowledged');
 });
 
 for (const [label, change, refusal] of [

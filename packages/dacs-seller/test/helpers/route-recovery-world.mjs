@@ -54,6 +54,7 @@ export async function realWorld(t, { early = false, ...options } = {}) {
   const real = () => fixture.agent(), calls = { receive: 0 };
   Object.assign(w.agent, {
     receiveProposal: (body, settings) => { calls.receive++; return real().receiveProposal(body, settings); },
+    agreementState: (identity) => real().agreementState(identity),
     reconcileTransport: (input) => real().reconcileTransport(input),
     retainsProposalWork: (id) => real().retainsProposalWork(id),
     retainsUnfinishedWork: (target) => real().retainsUnfinishedWork(target),

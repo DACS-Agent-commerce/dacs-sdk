@@ -66,6 +66,14 @@ const retainsPayment = (agent, jobId) => { try { return agent.retainsPaymentWork
 // A proposal effect is released only on the agent's proof that it signed and kept nothing.
 const retainsProposal = (agent, jobId) => { try { return agent.retainsProposalWork?.(jobId) !== false; } catch { return true; } };
 const retainedBy = (agent, path, jobId) => path === PAYMENT_PATH ? retainsPayment(agent, jobId) : path === PROPOSAL_PATH && retainsProposal(agent, jobId);
+// The answer pass of a completed proposal answer served from the cache, when that answer carries the Agreement
+// co-signature: the one the agent names for the same proposal. A co-signature the agent no longer names is refused.
+function cachedCosignature(agent, path, { status, text }, body) {
+  if (path !== PROPOSAL_PATH || status !== 200 || typeof JSON.parse(text)?.contribution?.signature?.value !== 'string') return undefined;
+  const cosignature = agent.agreementState(body.transportIdentity)?.[COSIGNATURE_ANSWER];
+  if (cosignature === undefined) throw new SellerTransportError('cosignature_answer_unavailable', 409);
+  return cosignature;
+}
 
 // What the agent holds for a table route's job, for the row's end rule. The agent settles inside its job lock, so a route
 // that retains nothing has no worker either. A route the agent cannot answer for is `unknown`, never `none`.
@@ -285,11 +293,13 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   // A route sends a signed 200 only once the agent's credit check has settled within its deadline. A failure, a rejection or
   // a missed deadline throws, and a result that comes later releases nothing.
   const creditHeld = (jobId) => boundedCall(() => agent.assertSettlementCredit(jobId), { timeoutMs: SETTLEMENT_CREDIT_TIMEOUT_MS });
-  // Sends one answer: signed, then for a 200 the credit check, then written.
-  const send = async (res, status, body, request, { close = false, text = JSON.stringify(body) } = {}) => {
+  // Sends one answer: signed, then for a 200 the credit check, then written. An answer that carries the Agreement
+  // co-signature is written inside its answer pass (`cosignature`), right after the pass's checks; a refusal writes nothing.
+  const send = async (res, status, body, request, { close = false, text = JSON.stringify(body), cosignature } = {}) => {
     const headers = await signedHeaders(status, text, request, close);
     if (status === 200 && request) await creditHeld(request.jobId);
-    write(res, status, headers, text);
+    if (cosignature === undefined) write(res, status, headers, text);
+    else await cosignature.send({ recheck: () => {}, write: () => write(res, status, headers, text) });
   };
   // The discovery document is public, so it is signed as a document and carries no response envelope; a GET with a body is refused.
   const serveDiscovery = async (req, res) => {
@@ -391,9 +401,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       // A signed read reserves and completes nowhere: it answers from the agent's current state.
       if (opened.read) {
         const outcome = transportOutcome(req.url, { answer: await route(agent, body, {}) }, { retained: false });
-        // A read that carries the Agreement co-signature transmits it too: it goes out only after its answer pass admits it.
-        await outcome.value?.[COSIGNATURE_ANSWER]?.send({ recheck: () => {}, write: () => {} });
-        return await send(res, outcome.status, outcome.value, request);
+        // A read that carries the Agreement co-signature transmits it too, inside its answer pass.
+        return await send(res, outcome.status, outcome.value, request, { cosignature: outcome.value?.[COSIGNATURE_ANSWER] });
       }
       // Payment evidence is taken only on an assembled settlement profile.
       if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
@@ -408,7 +417,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           if (agent.retainsPaymentWork(request.jobId) && !agent.retainsPaymentClaim(request.jobId, body)) throw new SellerTransportError('payment_already_recorded', 409);
         }
         await rowOfRoute()?.revalidate({ agent, jobId: request.jobId, outcome: { status: reservation.status, text: reservation.text } });
-        return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
+        return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url),
+          cosignature: cachedCosignature(agent, req.url, reservation, body) });
       }
       if (reservation.disposition === 'uncertain') {
         // A request its expired delegation admits only for readback reconciles read only.
