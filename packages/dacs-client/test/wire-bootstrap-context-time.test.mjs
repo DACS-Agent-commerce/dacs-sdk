@@ -78,6 +78,16 @@ test('a retried plan step sends the same context scope as the first, at a later 
   assert.deepEqual(scopes[1], scopes[0], 'the retry rebuilt no generatedAt');
 });
 
+test('a context purchase with an identity but no saved challenge scope is refused at the plan step with no context read', async (t) => {
+  const { world, purchase, scopes } = await forwardingWorld(t);
+  const { presentation } = await bootstrapThroughChallenge(world, purchase);
+  const row = purchase.get(), { challengeScope: _scope, ...protocol } = row.state.protocol;
+  world.ops().transition(row.id, row.status, row.status, { state: { ...row.state, protocol: { ...protocol, revision: protocol.revision + 1 } }, event: 'TEST-scope-removed', data: {} });
+  await assert.rejects(world.service().planRequest(purchase.get(), walletSign(presentation.message)), refusal('invalid_state'));
+  assert.deepEqual(scopes, [], 'no context was read');
+  assert.equal(protocolOf(purchase).planned, undefined);
+});
+
 test('an approved Agreement time that differs from the one the seller challenge bound is refused before any context read, and nothing is planned', async (t) => {
   const { world, purchase, scopes } = await forwardingWorld(t);
   const { presentation } = await bootstrapThroughChallenge(world, purchase);

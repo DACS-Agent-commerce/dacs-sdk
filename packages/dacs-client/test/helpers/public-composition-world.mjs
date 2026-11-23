@@ -9,6 +9,7 @@ import { createCoordinateStore, createSqlitePurchaseStore, createProtocolPurchas
 import { createDevnetNativeCommitmentCapability } from '../../src/devnet-demo/commitment-consumer.mjs';
 import { OFFLINE_AGREEMENT_MODE } from '../../src/dacs/protocol-purchases.mjs';
 import { buildUnsignedIdentityBundle } from '../../src/dacs/listing.mjs';
+import { agreementChallengeScope } from '../../src/dacs/agreement-context-consumer.mjs';
 import { createDevnetSettlementTransport, DEVNET_SETTLEMENT_POLICY } from '../../src/wallet/devnet-native-transport.mjs';
 import { readOnlyBoundary } from './read-only-boundary.mjs';
 import { openDatabase } from './purchase-integrity-database.mjs';
@@ -102,8 +103,10 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
     const { operation: requested, delegation } = await service.agreementIdentity({ operationId: operation.id, token, address: wallet.address });
     const sessionDelegation = { payload: delegation.payload, signature: wallet.signBytes(Buffer.from(delegation.message, 'utf8')).toString('base64url') };
     const identity = buildUnsignedIdentityBundle({ address: wallet.address, presentedAt: NOW, sessionNonce: SELLER_NONCE });
+    // The challenge scope the delegation step saves with the accepted delegation.
+    const challengeScope = agreementChallengeScope({ operation: requested, buyer: identity.bundle.presentedBy, generatedAt: NOW });
     const protocol = requested.state.protocol;
-    ops.transition(requested.id, requested.status, requested.status, { state: { ...requested.state, protocol: { ...protocol, sessionDelegation, identity, revision: (protocol.revision ?? 0) + 1,
+    ops.transition(requested.id, requested.status, requested.status, { state: { ...requested.state, protocol: { ...protocol, sessionDelegation, challengeScope, identity, revision: (protocol.revision ?? 0) + 1,
       progressGeneration: (protocol.progressGeneration ?? protocol.revision ?? 0) + 1 } }, event: 'TEST-identity-requested', data: {} });
     return { operationId: operation.id, token, signature: wallet.signHex(identity.message) };
   };

@@ -1139,7 +1139,8 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // time from the intent route that differs. Any other purchase uses the intent route's approved time, or now.
   function planGeneratedAt(operation, intentGeneratedAt) {
     if (!usesAgreementContext(operation)) return intentGeneratedAt ?? now();
-    const bound = operation.state.protocol.challengeScope.generatedAt;
+    const bound = operation.state.protocol.challengeScope?.generatedAt;
+    if (bound === undefined) throw new OperationError('invalid_state', 'accept the wallet delegation first: no seller challenge scope is saved; no Agreement was planned or signed');
     if ((intentGeneratedAt ?? bound) !== bound) throw new OperationError('agreement_time_mismatch', 'the approved Agreement generation time differs from the one the seller challenge binds; no context was read and no Agreement was planned or signed');
     return bound;
   }
