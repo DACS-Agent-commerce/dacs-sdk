@@ -2,6 +2,7 @@
 // final answer is read against. The native profile runs the same controls on the native wire world at the end of the file.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readOnlyRoleOf, testEffectBoundary } from './helpers/agent-signing.mjs';
 import { causeOf } from './helpers/refusal-body.mjs';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -882,6 +883,7 @@ function pausableResponseSigner() {
     current.reach();
     return current.released.then(() => seller.signBytes(bytes));
   } };
+  signer.readOnlyAnswerSigner = readOnlyRoleOf(signer);
   const stop = () => {
     held = {};
     held.reached = new Promise((resolve) => { held.reach = resolve; });
@@ -895,7 +897,10 @@ test('a settlement collision during response signing withholds the completed ans
   for (const replay of [false, true]) {
     const w = await fixturePaymentWorld(t), label = replay ? 'replay of a completed payment' : 'first completion';
     const { signer, stop } = pausableResponseSigner();
-    await w.withWire({ signer }, async () => {
+    // The wire's answer passes run over a boundary whose stop check counts its calls: each answer's pass checks it before the fence.
+    const stopChecks = { count: 0 };
+    const { effectBoundary } = testEffectBoundary({ binding: w.buyerWire.binding, currentLocal: () => ({ ...w.state.connection }), stopped: () => { stopChecks.count++; return false; } });
+    await w.withWire({ signer, effectBoundary }, async () => {
       let stored = null;
       if (replay) {
         assert.equal((await w.pay()).body.status, 'delivered', label);
@@ -905,9 +910,15 @@ test('a settlement collision during response signing withholds the completed ans
       const signing = stop(), answering = w.pay();
       await signing.reached;
       // The answer's sources have been read and its response is being signed when a second admitted job claims the same transfer.
-      const competing = await w.pay({ id: w.otherJobId });
-      assert.deepEqual([competing.status, competing.body.status, competing.body.reason], [200, 'indeterminate', 'settlement-collision'], `${label}: the competing job is told of the collision`);
+      // Effect-route answers are signed one at a time in passes of the host's boundary, so the competing job's answer is signed
+      // once the held signature is released; its claim is made before its answer's pass checks the stop and waits for the fence.
+      const checked = stopChecks.count;
+      const competingAnswer = w.pay({ id: w.otherJobId });
+      for (let turn = 0; turn < 20000 && stopChecks.count === checked; turn++) await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(stopChecks.count, checked + 1, `${label}: the competing answer's pass waits for the fence while the answer is being signed`);
       signing.release();
+      const competing = await competingAnswer;
+      assert.deepEqual([competing.status, competing.body.status, competing.body.reason], [200, 'indeterminate', 'settlement-collision'], `${label}: the competing job is told of the collision`);
       const withheld = await answering;
       assert.deepEqual([withheld.status, withheld.body.error], [503, 'operation_uncertain'], `${label}: the completed answer is withheld: ${withheld.text}`);
       assert.equal(withheld.signed, true, `${label}: the refusal is signed`);

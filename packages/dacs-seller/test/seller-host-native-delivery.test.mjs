@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
 import {testWallet,NOW}from './helpers/protocol-fixture.mjs';
 import { HOST_CONTEXT_CALLBACKS, presentContextAnswer } from './helpers/host-context-callbacks.mjs';
-import { agentSigning, integrityRoleOf } from './helpers/agent-signing.mjs';
+import { agentSigning, integrityRoleOf, readOnlyRoleOf } from './helpers/agent-signing.mjs';
 import { hostBuyer } from './helpers/host-context-client.mjs';
 import * as core from '@kynesyslabs/dacs';
 import {sellerApi as seller}from './helpers/seller-internal-api.mjs';
@@ -275,6 +275,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     return sellerKey.sign(bytes);
   } };
   sellerSigner.integritySigner = integrityRoleOf(sellerSigner);
+  sellerSigner.readOnlyAnswerSigner = readOnlyRoleOf(sellerSigner);
   // A seller bundle for the session: the Listing identity presented afresh.
   const sessionSeller = (signerKey) => {
     const { presentation: _publication, ...identity } = listing.seller.identity;
