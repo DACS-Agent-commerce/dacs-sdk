@@ -290,9 +290,13 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     res.writeHead(status, headers);
     res.end(text);
   };
-  // An answer that carries the Agreement co-signature is dispatched only to a response that can still be written: a closed
-  // one refuses inside the answer pass, before anything is stored or acknowledged.
-  const assertOpen = (res) => { if (res.destroyed || res.writableEnded) throw new SellerTransportError('response_closed', 503); };
+  // An answer that carries the Agreement co-signature is written only inside its answer pass, by the pass's last synchronous
+  // check: the response must still be open and the request's context session must not have ended. The answer may already be
+  // stored then; a refusal leaves it stored, unacknowledged and unwritten, and only the refusal is sent.
+  const assertAnswerable = (res, request) => {
+    if (res.destroyed || res.writableEnded) throw new SellerTransportError('response_closed', 503);
+    auth.store.assertSession(request);
+  };
   // A route sends a signed 200 only once the agent's credit check has settled within its deadline. A failure, a rejection or
   // a missed deadline throws, and a result that comes later releases nothing.
   const creditHeld = (jobId) => boundedCall(() => agent.assertSettlementCredit(jobId), { timeoutMs: SETTLEMENT_CREDIT_TIMEOUT_MS });
@@ -302,7 +306,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     const headers = await signedHeaders(status, text, request, close);
     if (status === 200 && request) await creditHeld(request.jobId);
     if (cosignature === undefined) write(res, status, headers, text);
-    else await cosignature.send({ recheck: () => assertOpen(res), write: () => write(res, status, headers, text) });
+    else await cosignature.send({ recheck: () => assertAnswerable(res, request), write: () => write(res, status, headers, text) });
   };
   // The discovery document is public, so it is signed as a document and carries no response envelope; a GET with a body is refused.
   const serveDiscovery = async (req, res) => {
@@ -364,7 +368,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       try { recheck(); } catch (error) { withheld = error; throw error; }
       end(text);
       delivered = true;
-      transmit = () => cosignature.send({ recheck: () => assertOpen(res), write: () => { write(res, outcome.status, headers, sent); written = true; } });
+      transmit = () => cosignature.send({ recheck: () => assertAnswerable(res, request), write: () => { write(res, outcome.status, headers, sent); written = true; } });
     };
     // The options an answer is stored with: its classification and, for a route with a row, the row's end decision for the exact text.
     const endOptions = (outcome, text) => {
