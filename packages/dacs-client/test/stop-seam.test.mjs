@@ -14,7 +14,7 @@ const { createPurchaseService } = await import('../src/purchases.mjs');
 const { createProtocolPurchases } = await import('../src/index.mjs');
 const { createSqlitePurchaseStore } = await import('../src/seams/purchase-store-not-wired.mjs');
 const { StaleProtocolCheck, OFFLINE_AGREEMENT_PROFILE } = await import('../src/dacs/protocol-purchases.mjs');
-const { createHostStop } = await import('../src/host-stop.mjs');
+const { createHostStop, bindHostStop, isHostStopRefusal } = await import('../src/host-stop.mjs');
 const { OperationError } = await import('../src/client-errors.mjs');
 const { SellerUnavailableError } = await import('../src/dacs/seller-http.mjs');
 const { createSellerHttpsConnector } = await import('../src/dacs/seller-https-connector.mjs');
@@ -26,13 +26,14 @@ const hostStopRefusal = code => error => error.code === code && error.message ==
 const queueWork = s => s.patch({ signatures: { agreement: 'TEST-queued-contribution' } });
 
 // The purchase service over the public protocol factory, both built with `stopped`; seller lookups are counted.
-function stoppedService(s, stopped) {
+// `ops` is the service's own operation store.
+function stoppedService(s, stopped, ops = s.p.ops) {
   const counters = { sellerLookups: 0 };
   const dacsProtocol = { ...s.p.config, sellerEndpoint: (...args) => { counters.sellerLookups++; return s.p.config.sellerEndpoint(...args); } };
   const protocol = createProtocolPurchases({ db: s.p.db, ops: s.p.ops, coordinates: { unresolvedForSender: () => [] }, dacsProtocol, admission: s.w.admission,
     store: createSqlitePurchaseStore(), now: () => s.w.state.time, buyerAccess: { assertWallet() {} }, stopped });
   s.p.db.prepare('UPDATE operations SET handoff_expires_at = expires_at WHERE id = ?').run(s.p.op.id);
-  const service = createPurchaseService({ db: s.p.db, ops: s.p.ops, coordinates: { get: () => null }, protocol, chain: { broadcastTransaction() { throw new Error('TEST-unexpected-broadcast'); } },
+  const service = createPurchaseService({ db: s.p.db, ops, coordinates: { get: () => null }, protocol, chain: { broadcastTransaction() { throw new Error('TEST-unexpected-broadcast'); } },
     config: {}, store: createSqlitePurchaseStore(), now: () => s.w.state.time, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped });
   const request = { accountId: s.p.op.accountId, operationId: s.p.op.id, token: s.p.ops.handoffTokenFor(s.p.op.id) };
   return { service, request, counters };
@@ -51,11 +52,17 @@ function killFile(t) {
   return kill;
 }
 
+// The public composition admitted through a real binding, with the hold lifted.
+async function admittedComposition(t, stopped) {
+  setPurchaseAdmission('testnet-tp1'); t.after(() => setPurchaseAdmission('held'));
+  const { compositionWorld } = await import('./helpers/public-composition-world.mjs');
+  return compositionWorld(t, { stopped });
+}
+
 // A composition admitted through a real binding, with one seeded agreement_pending protocol purchase and nothing queued.
 async function composedPurchase(t, stopped, key) {
-  setPurchaseAdmission('testnet-tp1'); t.after(() => setPurchaseAdmission('held'));
-  const { compositionWorld, ACCOUNT_ID } = await import('./helpers/public-composition-world.mjs');
-  const w = await compositionWorld(t, { stopped });
+  const { ACCOUNT_ID } = await import('./helpers/public-composition-world.mjs');
+  const w = await admittedComposition(t, stopped);
   const p = w.seed({ status: 'agreement_pending', key, protocolTerms: { profile: OFFLINE_AGREEMENT_PROFILE }, state: { protocol: { stage: 'agreement-signing' } } });
   w.db.prepare('UPDATE operations SET handoff_expires_at = expires_at WHERE id = ?').run(p.operation.id);
   const portal = { operationId: p.operation.id, token: p.token };
@@ -146,7 +153,7 @@ test('a stop observed before the first signature, and separately before dequeue,
 });
 
 test('a plugin-supplied lstat KILL check filling the seam is called at every boundary', async t => {
-  // The public gate and the continuation.
+  // The public gate, verifyDeal's entry and the continuation.
   const gateKill = killFile(t);
   const c = await composedPurchase(t, gateKill.stopped, 'TEST-kill-gate');
   let before = gateKill.calls;
@@ -156,7 +163,7 @@ test('a plugin-supplied lstat KILL check filling the seam is called at every bou
   let continuationCalls;
   c.w.authority.state.gate = async () => { c.w.authority.state.gate = null; continuationCalls = gateKill.calls - before; };
   await c.w.service.verifyDeal(c.account).catch(() => {});
-  assert.equal(continuationCalls, 2, 'the continuation, then the protocol gate before its binding read');
+  assert.equal(continuationCalls, 3, "verifyDeal's entry, the continuation, then the protocol gate before its binding read");
   gateKill.create();
   before = gateKill.calls;
   await assert.rejects(c.w.service.protocolRecheck(c.portal), hostStopRefusal('writes_stopped'));
@@ -443,4 +450,161 @@ test('a stop raised while signing whose suspension write fails rejects with the 
   assert.equal(suspension(s), undefined);
   assert.equal(s.record(P).lastClass, 'unknown'); assert.equal(s.record(P).attempts, 1);
   assert.equal(s.w.state.signs.length, 0); assert.equal(s.fetches.length, 0);
+});
+
+// Readback while stopped: portalOperation and verifyDeal save nothing but the stop's own suspension.
+const HASH = '1'.repeat(64);
+const STOPPED_READBACK = { outcome: 'readback_only', reason: 'writes_stopped' };
+const NATIVE_TERMS = { profile: OFFLINE_AGREEMENT_PROFILE, nativePayment: 'native-dem-once-after-public-agreement-and-fixture-commitment', sellerAgreementProjection: 'public-signed-create' };
+// Seller lookups, chain broadcasts, and the native source's signatures, fetches and journal writes.
+const compositionEffects = w => [w.counters.sellerLookups, w.chain.broadcasts, w.native.calls.length, w.native.writes.length];
+// A purchase row without the members a suspension write changes.
+const withoutSuspension = row => {
+  const protocol = { ...row.state.protocol };
+  for (const member of ['sellerSuspension', 'revision', 'progressGeneration']) delete protocol[member];
+  return { ...row, state: { ...row.state, protocol } };
+};
+
+test('while the host is stopped after the hold lifts, portalOperation and verifyDeal project an elapsed approval as expired without ops.transition, and verifyDeal attaches no hash, saves no settlement and starts no continuation', async t => {
+  const { ACCOUNT_ID, NOW } = await import('./helpers/public-composition-world.mjs');
+  const w = await admittedComposition(t, () => true);
+  const elapsed = w.seed({ status: 'agreement_pending', key: 'TEST-stopped-elapsed', expiresAt: new Date(NOW - 1).toISOString(),
+    protocolTerms: { profile: OFFLINE_AGREEMENT_PROFILE }, state: { protocol: { stage: 'agreement-signing' } } });
+  const handoff = w.seed({ status: 'payment_handoff', key: 'TEST-stopped-handoff', handoff: true });
+  const reported = w.seed({ status: 'broadcast_reported', key: 'TEST-stopped-reported', reportedTxHash: HASH });
+  const observed = { count: 0 };
+  w.chain.observeTransfer = async () => { observed.count++; return { status: 'not-found' }; };
+  const transitions = t.mock.method(w.ops, 'transition'), before = w.rows();
+  assert.equal(w.service.portalOperation(elapsed.operation.id, elapsed.token).status, 'expired');
+  const verify = ({ operation }, txHash) => w.service.verifyDeal({ accountId: ACCOUNT_ID, operationId: operation.id, ...(txHash ? { txHash } : {}) });
+  // A malformed hash is still refused while stopped.
+  await assert.rejects(verify(handoff, 'TEST-not-a-hash'), errorCode('invalid_tx_hash'));
+  const expired = await verify(elapsed, HASH);
+  assert.equal(expired.operation.status, 'expired'); assert.deepEqual(expired.verification, STOPPED_READBACK);
+  const unattached = await verify(handoff, HASH);
+  assert.equal(unattached.operation.status, 'payment_handoff'); assert.deepEqual(unattached.verification, STOPPED_READBACK);
+  const unsettled = await verify(reported);
+  assert.equal(unsettled.operation.status, 'broadcast_reported'); assert.deepEqual(unsettled.verification, STOPPED_READBACK);
+  assert.equal(transitions.mock.callCount(), 0);
+  assert.equal(w.rows(), before);
+  assert.equal(w.coordinates.get(handoff.operation.id).reportedTxHash ?? null, null);
+  assert.equal(observed.count, 0);
+  assert.deepEqual(compositionEffects(w), [0, 0, 0, 0]);
+});
+
+test('stopped during recovery: readback only', async t => {
+  const c = await composedPurchase(t, () => true, 'TEST-stopped-recovery');
+  const first = await c.w.service.verifyDeal(c.account);
+  assert.deepEqual(first.verification, STOPPED_READBACK);
+  const held = c.row().state.protocol.sellerSuspension;
+  assert.equal(held.cause, 'writes_stopped');
+  assert.deepEqual(first.operation.state.protocol.sellerSuspension, held);
+  // A repeated recovery read answers the same readback and keeps the first suspension.
+  const again = await c.w.service.verifyDeal(c.account);
+  assert.deepEqual(again.verification, STOPPED_READBACK);
+  assert.deepEqual(c.row().state.protocol.sellerSuspension, held);
+  assert.equal(c.events('seller_suspended').length, 1);
+  assert.equal(c.row().status, 'agreement_pending'); assert.equal(c.row().state.protocol.signatures, undefined);
+  assert.deepEqual(compositionEffects(c.w), [0, 0, 0, 0]);
+});
+
+test('readback and read-only diagnostics run while stopped', async t => {
+  const { ACCOUNT_ID } = await import('./helpers/public-composition-world.mjs');
+  const stop = { calls: 0 }, c = await composedPurchase(t, () => { stop.calls++; return true; }, 'TEST-stopped-readers');
+  const { service, protocol } = c.w, { operationId, token } = c.portal, operation = c.row();
+  const passive = {
+    status: () => service.status(ACCOUNT_ID, operationId, token),
+    portalOperation: () => service.portalOperation(operationId, token),
+    portalEvidence: () => service.portalEvidence(operationId, token),
+    verifyDeal: () => service.verifyDeal(c.account),
+    planRunning: () => service.planRunning(operation),
+    assertBuyerAccess: () => protocol.assertBuyerAccess(operation.terms.buyer.wallet, operation),
+    supportsMode: () => protocol.supportsMode('TEST-mode'),
+    readIssued: () => protocol.readIssued(operation),
+    readIssuedPayment: () => protocol.readIssuedPayment(operation, HASH),
+    observeReportedPayment: () => protocol.observeReportedPayment(HASH),
+  };
+  const otherTables = () => JSON.parse(c.w.rows()).filter(([name]) => !['operations', 'operation_events'].includes(name));
+  const tablesBefore = otherTables(), eventsBefore = c.w.ops.history(operationId).length;
+  const reads = {};
+  for (const [name, read] of Object.entries(passive)) {
+    const before = stop.calls;
+    // A source reader may answer with its own error; none is refused by the stop.
+    try { await read(); } catch (error) { assert.ok(!isHostStopRefusal(error), `${name} is not refused by the stop`); }
+    reads[name] = stop.calls - before;
+  }
+  assert.deepEqual(reads, { status: 0, portalOperation: 1, portalEvidence: 0, verifyDeal: 1, planRunning: 0,
+    assertBuyerAccess: 0, supportsMode: 0, readIssued: 0, readIssuedPayment: 0, observeReportedPayment: 0 });
+  const after = c.row();
+  assert.equal(after.state.protocol.sellerSuspension.cause, 'writes_stopped');
+  assert.deepEqual(withoutSuspension(after), withoutSuspension(operation));
+  assert.deepEqual(c.w.ops.history(operationId).slice(eventsBefore).map(event => event.type), ['seller_suspended']);
+  assert.deepEqual(otherTables(), tablesBefore);
+  assert.equal(c.w.counters.sellerLookups, 0); assert.equal(c.w.chain.broadcasts, 0); assert.equal(c.w.native.writes.length, 0);
+});
+
+test('a stopped verifyDeal of a native-payment purchase in payment_handoff whose buyer nonce moved returns readback_only instead of rejecting writes_stopped, and moves nothing to payment_uncertain', async t => {
+  const { ACCOUNT_ID } = await import('./helpers/public-composition-world.mjs');
+  const w = await admittedComposition(t, () => true);
+  // The seeded handoff's nonce fence is 6; the buyer's nonce has moved past it.
+  w.chain.getAddressNonce = async () => 7;
+  for (const [key, protocolTerms] of [['TEST-stopped-native-handoff', NATIVE_TERMS], ['TEST-stopped-ordinary-handoff', undefined]]) {
+    const { operation } = w.seed({ status: 'payment_handoff', key, protocolTerms, handoff: true });
+    const before = w.rows();
+    const result = await w.service.verifyDeal({ accountId: ACCOUNT_ID, operationId: operation.id });
+    assert.deepEqual(result.verification, STOPPED_READBACK, key);
+    assert.equal(result.operation.status, 'payment_handoff', key);
+    assert.equal(w.rows(), before, key);
+  }
+  assert.deepEqual(compositionEffects(w), [0, 0, 0, 0]);
+});
+
+// A service whose protocol refuses the buyer's wallet as closed (not missing) and answers its two source reads as given,
+// over a purchase with a reported hash. Both share one stop check, which counts its calls and answers stopped.
+async function closedBuyerReader(t, { protocolTerms, issued = null, observation = null }) {
+  const { ACCOUNT_ID, NOW } = await import('./helpers/public-composition-world.mjs');
+  const w = await admittedComposition(t);
+  const stop = { calls: 0 }, stopped = () => { stop.calls++; return true; }, sourceReads = [];
+  const closed = new OperationError('buyer_access_closed', 'TEST buyer access closed');
+  const protocol = bindHostStop({ available: true, assertBuyerAccess() { throw closed; },
+    async readIssuedPayment() { sourceReads.push('readIssuedPayment'); return issued; },
+    async observeReportedPayment() { sourceReads.push('observeReportedPayment'); return observation; } }, stopped);
+  const service = createPurchaseService({ db: w.db, ops: w.ops, coordinates: w.coordinates, chain: w.chain, protocol, config: {}, store: w.store,
+    now: () => NOW, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped });
+  const { operation } = w.seed({ status: 'broadcast_reported', key: 'TEST-closed-buyer', protocolTerms, reportedTxHash: HASH });
+  return { w, stop, closed, sourceReads, transitions: t.mock.method(w.ops, 'transition'), before: w.rows(),
+    verify: () => service.verifyDeal({ accountId: ACCOUNT_ID, operationId: operation.id }) };
+}
+
+test('a stopped verifyDeal of a purchase whose buyer access closed after a reported payment reads the stop once at entry, answers its source readback with the stop code and saves nothing', async t => {
+  const legs = [
+    { name: 'native readback', options: { protocolTerms: NATIVE_TERMS, issued: { status: 'readback-only', noResend: true, hash: HASH } }, reads: ['readIssuedPayment'] },
+    { name: 'transfer observation', options: { observation: { status: 'not-found' } }, reads: ['readIssuedPayment', 'observeReportedPayment'] },
+  ];
+  for (const { name, options, reads } of legs) {
+    const r = await closedBuyerReader(t, options);
+    const { verification } = await r.verify();
+    assert.equal(verification.outcome, 'readback_only', name); assert.equal(verification.reason, 'writes_stopped', name);
+    assert.equal(r.stop.calls, 1, name); assert.deepEqual(r.sourceReads, reads, name);
+    assert.equal(r.transitions.mock.callCount(), 0, name); assert.equal(r.w.rows(), r.before, name);
+  }
+  // A native-payment purchase whose source read finds nothing keeps the buyer-access refusal.
+  const r = await closedBuyerReader(t, { protocolTerms: NATIVE_TERMS });
+  await assert.rejects(r.verify(), error => error === r.closed);
+  assert.equal(r.stop.calls, 1); assert.deepEqual(r.sourceReads, ['readIssuedPayment']);
+  assert.equal(r.transitions.mock.callCount(), 0); assert.equal(r.w.rows(), r.before);
+});
+
+test('a stopped verifyDeal whose suspension write fails rejects with the stop itself, carries the write failure as details.suspensionWriteError, saves nothing and starts no continuation', async t => {
+  const s = await storedWorld(t, { paid: true }), failure = new Error('TEST-store-write-failed');
+  const ops = { ...s.p.ops, transition: (id, from, to, change) => {
+    if (change?.event === 'seller_suspended') throw failure;
+    return s.p.ops.transition(id, from, to, change);
+  } };
+  const { service, request, counters } = stoppedService(s, () => true, ops), before = s.p.get();
+  await assert.rejects(service.verifyDeal(request),
+    error => hostStopRefusal('writes_stopped')(error) && error.cause === undefined && error.details?.suspensionWriteError === failure);
+  assert.deepEqual(s.p.get(), before); assert.equal(suspension(s), undefined);
+  assert.equal(events(s, 'seller_suspended').length, 0);
+  assert.equal(counters.sellerLookups, 0); assert.equal(s.w.state.signs.length, 0); assert.equal(s.fetches.length, 0);
 });

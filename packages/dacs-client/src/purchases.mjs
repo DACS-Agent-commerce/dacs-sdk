@@ -560,10 +560,17 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   // Entry for the portal's approval and payment actions, which save expiry.
-  // The public diagnostic service projects it without saving.
+  // The public diagnostic service projects it without saving, and so does a call while the host is stopped.
   function portalOperation(operationId, token) {
     const found = authorizedPortalPurchase(operationId, token);
-    return diagnostic() ? projectDiagnosticOperation(projectExpiry(found)) : expireIfNeeded(found);
+    if (diagnostic()) return projectDiagnosticOperation(projectExpiry(found));
+    return stopRefusal() ? projectExpiry(found) : expireIfNeeded(found);
+  }
+
+  // The host stop's refusal while it answers stopped (a failed or invalid check counts as stopped), otherwise undefined.
+  function stopRefusal() {
+    try { hostStop.assert(); } catch (refusal) { return refusal; }
+    return undefined;
   }
 
   // Evidence the portal may show, taken only from what was recorded: the
@@ -831,8 +838,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // one that names a suspension is refused and leaves that suspension, with its id, as it was.
   async function continueProtocol(result, resumeSuspensionId) {
     const operation = result.operation;
-    if (!operation.terms.protocol || !protocol?.available) return result;
-    if (operation.status !== 'settled_verified' && operation.status !== 'agreement_pending') return result;
+    if (!continuesProtocol(operation)) return result;
     const stored = ops.get(operation.accountId, operation.id);
     if (stored?.state?.protocol?.sellerSuspension && !resumeSuspensionId) return { ...result, operation: stored };
     try { hostStop.assert(); } catch (refusal) {
@@ -846,6 +852,22 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       throw error;
     }
     return { ...result, operation: advanced };
+  }
+
+  // Whether continueProtocol has work for `operation`: a protocol purchase at agreement_pending or settled_verified.
+  function continuesProtocol(operation) {
+    return Boolean(operation.terms.protocol && protocol?.available)
+      && (operation.status === 'settled_verified' || operation.status === 'agreement_pending');
+  }
+
+  // verifyDeal while the host is stopped: where the continuation would run it records the purchase's suspension, then
+  // returns the stored row with expiry projected, unsaved. A failed suspension write rejects with the stop's refusal,
+  // which carries the write's error as details.suspensionWriteError, and returns no readback.
+  function stoppedReadback(found, refusal) {
+    if (continuesProtocol(projectExpiry(found))) suspendPurchase(ops.get(found.accountId, found.id), refusal);
+    if (refusal.details?.suspensionWriteError) throw refusal;
+    const stored = ops.get(found.accountId, found.id) ?? found;
+    return { operation: projectExpiry(stored), verification: { outcome: 'readback_only', reason: refusal.code } };
   }
 
   // Records a refusal as the stored purchase's suspension; a purchase already suspended keeps its own. A failed write does
@@ -1419,6 +1441,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   async function verifyDealOnce({ accountId, operationId, token, txHash, attachOnly = false, signal }) {
     const found = ownedPurchase(accountId, operationId, token);
+    // The stop is read once, here; a stopped call saves nothing but the purchase's suspension.
+    const stop = diagnostic() ? undefined : stopRefusal(), stopReason = stop ? { reason: stop.code } : {};
     try{protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);}
     catch(error){
       if(error?.code!=='buyer_access_closed'||error?.details?.buyerAccessMissing)throw error;
@@ -1426,15 +1450,20 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       if(!coords?.reportedTxHash||(txHash&&canonicalHash(txHash)!==coords.reportedTxHash))throw error;
       if(diagnostic())return diagnosticReadback(found,txHash,signal);
       const native=await protocol?.readIssuedPayment?.(found,coords.reportedTxHash);
-      if(native)return {operation:found,verification:{outcome:'readback_only',...native,...OBSERVATION_LIMITS}};
+      if(native)return {operation:found,verification:{outcome:'readback_only',...native,...stopReason,...OBSERVATION_LIMITS}};
       if(usesNativeAgreementPayment(found))throw error;
       let observation;
       try{await assertBoundDomain(found);observation=await protocol?.observeReportedPayment?.(coords.reportedTxHash)??await chain.observeTransfer(coords.reportedTxHash);}
       catch(readError){observation={status:'unavailable',reason:errorText(readError)};}
       observation=transferObservationRecord(observation,coords.reportedTxHash);
-      return {operation:found,verification:{outcome:'readback_only',observation,...OBSERVATION_LIMITS}};
+      return {operation:found,verification:{outcome:'readback_only',observation,...stopReason,...OBSERVATION_LIMITS}};
     }
     if (diagnostic()) return diagnosticReadback(found, txHash, signal);
+    if (stop) {
+      // A stopped call attaches no hash, but a malformed one is still refused, before any write.
+      if (txHash) canonicalHash(txHash);
+      return stoppedReadback(found, stop);
+    }
     const operation = expireIfNeeded(found);
     if (txHash) {
       assertAgreementPaymentHeld(operation);
