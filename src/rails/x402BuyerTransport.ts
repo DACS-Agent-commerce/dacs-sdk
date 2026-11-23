@@ -111,17 +111,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * payment input. The signed payload carries both, and the stored input holds
  * them three objects deep (input, intent, signed payload). Each layer refuses
  * JSON that is not canonical at that depth, and the intent refuses a resource
- * naming another URL. A refusal after the wallet hold would leave a hold with
- * no stored input, so the buyer checks first.
+ * naming another URL. The resource must be present. A refusal after the
+ * wallet hold would leave a hold with no stored input, so the buyer checks
+ * first.
  */
 function challengeFitsStoredInput(resource: unknown, requirements: unknown, httpResource: string): boolean {
-  if (resource !== undefined && (!isRecord(resource) || resource.url !== httpResource)) return false;
+  if (!isRecord(resource) || resource.url !== httpResource) return false;
   const capture = x402BuyerSettlementStoreInternals.captureJson;
   try {
     const accepted = capture(requirements, "x402 challenge requirements");
-    const signedPaymentPayload = resource === undefined
-      ? { accepted }
-      : { accepted, resource: capture(resource, "x402 challenge resource") };
+    const signedPaymentPayload = { accepted, resource: capture(resource, "x402 challenge resource") };
     canonicalize({ intent: { chosenRequirements: accepted, signedPaymentPayload } });
     return true;
   } catch {

@@ -758,7 +758,7 @@ test("a challenge resource the stored payment input would refuse is rejected bef
   const inner = client();
   // Like the x402 client, the signed payload carries the challenge's resource.
   const createPaymentPayload = vi.fn(async (value: unknown) => ({
-    ...await inner.createPaymentPayload(value),
+    ...await inner.createPaymentPayload(value) as Record<string, unknown>,
     resource: (value as { resource: unknown }).resource,
   }));
   const bindAuthorization = vi.fn(async () => ({ validBefore: 4_102_444_800 }));
@@ -770,6 +770,7 @@ test("a challenge resource the stored payment input would refuse is rejected bef
       { status: 402 }),
   });
   for (const resource of [
+    undefined,
     { url: RESOURCE, description: "\ud800" },
     { url: RESOURCE, deep: nested(125) },
     { url: "https://other.example/resource" },
