@@ -180,6 +180,9 @@ export interface DacsPayDemBuyerPaymentTrackOptionsV1 {
    * checks and removes that attestation before storing the settlement or
    * publishing its notice. Missing or other execution evidence stays
    * indeterminate without changing wallet accounting or publishing a notice.
+   * The track also calls this function on every replay of a completed payment,
+   * to re-read the recorded result from the chain. The replay fence rejects
+   * checkpoints, so this callback must remain read-only on every invocation.
    */
   reconcile(input: Readonly<{
     payment: Readonly<DacsPayDemBuyerPaymentInputV1>;
