@@ -31,7 +31,6 @@ export {
   TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES,
   TP1_WIRE_PROFILE_KEYS,
   TESTNET_PROFILE_TP1,
-  canonicalNodeEndpoint,
   bindTp1Profile,
   assertTp1Binding,
   assertTp1Authority,
@@ -47,6 +46,7 @@ export {
   type Tp1AuthorityDecision,
   type Tp1AuthorityReader,
 } from "./profile.js";
+export { canonicalNodeEndpoint } from "./node-endpoint.js";
 export {
   isWirePayload,
   wireEnvelopeSigningBytes,

@@ -10,6 +10,7 @@ import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { TP1_APPROVED_IDENTITY_RECORD_DIGESTS, TP1_REFUSED_CHAIN_IDENTITIES } from "./approval.js";
+import { canonicalNodeEndpoint, TP1_APPROVED_CHAIN_IDENTITY } from "./node-endpoint.js";
 import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_V1 } from "./routes.js";
 import { fail, hasKeys, HASH, isClaim, isRecord, ownedArtifact, ownedConfig, ownedFields, ownedOrNothing, uncurry } from "./validate.js";
 import { deepFreeze } from "../internal/deepFreeze.js";
@@ -64,7 +65,7 @@ export const TP1_APPROVED_IDENTITY_RECORD = deepFreeze({
   format: "dacs-testnet-identity-record/v1",
   recordId: "dacs-demos-testnet-identity/2026-10-21",
   network: "demos-testnet",
-  chainIdentity: "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc",
+  chainIdentity: TP1_APPROVED_CHAIN_IDENTITY,
   pinVersion: "dacs-demos-testnet-identity/2026-10-21",
   provenance: {
     approvedBy: "the owner",
@@ -74,25 +75,6 @@ export const TP1_APPROVED_IDENTITY_RECORD = deepFreeze({
     documentation: "Demos testnet nodes refuse a numeric block 0 (`getBlockByNumber` with `blockNumber: 0` returns RPC result 400). The chain identity is block 1's `content.previousHash`, the genesis hash a string `blockNumber: \"0\"` returns, checked against the approved record `dacs-demos-testnet-identity/2026-10-21`.",
   },
 } satisfies TestnetIdentityRecord);
-
-/**
- * The one rule for a Demos node endpoint: returns `endpoint` when it is a
- * canonical root URL, exactly its origin followed by `/` (so path exactly `/`,
- * no username, password, query or fragment, not even an empty `?` or `#`, and
- * the spelling the URL parser gives), otherwise null. The scheme is
- * `https:`, or `http:` only when `chainIdentity` is exactly the chain identity
- * of TP1_APPROVED_IDENTITY_RECORD: public Demos testnet nodes serve their RPC
- * over plain http. Any other or missing chain identity means https only. The
- * chain identity is the caller's pinned one, never one a node reported, and no
- * hostname, port or label changes the rule.
- */
-export function canonicalNodeEndpoint(endpoint: unknown, { chainIdentity }: { chainIdentity?: unknown } = {}): string | null {
-  if (typeof endpoint !== "string") return null;
-  let url: URL;
-  try { url = new URL(endpoint); } catch { return null; }
-  const scheme = url.protocol === "https:" || (url.protocol === "http:" && chainIdentity === TP1_APPROVED_IDENTITY_RECORD.chainIdentity);
-  return scheme && endpoint === `${url.origin}/` ? endpoint : null;
-}
 
 export const TESTNET_PROFILE_TP1 = deepFreeze({
   id: TP1_PROFILE_ID,
