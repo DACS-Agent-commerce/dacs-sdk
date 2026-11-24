@@ -4,8 +4,9 @@ import { sha256Hex } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { ok, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
 import { assertFenceFree, inPass, openPass } from './helpers/effect-gate-world.mjs';
-import { adapterWorld, assertNothingSent, evidenceInput, recordOf, releasedIds, signerOf } from './helpers/payment-evidence-adapter-world.mjs';
+import { adapterWorld, assertNothingSent, evidenceInput, recordOf, releasedIds, replayWorld, signerOf } from './helpers/payment-evidence-adapter-world.mjs';
 import { recordingApproval } from './helpers/payment-evidence-approval-double.mjs';
+import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
 import { installNoEgress } from './helpers/no-egress.mjs';
 import { nativeWalletLaneKey } from '../src/wallet/devnet-native-transport.mjs';
 import { signerReservationKey } from '../src/wallet/signer-reservation.mjs';
@@ -15,6 +16,7 @@ test.after(() => egress.restore());
 
 const FIRST_NONCE = 1;
 const FIRST_LEDGER_ID = 'TEST-ledger-1';
+const SECOND_LEDGER_ID = 'TEST-ledger-2';
 // A probe that must not wait for the operator's decision is raced against this real-time limit, so a regression fails the row
 // instead of deadlocking it.
 const PROBE_LIMIT_MS = 1_000;
@@ -415,3 +417,140 @@ for (const [how, end] of Object.entries(manualHoldEnds)) {
     assert.equal(w.signsInsideSign, 1); assertNothingSent(w);
   });
 }
+
+// The send hold. The kept bytes are signed in one call under the first authorization and not sent, so the scripted chain
+// answers that it has not seen them.
+const keptBytes = w => inPass(w, () => w.adapter.signCreate(evidenceInput(w)));
+const broadcastWith = async (w, signed, hold, pass) => (await openPass(w, pass ? { pass } : {})).run(() => w.adapter.broadcast(signed, { approval: hold }));
+const releaseFirst = w => w.approval.settle(w.approval.bindingOf(FIRST_LEDGER_ID), 'released', 'TEST-operator');
+
+test("a replacement approval for kept bytes whose authorization the ledger released is asked before the broadcast pass and outside the adapter queue, and the broadcast in the pass asks the ledger nothing new and sends the same bytes once", async t => {
+  const w = await replayWorld(t), signed = await keptBytes(w), probes = {};
+  await releaseFirst(w);
+  w.approval.script.push(async () => {
+    probes.fence = await outcomeOf(bounded(assertFenceFree(w.currentOwner()), 'the connection fence'));
+    probes.otherSignature = await outcomeOf(bounded(inPass(w, () => w.adapter.signCreate(evidenceInput(w, 'b'))), 'another evidence\'s signature'));
+  });
+  const { approval: hold } = await w.adapter.approveSendAhead(signed);
+  assert.ok(!('reason' in probes.fence), probes.fence.reason?.message);
+  assert.equal(probes.otherSignature.reason?.code, 'signer_lane_busy', 'the queue is free: another call is answered at once');
+  assert.equal(w.approval.prepared.length, 2, 'the replacement is prepared once');
+  assert.equal((await recordOf(w)).active.approvalId, SECOND_LEDGER_ID, 'and linked before the pass'); assertNothingSent(w);
+  const reopens = w.approval.reopened.length;
+  assert.deepEqual(await broadcastWith(w, signed, hold), { status: 'accepted', txHash: signed.txHash });
+  assert.equal(w.approval.prepared.length, 2, 'the broadcast asks for no new authorization');
+  assert.deepEqual(w.approval.reopened.slice(reopens), [SECOND_LEDGER_ID], 'it reopens the linked replacement');
+  assert.equal(w.approval.confirmations.at(-1).binding.ledgerId, SECOND_LEDGER_ID);
+  assert.equal(w.node.broadcasts.length, 1); assert.equal(JSON.stringify(w.node.broadcasts[0]), signed.signedTransaction, 'the kept bytes');
+  assert.equal(w.signsInsideSign, 1, 'no second signature');
+});
+
+const heldSendCuts = {
+  'the ledger released before the pass': async (w, signed, hold) => {
+    await releaseFirst(w);
+    const calls = w.node.calls.length;
+    await assert.rejects(broadcastWith(w, signed, hold), { code: 'approval_required' });
+    assert.equal(w.node.calls.length, calls, 'no node call: the hold is not current and is not taken');
+    assert.deepEqual(await hold.release(), { released: true }, 'the hold that was not taken still releases');
+  },
+  'another process closed before the pass': async (w, signed, hold) => {
+    w.approval.closeUncounted(w.approval.bindingOf(FIRST_LEDGER_ID));
+    await assert.rejects(broadcastWith(w, signed, hold), { code: 'approval_required' });
+    assert.equal(w.node.confirms.length, 0, 'refused before the confirmation');
+  },
+  'the ledger released during the broadcastTx final stop step': async (w, signed, hold) => {
+    const finalStop = ({ phase }) => (phase === 'broadcastTx' ? releaseFirst(w) : undefined);
+    await assert.rejects(broadcastWith(w, signed, hold, { finalStop }), { code: 'approval_required' });
+    assert.equal(w.node.confirms.length, 1, 'the confirmation ran once'); assert.equal(w.approval.confirmations.length, 1, 'and the ledger confirmed once');
+  },
+};
+for (const [how, cut] of Object.entries(heldSendCuts)) {
+  test(`a broadcast carrying a send hold whose authorization ${how} refuses approval_required inside the pass, asks for no new authorization and sends nothing`, async t => {
+    const w = await replayWorld(t), signed = await keptBytes(w);
+    const { approval: hold } = await w.adapter.approveSendAhead(signed);
+    const record = await recordOf(w);
+    await cut(w, signed, hold);
+    assert.equal(w.node.broadcasts.length, 0, 'nothing broadcast'); assert.equal(w.approval.prepared.length, 1, 'no new authorization');
+    assert.deepEqual(await recordOf(w), record, 'the record and its bytes are unchanged');
+  });
+}
+
+const sendAskChecks = [
+  ['a stop before the reads', 'writes_stopped', { before: stop => { stop.mode = 'on'; } }],
+  ['a stop during the chain read', 'writes_stopped', { duringChainRead: stop => { stop.mode = 'on'; } }],
+  ['a stop check that answers a promise', 'stop_check_invalid', { before: stop => { stop.mode = 'promise'; } }],
+];
+for (const [cut, code, { before, duringChainRead }] of sendAskChecks) {
+  test(`approveSendAhead checks the wallet lock, the purchase hold and a synchronous stop before its reads and again right before it asks for a replacement: ${cut} refuses ${code} with no prepare and the kept bytes and their record unchanged`, async t => {
+    const stop = { mode: 'off' };
+    const stopped = () => (stop.mode === 'promise' ? Promise.reject(new Error('TEST-stop-check-promise')) : stop.mode === 'on');
+    const w = await adapterWorld(t, { stopped }), signed = await keptBytes(w);
+    await releaseFirst(w);
+    const record = await recordOf(w), calls = w.node.calls.length;
+    before?.(stop);
+    if (duringChainRead) onceAt(w, 'getTransactionStatus', () => { duringChainRead(stop); return undefined; });
+    await assert.rejects(w.adapter.approveSendAhead(signed), { code });
+    if (before) assert.equal(w.node.calls.length, calls, 'nothing was read');
+    assert.equal(w.approval.prepared.length, 1, 'no prepare'); assert.deepEqual(await recordOf(w), record, 'the kept bytes and their record are unchanged');
+    assertNothingSent(w);
+  });
+}
+
+test("a send hold from another composition is refused there without being taken: nothing is read, signed or sent in that composition, and its own adapter can still use it once", async t => {
+  const w1 = await replayWorld(t), w2 = await replayWorld(t), signed = await keptBytes(w1);
+  const { approval: hold } = await w1.adapter.approveSendAhead(signed);
+  const ownRecord = await recordOf(w1), calls = w2.node.calls.length, signatures = w2.innerSigns.length;
+  await assert.rejects(broadcastWith(w2, signed, hold), { code: 'approval_required' });
+  assert.equal(w2.node.calls.length, calls, 'nothing read'); assert.equal(w2.innerSigns.length, signatures, 'nothing signed'); assert.equal(await recordOf(w2), null, 'nothing reserved');
+  assertNothingSent(w1); assertNothingSent(w2);
+  assert.deepEqual(await recordOf(w1), ownRecord, 'the owner\'s reservation is untouched');
+  assert.deepEqual(await broadcastWith(w1, signed, hold), { status: 'accepted', txHash: signed.txHash });
+  assert.equal(w1.node.broadcasts.length, 1); assert.equal(JSON.stringify(w1.node.broadcasts[0]), signed.signedTransaction, 'the kept bytes, once');
+  assert.equal(w2.node.calls.length, calls);
+});
+
+test("a process gone after approveSendAhead linked a replacement and before the broadcast pass sends nothing; at the next construction the old hold refuses with nothing read, and the next approveSendAhead reopens the linked replacement with no second preparation and sends the kept bytes once", async t => {
+  const w = await replayWorld(t), signed = await keptBytes(w);
+  await releaseFirst(w);
+  const { approval: old } = await w.adapter.approveSendAhead(signed);
+  assert.equal((await recordOf(w)).active.approvalId, SECOND_LEDGER_ID, 'the replacement is linked before the restart');
+  await w.restart();
+  assertNothingSent(w);
+  const record = await recordOf(w), calls = w.node.calls.length;
+  await assert.rejects(broadcastWith(w, signed, old), { code: 'approval_required' });
+  assert.equal(w.node.calls.length, calls, 'no node call'); assert.deepEqual(await recordOf(w), record, 'no record change');
+  const { approval: next } = await w.adapter.approveSendAhead(signed);
+  assert.equal(w.approval.prepared.length, 2, 'no second preparation');
+  assert.deepEqual(await broadcastWith(w, signed, next), { status: 'accepted', txHash: signed.txHash });
+  assert.equal(w.node.broadcasts.length, 1); assert.equal(w.approval.confirmations.at(-1).binding.ledgerId, SECOND_LEDGER_ID);
+});
+
+test("an approveSendAhead aborted while the ledger has not answered rejects with the abort's reason and gives no hold; the next approveSendAhead uses the replacement that was committed with no second preparation and sends the kept bytes once", async t => {
+  const w = await replayWorld(t), signed = await keptBytes(w), stop = new AbortController();
+  await releaseFirst(w);
+  w.approval.script.push(() => { stop.abort(new Error('TEST-deadline')); return new Promise(() => {}); });
+  await assert.rejects(w.adapter.approveSendAhead(signed, { signal: stop.signal }), error => causeChain(error).some(link => /TEST-deadline/.test(link.message)));
+  assertNothingSent(w);
+  const { approval: hold } = await w.adapter.approveSendAhead(signed);
+  assert.equal(w.approval.prepared.length, 2, 'no second preparation');
+  assert.equal((await recordOf(w)).active.approvalId, SECOND_LEDGER_ID, 'the committed replacement is linked');
+  assert.deepEqual(await broadcastWith(w, signed, hold), { status: 'accepted', txHash: signed.txHash });
+  assert.equal(w.node.broadcasts.length, 1);
+});
+
+test("a process gone while the ledger decides a replacement for kept bytes sends nothing; at the next construction the replacement it committed is found by its exact request and linked with no second preparation, and the broadcast sends the kept bytes once", async t => {
+  const w = await replayWorld(t), signed = await keptBytes(w);
+  await releaseFirst(w);
+  let asked;
+  const deciding = new Promise(resolve => { asked = resolve; });
+  w.approval.script.push(() => { asked(); return new Promise(() => {}); });
+  w.adapter.approveSendAhead(signed).catch(() => {});
+  await deciding;
+  await w.restart();
+  assert.equal((await recordOf(w)).active.approvalId, FIRST_LEDGER_ID, 'nothing was linked before the process went'); assertNothingSent(w);
+  const { approval: hold } = await w.adapter.approveSendAhead(signed);
+  assert.equal(w.approval.prepared.length, 2, 'no second preparation');
+  assert.equal((await recordOf(w)).active.approvalId, SECOND_LEDGER_ID, 'the committed replacement is linked');
+  assert.deepEqual(await broadcastWith(w, signed, hold), { status: 'accepted', txHash: signed.txHash });
+  assert.equal(w.node.broadcasts.length, 1);
+});
