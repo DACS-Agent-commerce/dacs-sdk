@@ -301,7 +301,8 @@ describe("recovering a pay-dem purchase after a restart", () => {
     expect(broadcastCalls).toBe(1);
   });
 
-  it("refuses a confirmed record that names another payee, and never signs or sends again", async () => {
+  // The product bridge refuses this: it compares the record's payee with the request.
+  it("the bridge refuses a confirmed record that names another payee, and never signs or sends again", async () => {
     const request = requestFor("restart-other-payee");
     await crashFirstProcess(request, { loseOutcome: true });
     const record = node.get(journal[0]?.txHash ?? "");
@@ -313,7 +314,9 @@ describe("recovering a pay-dem purchase after a restart", () => {
     expect(broadcastCalls).toBe(1);
   });
 
-  it("refuses a confirmed record that carries another nonce, and never signs or sends again", async () => {
+  // The bridge context carries no nonce, so this refusal comes from the sample reconciler above; the
+  // reconciler is responsible for binding the nonce (docs/pay-dem-execution.md, lines 75-78).
+  it("the sample reconciler refuses a confirmed record that carries another nonce, and nothing is signed or sent again", async () => {
     const request = requestFor("restart-other-nonce");
     await crashFirstProcess(request, { loseOutcome: true });
     const record = node.get(journal[0]?.txHash ?? "");
