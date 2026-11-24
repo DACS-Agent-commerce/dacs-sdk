@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync, StatementSync } from 'node:sqlite';
 import { storedWorld, PATHS, bodyFor, errorCode } from './helpers/stored-request-fixture.mjs';
-import { setPurchaseAdmission, T0 } from './helpers/wire-client-fixture.mjs';
+import { setPurchaseAdmission, T0, FIXTURE_RECEIPT_LIMITS } from './helpers/wire-client-fixture.mjs';
 import { spawnJournalChild } from './helpers/journal-child-process.mjs';
 import { controlledClock, settleUntil } from './helpers/effect-boundary-fixture.mjs';
 import { passiveNativeWorld, HASH as NATIVE_HASH, PAYER } from './helpers/passive-native-world.mjs';
@@ -35,7 +35,7 @@ function stoppedService(s, stopped, ops = s.p.ops) {
   const counters = { sellerLookups: 0 };
   const dacsProtocol = { ...s.p.config, sellerEndpoint: (...args) => { counters.sellerLookups++; return s.p.config.sellerEndpoint(...args); } };
   const protocol = createProtocolPurchases({ db: s.p.db, ops: s.p.ops, coordinates: { unresolvedForSender: () => [] }, dacsProtocol, admission: s.w.admission,
-    store: createSqlitePurchaseStore(), now: () => s.w.state.time, buyerAccess: { assertWallet() {} }, stopped });
+    store: createSqlitePurchaseStore(), now: () => s.w.state.time, buyerAccess: { assertWallet() {} }, stopped, ...FIXTURE_RECEIPT_LIMITS });
   s.p.db.prepare('UPDATE operations SET handoff_expires_at = expires_at WHERE id = ?').run(s.p.op.id);
   const service = createPurchaseService({ db: s.p.db, ops, coordinates: { get: () => null }, protocol, chain: { broadcastTransaction() { throw new Error('TEST-unexpected-broadcast'); } },
     config: {}, store: createSqlitePurchaseStore(), now: () => s.w.state.time, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped });
@@ -624,7 +624,7 @@ const typeErrorOf = message => error => error instanceof TypeError && error.mess
 // Every member of the real objects the two purchase factories return, by kind. A member the table does not name fails.
 const MEMBER_TABLE = {
   protocol: {
-    passive: ['assertBuyerAccess', 'observeReportedPayment', 'readIssued', 'readIssuedPayment', 'supportsMode'],
+    passive: ['assertBuyerAccess', 'assertSellerReceiptReservation', 'observeReportedPayment', 'readIssued', 'readIssuedPayment', 'supportsMode'],
     active: ['agreementDelegation', 'assertSellerAdmission', 'cancelNativePayment', 'checkDelivery', 'countersign', 'countersignRequest', 'holdChainReadback', 'identityRequest',
       'nativeIntentsSupersededBy', 'nativePaymentClaimed', 'nativePaymentFailed', 'nativePaymentRefused', 'nativePaymentSuperseded', 'nativePaymentTermsCancelled',
       'planFlightsRunning', 'planRequest', 'planRunning', 'prepareTerms', 'readNativePaymentLane', 'recheck', 'recheckCommitment', 'runningPlan', 'sessionRenewal',
@@ -664,7 +664,7 @@ function pendingPurchase(w, key) {
   return purchase;
 }
 
-// The ten passive members, each called on one purchase.
+// The eleven passive members, each called on one purchase.
 const passiveCalls = (w, { operation, token }) => ({
   status: () => w.service.status(ACCOUNT_ID, operation.id, token),
   portalOperation: () => w.service.portalOperation(operation.id, token),
@@ -676,6 +676,7 @@ const passiveCalls = (w, { operation, token }) => ({
   readIssued: () => w.protocol.readIssued(operation),
   readIssuedPayment: () => w.protocol.readIssuedPayment(operation, HASH),
   observeReportedPayment: () => w.protocol.observeReportedPayment(HASH),
+  assertSellerReceiptReservation: () => w.protocol.assertSellerReceiptReservation(operation),
 });
 // A source reader may answer with its own error; none is refused by the hold or the stop.
 async function runsEachPassive(calls) {
@@ -756,7 +757,7 @@ test('one table enumerates every method on the real objects returned by both pur
   assert.deepEqual(passiveEffects(w), [0, 0, 0, 0]);
 });
 
-test('a passiveOnly purchase composition keeps all ten passive members callable while held, stopped and with a failing binding; every active name is absent and calling it throws TypeError before any read or write; without admission both factories still throw admission_required with zero SQLite, journal and custody opens', async t => {
+test('a passiveOnly purchase composition keeps all eleven passive members callable while held, stopped and with a failing binding; every active name is absent and calling it throws TypeError before any read or write; without admission both factories still throw admission_required with zero SQLite, journal and custody opens', async t => {
   const stop = { calls: 0 };
   const w = await compositionWorld(t, { passiveOnly: true, stopped: () => { stop.calls++; return true; } });
   t.after(() => setPurchaseAdmission('held'));
