@@ -138,6 +138,10 @@ it("a packed consumer satisfying the install-time demosdk and Axios contract can
   const nestedManifest = JSON.parse(readFileSync(join(nested, "package.json"), "utf8"));
   writeFileSync(join(nested, "package.json"), JSON.stringify({ ...nestedManifest, version: "1.16.0" }));
   expect(installInConsumer()).toMatchObject({ axiosVersion: "1.16.0", axiosUnderDemosdk: true, installError: "write_attempt_install_invalid", adapterCalls: 0, unchanged: true });
+
+  // A separate 1.17.0 copy under demosdk is refused too: the guard can only hold the copy this package also loads.
+  writeFileSync(join(nested, "package.json"), JSON.stringify(nestedManifest));
+  expect(installInConsumer()).toMatchObject({ axiosVersion: "1.17.0", axiosUnderDemosdk: true, installError: "write_attempt_install_invalid", adapterCalls: 0, unchanged: true });
   rmSync(nested, { recursive: true, force: true });
 
   const demosdkManifest = join(consumer, "node_modules", "@kynesyslabs", "demosdk", "package.json");

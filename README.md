@@ -1159,9 +1159,11 @@ another algorithm, and the deprecated raw-key signers `tx.signWithAlgorithm`,
 `transactions.sign`/`signWithAlgorithm` and `DemosTransactions.sign`/`signWithAlgorithm`,
 refuse with `write_attempt_unsupported_signer`. The guard was reviewed against
 demosdk 4.0.17 and the Axios 1.17.0 ESM module that demosdk itself resolves; it
-checks requests on that Axios copy. Install exactly those versions. With any
-other demosdk, another Axios copy under demosdk, or a request interceptor
-registered on that Axios before the first install, installation throws
+checks requests on that Axios copy. Install exactly those versions, with one
+Axios copy that both demosdk and `@kynesyslabs/dacs` resolve (npm's usual
+hoisted layout). With any other demosdk, a separate Axios copy under demosdk,
+or a request interceptor registered on that Axios before the first install,
+installation throws
 `WriteAttemptInstallError` with `code: "write_attempt_install_invalid"` and
 changes nothing.
 

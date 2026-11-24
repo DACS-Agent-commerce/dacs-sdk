@@ -18,8 +18,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { Demos } from "@kynesyslabs/demosdk/websdk";
+import type { AxiosAdapter, InternalAxiosRequestConfig as AxiosConfig } from "axios";
 
 /** The demosdk and Axios versions whose call paths this guard was reviewed against. */
 const REVIEWED_DEMOSDK_VERSION = "4.0.17";
@@ -74,12 +74,11 @@ export class WriteAttemptInstallError extends Error {
 class AttemptRefusalSignal extends Error {}
 
 type Method = (...args: unknown[]) => unknown;
-interface AxiosConfig { adapter?: unknown }
-type Adapter = (config: AxiosConfig) => unknown;
+/** The parts of Axios 1.17.0 the guard uses; its `getAdapter` also takes the request config, which its types omit. */
 interface DemosAxios {
   defaults: { adapter?: unknown; transitional?: { legacyInterceptorReqResOrdering?: unknown } };
   interceptors: { request: { handlers?: unknown; use(fulfilled: (config: AxiosConfig) => AxiosConfig, rejected: undefined, options: { synchronous: boolean }): number } };
-  getAdapter(selection: unknown, config: AxiosConfig): Adapter;
+  getAdapter(selection: unknown, config: AxiosConfig): AxiosAdapter;
 }
 interface GuardedWallet { readonly instance: object; readonly guard: Method }
 interface AttemptScope { readonly wallet: GuardedWallet; refusal?: { readonly value: unknown } }
@@ -90,10 +89,14 @@ const installedInstances = new WeakSet<object>();
 const readManifest = (path: string): { name?: unknown; version?: unknown } => JSON.parse(readFileSync(path, "utf8"));
 const demosAxios = await loadDemosAxios();
 
-/** Loads the Axios ESM module demosdk itself imports, or says why the installed versions are not the reviewed ones. */
+/**
+ * Loads the Axios ESM module demosdk itself imports, or says why it cannot: the installed demosdk or Axios is not
+ * the reviewed version, or this package resolves a different Axios copy than demosdk does.
+ */
 async function loadDemosAxios(): Promise<{ axios: DemosAxios } | { problem: string }> {
   try {
-    const websdkEntry = createRequire(import.meta.url).resolve("@kynesyslabs/demosdk/websdk");
+    const requireHere = createRequire(import.meta.url);
+    const websdkEntry = requireHere.resolve("@kynesyslabs/demosdk/websdk");
     const demosdk = readManifest(join(dirname(websdkEntry), "..", "..", "package.json"));
     if (demosdk.name !== "@kynesyslabs/demosdk" || demosdk.version !== REVIEWED_DEMOSDK_VERSION) {
       return { problem: `demosdk ${String(demosdk.version)} is installed; the guard supports ${REVIEWED_DEMOSDK_VERSION}` };
@@ -103,8 +106,11 @@ async function loadDemosAxios(): Promise<{ axios: DemosAxios } | { problem: stri
     if (axiosVersion !== REVIEWED_AXIOS_VERSION) {
       return { problem: `demosdk resolves Axios ${String(axiosVersion)}; the guard supports ${REVIEWED_AXIOS_VERSION}` };
     }
-    // Axios 1.17.0 maps both its `node` and default ESM conditions to index.js, the module demosdk imports.
-    const module: { default: DemosAxios } = await import(pathToFileURL(join(dirname(axiosManifestPath), "index.js")).href);
+    // The same package directory gives the same ESM module, and so the same Axios instance demosdk sends through.
+    if (requireHere.resolve("axios/package.json") !== axiosManifestPath) {
+      return { problem: "demosdk resolves a different Axios copy from the one this package resolves" };
+    }
+    const module: { default: DemosAxios } = await import("axios");
     return { axios: module.default };
   } catch (error) {
     return { problem: `demosdk or its Axios copy cannot be read: ${String(error)}` };
@@ -303,8 +309,8 @@ function applyPatches(patches: SlotPatch[]): void {
  * @throws {WriteAttemptInstallError} before changing anything: `write_attempt_already_installed` for a second
  *   install on the instance; `write_attempt_surface_missing` when a demosdk method or object is not found;
  *   `write_attempt_install_invalid` for a non-`Demos` value, a disconnected or non-ed25519 wallet, a guard that is
- *   not a function, a demosdk other than 4.0.17 or a demosdk-resolved Axios other than 1.17.0, an Axios layout
- *   the guard cannot hold, or a property that cannot be replaced.
+ *   not a function, a demosdk other than 4.0.17, a demosdk-resolved Axios other than 1.17.0 or other than the copy
+ *   this package resolves, an Axios layout the guard cannot hold, or a property that cannot be replaced.
  */
 export function installWriteAttemptGuard(instance: Demos, guard: () => void): void {
   if (!(instance instanceof Demos)) throw invalid("the guard installs only on a demosdk Demos instance");
