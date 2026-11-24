@@ -49,6 +49,7 @@ import { nativeDemDeliveryConfig, hasGuardedNativeDemDelivery, submitNativeDemDe
 import { deliverableJournalFor } from './deliverable-wallet-journal.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { agreementInput, agreementTerms, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, deliverableAddress, deliveryEvidenceAddress, ed25519Deps, listingPin, protocolSupport, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
+import { OS_INTEGER } from './chain.mjs';
 
 /** A seller refusal with its stable code and HTTP status (422 by default). */
 export class SellerAgentError extends Error {
@@ -137,6 +138,30 @@ const walletAnswer = (answer) => ({ status: typeof answer?.status === 'string' ?
 const SELLER_REQUIREMENT = Object.freeze({ requirementVersion: '1', required: Object.freeze([]), preferredPresentation: 'any' });
 const vetUnverified = (reason, cause) => new SellerAgentError('seller_state_unverified', reason, 503, { cause });
 
+// The largest price this profile sells at (protocolSupport refuses a Listing above it). Ceilings whose sum with it is canonical OS
+// text keep every receipt within OS_INTEGER.
+const RECEIPT_PRICE_MAX_OS = BigInt(Number.MAX_SAFE_INTEGER);
+const RECEIPT_FEE_CEILING_NAMES = Object.freeze(['anchorFeeCeilingOs', 'payFeeCeilingOs']);
+/**
+ * Checks the seller's explicit receipt fee ceilings, `{ payFeeCeilingOs, anchorFeeCeilingOs }`: each canonical decimal OS text (zero
+ * allowed), and their sum with the largest supported price at most 78 digits. Returns a frozen copy, or null for null.
+ * Throws a TypeError for anything else; nothing is defaulted or inferred.
+ */
+export function receiptFeeCeilingsConfig(value) {
+  if (value === null) return null;
+  const names = typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).sort() : [];
+  if (names.join() !== RECEIPT_FEE_CEILING_NAMES.join() || !names.every((name) => typeof value[name] === 'string' && OS_INTEGER.test(value[name])) ||
+      !OS_INTEGER.test((RECEIPT_PRICE_MAX_OS + BigInt(value.payFeeCeilingOs) + BigInt(value.anchorFeeCeilingOs)).toString(10))) {
+    throw new TypeError('receiptFeeCeilings must be exactly { payFeeCeilingOs, anchorFeeCeilingOs }, each canonical decimal OS text, whose sum with the largest supported price has at most 78 digits');
+  }
+  return Object.freeze({ payFeeCeilingOs: value.payFeeCeilingOs, anchorFeeCeilingOs: value.anchorFeeCeilingOs });
+}
+// The seller receipt of an ordinary committed answer: the exact Agreement's hash, and the most the buyer reserves for it (its price plus
+// the Pay and anchor fee ceilings) as canonical decimal OS text. The wire response signature covers it; the Agreement, the commitment
+// record and every transaction stay as they are.
+const sellerReceiptOf = (agreement, ceilings) => ({ agreementHash: contentHash(agreement),
+  reservedMaximumOs: (BigInt(agreementTerms(agreement).price.amountOs) + BigInt(ceilings.payFeeCeilingOs) + BigInt(ceilings.anchorFeeCeilingOs)).toString(10) });
+
 /** Build a deterministic report from the Agreement, its exact Listing and settlement ID.
  * Throws SellerAgentError for a malformed job or mismatched Listing. */
 export function buildReport({ agreement, listing, settlementId }) {
@@ -200,7 +225,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // when the seller durably admitted exactly that context request for the job.
 // What the agent needs of the kit's one challenge ledger (the transport store's `challenges`).
 const CHALLENGE_LEDGER_METHODS = Object.freeze(['retained', 'jobBinding']);
-export async function createSellerAgent({ effectSigner, integritySigner, effectBoundary, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, jobSlotReleased, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, vetMode: vetModeOption, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, closedBootstrapGate = null, railAuthority = null, sessionAdmission = null, challengeLedger = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
+export async function createSellerAgent({ effectSigner, integritySigner, effectBoundary, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, jobSlotReleased, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, vetMode: vetModeOption, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, closedBootstrapGate = null, railAuthority = null, sessionAdmission = null, challengeLedger = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false, receiptFeeCeilings = null }) {
   assertKitOperationAdmitted('createSellerAgent');
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
@@ -269,6 +294,11 @@ export async function createSellerAgent({ effectSigner, integritySigner, effectB
   if (!nativeProfile && (typeof anchors?.read !== 'function' || typeof anchors.write !== 'function')) throw new TypeError('a seller agent needs agreementAnchor and nativeArtifactAnchor, or an explicit fixture substrate (anchors)');
   if (nativeProfile && simulatedFixture) throw new TypeError('the native seller profile is not the simulated fixture profile');
   if (!nativeProfile && !simulatedFixture) throw new TypeError('the fixture substrate (anchors) is the simulated fixture profile: it signs over not-performed Vet references and an unsigned rail, and needs simulatedFixture: true');
+  // The native profile declares a seller receipt on every ordinary committed answer, so it needs both ceilings; the fixture profile
+  // declares one only when it is given them.
+  const receiptCeilings = receiptFeeCeilingsConfig(receiptFeeCeilings);
+  if (nativeProfile && receiptCeilings === null) throw new TypeError('the native seller profile needs receiptFeeCeilings: { payFeeCeilingOs, anchorFeeCeilingOs } as canonical decimal OS text');
+  const committedReceipt = (agreement) => (receiptCeilings ? { sellerReceipt: sellerReceiptOf(agreement, receiptCeilings) } : {});
   // This native profile has no extended-pointer publisher. A signed exact
   // size is its pre-payment capacity bound, including for default Listings.
   // General DACS Listings may omit it; this inline-only profile cannot.
@@ -1194,7 +1224,7 @@ export async function createSellerAgent({ effectSigner, integritySigner, effectB
       retainCommitmentPhase(adopted,retained,false);
       if(!noLocalWrites){releaseFinalizedSignatureCommitment(adopted, jobId);persist(adopted);}
       Object.assign(session,adopted);
-      return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{})};
+      return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{}),...committedReceipt(agreement)};
     }
     // Adopting an anchored commitment is a save, which a read-only replay never makes.
     if (noLocalWrites) readbackRequired();
@@ -1213,7 +1243,7 @@ export async function createSellerAgent({ effectSigner, integritySigner, effectB
     releaseFinalizedSignatureCommitment(adopted, jobId);
     persist(adopted);
     Object.assign(session, adopted);
-    return { status: 'committed', address: finalized.logicalAddress, resumed: finalized.resumed, ...(native ? { agreementAnchor: nativeAgreementView(native) } : {}) };
+    return { status: 'committed', address: finalized.logicalAddress, resumed: finalized.resumed, ...(native ? { agreementAnchor: nativeAgreementView(native) } : {}), ...committedReceipt(agreement) };
   }
 
   // ---- DACS-4: payment claim -> SDK intake -> payment evidence ----
@@ -1324,8 +1354,11 @@ export async function createSellerAgent({ effectSigner, integritySigner, effectB
     try { assertBuyer(session.buyerBundle.presentedBy, jobId); }
     catch (error) { throw error?.code === 'buyer_access_closed' ? new SellerTransportError(error.code, error.status) : error; }
     let stored; try { stored = JSON.parse(outcome.text); } catch { /* not the retained answer */ }
+    // An ordinary answer is replayed only with the receipt this seller declares for the retained Agreement now; an early one has none.
+    const receipt = COMMITMENT_ANSWER_STATUS[path] === 'committed' ? committedReceipt(session.agreement) : {};
     if (stored?.status !== COMMITMENT_ANSWER_STATUS[path] || stored.address !== logicalAddress ||
-        (retained && (retained.logicalAddress !== logicalAddress || retained.agreementHash !== session.agreementHash))) throw sourceUnavailable('changed');
+        (retained && (retained.logicalAddress !== logicalAddress || retained.agreementHash !== session.agreementHash)) ||
+        canonicalize(Object.hasOwn(stored, 'sellerReceipt') ? { sellerReceipt: stored.sellerReceipt } : {}) !== canonicalize(receipt)) throw sourceUnavailable('changed');
     await authenticateCommitmentSource(session, retained);
   }
   // Reads the job's commitment from its source and checks it against the retained one (`retained`, when the job has an ordinary commitment) and

@@ -4,7 +4,7 @@
 // an explicit opt-in. No module hooks; real Listing and signer.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { seller as fixtureSeller, NOW } from './helpers/protocol-fixture.mjs';
+import { seller as fixtureSeller, NOW, RECEIPT_FEE_CEILINGS } from './helpers/protocol-fixture.mjs';
 import { readFileSync } from 'node:fs';
 import { canonicalize, DACS_STANDARD_PIN } from '@kynesyslabs/dacs';
 import { sellerApi as seller } from './helpers/seller-internal-api.mjs';
@@ -24,7 +24,8 @@ function sellerWorld() {
   return {
     base: { ...agentSigning({ claim: party.claim, sign: fixtureSeller.signBytes }), listing, deliverySchemaVerifier: { schemaUrl: listing.offering.deliverable.schemaUrl, verify: unreachable }, observeDemosTransfer: unreachable },
     agreementAnchor: { source: 'profile/agreement-readback', readAgreement: unreachable },
-    artifacts: { nativeArtifactAnchor: { writer: party.claim, publish: unreachable, readRetained: unreachable, verifyReceipt: unreachable }, deliverableProducer: () => null },
+    artifacts: { nativeArtifactAnchor: { writer: party.claim, publish: unreachable, readRetained: unreachable, verifyReceipt: unreachable }, deliverableProducer: () => null,
+      receiptFeeCeilings: RECEIPT_FEE_CEILINGS },
     anchors: { read: unreachable, write: unreachable },
     railAuthority: railSteward().railAuthority(),
   };

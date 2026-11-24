@@ -207,6 +207,7 @@ const capabilities = () => ({
   observeDemosTransfer: refuse('observeDemosTransfer'),
   railAuthority,
   sessionAdmission,
+  receiptFeeCeilings: { payFeeCeilingOs: '7000013', anchorFeeCeilingOs: '300007' },
 });
 const dataDirectory = second ?? realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-host-')));
 // The key's roles as the host takes them: the effect signer and the journal integrity role.
