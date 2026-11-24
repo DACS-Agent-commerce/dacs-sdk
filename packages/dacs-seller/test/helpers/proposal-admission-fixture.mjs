@@ -9,7 +9,7 @@ import {agreementInput} from '../../src/dacs/purchase-protocol.mjs';
 import {SELLER_REQUIREMENT} from '../../src/devnet-demo/agreement-context.mjs';
 import {identityBundleHash} from '@kynesyslabs/dacs';
 import {privateModule} from './private-module.mjs';
-import {seller,buyer,JOB,NOW} from './protocol-fixture.mjs';
+import {seller,buyer,JOB,NOW,RECEIPT_FEE_CEILINGS} from './protocol-fixture.mjs';
 import {fixtureListing,fixtureIdentityBundle} from '../fixtures/listings.mjs';
 import {railSteward} from './rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './session-admission-fixture.mjs';
@@ -38,7 +38,7 @@ export async function proposalAdmissionFixture(t,{assembled=false,maxJobs,expect
  const capability=mode=>createDemDeliveryContext({authority:'TEST-admission',vetMode:mode,resolveBuyer:async scope=>presentContextAnswer(scope),resolveSeller,...HOST_CONTEXT_CALLBACKS});
  const config={get challengeLedger(){return ledger===null?store.challenges:ledger();},maxJobs,...vetMode===undefined?{}:{vetMode},signer:{claim:seller.claim,sign:bytes=>{signed.push(Buffer.from(bytes).toString());return seller.signBytes(bytes);}},listing,durableDirectory:dir,now:()=>time,
   agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission,
-  nativePaymentEvidence:createNativePaymentEvidenceConsumer({rpcUrl:'http://127.0.0.1:1',anchorEvidence:unreachable,fetchImpl:unreachable}),demDeliveryContext:capability(vetMode)};
+  nativePaymentEvidence:createNativePaymentEvidenceConsumer({rpcUrl:'http://127.0.0.1:1',anchorEvidence:unreachable,fetchImpl:unreachable}),demDeliveryContext:capability(vetMode),receiptFeeCeilings:RECEIPT_FEE_CEILINGS};
  const sourceUrl=new URL('../../src/dacs/seller-agent.mjs',import.meta.url),api=await privateModule(sourceUrl,[],source=>{
   if(!assembled&&source.includes('await respondToFixedPriceAgreementProposalDurable(')){
    const file=ts.createSourceFile('agent.mjs',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);let method;
