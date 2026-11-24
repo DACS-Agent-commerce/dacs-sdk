@@ -6,8 +6,8 @@
 // app/api/dacs/listings/route.ts and src/catalog/types.ts. Bounded-origin
 // transport is local policy, with no historical demo authority claim.
 //
-// A row is read as the Directory's row contract defines it: every member the
-// schema requires is present, `status` is `active` or `revoked`, a
+// A row is read as the Directory's row contract defines it: the required
+// top-level row members are present, `status` is `active` or `revoked`, a
 // `revocation` object is present exactly when the row is revoked,
 // `transactionReadiness` is `{disposition: "unassessed", reason}` and
 // `catalogObservedAt` is an integer. A row that does not match is refused,
@@ -24,8 +24,8 @@ const CURSOR = /^\d{1,9}$/;
 
 const MIN_PAGE_LIMIT = 1;
 const MAX_PAGE_LIMIT = 50;
-// A lookup reads at most this many pages of MAX_PAGE_LIMIT rows. With no match
-// in them and a cursor still present after the last one, the scan is incomplete.
+// A lookup reads at most this many pages of MAX_PAGE_LIMIT rows. With a cursor
+// still present after the last one, the scan did not reach the end of the list.
 const MAX_SCAN_PAGES = 5;
 const MAX_MEMBER_NAME = 64;
 const REVOCATION_MEMBERS = ['sellerPrimaryClaim', 'listingId', 'listingVersion', 'listingContentHash', 'logicalAddress', 'markerAnchor', 'markerContentHash'];
@@ -36,6 +36,7 @@ export const DIRECTORY_CONTRACT_CODES = Object.freeze([
   'directory_row_ambiguous',
   'directory_row_malformed',
   'directory_scan_incomplete',
+  'directory_scan_unconfirmed',
   'directory_cursor_invalid',
   'directory_page_oversized',
 ]);
@@ -218,12 +219,14 @@ export function createDirectoryClient({ origin, timeoutMs = 8000, maxBytes = 1_0
   /**
    * The summary (anchor locator, catalog status) for one exact listing, or null
    * when a complete scan finds none. The scan reads at most five pages of 50
-   * rows. It answers at a valid end of the list, or after the fifth page when
-   * it has found a match; rows past the fifth page are not read. Throws
-   * OutboundError with a DIRECTORY_CONTRACT_CODES code for a second matching
-   * row, a malformed matching row, a repeated or malformed cursor, an
-   * oversized page, or a cursor still present after the fifth page with no
-   * match found.
+   * rows. It answers only at a valid end of the list (a page with no cursor)
+   * within those pages, because the Directory has no exact-coordinates query
+   * and a second row for the same listing could sit past the fifth page.
+   * Throws OutboundError with a DIRECTORY_CONTRACT_CODES code for a second
+   * matching row, a malformed matching row, a repeated or malformed cursor, an
+   * oversized page, a cursor still present after the fifth page with a match
+   * found (directory_scan_unconfirmed), or with no match found
+   * (directory_scan_incomplete).
    */
   async function findSummary(coordinates) {
     const cursors = new Set();
@@ -240,7 +243,7 @@ export function createDirectoryClient({ origin, timeoutMs = 8000, maxBytes = 1_0
       cursors.add(page.cursor);
       cursor = page.cursor;
     }
-    if (match) return summaryOf(match);
+    if (match) throw contractError('directory_scan_unconfirmed', `a matching directory row was found but the seller's rows after page ${MAX_SCAN_PAGES} were not read, so it cannot be shown to be the only one`);
     throw contractError('directory_scan_incomplete', `directory scan has more pages after ${MAX_SCAN_PAGES}`);
   }
 

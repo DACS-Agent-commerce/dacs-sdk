@@ -346,11 +346,33 @@ function sellerPages(count, matchAt) {
   return pages;
 }
 const listingPageReads = (w) => w.requests.filter((url) => url.pathname === '/api/dacs/listings').length;
-test('a seller with 251 rows and the match on the first page is found although the scan stops after five pages', async () => {
-  const w = world({ pages: sellerPages(251, 0) });
-  assertReachesRailAdmission(w, await w.verify());
+const exactCoordinates = { listingId: listing.listingId, version: listing.listingVersion, seller };
+const unconfirmed = (error) => error.kind === 'invalid' && error.code === 'directory_scan_unconfirmed';
+function assertUnconfirmedAndNeverVerified(w, result) {
+  assertRowRefused(result, 'directory_scan_unconfirmed');
+  assert.equal(result.transactable, false);
+  assert.equal(result.disposition, 'directory-row-invalid');
+  assert.equal(result.standardReaderInput, null);
+  assert.deepEqual(w.chainReads, []);
   assert.equal(listingPageReads(w), 5);
-  const summary = await w.directory.findSummary({ listingId: listing.listingId, version: listing.listingVersion, seller });
+}
+test('a seller with 251 rows and the match on the first page is directory_scan_unconfirmed and never verified', async () => {
+  const w = world({ pages: sellerPages(251, 0) });
+  assertUnconfirmedAndNeverVerified(w, await w.verify());
+  await assert.rejects(w.directory.findSummary(exactCoordinates), unconfirmed);
+});
+test('conflicting rows for one listing at rows 1 and 251 are refused and never return row 1', async () => {
+  const pages = sellerPages(251, 0);
+  pages[5] = { listings: [activeRow({ contentHash: 'f'.repeat(64), pricing: { kind: 'fixed', priceHint: '9.5', currency: 'DEM' } })] };
+  const w = world({ pages });
+  assertUnconfirmedAndNeverVerified(w, await w.verify());
+  await assert.rejects(w.directory.findSummary(exactCoordinates), unconfirmed);
+});
+test('a seller whose list ends within five pages with the match on the first page is found and verified', async () => {
+  const w = world({ pages: sellerPages(120, 0) });
+  assertReachesRailAdmission(w, await w.verify());
+  assert.equal(listingPageReads(w), 3);
+  const summary = await w.directory.findSummary(exactCoordinates);
   assert.equal(summary.contentHash, listingHash);
 });
 test('a seller with 251 rows and no match in the five scanned pages is directory_scan_incomplete and never not-found', async () => {
