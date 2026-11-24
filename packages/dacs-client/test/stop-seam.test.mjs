@@ -625,7 +625,7 @@ const typeErrorOf = message => error => error instanceof TypeError && error.mess
 const MEMBER_TABLE = {
   protocol: {
     passive: ['assertBuyerAccess', 'observeReportedPayment', 'readIssued', 'readIssuedPayment', 'supportsMode'],
-    active: ['assertSellerAdmission', 'cancelNativePayment', 'checkDelivery', 'countersign', 'countersignRequest', 'holdChainReadback', 'identityRequest',
+    active: ['agreementDelegation', 'assertSellerAdmission', 'cancelNativePayment', 'checkDelivery', 'countersign', 'countersignRequest', 'holdChainReadback', 'identityRequest',
       'nativeIntentsSupersededBy', 'nativePaymentClaimed', 'nativePaymentFailed', 'nativePaymentRefused', 'nativePaymentSuperseded', 'nativePaymentTermsCancelled',
       'planFlightsRunning', 'planRequest', 'planRunning', 'prepareTerms', 'readNativePaymentLane', 'recheck', 'recheckCommitment', 'runningPlan', 'sessionRenewal',
       'sessionRenewalAccept', 'signRequest', 'submitAgreement', 'withNativePaymentLane'],
@@ -633,7 +633,7 @@ const MEMBER_TABLE = {
   },
   service: {
     passive: ['planRunning', 'portalEvidence', 'portalOperation', 'status', 'verifyDeal'],
-    active: ['agreementIdentity', 'agreementPlan', 'agreementSubmit', 'approve', 'cancel', 'completionCountersign', 'completionRequest', 'issueApprovalChallenge',
+    active: ['agreementDelegation', 'agreementIdentity', 'agreementPlan', 'agreementSubmit', 'approve', 'cancel', 'completionCountersign', 'completionRequest', 'issueApprovalChallenge',
       'nativePaymentLane', 'prepare', 'prepareHandoff', 'protocolRecheck', 'reportWalletResult', 'sessionRenewal', 'sessionRenewalAccept'],
     value: ['actionsAdmitted'],
   },
