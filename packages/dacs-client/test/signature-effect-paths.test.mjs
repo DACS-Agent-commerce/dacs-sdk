@@ -250,7 +250,8 @@ test('with the signing of a session-key request held pending, or the request hel
 
     const waiting = await requestWorld(t);
     waiting.control.onStop = call => { if (call === lastStop) waiting.change[name](); };
-    await assert.rejects(waiting.post(), error => error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT);
+    // The connector's refusal before the first byte unwraps the same way for a stop.
+    await assert.rejects(waiting.post(), error => name === 'stop' ? error.code === expected && error.answerClass === undefined : error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT);
     assert.equal(waiting.seller.seen.requests.length, 0, `${name}: the request was written after the last check refused`);
     await flush();
     const kept = await waiting.w.requests.records();
@@ -267,7 +268,7 @@ test('a refused last check whose record cannot be saved still writes nothing', a
   const r = await requestWorld(t);
   r.w.requests.history.append = async () => { throw new Error('TEST-journal-cut'); };
   r.control.onStop = call => { if (call === lastStop) r.change.stop(); };
-  await assert.rejects(r.post(), error => error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT);
+  await assert.rejects(r.post(), error => error.code === 'writes_stopped' && error.answerClass === undefined);
   assert.equal(r.seller.seen.requests.length, 0);
   assert.deepEqual(await r.states(), []);
 });
