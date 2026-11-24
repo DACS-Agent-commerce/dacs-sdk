@@ -1,6 +1,9 @@
 import { describe, expect, test } from "vitest";
 
+import { DacsError } from "../../src/errors.js";
 import {
+  DEMOS_CCI_RESPONSE_LIMITS,
+  assertDemosCciResponseBounds,
   parseCciRecord,
   parseClaimRef,
   cciClaimRefs,
@@ -564,5 +567,115 @@ describe("domain host validation / reject-list (canonicalDomainHost)", () => {
     const recA = parseCciRecord(PRIMARY, gcr({ domain: [{ username: "alice.example" }] }));
     expect(cciHasClaim(recA, "domain:alice.example。")).toBe(false);
     expect(cciHasClaim(recA, "web2:domain:alice.example。")).toBe(false);
+  });
+});
+
+describe("Demos GCR identity response errors", () => {
+  class ArraySubclass extends Array<unknown> {}
+
+  const deep = (): Record<string, unknown> => {
+    let value: Record<string, unknown> = {};
+    for (let index = 0; index <= DEMOS_CCI_RESPONSE_LIMITS.maxDepth; index += 1) {
+      value = { response: value };
+    }
+    return value;
+  };
+  const accessorArray = (): unknown[] =>
+    Object.defineProperty([0], "0", { enumerable: true, get: () => 1 });
+  const twitterConflict = () => ({
+    result: 200,
+    response: {
+      xm: {},
+      ud: [],
+      pqc: {},
+      web2: {
+        twitter: [
+          { username: "alice", userId: "1", proofHash: "cd".repeat(32) },
+          { username: "alice", userId: "1", proofHash: "ef".repeat(32) },
+        ],
+      },
+    },
+  });
+  const WIRE_JSON_MESSAGE = "Demos GCR identity response must contain stable wire JSON";
+
+  test.each([
+    [
+      "a tree deeper than the depth limit",
+      () => parseCciRecord(PRIMARY, deep()),
+      "identity.cci_response_limit_exceeded",
+      "Demos GCR identity response exceeds maxDepth",
+    ],
+    [
+      "a string longer than the string limit",
+      () => parseCciRecord(PRIMARY, {
+        response: { ignored: "x".repeat(DEMOS_CCI_RESPONSE_LIMITS.maxStringBytes + 1) },
+      }),
+      "identity.cci_response_limit_exceeded",
+      "Demos GCR identity response exceeds maxStringBytes",
+    ],
+    [
+      "a number that is not finite",
+      () => assertDemosCciResponseBounds({ n: Number.NaN }),
+      "identity.cci_response_not_wire_json",
+      WIRE_JSON_MESSAGE,
+    ],
+    [
+      "a proxy",
+      () => assertDemosCciResponseBounds(new Proxy({}, {})),
+      "identity.cci_response_not_wire_json",
+      WIRE_JSON_MESSAGE,
+    ],
+    [
+      "an object with a symbol key",
+      () => assertDemosCciResponseBounds({ [Symbol("key")]: 1 }),
+      "identity.cci_response_not_wire_json",
+      WIRE_JSON_MESSAGE,
+    ],
+    [
+      "an array subclass instance",
+      () => assertDemosCciResponseBounds(new ArraySubclass()),
+      "identity.cci_response_not_wire_json",
+      WIRE_JSON_MESSAGE,
+    ],
+    [
+      "an array with an extra key",
+      () => assertDemosCciResponseBounds(Object.assign([1], { extra: 1 })),
+      "identity.cci_response_not_wire_json",
+      WIRE_JSON_MESSAGE,
+    ],
+    [
+      "an array with an accessor element",
+      () => assertDemosCciResponseBounds(accessorArray()),
+      "identity.cci_response_not_wire_json",
+      WIRE_JSON_MESSAGE,
+    ],
+    [
+      "an object with an inherited property",
+      () => assertDemosCciResponseBounds(Object.create({ inherited: 1 })),
+      "identity.cci_response_not_wire_json",
+      WIRE_JSON_MESSAGE,
+    ],
+    [
+      "an object with an undefined value",
+      () => assertDemosCciResponseBounds({ u: undefined }),
+      "identity.cci_response_not_wire_json",
+      WIRE_JSON_MESSAGE,
+    ],
+    [
+      "two claims with one reference and different proofs",
+      () => parseCciRecord(PRIMARY, twitterConflict()),
+      "identity.cci_claim_conflict",
+      "Demos GCR identity response contains conflicting claim cci-web2:twitter:alice",
+    ],
+  ])("%s carries its catalog code", (_name, call, code, message) => {
+    let thrown: unknown;
+    try {
+      call();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(DacsError);
+    expect(thrown).toMatchObject({ code, category: "permanent", message });
+    expect(Object.keys(thrown as object).sort()).toEqual(["category", "code", "name"]);
   });
 });

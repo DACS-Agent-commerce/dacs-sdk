@@ -1,11 +1,26 @@
 {
   "description": "Files and folders under src/ whose errors are all coded, checked by tools/lint/error-codes.mjs. A folder ends with a slash. A plain Error, TypeError, RangeError or SyntaxError throw that has to stay is listed in retainedPlainThrows with the throw as written and the reason it stays.",
-  "migrated": ["src/canonical/decimal.ts", "src/canonical/jcs.ts", "src/artifacts/", "src/crypto/"],
+  "migrated": ["src/canonical/decimal.ts", "src/canonical/jcs.ts", "src/artifacts/", "src/crypto/", "src/identity/"],
   "retainedPlainThrows": [
     {
       "path": "src/artifacts/signatures.ts",
       "throw": "new TypeError()",
       "reason": "Thrown inside a try whose catch right below it returns a malformed or unresolved verification result; it never leaves verifyComponentSignature."
+    },
+    {
+      "path": "src/identity/demosCci.ts",
+      "throw": "new TypeError(`${key} must be an own non-Proxy data function`)",
+      "reason": "Runs only inside the try in authenticateDemosCciRecord and, through captureTlsnDeps, the try in classifyCciTlsnProof; both catches return a result, so it never leaves either function."
+    },
+    {
+      "path": "src/identity/demosCci.ts",
+      "throw": "new TypeError(\"dependencies must be a plain record\")",
+      "reason": "Thrown inside the try in authenticateDemosCciRecord, whose catch right below it returns an error result."
+    },
+    {
+      "path": "src/identity/demosCci.ts",
+      "throw": "new TypeError(\"authentication dependencies contain unknown fields\")",
+      "reason": "Thrown inside the try in authenticateDemosCciRecord, whose catch right below it returns an error result."
     }
   ]
 }
