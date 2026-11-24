@@ -108,9 +108,129 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
 // helpers/kit-returned-capabilities.mjs). A member's class is what that member can reach, never the class of the export that
 // returned it: an effect member names the guard entries it reaches at each call (each listed in kit-operation-guard.test.mjs), a
 // role member is one of the seller key's closed non-effect roles, and a pure member signs, sends and rebroadcasts nothing itself.
-// `()` is a capability that is itself a function; `a.b` is a function member of a plain object member.
+// `()` is a capability that is itself a function; `a.b` is a function member of a plain object member. `as` names, for a plain
+// object member that is itself another row's capability, the row it is enumerated against. A row that equals another row (an
+// accessor that hands back a capability another constructor built) is that row.
 const PROVIDER_CALLS = ['agreementContextProvider.resolveBuyer', 'agreementContextProvider.recoverBuyer'];
+// Guards other than an assertKitOperationAdmitted entry, each with the source text that makes the check, which the test reads:
+// the client package's purchase hold, which its effect boundary, wallet factory and transport facade check at every pass, request
+// and active transport call, and the artifact anchor's resend, which a read makes only while the kit guard admits.
+export const OTHER_GUARDS = Object.freeze({
+  clientPurchaseHold: [['../dacs-client/src/wallet/effect-boundary.mjs', 'assertPurchaseActionsAdmitted();'],
+    ['../dacs-client/src/wallet/node-wallet-session.mjs', 'assertAdmitted: assertPurchaseActionsAdmitted']],
+  'artifactAnchor.resend': [['src/devnet-demo/artifact-anchor.mjs', 'resend && kitOperationAdmitted()']],
+});
+const CLIENT_HOLD = ['clientPurchaseHold'];
+const prefixed = (prefix, names) => names.map((name) => `${prefix}.${name}`);
+// The client transport facade: its active members run the purchase hold, its passive members only read or observe.
+const TRANSPORT_ACTIVE = ['rpc', 'walletBinding', 'recoverStorageWrite', 'cancelNativeTransfer', 'withWalletNonceLock', 'binding'];
+const TRANSPORT_PASSIVE = ['readRpc', 'observeBinding', 'chainReader', 'nativeTransferClaimed', 'nativeTransferCancelled', 'nativeTransferRefused', 'nativeNonceConsumer',
+  'isWalletIdle', 'profile', 'onPurchaseStep', 'onStorageWriteResend', 'reserveRpcAuth', 'close'];
+const LOCAL_JOURNAL = ['appendUnderLock', 'close', 'entries', 'get', 'inspectLocks', 'put', 'releaseAbandonedLock', 'withOwnedOrAcquiredLane', 'withWalletLock'];
+const EVIDENCE_JOURNAL_KEY = 'src/dacs/payment-evidence-wallet-journal.mjs#createPaymentEvidenceWalletJournal';
+// The seller's Node wallet composition, as createSellerNodeWallet returns it and the port's finalize hands it on; `transport` is the
+// facade's member name (`sourceCapability` on the wallet). Its wallet factory and passes sign only through the client's effect gate.
+const nodeWalletRow = (transport, extraPure = []) => ({ role: [], as: { paymentEvidence: EVIDENCE_JOURNAL_KEY },
+  effect: Object.fromEntries([['walletFactory', CLIENT_HOLD], ['effectPass', CLIENT_HOLD], ['runInEffectPass', CLIENT_HOLD], ...prefixed(transport, TRANSPORT_ACTIVE).map((name) => [name, CLIENT_HOLD])]),
+  pure: ['close', 'readBalance', ...extraPure, ...prefixed('artifactJournal', LOCAL_JOURNAL), ...prefixed('observer', ['observe', 'provenance', 'readNodeInfo']), ...prefixed(transport, TRANSPORT_PASSIVE)] });
+const EVIDENCE_JOURNAL = { role: [], effect: { anchorEvidence: ['anchorEvidence'], ensureEvidence: ['ensureEvidence'], reconcilePaymentEvidence: ['reconcilePaymentEvidence'] },
+  pure: ['clearHeldWrite', 'close', 'readSignedProjection'] };
+const DELIVERABLE_JOURNAL = { role: [], effect: { submitAuthorized: ['guardedCreate'], resume: ['guardedCreate'] }, pure: ['clearHeldWrite', 'close', 'readSignedProjection'] };
+const LEDGER_LOCAL = ['accept', 'acceptWithin', 'attempt', 'closeLostValidations', 'importAccepted', 'jobBinding', 'recordFailed', 'recordFailedWithin', 'retained', 'retainedForSession'];
+const AGENT_EFFECTS = ['agreementState', 'bundleRequest', 'commit', 'commitOnSignature', 'countersign', 'receiveProposal', 'reconcileTransport', 'resume', 'submitPayment'];
+const EFFECT_ROUTE_PATHS = ['/dacs/v1/agreements/proposals', '/dacs/v1/bundles/countersignature', '/dacs/v1/bundles/request', '/dacs/v1/commitments', '/dacs/v1/commitments/signature', '/dacs/v1/payments'];
+const PARTY_VET_STORE = { role: [], effect: {}, pure: ['close', 'entries', 'read', 'update', 'usage'] };
 export const RETURNED_CLASSIFICATION = Object.freeze({
+  'src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession.finalize()': nodeWalletRow('transport', ['acquireConnectionFence']),
+  'src/devnet-demo/seller-node-wallet.mjs#createSellerNodeWallet': nodeWalletRow('sourceCapability'),
+  'src/dacs/host-stages.mjs#openSellerStages': { role: [], effect: { finalize: ['sellerWalletSession.finalize', 'effectBoundary'] }, pure: ['bootstrap.current', 'bootstrap.enter', 'close', 'local'] },
+  'src/seller-key.mjs#loadKeyFile': { role: [], effect: {}, pure: ['bytes', 'destroy', 'redact', 'text', 'toJSON'] },
+  'src/devnet-demo/create-pass.mjs#currentAuthorizationFor': { role: [], effect: {}, pure: ['()'] },
+  'src/dacs/seller-http.mjs#createSellerHttpHandler': { role: [], effect: { '()': ['effectBoundary', 'issue', 'reserveCoordinated'] }, pure: [] },
+  'src/dacs/seller-http.mjs#createCompletedOutcomeReader': { role: [], effect: {}, pure: ['completedOutcomeWithoutReservation'] },
+  'src/dacs/seller-http.mjs#createOrdinaryCompletionPort': { role: [], effect: {}, pure: ['capture'] },
+  'src/dacs/seller-wire-requests.mjs#createWireContext': { role: ['readSigner', 'signer.readOnlyAnswerSigner'],
+    effect: { 'answers.signAnswer': ['effectBoundary'], 'reservations.reserveCoordinated': ['reserveCoordinated'], 'signer.sign': ['sellerKey.sign'], plannedAgreementOf: ['agreementContextProvider.recoverBuyer'] },
+    pure: ['admitPresentation', 'bindPlannedAgreementReader', 'continuationFor', 'local', 'now', 'readCommitmentReceipt', 'ready', 'reservations.addPreAccountingGate', 'retainedFor', 'stopped',
+      'tuple', ...prefixed('store', ['bind', 'close', 'contextHoldState', 'jobSlotReleased', 'purchaseProfile', 'recoverLostContextReservations', 'sessionTerminal'])] },
+  'src/dacs/seller-context-route.mjs#createSellerContextRoute': { role: [], effect: { challengeOnWire: ['issue'] }, pure: [] },
+  'src/dacs/seller-context-route.mjs#createSellerContextRecords': { role: [], effect: {}, pure: ['completedScope', 'exactRequest', 'retainedBody'] },
+  'src/dacs/seller-context-route.mjs#contextOperationView': { role: [], effect: {}, pure: ['()'] },
+  'src/dacs/seller-context-route.mjs#completedContextOutcome': { role: [], effect: {}, pure: ['()'] },
+  'src/dacs/seller-context-continuation.mjs#createContinuationCheck': { role: [], effect: {}, pure: ['()'] },
+  'src/dacs/seller-context-continuation.mjs#createAcceptedContinuation': { role: [], effect: { '()': ['agreementContextProvider.recoverBuyer'] }, pure: [] },
+  'src/dacs/seller-context-attempt.mjs#createContextAttempt': { role: [], effect: { writable: ['runningCheck'] }, pure: ['close', 'isClosed', 'run'] },
+  'src/dacs/seller-planned-agreement.mjs#createPlannedAgreementReader': { role: [], effect: { '()': ['agreementContextProvider.recoverBuyer'] }, pure: [] },
+  'src/dacs/seller-admission-transaction.mjs#createContextAdmissionTransaction': { role: [],
+    effect: { begin: ['begin'], compensate: ['compensate'], reserveContext: ['reserveContext'], runningCheck: ['runningCheck'] },
+    pure: ['addAcceptanceHook', 'admissionRecord', 'cleanupPending', 'fitsNewPurchase', 'jobEffectMutex', 'sweep'] },
+  'src/dacs/seller-admission-transaction.mjs#admissionTransactionInternals': { role: [], effect: {}, pure: ['ownedIntent'] },
+  'src/dacs/seller-reservation-accounting.mjs#createReservationCoordinator': { role: [], effect: { reserveCoordinated: ['reserveCoordinated'] }, pure: ['addPreAccountingGate'] },
+  'src/dacs/seller-reservation-accounting.mjs#createReservationAccounting': { role: [], effect: { reserveAccounted: ['reserveAccounted'] }, pure: ['reservedRequest'] },
+  'src/dacs/seller-reservation-accounting.mjs#createLiveAttemptGate': { role: [], effect: {}, pure: ['()'] },
+  'src/dacs/seller-transport-auth.mjs#createSellerTransportStore': { role: [], effect: { 'challenges.issue': ['issue'], 'reservationAccounting.reserveAccounted': ['reserveAccounted'] },
+    pure: ['bind', 'close', 'contextHoldState', 'jobSlotReleased', 'purchaseProfile', 'recoverLostContextReservations', 'sessionTerminal', 'reservationAccounting.reservedRequest', ...prefixed('challenges', LEDGER_LOCAL)] },
+  'src/dacs/seller-transport-auth.mjs#sellerStoreInternals': { role: [], effect: { 'challenges.issue': ['issue'], terminalSession: ['terminalSession'] },
+    pure: ['admissionCounts', 'bindTerminalCleanup', 'flushTerminalObservations', 'keepPurchaseProfileWithin', 'reserveAdmissionWithin', 'retainedReservationCount', 'retireSlotsWithin', 'sessionState',
+      'transaction', ...prefixed('challenges', LEDGER_LOCAL)] },
+  'src/dacs/seller-purchase-capacity.mjs#createPurchaseCapacity': { role: [], effect: { terminalSession: ['terminalSession'] },
+    pure: ['allocateWithin', 'allocationWithin', 'allotment', 'capacityReport', 'classify', 'fitsNewPurchase', 'flushTerminalObservations', 'recordExhaustion', 'releaseAllWithin',
+      'releaseTerminalAllocations', 'retainedAllocated', 'returnRouteSlotWithin'] },
+  'src/dacs/seller-completion-records.mjs#createCompletionRecords': { role: [], effect: {}, pure: ['complete', 'reservationRow'] },
+  'src/dacs/accounting-reconciliation.mjs#createAccountingReconciler': { role: [], effect: {}, pure: ['reconcileStartup'] },
+  'src/dacs/seller-challenge-ledger.mjs#createSellerChallengeLedger': { role: [], effect: { issue: ['issue'] }, pure: LEDGER_LOCAL },
+  'src/dacs/closed-bootstrap-gate.mjs#createClosedBootstrapGate': { role: [], effect: {}, pure: ['()'] },
+  'src/dacs/bootstrap-scope.mjs#createBootstrapScopes': { role: [], effect: {}, pure: ['current', 'enter'] },
+  'src/dacs/abandoned-purchase.mjs#createAbandonedPurchaseState': { role: [], effect: {}, pure: ['()'] },
+  'src/dacs/context-work-registry.mjs#createContextWorkRegistry': { role: [], effect: {}, pure: ['drain', 'stop', 'track'] },
+  'src/dacs/compensation-proof.mjs#createContextEffectEvidence': { role: [], effect: {}, pure: ['()'] },
+  'src/dacs/cosignature-answer.mjs#createCosignatureAnswer': { role: [], effect: { send: ['effectBoundary'] }, pure: [] },
+  'src/dacs/agent-effect-signer.mjs#createAgentEffectSigner': { role: [], effect: { '()': ['effectBoundary'] }, pure: [] },
+  'src/dacs/effect-boundary.mjs#createEffectBoundary': { role: [],
+    effect: Object.fromEntries(['checkNow', 'dispatchPass', 'pass', 'refresh', 'signPass', 'signerFor', 'withFence'].map((name) => [name, ['effectBoundary']])),
+    pure: ['connectionGeneration', 'recordObserved', 'replaceConnection'] },
+  'src/dacs/effect-history.mjs#createEffectHistory': { role: [], effect: {}, pure: ['append', 'read'] },
+  'src/dacs/seller-durable-state.mjs#createSellerDurableState': { role: [], effect: { anchor: ['anchor'], signOnce: ['signOnce'] },
+    pure: ['assertHeld', 'bindSettlement', 'close', 'context', 'hasAnchor', 'inspectLocks', 'legacyAcceptedChallenges', 'loadSession', 'readAnchor', 'reconcileAnchor', 'reconcileJob',
+      'releaseAbandonedLock', 'releaseSignatureCommitment', 'releaseStaleLocks', 'reserveSignatureCommitment', 'retainContext', 'saveSession', 'sessions', 'settlementBoundTo', 'settlementJob', 'signature',
+      'withJob', ...prefixed('fencedStore', ['acquireLease', 'bindHash', 'bindSessionAuthorization', 'claimCheckpoint', 'create', 'list', 'load', 'renewLease', 'transition']),
+      ...prefixed('receiptStore', ['claim', 'consumePermit', 'inspectPermit'])] },
+  'src/dacs/seller-agent.mjs#createSellerAgent': { role: [], effect: Object.fromEntries(AGENT_EFFECTS.map((name) => [name, ['effectBoundary', 'signOnce', 'anchor']])),
+    pure: ['admitSessionPresentation', 'assertAuthenticatedPayment', 'assertSettlementCredit', 'close', 'confirmBuyerCopy', 'continuationEvidenceOf', 'deliveryStateOf', 'durableSessionOf', 'durableSessions',
+      'finalityCommitmentAddress', 'holdsRecordedPayment', 'readCommitment', 'reconcile', 'releaseStaleLocks', 'retainedAgreementDeadline', 'retainsCommitmentWork', 'retainsPaymentClaim', 'retainsPaymentWork',
+      'retainsProposalWork', 'retainsUnfinishedWork', 'revalidateCompletedAnswer', 'stageOf', 'transportAgreementOf'] },
+  // A fixture payment signs its evidence and anchors it through the agent's guarded signer and durable anchor; its reads only read back.
+  'src/dacs/fixture-settlement.mjs#createFixtureSettlement': { role: [], effect: { submitPayment: ['effectBoundary', 'signOnce', 'anchor'] }, pure: ['readPayment', 'verifyRetainedPayment'] },
+  // A route's recovery may finish retained work through the agent; its end decision and revalidation only read.
+  'src/dacs/seller-effect-routes.mjs#createSellerEffectRoutes': { role: [], effect: Object.fromEntries(EFFECT_ROUTE_PATHS.map((path) => [`${path}.recover`, ['effectBoundary', 'signOnce', 'anchor']])),
+    pure: EFFECT_ROUTE_PATHS.flatMap((path) => [`${path}.endAfter`, `${path}.revalidate`]) },
+  'src/dacs/commit-on-signature.mjs#signatureCommitmentAnchor': { role: [], effect: { anchorAgreement: ['signatureCommitmentAnchor'] }, pure: [] },
+  'src/dacs/purchase-protocol.mjs#commitmentReader': { role: [], effect: {}, pure: ['resolve', 'verifyAnchorReceipt'] },
+  [EVIDENCE_JOURNAL_KEY]: EVIDENCE_JOURNAL,
+  'src/dacs/payment-evidence-wallet-journal.mjs#paymentEvidenceWalletJournalOf': EVIDENCE_JOURNAL,
+  'src/dacs/payment-evidence-wallet-journal.mjs#createSignedCreateJournal': { role: [], effect: { guardedCreate: ['guardedCreate'] }, pure: ['clearHeldWrite', 'close', 'readSignedProjection'] },
+  'src/dacs/deliverable-wallet-journal.mjs#createDeliverableWalletJournal': DELIVERABLE_JOURNAL,
+  'src/dacs/deliverable-wallet-journal.mjs#deliverableJournalFor': DELIVERABLE_JOURNAL,
+  'src/dacs/native-payment-evidence-consumer.mjs#createNativePaymentEvidenceConsumer': { role: [], effect: { anchorEvidence: ['anchorEvidence'] }, pure: ['observeDemosTransfer', 'readEvidence'] },
+  'src/dacs/demos-sr2-adapter.mjs#createInMemoryDemosSr2Journal': { role: [], effect: {}, pure: ['get', 'put', 'records', 'withWalletLock'] },
+  'src/dacs/demos-sr2-adapter.mjs#createDemosSr2Adapter': { role: [], effect: {}, pure: ['read', 'recheck', 'verifyReceipt'] },
+  'src/dacs/authority-reader.mjs#createSellerAuthorityReader': { role: [], effect: {}, pure: ['()'] },
+  'src/devnet-demo/artifact-anchor.mjs#createDevnetDemoArtifactAnchor': { role: [], effect: { publish: ['publish'], read: ['artifactAnchor.resend'], readRetained: ['artifactAnchor.resend'] },
+    pure: ['hasIntent', 'retainedSignedCreate', 'verifyReceipt'] },
+  'src/devnet-demo/buyer-access.mjs#createOperatorBuyerAccess': { role: [], effect: {}, pure: ['allowsWallet', 'assertRelayWallet', 'assertSellerJob', 'assertSellerWallet', 'assertWallet', 'jobAccess', 'sellerNotice'] },
+  'src/devnet-demo/deliverable.mjs#createDevnetPurchasedReportProducer': { role: [], effect: {}, pure: ['()'] },
+  // The approval only decides: it signs and sends nothing, and the write it approves signs inside the guarded boundary.
+  'src/devnet-demo/operator-approval.mjs#composeSellerApproval': { role: [], effect: {}, pure: ['()'] },
+  'src/devnet-demo/operator-approval.mjs#createExactOperatorApproval': { role: [], effect: {}, pure: ['()'] },
+  'src/devnet-demo/operator-approval.mjs#createSellerContextAdmission': { role: [], effect: {}, pure: ['release', 'reserve'] },
+  'src/devnet-demo/party-vet-store.mjs#createInMemoryPartyVetStore': PARTY_VET_STORE,
+  'src/devnet-demo/party-vet-store.mjs#openPartyVetStore': PARTY_VET_STORE,
+  'src/devnet-demo/seller-purchase-source.mjs#sellerRecordsPurchaseResolver': { role: [], effect: {}, pure: ['()'] },
+  'src/devnet-demo/seller-state-lock.mjs#acquireSellerStateLock': { role: [], effect: {}, pure: ['held', 'release'] },
+  'src/devnet-demo/storage-write-recovery.mjs#storageWriteRpcSigner': { role: [], effect: { '()': ['storageWriteRpcSigner'] }, pure: [] },
+  'src/devnet-demo/write-exclusion.mjs#createWriteExclusionRule': { role: [], effect: {}, pure: ['()'] },
+  'src/util/immutable-readbacks.mjs#createImmutableReadbacks': { role: [], effect: {}, pure: ['delete', 'get', 'put'] },
+  'src/host.mjs#startSellerHost': { role: [], effect: {}, pure: ['close'] },
   'src/devnet-demo/agreement-context.mjs#createDevnetDemoAgreementContextProvider': { role: [],
     effect: { resolveBuyer: ['agreementContextProvider.resolveBuyer', 'effectBoundary'], recoverBuyer: ['agreementContextProvider.recoverBuyer'],
       resolveSeller: ['agreementContextProvider.resolveSeller', 'effectBoundary'] },
@@ -138,3 +258,25 @@ export const RETURNED_CLASSIFICATION = Object.freeze({
   'src/dacs/dem-delivery-context-consumer.mjs#demDeliveryContextHost': { role: [],
     effect: { resolveBuyer: ['agreementContextProvider.resolveBuyer'], recoverBuyer: ['agreementContextProvider.recoverBuyer'] }, pure: ['resumableBuyer', 'bindRetainedScope'] },
 });
+
+// The exports named like constructors (create, open, take, compose, late) that return only data or a registered-capability
+// descriptor, so they have no row. kit-operation-guard.test.mjs builds each and checks it hands out no function.
+export const NO_CAPABILITY = Object.freeze({
+  // A frozen { source, authority } descriptor; its callbacks are reached through the registry.
+  'src/dacs/dem-delivery-context-consumer.mjs': ['createDemDeliveryContext'],
+  // A frozen { source, authority } descriptor; its submit is reached through the registry and checks the guard there.
+  'src/dacs/native-dem-delivery-consumer.mjs': ['createNativeDemDeliveryCapability'],
+  'src/devnet-demo/native-delivery.mjs': ['createDevnetDemoDeliveryCapability'],
+  // The opened request envelope, as the wire verified it.
+  'src/dacs/seller-wire-requests.mjs': ['openWireRequest'],
+  // The lease holder's id.
+  'src/dacs/process-lease.mjs': ['takeLease'],
+  // Whether a late write is still watched.
+  'src/devnet-demo/late-write-watch.mjs': ['lateWriteWatchOpen'],
+});
+
+// Exports outside the constructor name rule that return a function or an object with function members, read from each
+// `export function`'s return in src/. Each has a row.
+export const ALSO_CONSTRUCTORS = Object.freeze(['resumeContext', 'demDeliveryContextHost', 'wireAuthenticator', 'commitmentReader', 'currentAuthorizationFor',
+  'sellerRecordsPurchaseResolver', 'signatureCommitmentAnchor', 'storageWriteRpcSigner', 'startSellerHost', 'contextOperationView', 'completedContextOutcome',
+  'sellerStoreInternals', 'admissionTransactionInternals', 'loadKeyFile', 'deliverableJournalFor', 'paymentEvidenceWalletJournalOf', 'acquireSellerStateLock']);

@@ -9,7 +9,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathS
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { EXPORT_CLASSIFICATION, RETURNED_CLASSIFICATION } from './helpers/kit-guard-classification.mjs';
+import { ALSO_CONSTRUCTORS, EXPORT_CLASSIFICATION, NO_CAPABILITY, OTHER_GUARDS, RETURNED_CLASSIFICATION } from './helpers/kit-guard-classification.mjs';
 
 const packageDirectory = fileURLToPath(new URL('../', import.meta.url));
 const probePath = fileURLToPath(new URL('./helpers/kit-guard-probe.mjs', import.meta.url));
@@ -91,6 +91,7 @@ const isPlainObject = (value) => value !== null && typeof value === 'object' && 
 // members of a plain object member as `<key>.<inner>`, one level deep. Data (strings, Maps, arrays, getters that answer data) is skipped.
 const returnedMembers = (value) => {
   if (typeof value === 'function') return ['()'];
+  if (value === null || typeof value !== 'object') return [];
   const members = [];
   for (const [key, member] of Object.entries(value)) {
     if (typeof member === 'function') members.push(key);
@@ -98,6 +99,28 @@ const returnedMembers = (value) => {
   }
   return members.sort();
 };
+// A row's drift against the capability it classifies; an `as` member is enumerated against the row it names, its findings prefixed.
+const capabilityDrift = (capability, row) => {
+  const delegated = Object.entries(row.as ?? {});
+  const own = returnedMembers(capability).filter((member) => !delegated.some(([key]) => member.startsWith(`${key}.`)));
+  const drift = classificationDrift(own, row);
+  for (const [key, rowKey] of delegated) {
+    if (!isPlainObject(capability[key])) { drift.stale.push(key); continue; }
+    const inner = capabilityDrift(capability[key], RETURNED_CLASSIFICATION[rowKey]);
+    drift.unclassified.push(...inner.unclassified.map((member) => `${key}.${member}`));
+    drift.stale.push(...inner.stale.map((member) => `${key}.${member}`));
+  }
+  return drift;
+};
+const CONSTRUCTOR_NAME = /^(create|open|take|compose|late)/;
+// The constructors the two rules name, as '<file>#<export>', for a classification of exports by file.
+const namedConstructors = (classification, also) => Object.entries(classification).flatMap(([file, { effect, pure }]) => [...Object.keys(effect), ...pure]
+  .filter((name) => CONSTRUCTOR_NAME.test(name) || also.includes(name)).map((name) => `${file}#${name}`));
+// The named constructors with neither a row nor a NO_CAPABILITY entry.
+const missingRows = (named, rows, noCapability) => named.filter((key) => {
+  const [file, name] = key.split('#');
+  return !Object.hasOwn(rows, key) && !(noCapability[file] ?? []).includes(name);
+});
 
 test('while the guard is off, startSellerHost refuses kit_operation_guard_off before it reads options or opens any file', () => {
   const { refusal, optionReads, fsCalls } = runProbe('startWithHostileOptions');
@@ -158,13 +181,30 @@ test('every function exported by a shipped module is classified as an effect ent
 test('every capability a shipped constructor returns, whatever its export class, is classified as an effect entry guarded at each call, a closed non-effect signing role, or pure; an unclassified returned method, including one added to a constructor whose export is pure, fails', async (t) => {
   const { returnedCapabilities } = await import('./helpers/kit-returned-capabilities.mjs');
   const capabilities = await returnedCapabilities(t);
-  assert.deepEqual([...capabilities.keys()].sort(), Object.keys(RETURNED_CLASSIFICATION).sort(), 'every classified constructor was built, and only those');
-  const guarded = new Set(Object.values(GUARD_SITES).flat());
+  const noCapability = Object.entries(NO_CAPABILITY).flatMap(([file, names]) => names.map((name) => `${file}#${name}`));
+  assert.deepEqual([...capabilities.keys()].sort(), [...Object.keys(RETURNED_CLASSIFICATION), ...noCapability].sort(), 'every classified constructor was built, and only those');
+  const exportsOf = (file) => [...Object.keys(EXPORT_CLASSIFICATION[file]?.effect ?? {}), ...(EXPORT_CLASSIFICATION[file]?.pure ?? [])];
+
+  // Completeness: every export the name rule or ALSO_CONSTRUCTORS names, in any export class, has a row or a NO_CAPABILITY entry.
+  const named = namedConstructors(EXPORT_CLASSIFICATION, ALSO_CONSTRUCTORS);
+  assert.deepEqual(missingRows(named, RETURNED_CLASSIFICATION, NO_CAPABILITY), [], 'every constructor the two rules name has a row or a NO_CAPABILITY entry');
+  for (const name of ALSO_CONSTRUCTORS) assert.ok(named.some((key) => key.endsWith(`#${name}`)), `${name} is an export of a classified module`);
+  for (const key of noCapability) {
+    assert.ok(!Object.hasOwn(RETURNED_CLASSIFICATION, key), `${key} is not both a row and a NO_CAPABILITY entry`);
+    assert.ok(exportsOf(key.split('#')[0]).includes(key.split('#')[1]), `${key} names an existing export`);
+    assert.deepEqual(returnedMembers(capabilities.get(key)), [], `${key} hands out no function`);
+  }
+  const injectedExports = { ...EXPORT_CLASSIFICATION, 'src/dacs/answer-signers.mjs': { effect: {}, pure: ['createAnswerSigners', 'createInjected', 'injectedHelper'] } };
+  assert.deepEqual(missingRows(namedConstructors(injectedExports, [...ALSO_CONSTRUCTORS, 'injectedHelper']), RETURNED_CLASSIFICATION, NO_CAPABILITY),
+    ['src/dacs/answer-signers.mjs#createInjected', 'src/dacs/answer-signers.mjs#injectedHelper'], 'a new constructor of a pure module, by name or by the named list, has no row and fails');
+
+  // Each row's members, against the guards they reach: kit guard entries, or a guard named in OTHER_GUARDS whose check is in its source.
+  for (const [name, sites] of Object.entries(OTHER_GUARDS)) for (const [file, text] of sites) assert.ok(sourceOf(file).includes(text), `${file} makes the ${name} check`);
+  const guarded = new Set([...Object.values(GUARD_SITES).flat(), ...Object.keys(OTHER_GUARDS)]);
   for (const [key, row] of Object.entries(RETURNED_CLASSIFICATION)) {
     const [file, constructor] = key.split('#');
-    const row0 = EXPORT_CLASSIFICATION[file];
-    assert.ok(row0 && [...Object.keys(row0.effect), ...row0.pure].includes(constructor), `${key} names an existing export`);
-    assert.deepEqual(classificationDrift(returnedMembers(capabilities.get(key)), row), { unclassified: [], stale: [] }, `${key} returned-member classification drifted`);
+    assert.ok(exportsOf(file).includes(constructor.split('.')[0]), `${key} names an existing export`);
+    assert.deepEqual(capabilityDrift(capabilities.get(key), row), { unclassified: [], stale: [] }, `${key} returned-member classification drifted`);
     for (const [member, entries] of Object.entries(row.effect)) for (const entry of entries) assert.ok(guarded.has(entry), `${key} ${member} reaches ${entry}, which no module guards`);
   }
   const rowOf = (key) => RETURNED_CLASSIFICATION[key];
@@ -174,6 +214,9 @@ test('every capability a shipped constructor returns, whatever its export class,
   assert.deepEqual(classificationDrift(returnedMembers({ ...capabilities.get(PROVIDER), injected }), rowOf(PROVIDER)).unclassified, ['injected'], 'an extra provider member');
   const port = capabilities.get(PORT);
   assert.deepEqual(classificationDrift(returnedMembers({ ...port, artifactAnchor: { ...port.artifactAnchor, injected } }), rowOf(PORT)).unclassified, ['artifactAnchor.injected'], 'a nested extra member');
+  const FINALIZED = `${PORT}.finalize()`, session = capabilities.get(FINALIZED);
+  assert.deepEqual(capabilityDrift({ ...session, paymentEvidence: { ...session.paymentEvidence, injected } }, rowOf(FINALIZED)).unclassified, ['paymentEvidence.injected'],
+    'an extra member of a capability another row covers');
   for (const key of [ROUTE, ANSWERS]) {
     assert.deepEqual(classificationDrift(returnedMembers({ ...capabilities.get(key), injected }), rowOf(key)).unclassified, ['injected'], `an extra member of ${key}, whose export is pure`);
   }
