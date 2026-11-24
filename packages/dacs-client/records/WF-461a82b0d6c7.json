@@ -1,0 +1,83 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF read the Directory's actual row contract and report every bounded-read deadline as a timeout",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/chain.mjs",
+      "before": "ad8d99f266a087b826a052730243bc257b1f5789",
+      "after": "1e918802dc38fbf0abb5e8ea39a25994597795a5"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/directory.mjs",
+      "before": "c91e7f4769c14fa8b8306ef38647c65230cce881",
+      "after": "e3e33a75394028b96ec0d04dcfa3b19314ad8ad3"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/verification.mjs",
+      "before": "d974b1b11cd188f5f7246bcba42ce541c5873a01",
+      "after": "aeb4e5b4bee9b4ea8b39728aef78d043e1c4f6eb"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "8e4a77e255111ecbaf5758e53d84fceaa2c36816",
+      "after": "a0c42c873e6bda38b7c5d9f94ec97e0adf738876"
+    },
+    {
+      "path": "packages/dacs-client/src/util/http.mjs",
+      "before": "1491db0fe720a81c5b0cb053ad79af4ab5f79639",
+      "after": "01c62b14963d1579c1a2e3cc02ffd392dff692a6"
+    },
+    {
+      "path": "packages/dacs-client/test/bounded-json-causes.test.mjs",
+      "before": null,
+      "after": "aac5f2e8d20ad93997b848ddf7cb95548509dcc7"
+    },
+    {
+      "path": "packages/dacs-client/test/directory-contract.test.mjs",
+      "before": null,
+      "after": "d37fe6482340e8c4984ec452722a24a17856e294"
+    },
+    {
+      "path": "packages/dacs-client/test/fetch-abort-settle.test.mjs",
+      "before": "3293ce72e25868798e7b7f29aecc1c155a4d11e3",
+      "after": "edd76107f573511aa2b8836d5a33e0546eae124f"
+    },
+    {
+      "path": "packages/dacs-client/test/fixtures/directory-contract-c02.json",
+      "before": null,
+      "after": "40559027ca4477d8de49d6e9cc054e4ca3603df5"
+    },
+    {
+      "path": "packages/dacs-client/test/fixtures/listings.mjs",
+      "before": "7b61fcf06227c2a81bf9ac04b9a673ba686fe63d",
+      "after": "1648a8715b2435b40e4cfcf252dc42f805bd9c01"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/agreement-context-integration.mjs",
+      "before": "3bbc74d4d3f72101e8b3d3b2ff27449ba4105add",
+      "after": "f93852b2cb829403fcfbb39baed8be3679f5908d"
+    },
+    {
+      "path": "packages/dacs-client/test/passive-observation.test.mjs",
+      "before": "4b2d301177a3d336f1976f1bafaae1fc00e98c70",
+      "after": "b49f15e35447e2b33f7f2f9a7fdc819a993ce90a"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-461a82b0d6c7.json",
+    "packages/dacs-client/src/dacs/chain.mjs",
+    "packages/dacs-client/src/dacs/directory.mjs",
+    "packages/dacs-client/src/dacs/verification.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/util/http.mjs",
+    "packages/dacs-client/test/bounded-json-causes.test.mjs",
+    "packages/dacs-client/test/directory-contract.test.mjs",
+    "packages/dacs-client/test/fetch-abort-settle.test.mjs",
+    "packages/dacs-client/test/fixtures/directory-contract-c02.json",
+    "packages/dacs-client/test/fixtures/listings.mjs",
+    "packages/dacs-client/test/helpers/agreement-context-integration.mjs",
+    "packages/dacs-client/test/passive-observation.test.mjs"
+  ]
+}

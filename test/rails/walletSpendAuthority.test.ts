@@ -1280,3 +1280,122 @@ test("an authorization window without an expiry binder is denied before any hold
   // A window request for an id that already holds a row reports that row, not the missing binder.
   expect((await wallet.reserve(reservation("windowed"), { authorizationWindowSeconds: 120 })).status).toBe("held");
 });
+
+describe("an absence claim is released only against the hold it was checked on", () => {
+  const absence = { disposition: "terminal-absent" as const, evidenceHash: HASH_C };
+  const notInvoked = { disposition: "not-invoked" as const, evidenceHash: HASH_C };
+  type Hold = Parameters<WalletSpendAuthorityDependenciesV1["authenticateRecovery"]>[2];
+
+  function recording(authenticate: (
+    observation: Readonly<WalletSpendRecoveryObservationV1>,
+    hold: Hold,
+  ) => Promise<boolean> | boolean = () => true) {
+    const clock = { value: 1_000 };
+    const seen: { disposition: string; hold: Hold }[] = [];
+    const wallet = createWalletSpendAuthorityV1(policy(), {
+      store: createInMemoryWalletSpendStateStore(),
+      readBalance: async () => "1000",
+      authenticateRecovery: async (_reservation, observation, hold) => {
+        seen.push({ disposition: observation.disposition, hold });
+        return authenticate(observation, hold);
+      },
+      bindAuthorizationValidBefore: async () => 1_900_000_000 + clock.value,
+      now: () => clock.value,
+      owner: "worker-1",
+      leaseDurationMs: 100,
+    });
+    return { wallet, clock, seen };
+  }
+
+  test("hands the authenticator the current hold's generation and expiry, and none for a settlement", async () => {
+    const { wallet, clock, seen } = recording();
+    const item = reservation("one");
+    const claim = await wallet.reserve(item, { authorizationWindowSeconds: 120 });
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+    await claim.permit.beginEffect();
+    clock.value = 1_101;
+    expect(await wallet.reconcile(item, absence)).toBe("released");
+    expect(seen).toEqual([{
+      disposition: "terminal-absent",
+      hold: { generation: claim.permit.generation, authorizationValidBefore: 1_900_001_000 },
+    }]);
+    const again = await wallet.reserve(item);
+    if (again.status !== "reserved") throw new Error("expected reservation");
+    await again.permit.beginEffect();
+    await again.permit.settle(settled() as Extract<WalletSpendRecoveryObservationV1, { disposition: "settled" }>);
+    expect(seen[1]).toEqual({ disposition: "settled", hold: undefined });
+  });
+
+  test("a hold without a bound expiry is passed on with its generation alone", async () => {
+    const seen: Hold[] = [];
+    const clock = { value: 1_000 };
+    const wallet = createWalletSpendAuthorityV1(policy(), {
+      store: createInMemoryWalletSpendStateStore(),
+      readBalance: async () => "1000",
+      authenticateRecovery: async (_reservation, _observation, hold) => {
+        seen.push(hold);
+        return true;
+      },
+      now: () => clock.value,
+      owner: "worker-1",
+      leaseDurationMs: 100,
+    });
+    const item = reservation("one");
+    const claim = await wallet.reserve(item);
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+    clock.value = 1_101;
+    await wallet.reconcile(item, notInvoked);
+    expect(seen).toEqual([{ generation: claim.permit.generation }]);
+  });
+
+  test("refuses an absence for a missing or different reservation before the authenticator runs", async () => {
+    const { wallet, seen } = recording();
+    await expect(wallet.reconcile(reservation("none"), absence))
+      .rejects.toThrow("wallet spend absence does not match a reservation");
+    const claim = await wallet.reserve(reservation("one"));
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+    await expect(wallet.reconcile(reservation("one", { payee: "seller-2" }), absence))
+      .rejects.toThrow("wallet spend absence does not match a reservation");
+    expect(seen).toEqual([]);
+  });
+
+  for (const [name, effect, observation] of [
+    ["a hold released and reserved again during the check", false, absence],
+    ["an effect-pending hold reserved again during the check", true, absence],
+    ["a hold released and reserved again during a not-invoked check", false, notInvoked],
+  ] as const) {
+    test(`refuses the release for ${name}`, async () => {
+      let nested = false;
+      let again: Awaited<ReturnType<ReturnType<typeof recording>["wallet"]["reserve"]>> | undefined;
+      const harness = recording(async () => {
+        if (nested) return true;
+        nested = true;
+        await harness.wallet.reconcile(item, absence);
+        again = await harness.wallet.reserve(item);
+        if (again.status !== "reserved") throw new Error("expected reservation");
+        if (effect) await again.permit.beginEffect();
+        harness.clock.value += 1_000;
+        return true;
+      });
+      const item = reservation("one");
+      const first = await harness.wallet.reserve(item);
+      if (first.status !== "reserved") throw new Error("expected reservation");
+      harness.clock.value = 1_101;
+      await expect(harness.wallet.reconcile(item, observation))
+        .rejects.toThrow("wallet spend absence was checked against another hold");
+      if (again?.status !== "reserved") throw new Error("expected a second hold");
+      expect((await harness.wallet.inspect()).activeEffects).toBe(1);
+      harness.clock.value += 1_000;
+      expect(await harness.wallet.reconcile(item, observation)).toBe("released");
+    });
+  }
+
+  test("a check that finds the hold already released by the same evidence still answers existing", async () => {
+    const { wallet, clock } = recording();
+    const item = reservation("one");
+    await wallet.reserve(item);
+    clock.value = 1_101;
+    expect(await wallet.reconcile(item, absence)).toBe("released");
+    expect(await wallet.reconcile(item, absence)).toBe("existing");
+  });
+});
