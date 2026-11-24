@@ -77,7 +77,9 @@ test('a stop seen when a request starts stores no bytes and counts no attempt', 
   const s = await storedWorld(t), before = s.p.get();
   await assert.rejects(s.client({ stopped: () => true }).propose(bodyFor(P)), isStopRefusal);
   assert.equal(s.record(P), undefined);
-  assert.equal(s.p.get().state.protocol.revision, before.state.protocol.revision);
+  assert.deepEqual(s.p.get().state.protocol.sellerRequests, before.state.protocol.sellerRequests);
+  assert.equal(s.p.get().state.protocol.revision, (before.state.protocol.revision ?? 0) + 1, 'the one write is the suspension');
+  assert.equal(s.p.get().state.protocol.sellerSuspension.cause, 'writes_stopped');
   assert.equal(s.w.state.signs.length, 0);
   assert.equal(s.fetches.length, 0);
 });
