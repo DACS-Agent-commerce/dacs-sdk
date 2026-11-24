@@ -205,6 +205,7 @@ const capabilities = () => ({
   observeDemosTransfer: refuse('observeDemosTransfer'),
   railAuthority,
   sessionAdmission,
+  receiptFeeCeilings: { payFeeCeilingOs: '7000013', anchorFeeCeilingOs: '300007' },
 });
 const dataDirectory = second ?? realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-host-')));
 const signer = { claim: sellerKey.claim, sign: sellerKey.sign };

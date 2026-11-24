@@ -7,7 +7,7 @@ import * as core from '@kynesyslabs/dacs';
 import {createSellerAgent} from '../src/dacs/seller-agent.mjs';
 import {createSellerDurableState} from '../src/dacs/seller-durable-state.mjs';
 import {fixtureListing} from './fixtures/listings.mjs';
-import {seller,buyer,JOB,NOW} from './helpers/protocol-fixture.mjs';
+import {seller,buyer,JOB,NOW,RECEIPT_FEE_CEILINGS} from './helpers/protocol-fixture.mjs';
 import {railSteward} from './helpers/rail-authority-fixture.mjs';
 import {createSessionAdmissionFixture} from './helpers/session-admission-fixture.mjs';
 import {buildUnsignedIdentityBundle,attachIdentityPresentation} from '../src/dacs/listing.mjs';
@@ -20,7 +20,7 @@ function fixture(t){
  const storeDirectory=mkdtempSync(join(tmpdir(),'TEST-agent-construction-ledger-'));t.after(()=>rmSync(storeDirectory,{recursive:true,force:true}));
  const store=createSellerTransportStore({path:join(storeDirectory,'transport.sqlite'),now:()=>time,generation:'TEST-generation'});t.after(()=>store.close());
  const admission=createSessionAdmissionFixture({seller:{claim:seller.claim,sign:seller.signBytes},buyer:{claim:buyer.claim,sign:buyer.signBytes},now:()=>time});
- const config={signer,listing,durableDirectory:dir,challengeLedger:store.challenges,now:()=>time,agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission};
+ const config={signer,listing,durableDirectory:dir,challengeLedger:store.challenges,now:()=>time,agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission,receiptFeeCeilings:RECEIPT_FEE_CEILINGS};
  return{config,dir,listing,signer,admission,ledger:store.challenges,store,storePath:join(storeDirectory,'transport.sqlite'),advance:ms=>{time+=ms;},open:changes=>createSellerAgent({...config,...changes})};
 }
 // The simulated fixture profile: no session admission, so no retained Vet
