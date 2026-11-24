@@ -1,0 +1,53 @@
+{
+  "current-entry": {
+    "answer": "{\"result\":200,\"response\":{\"version\":1,\"request\":{\"sellerClaim\":\"did:demos:agent:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e\",\"participantClaim\":\"did:demos:agent:b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7\",\"listingPin\":{\"listingId\":\"enrollment-test-listing\",\"version\":3,\"contentHash\":\"c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4\"},\"nonce\":\"5dfc6a3495d7503cc3c3864fa61da8fb60b0c843dd3e18b5365919d121648ee9\"},\"chainIdentity\":\"d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc\",\"height\":120345,\"blockHash\":\"eac8e7c1294ed73fc9421f6a16bb26c4ea1bc71b67c7f025e760e1c41897105d\",\"complete\":true,\"entries\":[{\"claim\":\"did:demos:agent:b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7\",\"profile\":{\"id\":\"dacs-testnet-tp1\",\"revision\":\"TP-1\",\"base\":\"d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20\",\"chainIdentity\":\"d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc\",\"pinVersion\":\"dacs-demos-testnet-identity/2026-10-21\"},\"modules\":{\"CORE\":\"0.3\",\"DACS-1\":\"0.7\",\"DACS-2\":\"0.6\",\"DACS-3\":\"0.5\",\"DACS-4\":\"0.8\",\"DACS-5\":\"0.5\"},\"evidence\":\"registry row 41 at block 120300\",\"revoked\":false}],\"signature\":\"KeEa-XWM6bl1eb54iso43iadae2Sw_9A5B8pc4CLzNRe_gjtqnPYZO5CltASp8le8VnTbmHSRl1K3PUt1miYBA\"},\"require_reply\":false,\"extra\":\"\"}",
+    "request": {
+      "sellerClaim": "did:demos:agent:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+      "participantClaim": "did:demos:agent:b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7",
+      "listingPin": {
+        "listingId": "enrollment-test-listing",
+        "version": 3,
+        "contentHash": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4"
+      },
+      "nonce": "5dfc6a3495d7503cc3c3864fa61da8fb60b0c843dd3e18b5365919d121648ee9"
+    },
+    "observedBlock": {
+      "height": 120345,
+      "blockHash": "eac8e7c1294ed73fc9421f6a16bb26c4ea1bc71b67c7f025e760e1c41897105d"
+    }
+  },
+  "complete-empty": {
+    "answer": "{\"result\":200,\"response\":{\"version\":1,\"request\":{\"sellerClaim\":\"did:demos:agent:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e\",\"participantClaim\":\"did:demos:agent:b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7\",\"listingPin\":{\"listingId\":\"enrollment-test-listing\",\"version\":3,\"contentHash\":\"c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4\"},\"nonce\":\"5dfc6a3495d7503cc3c3864fa61da8fb60b0c843dd3e18b5365919d121648ee9\"},\"chainIdentity\":\"d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc\",\"height\":120345,\"blockHash\":\"eac8e7c1294ed73fc9421f6a16bb26c4ea1bc71b67c7f025e760e1c41897105d\",\"complete\":true,\"entries\":[],\"signature\":\"9k6QHE6oY_8U13qIGWyhrgXvem8806O65h51_n_stI3DPbmdiHzv5bRJwThdQIAbiNnc-wawwYb6Ab87Td7-DA\"},\"require_reply\":false,\"extra\":\"\"}",
+    "request": {
+      "sellerClaim": "did:demos:agent:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+      "participantClaim": "did:demos:agent:b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7",
+      "listingPin": {
+        "listingId": "enrollment-test-listing",
+        "version": 3,
+        "contentHash": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4"
+      },
+      "nonce": "5dfc6a3495d7503cc3c3864fa61da8fb60b0c843dd3e18b5365919d121648ee9"
+    },
+    "observedBlock": {
+      "height": 120345,
+      "blockHash": "eac8e7c1294ed73fc9421f6a16bb26c4ea1bc71b67c7f025e760e1c41897105d"
+    }
+  },
+  "revoked-entry": {
+    "answer": "{\"result\":200,\"response\":{\"version\":1,\"request\":{\"sellerClaim\":\"did:demos:agent:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e\",\"participantClaim\":\"did:demos:agent:b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7\",\"listingPin\":{\"listingId\":\"enrollment-test-listing\",\"version\":3,\"contentHash\":\"c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4\"},\"nonce\":\"5dfc6a3495d7503cc3c3864fa61da8fb60b0c843dd3e18b5365919d121648ee9\"},\"chainIdentity\":\"d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc\",\"height\":120345,\"blockHash\":\"eac8e7c1294ed73fc9421f6a16bb26c4ea1bc71b67c7f025e760e1c41897105d\",\"complete\":true,\"entries\":[{\"claim\":\"did:demos:agent:b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7\",\"profile\":{\"id\":\"dacs-testnet-tp1\",\"revision\":\"TP-1\",\"base\":\"d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20\",\"chainIdentity\":\"d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc\",\"pinVersion\":\"dacs-demos-testnet-identity/2026-10-21\"},\"modules\":{\"CORE\":\"0.3\",\"DACS-1\":\"0.7\",\"DACS-2\":\"0.6\",\"DACS-3\":\"0.5\",\"DACS-4\":\"0.8\",\"DACS-5\":\"0.5\"},\"evidence\":\"registry row 41 revoked at block 120310\",\"revoked\":true}],\"signature\":\"lDItkaXN6iXO9y4BTiUrPcBajEakqyJ549IaFHJLNpnK11I0jGJ8cQCjLfEXDZg7E6KUSQUGLcwkxhvgVpFYCw\"},\"require_reply\":false,\"extra\":\"\"}",
+    "request": {
+      "sellerClaim": "did:demos:agent:5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+      "participantClaim": "did:demos:agent:b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7",
+      "listingPin": {
+        "listingId": "enrollment-test-listing",
+        "version": 3,
+        "contentHash": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4"
+      },
+      "nonce": "5dfc6a3495d7503cc3c3864fa61da8fb60b0c843dd3e18b5365919d121648ee9"
+    },
+    "observedBlock": {
+      "height": 120345,
+      "blockHash": "eac8e7c1294ed73fc9421f6a16bb26c4ea1bc71b67c7f025e760e1c41897105d"
+    }
+  }
+}
