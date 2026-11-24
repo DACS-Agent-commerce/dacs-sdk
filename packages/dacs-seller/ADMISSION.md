@@ -246,10 +246,8 @@ node --experimental-vm-modules --test --test-concurrency=1 packages/dacs-seller/
 ```
 
 The stock `npm test` command runs the SDK's TypeScript Vitest tests; the seller
-MJS checks use the separate Node command above. Complete seller validation is
-blocked by unresolved custody/issuance dependencies and the supersession restart
-vector (`wallet_journal_conflict`). This stack has no complete seller-suite pass.
-Use focused affected files during development; CI runs the complete seller set.
+MJS checks use the separate Node command above.
+Use focused affected files during development; CI runs the complete seller set on Node 22 and 24.
 
 Native publication requires `pins.deployment` at the supported node source commit
 `61b8e75aa8db5e408c49e1c3a89db4d673f45578` (the fee, nonce, broadcast and

@@ -12,8 +12,8 @@ test('source-only quickstart uses modules available before package activation',a
  if(existsSync(new URL('../package.json',import.meta.url)))return;
  const text=readme();assert.doesNotMatch(text,/from ['"]@kynesyslabs\/dacs-seller['"]/);assert.doesNotMatch(text,/workspace package is marked `private`/);assert.match(text,/\.\/src\/index\.mjs/);assert.equal(typeof(await import('../src/index.mjs')).startSellerHost,'function');assert.equal(typeof(await import('../src/devnet-demo/buyer-access.mjs')).createOperatorBuyerAccess,'function');
 });
-test('documented seller checks use the actual direct Node runner and explain incomplete validation',()=>{
- const text=readFileSync(new URL('../ADMISSION.md',import.meta.url),'utf8');assert.match(text,/node --experimental-vm-modules --test --test-concurrency=1 packages\/dacs-seller\/test\/\*\.test\.mjs/);assert.match(text,/npm test[\s\S]{0,150}(TypeScript|Vitest)/);assert.match(text,/blocked[\s\S]{0,300}supersession/i);
+test('documented seller checks use the actual direct Node runner and describe complete CI coverage',()=>{
+ const text=readFileSync(new URL('../ADMISSION.md',import.meta.url),'utf8');assert.match(text,/node --experimental-vm-modules --test --test-concurrency=1 packages\/dacs-seller\/test\/\*\.test\.mjs/);assert.match(text,/npm test[\s\S]{0,150}(TypeScript|Vitest)/);assert.match(text,/Use focused affected files during development; CI runs the complete seller set on Node 22 and 24\./);assert.doesNotMatch(text,/no complete seller-suite pass|Complete seller validation is\s+blocked/);assert.doesNotMatch(text,/The complete seller set has\s+passed CI/);
 });
 test('directory and minimum-runtime claims match the portable immediate-directory implementation',()=>{
  const engines=JSON.parse(readFileSync(new URL('../../../package.json',import.meta.url),'utf8')).engines.node;
