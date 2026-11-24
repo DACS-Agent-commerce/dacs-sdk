@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF build the rate limit bootstrap test client with the file's shared client builder",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+      "before": "8986469bbfe11e7770c41190f0dffb6cdb85afe2",
+      "after": "e030d5bd260a524c277109f48369d1a90f54cc41"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-dcb81606515b.json",
+    "packages/dacs-client/test/seller-response-classification.test.mjs"
+  ],
+  "note": "The merged tree no longer has the seller agent client; the test builds its client the way the rest of the file does."
+}

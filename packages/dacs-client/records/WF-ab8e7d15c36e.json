@@ -1,0 +1,20 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF move the record anchor past the merged package manifest choice with the signature routing and the delegation-first bootstrap",
+  "kind": "checkpoint",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "4015c72223017a91ca704434bf53854185848068",
+      "after": "4015c72223017a91ca704434bf53854185848068"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-ab8e7d15c36e.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "The base's anchor stands before this branch's records of the package manifest, which start from the earlier anchor's copy and no longer start from it. The anchor moves to the merge commit, which holds every anchored file as the anchor names it: the merged package manifest and README; the other anchored blobs are unchanged. The checkpoint keeps the package manifest recorded after the anchor, and the controls are re-pinned."
+}

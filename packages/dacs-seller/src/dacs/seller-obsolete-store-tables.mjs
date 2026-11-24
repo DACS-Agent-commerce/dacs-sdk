@@ -4,7 +4,7 @@
 import { kitFormatRefusal } from './kit-data-format.mjs';
 
 /** The tables an earlier transport store created and this one no longer has. */
-export const OBSOLETE_TRANSPORT_TABLES = Object.freeze(['peer_slots', 'peer_transactions', 'peer_nonces', 'peer_nonce_retention']);
+export const OBSOLETE_TRANSPORT_TABLES = Object.freeze(['peer_slots', 'peer_transactions', 'peer_nonces', 'peer_nonce_retention', 'kit_context_reservations']);
 
 // A store with no binding yet is current; a bound one is current only when its stored version is the one this code writes.
 // Any other version, or a binding that does not parse, is left whole for the store's own binding check to refuse.
