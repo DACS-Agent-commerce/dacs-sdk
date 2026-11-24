@@ -15,7 +15,7 @@ import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync,readFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
-import {testWallet,NOW}from './helpers/protocol-fixture.mjs';
+import {testWallet,NOW,RECEIPT_FEE_CEILINGS}from './helpers/protocol-fixture.mjs';
 import { HOST_CONTEXT_CALLBACKS, presentContextAnswer } from './helpers/host-context-callbacks.mjs';
 import { agentSigning, integrityRoleOf } from './helpers/agent-signing.mjs';
 import { hostBuyer } from './helpers/host-context-client.mjs';
@@ -614,7 +614,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   };
   // Every request reaches the host under the Host its Listing's endpoint names.
   const hostFetch = fetchAsHost({ authority: new URL(listing.seller.publicEndpoint).host });
-  const capabilities = () => ({ readCommitmentReceipt, signer: sellerSigner, listing,
+  const capabilities = () => ({ readCommitmentReceipt, signer: sellerSigner, listing, receiptFeeCeilings: RECEIPT_FEE_CEILINGS,
     buyerAccess: seller.createOperatorBuyerAccess({ buyerForJob: jobId => buyerBundles.has(jobId) ? buyerKey.address : null, ...buyerAccessOptions }), agreementAnchor, deliverableProducer: producer, maxJobs, deliveryEvidenceEnabled,
     deliverySchemaVerifier: deliverySchemaVerifier ?? { schemaUrl: listing.offering.deliverable.schemaUrl, verify: ({ cleartextPayload: p }) => ({ disposition: p.reportVersion === '1' && typeof p.kind === 'string' && Array.isArray(p.body) && p.body.every(v => typeof v === 'string') ? 'valid' : 'invalid' }) },
     ...(compatibilityObserver ? { observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); } } : {}),

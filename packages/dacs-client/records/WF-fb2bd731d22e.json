@@ -1,0 +1,36 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF read the mempool broadcast reply, the staked-node refusal and the bounded not-found lookup of node build e6af8f40 in storage-write recovery",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/devnet-demo/storage-write-recovery.mjs",
+      "before": "339752ef02b10b9f2740e833f9b6a1be239ed2b8",
+      "after": "6c5aeba074fbc473c3890aae01282ffb4ad74f74"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "26f84fc37061782dba50b0c3dd22509d58946e3a",
+      "after": "e5c956d29e34634c8f1dc5aac21d61af6c72ef14"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/native-create-boundary.mjs",
+      "before": "2d9fce21573694835e2107335893f973b1fe7e55",
+      "after": "65504a4e241c2fa7df7d095caf517a5ca3ad2ef2"
+    },
+    {
+      "path": "packages/dacs-client/test/storage-write-node-replies.test.mjs",
+      "before": null,
+      "after": "6d3e4c12935993951ca438f063739d3b0e864d8a"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-fb2bd731d22e.json",
+    "packages/dacs-client/src/devnet-demo/storage-write-recovery.mjs",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/test/helpers/native-create-boundary.mjs",
+    "packages/dacs-client/test/storage-write-node-replies.test.mjs"
+  ],
+  "note": "Node build e6af8f40 answers a storage write taken into its mempool with a null response and exactly confirmationBlock, lastBlockNumber, published, hash and disposition \"mempool\" in extra. The classifier counts it as accepted only when hash is the hash that was sent; any other answer stays unknown and is never recovered. Both 61b8e75 replies keep their reading. A node that is not a staked validator answers 400 with extra { error: \"NOT_A_VALIDATOR\" } before the transaction reaches its mempool or the transaction topic; the classifier records it as refused-not-validator, a definite refusal that recovery never resends. getTxByHash for an unknown hash answers 404 with extra { reason: \"not_found\", checkedThroughBlock }. Recovery reads it as absence only with exactly those members and checkedThroughBlock at or past R+2 of the write's kept confirmation reference block R, the last block that can execute the write, and never without a kept R; a lookup_failed 500 is never absence. The scripted test world can now replace a node answer, and the new tests run the classifiers directly and through the native transport."
+}

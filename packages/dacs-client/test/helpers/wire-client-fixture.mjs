@@ -168,7 +168,7 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
     ops = createOperationStore({ db, handoffSecret: 'TEST-wire-fixture-'.repeat(3), now: () => w.state.time });
     service = withSeller(seller, () => createProtocolPurchases({
       db, ops, admission: w.admission, now: () => w.state.time, store: createSqlitePurchaseStore(), coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {
-        } }, dacsProtocol: config
+        } }, dacsProtocol: config, feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n }
     }));
   };
   reopen();

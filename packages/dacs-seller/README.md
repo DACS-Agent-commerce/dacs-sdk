@@ -177,6 +177,8 @@ const host = await startSellerHost({
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
   readCommitmentReceipt, // Chain-bound current SR-2 receipt reader, with bounded I/O.
+  receiptFeeCeilings: { payFeeCeilingOs, anchorFeeCeilingOs }, // required, no default: the Pay and anchor fee
+                         // ceilings, each canonical decimal OS text (zero allowed); see "Seller receipt"
   walletSession,         // { authority, connectionAuthority, finalize, close? }: the seller's wallet session.
                          // authority is its read-only capability (it cannot sign or send); connectionAuthority
                          // is the client's createAuthorityReader over it; finalize({ binding, effectBoundary,
@@ -457,6 +459,21 @@ For `provenUnsignedAbsence` and `deadRefusedCreate`, that copy retains the
 process-local proof. Missing reasons become empty text; errors and
 message-bearing objects use their name and message; function and symbol
 reasons become text. Other reason values must pass the JSON reply limits.
+
+### Seller receipt
+
+Every ordinary `committed` answer of `/dacs/v1/commitments` carries
+`sellerReceipt: { agreementHash, reservedMaximumOs }`. `agreementHash` is the
+hash of the exact signed Agreement. `reservedMaximumOs` is the most the buyer
+reserves for this purchase: the Agreement price in OS plus `payFeeCeilingOs`
+plus `anchorFeeCeilingOs` from `receiptFeeCeilings`, as canonical decimal OS
+text. The wire response signature covers it with the rest of the answer. A
+fresh answer and a read-back of a retained commitment carry the same receipt,
+and a stored answer is replayed only while its receipt still matches the one
+the seller declares now. An early `commitment-held` answer carries none. The
+receipt is a declaration on the wire answer only: the Agreement, the commitment
+record and every transaction are unchanged. The host refuses to start without
+both ceilings; the SDK sets no default and infers none.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -1215,7 +1232,9 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
 - The signed challenge route is composed directly, not by the host:
   `createSellerHttpHandler(agent, { wire, context })` serves
   `POST /dacs/v1/agreements/context/challenge` through the SDK's `./wire` when the
-  `wire` context (`createWireContext`) carries the host's `stopped` predicate; without
+  `wire` context (`createWireContext`, from
+  `@kynesyslabs/dacs-seller/src/dacs/seller-wire-requests.mjs`) carries the host's
+  `stopped` predicate; without
   one the handler refuses construction. No Agreement exists yet and the wire journal is never
   written. The seller refuses in this order: the body (64 KiB, one JSON value, no duplicate
   members or lossy numbers: `body_too_large`, `bad_json`; unsigned, like the envelope's
