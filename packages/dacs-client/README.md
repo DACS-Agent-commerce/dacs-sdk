@@ -48,7 +48,7 @@ Delta records also check parent continuity against the newest ancestor records f
 
 ## Public API
 
-A plugin composes a purchase from the root names and the purchase subpaths below. Each export's doc comment in `src/index.mjs` names what it returns and what it throws or rejects with; this section lists the factories' methods and the error contract.
+A plugin composes a purchase from the root names and the purchase subpaths below. Each root export's doc comment in `src/index.mjs`, and each subpath export's in its own module, names what it returns and what it throws or rejects with; this section lists the factories' methods and the error contract.
 
 The admission option: `admission: { binding, currentLocal }` is required by each factory below.
 - Construction throws `TypeError('admission_required')` without exactly those two members, `TypeError('admission_input_untrusted')` for a `profile`, `record`, `identityRecord` or `actionsAdmitted` option, and `OperationError('runtime_unsupported')` below the Node floor.
