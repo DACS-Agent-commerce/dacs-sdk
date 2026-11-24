@@ -28,7 +28,9 @@ const { createWireContext } = await import('../src/dacs/seller-wire-requests.mjs
 const { orchestratorFixture } = await import('./helpers/vet-orchestrator-fixture.mjs');
 const { productionFixture } = await import('./helpers/vet-production-fixture.mjs');
 const { contextHostFixture } = await import('./helpers/host-context-client.mjs');
-const { seller: protocolSeller } = await import('./helpers/protocol-fixture.mjs');
+const { JOB: protocolJob, seller: protocolSeller } = await import('./helpers/protocol-fixture.mjs');
+const { composedVetHost, composedVetHostProcess, vetRecordAnchor } = await import('./helpers/composed-vet-host.mjs');
+const { default: Database } = await import('better-sqlite3');
 const { world: wireWorld, proposeJob, identityBody } = await import('./helpers/wire-routes-world.mjs');
 const { authorityReader } = await import('./helpers/wire-authority-fixture.mjs');
 const { SELLER_STATE_SIGNING_DOMAIN } = await import('../src/dacs/seller-durable-state.mjs');
@@ -821,15 +823,10 @@ async function pausablePass() {
   return { gate, binding, effectBoundary, runCreate: testRunCreate({ effectBoundary }).runCreate };
 }
 
-// The paths whose final checks are paused: each `make(pass)` gives `{ attempt(), signatures(), onSign(hook), reclaim?, rollback?, restart? }`.
+// The paths whose final checks are paused outside the composed host: each `make(pass)` gives `{ attempt(), signatures(), onSign(hook), restart? }`.
+// The presentation runs over the production Vet fixture, the Listing over the isolated anchor with an issued runCreate, and the answer
+// signer over a boundary whose stop check can be paused (the host's own stop check is the process-wide stop flag, which a test cannot hold).
 const PAUSED_PATHS = [
-  ['the Vet component signature', async (t, pass) => {
-    const f = await orchestratorFixture(t), open = { value: true };
-    const provider = f.provider({ runCreate: pass.runCreate });
-    return { attempt: () => settled(provider.resolveBuyer(f.input, { writable: () => open.value })), signatures: () => f.controls.signatures.length,
-      onSign: (hook) => { f.controls.beforeSign = hook; }, reclaim: () => { open.value = false; }, rollback: () => { open.value = 'TEST-rev-advanced'; },
-      restart: () => settled(f.fresh({ runCreate: testRunCreate().runCreate }).resolveBuyer(f.input, { writable: () => true })) };
-  }],
   ['the identity presentation', async (t, pass) => {
     const p = productionFixture();
     t.after(() => p.base.close());
@@ -853,7 +850,103 @@ const PAUSED_PATHS = [
   }],
 ];
 
+// The composed host's context admission row for `jobId`: `contextRow` reads its state, `moveContextRow` rewrites its record as another
+// writer of the store would (a reclaimed attempt, or a compensation that advances its revision).
+const HOST_JOB = protocolJob, NEXT_HOST_JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0B';
+const transportStore = (directory, options) => new Database(join(directory, 'transport', 'transport.sqlite'), options);
+const contextRow = (directory, jobId = HOST_JOB) => {
+  const db = transportStore(directory, { readonly: true });
+  try { return db.prepare('SELECT state FROM kit_context_admissions WHERE jobId = ?').get(jobId)?.state ?? null; } finally { db.close(); }
+};
+const moveContextRow = (directory, change, jobId = HOST_JOB) => {
+  const db = transportStore(directory);
+  try {
+    const next = change(JSON.parse(db.prepare('SELECT record FROM kit_context_admissions WHERE jobId = ?').get(jobId).record));
+    db.prepare('UPDATE kit_context_admissions SET state = ?, rev = ?, record = ? WHERE jobId = ?').run(next.state, next.rev, JSON.stringify(next), jobId);
+  } finally { db.close(); }
+};
+// Resolves once `gate` holds a call, and fails when the request ends first.
+const heldBefore = async (gate, request, name) => {
+  let ended = false;
+  void request.then(() => { ended = true; }, () => { ended = true; });
+  while (gate.held === null && !ended) await new Promise((resolve) => setImmediate(resolve));
+  assert.notEqual(gate.held, null, `${name}: paused at its final await`);
+};
+
 test('run the final pause-and-resume subcases at the real final authority and stop awaits through the composed host and the real seller routes: issuance and reclamation, rollback, closure and restart, each with its expected outcome and refusal cause; closed authority grants no signature or transmission, and the unchanged authorized control succeeds; the payment-evidence leg and the CREATE-lane matrix included', async (t) => {
+  // The composed host over the real Vet provider, its buyer through the real challenge and context routes. The control finds the final
+  // authority read and final stop check of the first Vet component signature's pass, and the final authority read of the context answer's.
+  const control = await composedVetHost(t), started = await control.start(), finals = { vet: null, answer: null };
+  control.gate.pause('none', 0);
+  control.hooks.onSign = () => { finals.vet ??= { ...control.gate.calls }; };
+  control.hooks.onEffect = () => { if (control.signatures.length === 2) finals.answer ??= { ...control.gate.calls }; };
+  const answered = await started.buyer.requestContext();
+  assert.deepEqual([answered.status, control.signatures.length], [200, 2], `the control signs both Vet records and answers: ${answered.text}`);
+  assert.ok(finals.vet.authority >= 1 && finals.vet.stop >= 1 && finals.answer.authority > finals.vet.authority, 'the control reached each signer after its checks');
+
+  for (const kind of ['authority', 'stop']) {
+    const subcases = [
+      ['the unchanged authorized control', null, null],
+      ['closure', (w) => { if (kind === 'authority') w.gate.closed = true; else w.gate.stop = true; }, kind === 'authority' ? 'tp1_participant_refused' : 'seller_stopped'],
+      ['issuance and reclamation', (w) => moveContextRow(w.dataDirectory, (row) => ({ ...row, attempt: row.attempt + 1 })), 'not-pending'],
+      ['rollback', (w) => moveContextRow(w.dataDirectory, (row) => ({ ...row, state: 'compensating', rev: row.rev + 1 })), 'not-pending'],
+    ];
+    for (const [subcase, change, code] of subcases) {
+      const name = `the Vet component signature through the composed host, final ${kind} await, ${subcase}`;
+      const w = await composedVetHost(t), { buyer } = await w.start();
+      w.gate.pause(kind, finals.vet[kind]);
+      const request = buyer.requestContext();
+      await heldBefore(w.gate, request, name);
+      change?.(w);
+      w.gate.resume();
+      const answer = await request;
+      if (change === null) {
+        assert.deepEqual([answer.status, w.signatures.length], [200, 2], `${name}: signs both Vet records and answers`);
+        continue;
+      }
+      // A closed authority grants no signature at all: the read-only role checks it too, so that refusal goes out unsigned.
+      const signedRefusal = !(subcase === 'closure' && kind === 'authority');
+      assert.deepEqual([answer.status >= 400, answer.signed, w.signatures.length], [true, signedRefusal, 0], `${name}: a refusal and no signature: ${answer.text}`);
+      assert.ok((await w.failedSteps()).includes(code), `${name}: the Vet step keeps ${code}, got ${await w.failedSteps()}`);
+    }
+
+    // Restart: the host process is killed at the final await; the host started again over its data directory and party Vet store fences the
+    // attempt at its startup sweep and signs nothing for it, and the next purchase signs each Vet record once.
+    const name = `the Vet component signature through the composed host, final ${kind} await, restart`;
+    const anchor = vetRecordAnchor(), w = await composedVetHost(t, { anchor });
+    await (await w.start()).host.close();
+    const killed = await composedVetHostProcess(t, { dataDirectory: w.dataDirectory, vetPath: w.vetPath, anchor, kind, at: finals.vet[kind] });
+    const ended = (await w.buyerFor(killed.host)).requestContext().then(() => null, (error) => error);
+    await killed.held;
+    await killed.kill();
+    assert.ok((await ended) instanceof Error, `${name}: the killed host sends no answer`);
+    assert.deepEqual([killed.signatures(), anchor.records.size, contextRow(w.dataDirectory)], [0, 0, 'running'], `${name}: the killed host signed and published nothing`);
+    const { buyer } = await w.start();
+    assert.deepEqual([contextRow(w.dataDirectory), w.signatures.length], ['compensating', 0], `${name}: the restarted host fences the attempt and signs nothing for it`);
+    const next = await buyer.requestContext(NEXT_HOST_JOB);
+    assert.deepEqual([next.status, w.signatures.length, new Set(w.signatures).size], [200, 2, 2], `${name}: the next purchase signs each Vet record once`);
+  }
+
+  // The context answer's own effect pass in the composed host, paused at its final authority read: the control answers with the effect
+  // role's signature; closed there, the answer is an unsigned refusal carrying the cause, and nothing signs it.
+  for (const [subcase, closed] of [['the unchanged authorized control', false], ['closure', true]]) {
+    const name = `the context answer through the composed host, final authority await, ${subcase}`;
+    const w = await composedVetHost(t), { buyer } = await w.start();
+    w.gate.pause('authority', finals.answer.authority);
+    const request = buyer.requestContext();
+    await heldBefore(w.gate, request, name);
+    const effectBefore = w.effectSigns();
+    w.gate.closed = closed;
+    w.gate.resume();
+    const answer = await request;
+    if (!closed) {
+      assert.deepEqual([answer.status, w.effectSigns() - effectBefore], [200, 1], `${name}: the effect role signs the answer`);
+      continue;
+    }
+    assert.deepEqual([answer.status >= 400, answer.signed, answer.body.error, w.effectSigns() - effectBefore], [true, false, 'tp1_participant_refused', 0], `${name}: ${answer.text}`);
+  }
+
+  // The paths that run outside the composed host (see PAUSED_PATHS).
   for (const [label, make] of PAUSED_PATHS) {
     // The control finds where the final authority read and stop check of the first signature's pass are: the last of each before the signer.
     const probe = await pausablePass(), probed = await make(t, probe);
