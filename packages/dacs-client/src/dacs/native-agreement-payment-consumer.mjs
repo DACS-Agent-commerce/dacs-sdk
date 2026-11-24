@@ -15,6 +15,12 @@ export const NATIVE_AGREEMENT_PAYMENT = 'native-dem-once-after-public-agreement-
 export const usesNativeAgreementPayment = (op) => op?.terms?.protocol?.profile === 'dacs-chatgpt-plugin/sr2-wallet-agreement/v1'
   && op.terms.protocol.nativePayment === NATIVE_AGREEMENT_PAYMENT
   && op.terms.protocol.sellerAgreementProjection === SELLER_SR2_PUBLIC_PROJECTION;
+/** Returns a retained Agreement CREATE receipt's nonce, a canonical decimal string, as a safe integer of at least 1, or null for any other value. */
+export function createNonceOf(value) {
+  if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) return null;
+  const nonce = Number(value);
+  return Number.isSafeInteger(nonce) ? nonce : null;
+}
 export function nativeAgreementPaymentConfig(value, { walletConfig, sellerSr2Commitment, coordinates, fetchImpl, now, readbackCache = null }) {
   if (value === undefined || value === null) return null;
   const sourceCapability = isDevnetAgreementTransport(value) ? value : null;
@@ -28,8 +34,11 @@ export function nativeAgreementPaymentConfig(value, { walletConfig, sellerSr2Com
   const workflowKey = (op) => `plugin/native-payment/${JSON.stringify([op.terms.network, op.terms.buyer.wallet])}`;
   const lane = (op) => walletLane({ network: op.terms.network, chainIdentity: sourceCapability.pins.chainIdentity, address: op.terms.buyer.wallet });
   const laneKey = (op) => walletLaneKey(lane(op));
+  function assertSourceBound(op) {
+    if(op.terms.domain.mode !== 'public-chain-read' || op.terms.domain.chainIdentity !== sourceCapability.pins.chainIdentity || op.terms.network !== sourceCapability.pins.network || canonicalize(op.terms.protocol.transportBinding) !== canonicalize(sourceCapability.transportBinding)) throw new OperationError('network_identity_mismatch','these terms do not carry the exact source capability binding');
+  }
   function unresolved(op) {
-    if(sourceCapability && (op.terms.domain.mode !== 'public-chain-read' || op.terms.domain.chainIdentity !== sourceCapability.pins.chainIdentity || op.terms.network !== sourceCapability.pins.network || canonicalize(op.terms.protocol.transportBinding) !== canonicalize(sourceCapability.transportBinding))) throw new OperationError('network_identity_mismatch','these terms do not carry the exact source capability binding');
+    assertSourceBound(op);
     const pending = coordinates.unresolvedForSender(op.terms.buyer.wallet, op.id, ['payment_handoff', 'broadcast_reported', 'payment_uncertain', 'publication_handoff']);
     if (pending.length) throw new OperationError('unresolved_payment', 'the shared wallet nonce lane has an unresolved handoff; no CREATE or payment may be issued');
   }
@@ -83,5 +92,17 @@ export function nativeAgreementPaymentConfig(value, { walletConfig, sellerSr2Com
       // Public read-only guard projection of an ACTUAL retained record. This
       // does not approve payment, write a wallet record or extend CREATE scope.
       return { stage: record.stage, hash: record.hash, nonce: record.nonce };
+    },
+    // Read-only, after the guard was issued: the one retained lane record, with no readiness check, Agreement read,
+    // lock or write. The nonce is the Agreement CREATE's own, not the later payment's. The envelope is not a guard.
+    async readRetainedLane(op, key) {
+      if (key !== lane(op)) throw new OperationError('wallet_lane_mismatch', 'only this purchase wallet lane may be read');
+      assertSourceBound(op);
+      const receipt = op.state.protocol.agreement.anchorReceipt, nonce = createNonceOf(receipt.nonce);
+      const record = await journal.get(laneKey(op));
+      if (nonce === null || !record || record.stage !== 'broadcast-accepted' || record.hash !== receipt.transactionRef.value || record.nonce !== nonce) {
+        throw new OperationError('wallet_fenced', 'the retained CREATE lane differs from this Agreement');
+      }
+      return { readback: true, retained: { stage: record.stage, hash: record.hash, nonce: record.nonce } };
     } };
 }
