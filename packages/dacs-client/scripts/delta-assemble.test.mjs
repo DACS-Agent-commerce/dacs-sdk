@@ -190,22 +190,40 @@ test('the delta checker orders records by file name, whatever the order of the c
   assert.deepEqual(h.check(), []);
 });
 
-test('the delta checker accepts a record that changes only README.md, and refuses a stale README blob', async t => {
+test('the delta checker accepts a record that changes only DELTA-NOTES.md, and refuses a stale notes blob', async t => {
+  const h = await history(t);
+  h.commit({ 'DELTA-NOTES.md': 'changed notes\n' });
+  assert.deepEqual(h.check(), []);
+  writeFileSync(join(h.fixture, 'DELTA-NOTES.md'), 'edited after the commit\n');
+  assert.ok(h.check().includes(`${prefix}DELTA-NOTES.md: current blob differs from enumerated deltas`));
+});
+
+test('the delta checker accepts a record that changes only README.md, and any README blob after it', async t => {
   const h = await history(t);
   h.commit({ 'README.md': 'changed readme\n' });
   assert.deepEqual(h.check(), []);
   writeFileSync(join(h.fixture, 'README.md'), 'edited after the commit\n');
-  assert.ok(h.check().includes(`${prefix}README.md: current blob differs from enumerated deltas`));
+  assert.deepEqual(h.check(), []);
 });
 
-test('the delta checker starts the first README.md record from the anchor, not from its parent, and refuses a stale source parent', async t => {
+test('the delta checker needs no README record: an unlisted README edit and a README record that does not start from the anchor pass', async t => {
   const h = await history(t);
   writeFileSync(join(h.fixture, 'README.md'), 'changed without a record\n');
   h.commit({ 'src/example.mjs': 'fixed\n' }, { extra: [prefix + 'README.md'] });
   h.commit({ 'README.md': 'changed readme\n' });
+  writeFileSync(join(h.fixture, 'README.md'), 'committed with no record at all\n');
+  h.git('add', '--', prefix + 'README.md'); h.git('commit', '--quiet', '-m', 'docs(client): TEST README alone');
+  assert.deepEqual(h.check(), []);
+});
+
+test('the delta checker starts the first DELTA-NOTES.md record from the anchor, not from its parent, and refuses a stale source parent', async t => {
+  const h = await history(t);
+  writeFileSync(join(h.fixture, 'DELTA-NOTES.md'), 'changed without a record\n');
+  h.commit({ 'src/example.mjs': 'fixed\n' }, { extra: [prefix + 'DELTA-NOTES.md'] });
+  h.commit({ 'DELTA-NOTES.md': 'changed notes\n' });
   const failures = h.check();
-  assert.ok(failures.some(failure => failure.startsWith(`${prefix}README.md: delta parent is discontinuous at `)), failures.join('\n'));
-  assert.ok(failures.some(failure => failure.startsWith(`${prefix}README.md: unenumerated change in `)), failures.join('\n'));
+  assert.ok(failures.some(failure => failure.startsWith(`${prefix}DELTA-NOTES.md: delta parent is discontinuous at `)), failures.join('\n'));
+  assert.ok(failures.some(failure => failure.startsWith(`${prefix}DELTA-NOTES.md: unenumerated change in `)), failures.join('\n'));
   const { name } = h.commit({ 'src/example.mjs': 'fixed again\n' });
   const file = join(h.fixture, 'records', name), good = readJson(file);
   json(file, { ...good, files: [{ ...good.files[0], before: blobA }] });

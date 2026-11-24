@@ -6,8 +6,10 @@ import { CONTINUING_PATHS } from '../../../dist/wire/discovery.js';
 import { world, purchase, party, validReceipt, setPurchaseAdmission, PUBLIC_ENDPOINT, T0, JOB } from './helpers/wire-client-fixture.mjs';
 import { committedPurchase } from './helpers/wire-committed-purchase.mjs';
 import { readOnlyBoundary } from './helpers/read-only-boundary.mjs';
+import { fetchClient } from './helpers/seller-https-rig.mjs';
 // The fixture installs the admission double, so the modules that read admission state load after it.
-const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
+const { createSellerHttpsClient } = await import('../src/dacs/seller-http.mjs');
+const clientOverFetch = fetchClient(createSellerHttpsClient);
 const { purchaseStore, createSqlitePurchaseStore } = await import('../src/seams/purchase-store-not-wired.mjs');
 const { createBuyerChainReadback } = await import('../src/dacs/buyer-chain-readback.mjs');
 const { createDevnetAgreementTransport } = await import('../src/wallet/devnet-native-transport.mjs');
@@ -40,7 +42,9 @@ const rowAuth = (s, readCommitment) => {
   const evidence = evidenceFor(s.p, readCommitment);
   return authFor(s, () => evidence(s.p.get()));
 };
-const sign = (auth, path) => auth.request(path, BODY, TEXT);
+// The challenge and context routes name their job in the body's scope.
+const SCOPE_BODY = { scope: { jobId: JOB } }, SCOPE_TEXT = JSON.stringify(SCOPE_BODY);
+const sign = (auth, path) => [PATHS.contextChallenge, PATHS.context].includes(path) ? auth.request(path, SCOPE_BODY, SCOPE_TEXT) : auth.request(path, BODY, TEXT);
 const verifiedReadback = (s, anchored = s.anchored) => async () => ({ status: 'verified', contentHash: s.summary.contentHash, signer: s.summary.signer, committedAt: s.summary.committedAt, anchored });
 const refuses = (s, work, expectedCode, detail) => {
   const signed = s.w.state.signs.length;
@@ -60,7 +64,7 @@ const sameTuples = (seen, anchored, requests) => {
 
 test('a real payment request through the client is signed with the kept finalized commitment, the two-party Agreement and the signed Listing', async (t) => {
   const s = await scenario(t), fetches = [];
-  const client = createSellerAgentClient({ url: PUBLIC_ENDPOINT, authentication: rowAuth(s), fetchImpl: async (url, init) => { fetches.push(init); return new Response('{}', { status: 500 }); } });
+  const client = clientOverFetch({ url: PUBLIC_ENDPOINT, authentication: rowAuth(s), fetchImpl: async (url, init) => { fetches.push(init); return new Response('{}', { status: 500 }); } });
   await assert.rejects(client.submitPayment({ jobId: JOB, txHash: 'a'.repeat(64) }));
   assert.equal(fetches.length, 1);
   assert.ok(fetches[0].headers[DACS_SELLER_HTTP_HEADER]);

@@ -166,6 +166,8 @@ async function effectEntries() {
   await attempt('storageWriteRpcSigner', () => storageWriteRpcSigner({ claim: 'writer', sign: signBytes }, 'writer')('message'));
   const { createSellerNodeWallet } = await import('../../src/devnet-demo/seller-node-wallet.mjs');
   await attempt('createSellerNodeWallet', () => createSellerNodeWallet({ dataDirectory: directory, keyRecord: new Uint8Array(1) }));
+  const { createSellerWalletSession } = await import('../../src/devnet-demo/seller-wallet-session.mjs');
+  await attempt('createSellerWalletSession', () => createSellerWalletSession({ loadKeyRecord: () => { effects.signs++; } }));
 
   const delivery = { authority: 'TEST-native', writer: seller.claim, publish: async () => { effects.sends++; }, read: async () => ({ status: 'absent' }), readRetained: async () => ({ status: 'absent' }), verifyReceipt: async () => 'valid' };
   await attempt('createDevnetDemoDeliveryCapability.submit', () => nativeDemDeliverySubmitsOf(createDevnetDemoDeliveryCapability({ authority: delivery.authority, anchor: delivery })).submit({}));

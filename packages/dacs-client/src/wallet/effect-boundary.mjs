@@ -3,7 +3,7 @@
 // signature, release and send of it passes the same checks under the fence,
 // and is recorded in the history before it leaves. Internal: not exported by
 // the package.
-import { AsyncLocalStorage } from 'node:async_hooks';
+import { AsyncLocalStorage, AsyncResource } from 'node:async_hooks';
 import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { OperationError } from '../client-errors.mjs';
@@ -275,7 +275,15 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
     const enclosing = operations.getStore();
     if (enclosing) {
       if (enclosing.operationId !== operation.operationId) throw refusal('tp1_fence_not_owned');
-      return fence.withFence(operation.operationId, () => work(enclosing, read), { capability: enclosing.capability });
+      const heldScope = enclosing.inFence;
+      if (!heldScope) return fence.withFence(operation.operationId, () => work(enclosing, read), { capability: enclosing.capability });
+      // A frame from holdFence: the fence accepts its capability only in the scope that
+      // acquired it, so only the ownership check runs there. The work runs back in the
+      // caller's own context, which keeps the caller's journal lock and other async-local
+      // values. This means any pass made inside the held frame may use the fence's capability.
+      const caller = new AsyncResource('dacs-held-pass');
+      return heldScope.runInAsyncScope(() => fence.withFence(operation.operationId,
+        () => caller.runInAsyncScope(() => work(enclosing, read)), { capability: enclosing.capability }));
     }
     await precheck(read, operation);
     let finished;
@@ -296,7 +304,8 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
   // Holds the operation's fence across several later calls, none of which share an async
   // context. The checks that precede a pass run before the fence is waited for and again
   // once it is held, so a refusal never leaves the fence held. The fence stays held until
-  // release().
+  // release(). The held frame keeps the async scope that acquired the fence (`inFence`),
+  // which runPass enters for the fence's ownership check.
   async function holdFence(input) {
     const operation = snapshotOperation(input);
     const read = createReadBudget(clock);
@@ -309,7 +318,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
         const held = { operationId: operation.operationId, capability };
         await refresh(read, operation);
         gate(held, operation);
-        resolve(held);
+        resolve({ ...held, inFence: new AsyncResource('dacs-held-fence') });
         await ended;
       });
       holding.catch(reject);

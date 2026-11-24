@@ -1,0 +1,78 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF end refused bootstraps with their causes",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "ffc092a3aa65bab5c55cefff89ccef6cfaebedcf",
+      "after": "822b7b6bffe7e84595dba971e10a8ab031bd175c"
+    },
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "18859936179914e393d1b5f1626d51ff9e2b4e7d",
+      "after": "994e2dd793c61185c07713d46f221a44db52d16e"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/bootstrap-outcome.mjs",
+      "before": null,
+      "after": "75b670f6b29e49e3b43e7805f90c10aa3c5d65a0"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/dem-delivery-context-consumer.mjs",
+      "before": "5f053fb7d098f5ba4a9ce640851ec801335a1bbd",
+      "after": "9beb508f34edc0f745dd5627f78e88d2e860ea2b"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "daf6753243ad9bf0ec8517929b876fa97c05379e",
+      "after": "2ec0b2ea959293c4f4e53e6cd765b3c6ed049490"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+      "before": "2b93db2e3312a5be835bcd18cbcd3feed3acd937",
+      "after": "d496dbd20a33541091b15072ad0fb78fc7f24610"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-response-class.mjs",
+      "before": "1d3e36db10b88dd5a55d426b7e6c228251dc1cc2",
+      "after": "d83c744e058878f8747599945c8a843e0a18add9"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/bootstrap-challenge-host.mjs",
+      "before": null,
+      "after": "04a9c96363c13fcbde5aa1df84d64f528123ae4d"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/kit-bootstrap-world.mjs",
+      "before": "03be4045322ce7fce0e9bdbf341b063d9407f00f",
+      "after": "bbe3b3c424d5f5368ea0d7d4d7525e5e9bfd7b9c"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+      "before": "35f0ac9deae8e0b1c8c1a3057fe8dad6da32a55d",
+      "after": "cc8cd6e3989e1c3d2d4471bea877037cf67475ac"
+    },
+    {
+      "path": "packages/dacs-client/test/wire-bootstrap-failure.test.mjs",
+      "before": null,
+      "after": "fb50665f5dfe315265faac9c92b041793b288ec6"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-ad485014534d.json",
+    "packages/dacs-client/src/dacs/bootstrap-outcome.mjs",
+    "packages/dacs-client/src/dacs/dem-delivery-context-consumer.mjs",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/dacs/seller-http.mjs",
+    "packages/dacs-client/src/dacs/seller-response-class.mjs",
+    "packages/dacs-client/test/helpers/bootstrap-challenge-host.mjs",
+    "packages/dacs-client/test/helpers/kit-bootstrap-world.mjs",
+    "packages/dacs-client/test/seller-response-classification.test.mjs",
+    "packages/dacs-client/test/wire-bootstrap-failure.test.mjs",
+    "scripts/release-policy.json"
+  ]
+}

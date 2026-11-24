@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged Node wallet session with the demosdk 4.0.23 signature gate and the authority token registry",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "9c79fb849b0ec085dd8f4651ebd0d053d81fff3f",
+      "after": "9c79fb849b0ec085dd8f4651ebd0d053d81fff3f"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-5b47cb0e3ab5.json"
+  ],
+  "note": "Both sides of the merge recorded the Node wallet session; this record chooses the merged copy. It keeps the base's demosdk 4.0.23 handling, which moves the SDK's own crypto field back behind the class accessor and refuses node_wallet_sdk_unguarded when a signature could skip the effect gate, and this side's token registration in the shared authority token registry with the composition's admission binding passed to the transport."
+}

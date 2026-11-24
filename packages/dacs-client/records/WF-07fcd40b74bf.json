@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged README with the paid renewal margin and the seller transport nonce lane",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "9b4014876a78e336ddb01f3f876e6668c1307366",
+      "after": "9b4014876a78e336ddb01f3f876e6668c1307366"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-07fcd40b74bf.json"
+  ],
+  "note": "Both sides of the merge recorded the README; this record chooses the merged copy, which holds the base's paid renewal margin text and this side's wallet nonce lane section."
+}

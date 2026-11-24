@@ -13,9 +13,8 @@ const UNPACKED_BROWSER_COPIES = [
   'src/public/portal/seller-session-delegation.mjs',
   'src/public/portal-intent/intent.mjs',
 ];
-// Colon-form labels that are not transport domains: the session nonce seed and the delivery schema URN.
+// Colon-form labels that are not transport domains: the delivery schema URN.
 const OTHER_COLON_LABELS = [
-  'dacs-chatgpt-plugin:${sessionSeed}:${claim}:${presentedAt}',
   'dacs-chatgpt-plugin:v0.1:seller-defined-delivery',
 ];
 const COLON_LABEL = /dacs-chatgpt-plugin:[^'"`\s]*/g;
