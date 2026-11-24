@@ -31,6 +31,7 @@ export {
   TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES,
   TP1_WIRE_PROFILE_KEYS,
   TESTNET_PROFILE_TP1,
+  canonicalNodeEndpoint,
   bindTp1Profile,
   assertTp1Binding,
   assertTp1Authority,

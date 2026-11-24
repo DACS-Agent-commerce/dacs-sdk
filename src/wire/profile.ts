@@ -75,6 +75,25 @@ export const TP1_APPROVED_IDENTITY_RECORD = deepFreeze({
   },
 } satisfies TestnetIdentityRecord);
 
+/**
+ * The one rule for a Demos node endpoint: returns `endpoint` when it is a
+ * canonical root URL, exactly its origin followed by `/` (so path exactly `/`,
+ * no username, password, query or fragment, not even an empty `?` or `#`, and
+ * the spelling the URL parser gives), otherwise null. The scheme is
+ * `https:`, or `http:` only when `chainIdentity` is exactly the chain identity
+ * of TP1_APPROVED_IDENTITY_RECORD: public Demos testnet nodes serve their RPC
+ * over plain http. Any other or missing chain identity means https only. The
+ * chain identity is the caller's pinned one, never one a node reported, and no
+ * hostname, port or label changes the rule.
+ */
+export function canonicalNodeEndpoint(endpoint: unknown, { chainIdentity }: { chainIdentity?: unknown } = {}): string | null {
+  if (typeof endpoint !== "string") return null;
+  let url: URL;
+  try { url = new URL(endpoint); } catch { return null; }
+  const scheme = url.protocol === "https:" || (url.protocol === "http:" && chainIdentity === TP1_APPROVED_IDENTITY_RECORD.chainIdentity);
+  return scheme && endpoint === `${url.origin}/` ? endpoint : null;
+}
+
 export const TESTNET_PROFILE_TP1 = deepFreeze({
   id: TP1_PROFILE_ID,
   revision: TP1_PROFILE_REVISION,
@@ -227,17 +246,15 @@ const connectionDigest = (decision: Tp1AuthorityDecision) => sha256Hex(canonical
   local: decision.local, chainIdentity: decision.chainIdentity, provenance: decision.provenance,
 }));
 
-function localBinding(supplied: unknown): LocalNetworkBinding {
+// One actor's connection, its endpoint checked by canonicalNodeEndpoint under the pinned `chainIdentity`.
+function localBinding(supplied: unknown, chainIdentity: string): LocalNetworkBinding {
   const local = ownedConfig(supplied, "tp1_local_binding_invalid");
   if (!hasKeys(local, ["endpoint", "transportAuthority", "connectionId"])) return fail("tp1_local_binding_invalid", 500);
-  let url: URL | null = null;
-  try { url = new URL(String(local.endpoint)); } catch { /* refused below */ }
-  if (typeof local.endpoint !== "string" || url === null || url.href !== local.endpoint || url.protocol !== "https:" ||
-      url.username || url.password || url.search || url.hash ||
-      !isIdentifier(local.transportAuthority) || !isIdentifier(local.connectionId)) {
+  const endpoint = canonicalNodeEndpoint(local.endpoint, { chainIdentity });
+  if (endpoint === null || !isIdentifier(local.transportAuthority) || !isIdentifier(local.connectionId)) {
     return fail("tp1_local_binding_invalid", 500);
   }
-  return { endpoint: local.endpoint, transportAuthority: local.transportAuthority, connectionId: local.connectionId };
+  return { endpoint, transportAuthority: local.transportAuthority, connectionId: local.connectionId };
 }
 
 /**
@@ -275,7 +292,7 @@ export async function bindTp1Profile(options: BindTp1Options): Promise<Tp1Bindin
   }
   const recordDigest = sha256Hex(canonicalize(record));
   if (!listHas(TP1_APPROVED_IDENTITY_RECORD_DIGESTS, recordDigest)) return fail("tp1_identity_unapproved", 500);
-  const local = localBinding(suppliedLocal);
+  const local = localBinding(suppliedLocal, record.chainIdentity as string);
   if (typeof readAuthority !== "function") fail("tp1_authority_required", 500);
   const reader = readAuthority as Tp1AuthorityReader;
   const decision = await readAuthorityDecision(reader, local, record.chainIdentity as string, null, []);
@@ -302,7 +319,7 @@ const isTp1Binding = (binding: unknown): binding is Tp1Binding =>
  */
 export async function assertTp1Binding(binding: unknown, currentLocal: unknown): Promise<void> {
   if (!isTp1Binding(binding)) fail("tp1_binding_required", 500);
-  const local = localBinding(currentLocal);
+  const local = localBinding(currentLocal, binding.profile.chainIdentity);
   if (sha256Hex(canonicalize(local)) !== binding.localDigest) fail("tp1_local_binding_changed", 500);
   await assertTp1Authority(binding, local, [], null);
 }
@@ -310,7 +327,7 @@ export async function assertTp1Binding(binding: unknown, currentLocal: unknown):
 /** Await fresh connection and participant/session authority; rejects on refusal or the reader's original error. */
 export async function assertTp1Authority(binding: Tp1Binding, local: unknown, suppliedParticipants: readonly string[], sessionId: string | null): Promise<void> {
   if (!isTp1Binding(binding)) fail("tp1_binding_required", 500);
-  const current = localBinding(local);
+  const current = localBinding(local, binding.profile.chainIdentity);
   if (sha256Hex(canonicalize(current)) !== binding.localDigest) fail("tp1_local_binding_changed", 500);
   const participants = ownedConfig(suppliedParticipants, "tp1_participant_profile_mismatch") as string[];
   const expectedCount = sessionId === null ? 0 : sessionId === "dacs-seller-discovery/v1" ? 1 : 2;

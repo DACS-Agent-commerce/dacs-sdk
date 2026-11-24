@@ -863,6 +863,12 @@ record. An endpoint string and a network label do not establish that fact.
 The reader returns `{local, chainIdentity, provenance, sessionId, participants}`.
 `local` includes the exact endpoint, transport authority and connection
 generation; `provenance` identifies that connection's authenticated attestation.
+The endpoint must pass `canonicalNodeEndpoint(endpoint, { chainIdentity })`
+with the record's chain identity: a canonical root URL (path exactly `/`, no
+credentials, query or fragment) over `https:`, or over plain `http:` only when
+that chain identity is the approved record's, because public Demos testnet
+nodes serve their RPC over plain http. Any other endpoint refuses with
+`tp1_local_binding_invalid`; no hostname, port or label changes the rule.
 The binding retains their digest and the reader in process-local state. A
 missing reader, wrong chain, changed connection or changed attestation refuses
 authorization. Two independently authenticated endpoints for the approved
