@@ -90,13 +90,17 @@ function parsedUrl(value: string, reasonCode: string, setting: string): URL {
 /** Plain http on a loopback host with an explicit port and nothing after the root path. */
 function listenAddress(value: string): Readonly<{ hostname: string; port: number }> {
   const url = parsedUrl(value, "url-refused", "DACS_WALLET_AUTHORITY_URL");
-  if (url.protocol !== "http:" || !isLoopbackHost(url.hostname) || url.port === "" ||
+  // URL normalizes an explicit :80 away. Recover it only from the raw authority.
+  const authority = /^http:\/\/([^/\\?#]*)/i.exec(value.trim())?.[1] ?? "";
+  const port = Number(url.port || /:([0-9]+)$/.exec(authority)?.[1]);
+  if (url.protocol !== "http:" || !isLoopbackHost(url.hostname) ||
+      !Number.isInteger(port) ||
       url.pathname !== "/" || url.search !== "" || url.hash !== "" ||
       url.username !== "" || url.password !== "") {
     refuse("url-refused", "DACS_WALLET_AUTHORITY_URL");
   }
   const hostname = url.hostname === "[::1]" ? "::1" : url.hostname;
-  return Object.freeze({ hostname, port: Number(url.port) });
+  return Object.freeze({ hostname, port });
 }
 
 function rpcUrl(value: string): string {
