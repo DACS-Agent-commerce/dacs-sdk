@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF copy scopes without members through a named helper in the context time tests",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/wire-bootstrap-context-time.test.mjs",
+      "before": "8c6728f2f65be09a1739d470ac364cdeca82955a",
+      "after": "9b600acdcd6dac130c840ed367f41440723101d0"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-98f1f9f8eb53.json",
+    "packages/dacs-client/test/wire-bootstrap-context-time.test.mjs"
+  ],
+  "note": "The tests drop scope members with a small helper instead of destructuring into unused names, which the repo lint refuses."
+}

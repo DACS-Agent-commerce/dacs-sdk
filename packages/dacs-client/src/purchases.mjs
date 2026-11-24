@@ -1511,6 +1511,12 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return protocol.identityRequest(operation, address);
   }
 
+  /** Accepts the wallet's signature over the delegation message, asks the seller for its challenge, and returns the identity presentation message over the seller's nonce. */
+  async function agreementDelegation({ operationId, token, delegationSignature }) {
+    assertPurchaseOpen();
+    return protocol.agreementDelegation(await admitProtocolStart(operationId, token), delegationSignature);
+  }
+
   async function admitProtocolStart(operationId, token) {
     const operation = protocolOperation(operationId, token);
     protocol.assertBuyerAccess?.(operation.terms.buyer.wallet);
@@ -1541,11 +1547,11 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   // A plan step already running for this purchase answers before the domain,
   // balance and fee reads: its own signatures wait for it, others are told at once.
-  async function agreementPlan({ operationId, token, signature, delegationSignature, intentGeneratedAt }) {
+  async function agreementPlan({ operationId, token, signature, intentGeneratedAt }) {
     assertPurchaseOpen();
-    const running = await protocol.runningPlan?.(protocolOperation(operationId, token), signature, delegationSignature, intentGeneratedAt);
+    const running = await protocol.runningPlan?.(protocolOperation(operationId, token), signature, intentGeneratedAt);
     if (running) return running;
-    return protocol.planRequest(await admitProtocolStart(operationId, token), signature, delegationSignature, intentGeneratedAt);
+    return protocol.planRequest(await admitProtocolStart(operationId, token), signature, intentGeneratedAt);
   }
   // True while this process runs the purchase's plan step (none is saved yet).
   const planRunning = (operation) => operation.status === 'agreement_pending' && !operation.state?.protocol?.planned && planRunningOf(protocol, operation);
@@ -1724,7 +1730,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   const service = {
     prepare, status, issueApprovalChallenge, approve, prepareHandoff, nativePaymentLane, reportWalletResult, verifyDeal, cancel, portalOperation, portalEvidence,
-    agreementIdentity, sessionRenewal, sessionRenewalAccept, agreementPlan, planRunning, agreementSubmit, completionRequest, completionCountersign, protocolRecheck,
+    agreementIdentity, agreementDelegation, sessionRenewal, sessionRenewalAccept, agreementPlan, planRunning, agreementSubmit, completionRequest, completionCountersign, protocolRecheck,
   };
   stopRefusalRecorders.set(service, suspendOnStopRefusal);
   return service;
@@ -1732,7 +1738,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
 // The service actions that authenticate their request with the purchase's handoff token.
 const TOKEN_ACTIONS = new Set(['issueApprovalChallenge', 'approve', 'prepareHandoff', 'nativePaymentLane', 'reportWalletResult',
-  'agreementIdentity', 'sessionRenewal', 'sessionRenewalAccept', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign', 'protocolRecheck']);
+  'agreementIdentity', 'agreementDelegation', 'sessionRenewal', 'sessionRenewalAccept', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign', 'protocolRecheck']);
 
 // Each service's recorder for host stop refusals of its actions. Module-private.
 const stopRefusalRecorders = new WeakMap();

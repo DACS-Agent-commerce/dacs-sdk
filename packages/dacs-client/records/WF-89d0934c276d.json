@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF verify context rate limits and align the release snapshot",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+      "before": "cc8cd6e3989e1c3d2d4471bea877037cf67475ac",
+      "after": "8efac0b2a4ba58e6de248adeb1cf272a1a12b342"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-89d0934c276d.json",
+    "packages/dacs-client/test/seller-response-classification.test.mjs",
+    "scripts/release-policy.json"
+  ]
+}
