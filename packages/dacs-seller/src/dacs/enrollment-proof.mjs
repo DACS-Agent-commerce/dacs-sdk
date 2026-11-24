@@ -20,7 +20,9 @@ const PUBLIC_KEY_CHARACTERS = 43;
 const HEX64 = /^[0-9a-f]{64}$/;
 
 const ENVELOPE_MEMBERS = ['result', 'response', 'require_reply', 'extra'];
-const RESPONSE_MEMBERS = ['version', 'request', 'chainIdentity', 'height', 'blockHash', 'complete', 'entries', 'signature'];
+// Every response member is signed except `signature` itself.
+const SIGNED_MEMBERS = ['version', 'request', 'chainIdentity', 'height', 'blockHash', 'complete', 'entries'];
+const RESPONSE_MEMBERS = [...SIGNED_MEMBERS, 'signature'];
 const REQUEST_MEMBERS = ['sellerClaim', 'participantClaim', 'listingPin', 'nonce'];
 const ENTRY_MEMBERS = ['claim', 'profile', 'modules', 'evidence', 'revoked'];
 const PIN_MEMBERS = ['chainIdentity', 'publicKey'];
@@ -59,14 +61,8 @@ export function parseTrustedNodePin(trustedNode) {
   }
   const raw = Buffer.from(publicKey, 'base64url');
   if (isSmallOrderPublicKey(raw)) refuse('enrollment_invalid', 'the trusted node key is a small-order point');
-  let keyObject;
-  try {
-    keyObject = publicKeyFromRaw(raw);
-  } catch (error) {
-    refuse('enrollment_invalid', 'the trusted node key is not an Ed25519 public key', error);
-  }
   if (chainIdentity !== TP1_APPROVED_IDENTITY_RECORD.chainIdentity) refuse('enrollment_unverified', 'the trusted node pin names another chain');
-  return Object.freeze({ chainIdentity, keyObject });
+  return Object.freeze({ chainIdentity, keyObject: publicKeyFromRaw(raw) });
 }
 
 // The node's envelope and closed signed response shape; non-200 is an unavailable answer, not a malformed one.
@@ -98,7 +94,7 @@ function verifiedEntry(entry, participantClaim) {
 }
 
 function signingInput(response) {
-  const { signature: _signature, ...signed } = response;
+  const signed = Object.fromEntries(SIGNED_MEMBERS.map((member) => [member, response[member]]));
   let text;
   try {
     text = SIGNING_DOMAIN + canonicalize(signed);

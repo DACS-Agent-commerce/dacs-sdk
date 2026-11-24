@@ -26,7 +26,7 @@ export const trustedNodeFor = (key) => ({ chainIdentity: TP1_APPROVED_IDENTITY_R
 
 /** The text a node signs: the domain line, then canonical JSON of every response member except `signature`. */
 export function signingInputFor(response) {
-  const { signature: _signature, ...signed } = response;
+  const signed = Object.fromEntries(Object.entries(response).filter(([member]) => member !== 'signature'));
   return SIGNING_DOMAIN + canonicalize(signed);
 }
 

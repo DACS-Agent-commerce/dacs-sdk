@@ -148,6 +148,7 @@ test('independently signed wrong profile module tuple empty evidence wrong entry
     'missing extra': [(env) => { delete env.extra; }, 'enrollment_invalid'],
     'extra envelope member': [(env) => { env.proof = 'x'; }, 'enrollment_invalid'],
     'response not an object': [(env) => { env.response = JSON.stringify(env.response); }, 'enrollment_invalid'],
+    'entry text with no canonical form': [(env) => { env.response.entries[0].evidence = 'row \ud800'; }, 'enrollment_invalid'],
   };
   for (const [label, [change, code]] of Object.entries(envelopeCases)) {
     const vector = storedVector('current-entry');
