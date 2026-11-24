@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fetchBoundedJson } from '../src/util/http.mjs';
 import { createSellerHttpsClient } from '../src/dacs/seller-http.mjs';
-import { startHttpsSeller } from './helpers/seller-https-rig.mjs';
+import { startHttpsSeller, NO_TRANSMIT_GUARDS } from './helpers/seller-https-rig.mjs';
 import { passiveNativeWorld, HASH } from './helpers/passive-native-world.mjs';
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
@@ -75,7 +75,7 @@ test('bounded fetch reports an oversized body without waiting for the body to ca
 });
 
 // The seller's signed-answer step is never reached: the server stalls before a complete answer exists.
-const stallAuthentication = { request: async () => ({ header: 'TEST-header', payload: {} }), verifyResponse: async () => assert.fail('a stalled answer is never verified') };
+const stallAuthentication = { request: async () => ({ header: 'TEST-header', payload: {}, transmitGuards: NO_TRANSMIT_GUARDS }), verifyResponse: async () => assert.fail('a stalled answer is never verified') };
 test('seller client settles on its deadline when the server stalls headers or body', async (t) => {
   let stall = 'headers';
   const seller = await startHttpsSeller(t, (_req, res) => { if (stall === 'body') { res.writeHead(200, { ...JSON_HEADERS, 'content-length': 100 }); res.flushHeaders(); } });

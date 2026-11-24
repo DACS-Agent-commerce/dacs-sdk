@@ -1,0 +1,32 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client files with the recorded stop suspension and the delegation-first bootstrap",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "066832c4cf8b936f7bc25cbb540cdd4ac1d2caea",
+      "after": "066832c4cf8b936f7bc25cbb540cdd4ac1d2caea"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "1da4fb1e46c9d9973bd9f73d9d9ff5e445b6339f",
+      "after": "1da4fb1e46c9d9973bd9f73d9d9ff5e445b6339f"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "193c2d235a5dda3b30027a2c169804e99196c26d",
+      "after": "193c2d235a5dda3b30027a2c169804e99196c26d"
+    },
+    {
+      "path": "packages/dacs-client/test/host-stop-wire.test.mjs",
+      "before": "95956a123ba6d66d84eb47825ee22440e43d83e0",
+      "after": "95956a123ba6d66d84eb47825ee22440e43d83e0"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-fd2dfee8657c.json"
+  ],
+  "note": "Both sides of the merge of the base recorded these files, so their newest records disagree; this record chooses the merged copies, which the merge combined without conflict. The protocol purchases and the purchase service keep the base's delegation-first bootstrap, signature routing and bootstrap outcomes with this branch's recording of a purchase's suspension whether or not work is queued; the root keeps the base's host adapter exports with this branch's service description; the stop test of a request start keeps the base's setup and expects this branch's one suspension write."
+}

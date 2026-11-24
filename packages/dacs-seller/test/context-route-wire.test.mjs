@@ -314,6 +314,17 @@ test('the retained scope reader is refused when set twice, after a request, or b
   f.store.close();
 });
 
+test('the retained scope reader refusal after a resolution call names that call, and a readback alone does not close binding', async () => {
+  const world = contextWorld(), { f, records } = world;
+  const readBack = world.compose();
+  await readBack.provider.readBackRecords({ jobId: JOB, buyer: world.bundle.presentedBy });
+  readBack.provider.bindRetainedScope(records.completedScope);
+  const resolved = world.compose();
+  await resolved.provider.resolveSeller({ jobId: JOB, listingPin: f.pin, buyerIdentityBundle: world.bundle, generatedAt: NOW });
+  assert.throws(() => resolved.provider.bindRetainedScope(records.completedScope), { name: 'TypeError', message: /after the first context resolution call/ });
+  f.store.close();
+});
+
 test('the resolve wrapper forwards the attempt\'s writable predicate: a fenced admission revision stops the next Vet signature and transmission', async (t) => {
   const world = contextWorld(), { f } = world, gate = deferred(), reached = deferred();
   const issueChallenge = async (input) => { reached.resolve(); await gate.promise; return f.counterparty.issueChallenge(input); };
@@ -1422,7 +1433,7 @@ const AGENT_EFFECT_ENTRIES = ['receiveProposal', 'commit', 'commitOnSignature', 
 
 test('an agent refuses every direct effect entry without a closed-bootstrap gate, and asks its gate before any work', async (t) => {
   const f = await proposalAdmissionFixture(t), request = { jobId: AGENT_JOB, transportIdentity: { jobId: AGENT_JOB } };
-  const ungated = await createSellerAgent({ ...f.config });
+  const ungated = await createSellerAgent({ ...f.config, ...f.signing });
   t.after(() => ungated.close());
   for (const entry of AGENT_EFFECT_ENTRIES) {
     await assert.rejects(ungated[entry](request), (error) => error.code === 'session_admission_unavailable' && error.status === 503, `${entry} without a gate`);

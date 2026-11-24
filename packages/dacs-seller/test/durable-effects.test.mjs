@@ -80,17 +80,18 @@ test('a thousand competing settlement claims keep a constant-size row and credit
 
 test('signature bytes persist once and a failed signer remains retryable under the fence', async t => {
   let fail = false, count = 0;
-  const f = await durableFixture(t, { signer: { claim: seller.claim, sign(bytes) { if (bytes.toString() === 'TEST exact bytes') { count++; if (fail) throw new Error('TEST sign failed'); } return seller.signBytes(bytes); } } });
+  const f = await durableFixture(t);
+  const passSigner = (bytes) => { count++; if (fail) throw new Error('TEST sign failed'); return seller.signBytes(bytes); };
   const bytes = Buffer.from('TEST exact bytes'); fail = true;
-  await assert.rejects(f.store.withJob(JOB, () => f.store.signOnce('TEST-signature', bytes)), /TEST sign failed/); fail = false;
-  const signed = await f.store.withJob(JOB, () => f.store.signOnce('TEST-signature', bytes)); f.store.close();
-  const again = await f.reopen(); assert.deepEqual(await again.withJob(JOB, () => again.signOnce('TEST-signature', bytes)), signed); assert.equal(count, 2);
-  await assert.rejects(again.withJob(JOB, () => again.signOnce('TEST-signature', Buffer.from('changed'))), e => e.code === 'seller_effect_conflict'); again.close();
+  await assert.rejects(f.store.withJob(JOB, () => f.store.signOnce('TEST-signature', bytes, passSigner)), /TEST sign failed/); fail = false;
+  const signed = await f.store.withJob(JOB, () => f.store.signOnce('TEST-signature', bytes, passSigner)); f.store.close();
+  const again = await f.reopen(); assert.deepEqual(await again.withJob(JOB, () => again.signOnce('TEST-signature', bytes, passSigner)), signed); assert.equal(count, 2);
+  await assert.rejects(again.withJob(JOB, () => again.signOnce('TEST-signature', Buffer.from('changed'), passSigner)), e => e.code === 'seller_effect_conflict'); again.close();
 });
 for (const [label, answer] of [['a short signature', Buffer.alloc(10)], ['a signature that does not verify', Buffer.alloc(64)]]) test(`a signer returning ${label} records no completion`, async t => {
   const bytes = Buffer.from('TEST refused signature');
-  const f = await durableFixture(t, { signer: { claim: seller.claim, sign: value => value.equals(bytes) ? answer : seller.signBytes(value) } });
-  await assert.rejects(f.store.withJob(JOB, () => f.store.signOnce('TEST-signature', bytes)), e => e.code === 'seller_state_signer_invalid');
+  const f = await durableFixture(t);
+  await assert.rejects(f.store.withJob(JOB, () => f.store.signOnce('TEST-signature', bytes, () => answer)), e => e.code === 'seller_state_signer_invalid');
   assert.equal(f.store.signature('TEST-signature').disposition, 'indeterminate'); f.store.close();
 });
 
@@ -296,7 +297,7 @@ test('reconciling one job reads only its own anchors among other jobs and signat
     const address = `TEST-anchor-${jobId}`;
     await f.store.withJob(jobId, async () => {
       await f.store.anchor({ jobId, logicalAddress: address, artifact, anchors, authorize: sellerAuthorization(address, artifact) });
-      f.store.signOnce(`TEST-signature-${jobId}`, Buffer.from(jobId));
+      f.store.signOnce(`TEST-signature-${jobId}`, Buffer.from(jobId), seller.signBytes);
     });
   }
   anchors.read = (address, options) => { addresses.push(address); return read(address, options); };
@@ -343,8 +344,9 @@ test('real held child lock fences effects until process exit', async t => {
 test('losing a job fence during signing releases no signature completion', async t => {
   let db;
   const bytes = Buffer.from('TEST lost fence');
-  const f = await durableFixture(t, { signer: { claim: seller.claim, sign(value) { if (value.equals(bytes)) db.prepare('DELETE FROM seller_locks WHERE job=?').run(JOB); return seller.signBytes(value); } } });
+  const f = await durableFixture(t);
+  const passSigner = (value) => { db.prepare('DELETE FROM seller_locks WHERE job=?').run(JOB); return seller.signBytes(value); };
   db = new DatabaseSync(f.path);
-  await assert.rejects(f.store.withJob(JOB, () => f.store.signOnce('TEST-lost-fence', bytes)), e => e.code === 'seller_state_fenced');
+  await assert.rejects(f.store.withJob(JOB, () => f.store.signOnce('TEST-lost-fence', bytes, passSigner)), e => e.code === 'seller_state_fenced');
   assert.equal(f.store.signature('TEST-lost-fence').disposition, 'indeterminate'); db.close(); f.store.close();
 });

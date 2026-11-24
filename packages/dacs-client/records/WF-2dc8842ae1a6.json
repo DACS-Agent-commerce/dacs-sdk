@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged copies after the catch-up merge 913e29695c58",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "106daf2340e07c43992a37cb13fcdd0867672076",
+      "after": "106daf2340e07c43992a37cb13fcdd0867672076"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-2dc8842ae1a6.json"
+  ],
+  "note": "Both sides of the catch-up merge of phase0-completion recorded these files and git merged them without a conflict; this record names the merged copies, which keep both sides' changes. Written by the factory's catch-up script; no file other than this record changes."
+}

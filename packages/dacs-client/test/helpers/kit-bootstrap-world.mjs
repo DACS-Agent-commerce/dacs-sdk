@@ -24,6 +24,7 @@ const { purchaseSupport } = await import('../../../dacs-seller/src/dacs/listing.
 const { createSqlitePurchaseStore } = await import('../../src/seams/purchase-store-not-wired.mjs');
 const { createSourceDemoSellerTransport } = await import('../../src/dacs/source-demo-seller-transport.mjs');
 const { createProtocolPurchases } = await import('../../src/index.mjs');
+const { requestBoundary } = await import('./request-boundary.mjs');
 
 export { JOB, JOB2, NOW, TEST_CONNECTION, buyer, seller };
 export const CHALLENGE = wire.DACS_SELLER_HTTP_PATHS.contextChallenge;
@@ -51,7 +52,7 @@ export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = D
   const sessionSigner = { claim: session.claim, sign(bytes) { signs.push(Buffer.from(bytes)); return session.signBytes(bytes); } };
   const world = { host, binding, signs, requests: [], answers: [], clock: { time: NOW }, intercept: null, policies: 0 };
   const transport = createSourceDemoSellerTransport({ authority: 'TEST-wire', sessionSignerFor: () => sessionSigner, endpointProofFor: () => proof,
-    sessionPolicyFor: () => { world.policies++; return { expiresAt: world.clock.time + delegationLifetimeMs }; } });
+    sessionPolicyFor: () => { world.policies++; return { expiresAt: world.clock.time + delegationLifetimeMs }; }, effectBoundary: requestBoundary(t, admission).boundary });
   const forwardToHost = async (url, init) => {
     const response = await (host.fetch ?? fetchAsHost())(url.replace(FIXTURE_ENDPOINT, host.url), init);
     if (new URL(url).pathname === CHALLENGE) world.answers.push({ text: await response.clone().text(), header: response.headers.get(wire.DACS_SELLER_HTTP_HEADER) });

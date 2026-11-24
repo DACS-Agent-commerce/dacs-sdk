@@ -1746,6 +1746,7 @@ value partyVetPinScopeHash
 value partyVetWithNativeCciTlsnCore
 value payD402Settle
 value payD402SettleCore
+value payDemConfirmedTotalDebitOs
 value payDemSettle
 value payDemSettleCore
 value paymentEvidenceAddress

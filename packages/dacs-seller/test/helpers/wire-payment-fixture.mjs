@@ -82,6 +82,7 @@ export async function fixturePaymentWorld(t, { leaseMs = PAYMENT_LEASE_MS, direc
     transportAgreementOf,
     continuationEvidenceOf,
     receiveProposal: (body, settings) => real().receiveProposal(body, settings),
+    agreementState: (identity) => real().agreementState(identity),
     reconcileTransport: (input) => real().reconcileTransport(input),
     retainsProposalWork: (id) => real().retainsProposalWork(id),
     retainsUnfinishedWork: (target) => real().retainsUnfinishedWork(target),

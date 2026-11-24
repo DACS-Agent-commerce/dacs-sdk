@@ -9,6 +9,7 @@ import { installPurchaseAdmissionHook, loadAdmissionDouble } from './purchase-ad
 import { LOCAL } from '../fixtures/tp1-authority-reader.mjs';
 import { fixtureListing } from '../fixtures/listings.mjs';
 import { readOnlyBoundary } from './read-only-boundary.mjs';
+import { requestBoundary } from './request-boundary.mjs';
 import { withSeller } from './seller-stand-in.mjs';
 installPurchaseAdmissionHook();
 export const { setPurchaseAdmission } = await loadAdmissionDouble();
@@ -56,7 +57,8 @@ export async function world(t, { pin: committedPin, agreementHash = sha256Hex('a
       };
     }
   });
-  const admission = { binding, currentLocal: () => ({ ...local }) }, pin = committedPin ?? { listingId: 'tp1-vector-listing', version: 1, contentHash: sha256Hex('contracts-vector-listing') };
+  const requests = requestBoundary(t, { binding, currentLocal: () => ({ ...local }) });
+  const admission = { binding, currentLocal: () => ({ ...local }) }, pin =committedPin ?? { listingId: 'tp1-vector-listing', version: 1, contentHash: sha256Hex('contracts-vector-listing') };
   const document = await wire.signDiscoveryDocument({
     format: 'dacs-seller-discovery/v1', profile: binding.profile, seller: seller.claim, publicEndpoint,
     transport: ['dacs-seller-http/v1'], listings: [pin], capabilities: wire.TP1_CAPABILITIES, ready, issuedAt: T0, expiresAt: T0 + 120000
@@ -81,9 +83,9 @@ export async function world(t, { pin: committedPin, agreementHash = sha256Hex('a
       return session.sign(bytes);
     } };
   const { createSellerWireAuthentication } = await import('../../src/dacs/seller-wire-authentication.mjs');
-  const options = { admission, sessionSigner, delegation, seller: seller.claim, publicEndpoint, endpointProof, job, now: () => state.time };
+  const options = { admission, sessionSigner, delegation, seller: seller.claim, publicEndpoint, endpointProof, job, now: () => state.time, effectBoundary: requests.boundary };
   const auth = createSellerWireAuthentication(options);
-  return { buyer, seller, session, other, local, state, binding, admission, pin, endpointProof, publicEndpoint, payload, delegation, job, options, auth, createSellerWireAuthentication };
+  return { requests, buyer, seller, session, other, local, state, binding, admission, pin, endpointProof, publicEndpoint, payload, delegation, job, options, auth, createSellerWireAuthentication };
 }
 /** A world whose endpoint proof names the fixture purchase's own Listing, so the purchase's seller requests can be signed. */
 export const sellerWorld = (t) => {
@@ -104,7 +106,7 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
     authority: 'TEST-wire', sessionSignerFor, sessionPolicyFor: (op) => {
       policies++;
       return policy(op);
-    }, endpointProofFor: () => w.endpointProof
+    }, endpointProofFor: () => w.endpointProof, effectBoundary: w.options.effectBoundary
   });
   const listing = signedListing ?? fixtureListing(w.seller, { now: T0 });
   const terms = {

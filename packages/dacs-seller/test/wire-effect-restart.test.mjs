@@ -282,7 +282,7 @@ test('commitments/signature cut after the wire reservation, before the early-att
       // The buyer's slot was reserved durably before the cut: the same retained state with its slot and no marker.
       const { listingPin } = seller.agent;
       seller.agent.close();
-      const state = await createSellerDurableState({ dir: seller.f.dir, signer: seller.f.config.signer, listingPin });
+      const state = await createSellerDurableState({ dir: seller.f.dir, integritySigner: seller.f.config.signer, listingPin });
       await state.withJob(JOB, () => state.reserveSignatureCommitment(buyer.claim, JOB));
       state.close();
       await seller.restart();
@@ -462,6 +462,7 @@ async function commitmentWire(t, { early, leaseMs }) {
     // The host holds a job from the proposal its wire route admitted, which is when the transport store keeps the job's tuple.
     transportAgreementOf: (id) => (admitted.has(id) ? agent.transportAgreementOf(id) : null),
     receiveProposal: (body, settings) => agent.receiveProposal(body, settings),
+    agreementState: (identity) => agent.agreementState(identity),
     reconcileTransport: (input) => agent.reconcileTransport(input),
     retainsProposalWork: (id) => agent.retainsProposalWork(id),
     retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target),
@@ -512,6 +513,7 @@ async function proposalCell(t, kind) {
   Object.assign(w.agent, {
     transportAgreementOf: (id) => agent.transportAgreementOf(id),
     receiveProposal: (body, settings) => agent.receiveProposal(body, settings),
+    agreementState: (identity) => agent.agreementState(identity),
     reconcileTransport: (input) => agent.reconcileTransport(input),
     retainsProposalWork: (id) => agent.retainsProposalWork(id),
     retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target),

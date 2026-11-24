@@ -14,7 +14,7 @@ const directory = async t => {
   t.after(() => rm(dir, { recursive: true, force: true }));
   return dir;
 };
-const config = dir => ({ dir, signer: { claim: seller.claim, sign: seller.signBytes }, listingPin: { contentHash: 'a'.repeat(64) } });
+const config = dir => ({ dir, integritySigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: { contentHash: 'a'.repeat(64) } });
 function worker(t, dir, phase) {
   const child = fork(new URL('./helpers/durable-init-worker.mjs', import.meta.url), [dir, phase], { stdio: ['pipe', 'ignore', 'pipe', 'ipc'] });
   let stderr = '';

@@ -45,20 +45,36 @@ test('a service constructed admitted and then re-held, with a purchase at agreem
   assert.equal(world.rows(), before);
 });
 
-test('the constant flips to held at a barrier after verifyDeal\'s entry check and before its continuation: verifyDeal returns the diagnostic readback and the continuation runs 0 times; with the constant still admitted, a binding refusal at the same point rejects with its tp1_* cause', async (t) => {
+test('the constant flips to held at a barrier after verifyDeal\'s entry check and before its continuation: verifyDeal returns the diagnostic readback, the continuation runs 0 times and the purchase records only the re-hold\'s suspension; with the constant still admitted, a binding refusal at the same point rejects with its tp1_* cause', async (t) => {
   setPurchaseAdmission('testnet-tp1');
   holdAfter(t);
   const world = await compositionWorld(t);
-  const purchase = world.seed({ status: 'agreement_pending', key: 'TEST-barrier', protocolTerms: NATIVE_TERMS, state: { protocol: { stage: 'agreement-signing', agreement: SIGNED_AGREEMENT } } });
-  const before = world.rows();
+  const seed = (key) => world.seed({ status: 'agreement_pending', key, protocolTerms: NATIVE_TERMS, state: { protocol: { stage: 'agreement-signing', agreement: SIGNED_AGREEMENT } } });
+  const purchase = seed('TEST-barrier');
+  const before = world.ops.get(ACCOUNT_ID, purchase.operation.id), events = () => world.ops.history(purchase.operation.id);
+  const eventsBefore = events();
+  const otherTables = () => JSON.parse(world.rows()).filter(([name]) => !['operations', 'operation_events'].includes(name));
+  const tablesBefore = otherTables();
   world.authority.state.gate = async () => { setPurchaseAdmission('held'); };
   const result = await readers(world, purchase).verifyDeal();
   assert.ok(result.verification, 'the diagnostic readback is returned');
   assert.equal(world.counters.buyerAccess, 1, 'only verifyDeal\'s own check ran; the continuation\'s protocol.recheck did not');
-  assert.equal(world.rows(), before);
+  // The suspension write also advances the protocol revision; nothing else in the row changes.
+  const withoutSuspension = (row) => {
+    const protocol = { ...row.state.protocol };
+    for (const member of ['sellerSuspension', 'revision', 'progressGeneration']) delete protocol[member];
+    return { ...row, state: { ...row.state, protocol } };
+  };
+  const after = world.ops.get(ACCOUNT_ID, purchase.operation.id);
+  assert.equal(after.state.protocol.sellerSuspension.cause, 'profile_not_admitted');
+  assert.deepEqual(withoutSuspension(after), withoutSuspension(before));
+  assert.deepEqual(events().slice(eventsBefore.length).map((event) => event.type), ['seller_suspended']);
+  assert.deepEqual(otherTables(), tablesBefore);
+  // The first purchase is now suspended, so its continuation would stop before protocol.recheck; the binding refusal runs on a second.
+  const second = seed('TEST-barrier-admitted');
   setPurchaseAdmission('testnet-tp1');
   world.authority.state.gate = async () => { world.current.connectionId = 'vector-conn-2'; };
-  await assert.rejects(readers(world, purchase).verifyDeal(), (error) => error.code === 'profile_not_admitted' && error.cause?.code === 'tp1_local_binding_changed');
+  await assert.rejects(readers(world, second).verifyDeal(), (error) => error.code === 'profile_not_admitted' && error.cause?.code === 'tp1_local_binding_changed');
 });
 
 test('admitted: verifyDeal\'s continuation calls protocol.recheck exactly once, after its K6 check', async (t) => {

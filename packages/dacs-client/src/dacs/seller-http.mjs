@@ -143,9 +143,11 @@ export const sellerEndpointOrigin = (publicEndpoint) => parsePublicEndpoint(publ
  * `explicitResume(path)` (optional) is the caller's one-shot taker: it answers true at most once, for the route a buyer's explicit
  * resume named. The first attempt of that call then carries a fresh proof of the resume (see `authentication.resumeProof`) in the `x-dacs-seller-resume` header.
  * No automatic retry of the call, and no other call, sends one; the proof is never kept.
- * `request(path, body, {prepareTransmit, beforeTransmit})` hands the effect boundary's two callbacks to the connector unchanged;
- * neither the construction options nor the named methods accept them. Throws TypeError for an option it does not take, an
- * endpoint that is not a public https origin, or a missing authentication or connector.
+ * The authentication returns each signed request with its `transmitGuards`, the signature's own last checks. The connector runs
+ * them right before the first byte, and a request they refuse is not written. `request(path, body, {prepareTransmit, beforeTransmit})`
+ * adds the effect boundary's two callbacks after them; neither the construction options nor the named methods accept them.
+ * Throws TypeError for an option it does not take, an endpoint that is not a public https origin, a missing authentication or
+ * connector, or an authentication that returns a signed request without transmit guards.
  */
 export function createSellerHttpsClient(options) {
   const unaccepted = Object.keys(options).find((name) => !CLIENT_OPTIONS.has(name));
@@ -224,12 +226,17 @@ export function createSellerHttpsClient(options) {
       checkDeadline();
       phase = 'other';
       const { pathname } = routeUrl(path);
+      const guards = signed.transmitGuards;
+      if (typeof guards?.prepareTransmit !== 'function' || typeof guards.beforeTransmit !== 'function') throw new TypeError('the wire authentication returned a request without transmit guards');
       let response;
       try {
+        // The signature's own last checks come first; the caller's callbacks follow, all before the first byte.
         response = await connector.send({ origin, path: pathname, method: 'POST', body: Buffer.from(text),
           headers: { accept: 'application/json', 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header, ...(resumeHeader ? { [DACS_SELLER_RESUME_HEADER]: resumeHeader } : {}) },
           deadlineMs: Math.max(1, Math.ceil(deadline - clock.now())), maxResponseBytes: DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes,
-          maxResponseHeaderBytes: SELLER_RESPONSE_HEADER_BYTES, prepareTransmit, beforeTransmit });
+          maxResponseHeaderBytes: SELLER_RESPONSE_HEADER_BYTES,
+          prepareTransmit: async () => { await guards.prepareTransmit(); await prepareTransmit?.(); },
+          beforeTransmit: () => { guards.beforeTransmit(); beforeTransmit?.(); } });
         dispatched = true;
       } catch (failure) {
         // Only a rejection that says nothing was written leaves the call unsent.

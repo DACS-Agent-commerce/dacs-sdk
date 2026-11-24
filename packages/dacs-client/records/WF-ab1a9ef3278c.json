@@ -1,0 +1,67 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client files with the signature routing, the host stop and the explicit resume proof",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "1f5d699360d773e1ff107950ceaac2d39a83cd61",
+      "after": "1f5d699360d773e1ff107950ceaac2d39a83cd61"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "f6171b2b1bc8668e527c701717081b12eb8ee4e1",
+      "after": "f6171b2b1bc8668e527c701717081b12eb8ee4e1"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+      "before": "b780c9f11acfe7ec2c2d1166a7fe6ee6b5d2761f",
+      "after": "b780c9f11acfe7ec2c2d1166a7fe6ee6b5d2761f"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+      "before": "69f154ab810454ed35e8bfabfae57b275ac9a78f",
+      "after": "69f154ab810454ed35e8bfabfae57b275ac9a78f"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/source-demo-seller-transport.mjs",
+      "before": "79a58498aa567c369589d4eba2ea97fbed241a7d",
+      "after": "79a58498aa567c369589d4eba2ea97fbed241a7d"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "862078b5d7080ce4d2ad3ef060fbfdccec74599e",
+      "after": "862078b5d7080ce4d2ad3ef060fbfdccec74599e"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "0423285a129e436eae5c927787d11b27d691b708",
+      "after": "0423285a129e436eae5c927787d11b27d691b708"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+      "before": "e7b6bd961343393025d2e3b511f2f9543913d937",
+      "after": "e7b6bd961343393025d2e3b511f2f9543913d937"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "7984731a0bd39e315a1fa337ca53a15dfde5684e",
+      "after": "7984731a0bd39e315a1fa337ca53a15dfde5684e"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+      "before": "962ab7d6728ddb24865cdbade77e767810b2086c",
+      "after": "962ab7d6728ddb24865cdbade77e767810b2086c"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-https-client.test.mjs",
+      "before": "fd4098e55407cdf9be6ffb592be5c2afe96e5054",
+      "after": "fd4098e55407cdf9be6ffb592be5c2afe96e5054"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-ab1a9ef3278c.json"
+  ],
+  "note": "Both sides of the merge recorded these files; this record chooses the merged copies. The README keeps the base's authority token text, its rule that prepare declares the seller transport only with native payment and its evidence, and its host stop text, and this side's effect boundary paragraphs for the seller transport and the general sign request. The wire authentication keeps the base's session signer helper, with its host stop check, and its explicit resume proof unchanged, and passes that helper's signer for each request through the effect boundary as a transient signature whose transmit guards it returns. The seller HTTP client keeps the base's explicit resume header and its pass-through of an unsent host stop refusal, and runs the signature's transmit guards before the caller's callbacks. The seller transport keeps the base's authority label or token check and requires the client's effect boundary. The protocol purchases keep the base's host stop on the request records, its check that the saved delegation names the session key and its explicit resume taker, and hand the transport's effect boundary to the wire authentication. The entry point documents both. The effect boundary, the native transport, the Node wallet session, the wire client fixture and the seller HTTPS client test merged without a conflict and keep both sides' changes."
+}
