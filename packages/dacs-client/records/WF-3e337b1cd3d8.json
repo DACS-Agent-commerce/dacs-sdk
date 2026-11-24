@@ -1,0 +1,97 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF read an issued native payment lane back passively, also while purchase actions are held or the host is stopped",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "d301638b1f48455779956d2baad1f21883609a2d",
+      "after": "d2e0b7d5e7717031195ab63562b3a438460e0bab"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs",
+      "before": "218f80d92381ec77ea1367d31483c63b10cd3347",
+      "after": "5c405c52c7bc5e37e1829fa1ec8ab4bc9cfc2be7"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "abb44afff8044fe667048284a96be20c4a7e2a93",
+      "after": "79ea722d9ffebe0fce06e8c63a8e0411e92b1f84"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/retained-native-lane-proof.mjs",
+      "before": null,
+      "after": "5770048634278242fb0006ce61699b1939a536e3"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "7af05fc96c945cf866ef17c7225854a1012fd0e5",
+      "after": "7c87ba807178464ffa87cfba1089ff6ef4729741"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "b6457decdc71921f309c9b43f60fcf0113a00697",
+      "after": "3f14f768f889e50e59c86262de195b7d75eca4e7"
+    },
+    {
+      "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+      "before": "8de640ef8a5f5dd10f4e7f03cfc2e7bd839e4d7f",
+      "after": "a5cde3f38d4eb60e24adb3751a567848a09ddc15"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/retained-native-lane-world.mjs",
+      "before": null,
+      "after": "1c36d4fd393f2fd73a71720822e2999a44a8ec76"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/retained-native-readback-stand-ins.mjs",
+      "before": null,
+      "after": "a172fca7916112fa0b2ba9ac3078dba18f315c69"
+    },
+    {
+      "path": "packages/dacs-client/test/native-payment-lane-read.test.mjs",
+      "before": null,
+      "after": "696085a19380a2b21f8cd6443ab0234b0f1ebe7c"
+    },
+    {
+      "path": "packages/dacs-client/test/public-admission.test.mjs",
+      "before": "da8bdb183607a5978c1e965802bf656577d50c34",
+      "after": "b0fe4f7f33b0c7b7524a74add91b3bec51f77d8c"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "8ed50e733139bf246206918c9c6543a465e8c7f2",
+      "after": "73a076c50c851ff862dd31b738d21c1e5b20d973"
+    },
+    {
+      "path": "packages/dacs-client/test/readme-contract.test.mjs",
+      "before": "9bd68593eb4fe5b54444bcf39fb0b1667de8b862",
+      "after": "85512c075ba469eeeac34dfd0f409b2f9e750210"
+    },
+    {
+      "path": "packages/dacs-client/test/stop-seam.test.mjs",
+      "before": "f50f9e931cfdaeab71deb875654f40c3155685ee",
+      "after": "17a7de63ecdee0a70b0fb9e12c08a9df04b2fefc"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-3e337b1cd3d8.json",
+    "packages/dacs-client/src/dacs/native-agreement-payment-consumer.mjs",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/dacs/retained-native-lane-proof.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/purchases.mjs",
+    "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+    "packages/dacs-client/test/helpers/retained-native-lane-world.mjs",
+    "packages/dacs-client/test/helpers/retained-native-readback-stand-ins.mjs",
+    "packages/dacs-client/test/native-payment-lane-read.test.mjs",
+    "packages/dacs-client/test/public-admission.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "packages/dacs-client/test/readme-contract.test.mjs",
+    "packages/dacs-client/test/stop-seam.test.mjs"
+  ],
+  "note": "createPurchaseService gains the passive nativePaymentLaneRead({operationId,token,key}) and createProtocolPurchases the passive readRetainedNativePaymentLane(operation,key); both are on the public passive lists, so they run while purchase actions are held or the host is stopped and never read the stop check. After the one-time wallet guard was issued, they re-read the approval, coordinates, handoff and guard events, retained Agreement receipt and seller commitment from the local stores (src/dacs/retained-native-lane-proof.mjs), read the one retained lane record, and read every row and event again after it; they resolve {readback:true,retained:{stage,hash,nonce}} and reject native_payment_lane_held, native_payment_lane_unverified, network_identity_mismatch, wallet_lane_mismatch or wallet_fenced, with no recheck, lock or save. A native payment_handoff event now records sellerCommitmentWitness, the digest of the saved seller commitment. purchaseCommitment and COMMITMENT_DOMAIN moved to the new module unchanged and are re-exported from purchases.mjs."
+}

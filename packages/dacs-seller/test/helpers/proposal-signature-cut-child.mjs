@@ -7,6 +7,7 @@ import { fixtureListing } from '../fixtures/listings.mjs';
 import { fixtureProposal } from './seller-agent-isolated-fixture.mjs';
 import { localAnchor } from './local-anchor-fixture.mjs';
 import { createSellerAgent } from '../../src/dacs/seller-agent.mjs';
+import { agentSigning } from './agent-signing.mjs';
 
 const [directory, jobId, signatureLog] = process.argv.slice(2);
 const listing = fixtureListing(sellerKey, { now: NOW });
@@ -18,6 +19,6 @@ const signer = { claim: sellerKey.claim, sign: (bytes) => {
   if (Buffer.from(bytes).toString() === agreementBytes) { signed = true; appendFileSync(signatureLog, 'signed\n'); }
   return sellerKey.signBytes(bytes);
 } };
-const agent = await createSellerAgent({ signer, listing, anchors: localAnchor({ now: () => NOW + 2000 }), durableDirectory: directory, now: () => NOW + 2000, simulatedFixture: true });
+const agent = await createSellerAgent({ ...agentSigning(signer, { historyDirectory: `${directory}-effects` }), listing, anchors: localAnchor({ now: () => NOW + 2000 }), durableDirectory: directory, now: () => NOW + 2000, simulatedFixture: true });
 const transport = { path: '/dacs/v1/agreements/proposals', check: () => { if (signed) process.kill(process.pid, 'SIGKILL'); }, settle: () => {} };
 await agent.receiveProposal(body, { transport });

@@ -22,7 +22,8 @@ const TX_HASH = /^[0-9a-f]{64}$/;
 // is labelled simulated and can never be reported as live chain evidence.
 export const SIMULATION_HEADER = 'x-dacs-simulation';
 
-const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+/** True for a non-null, non-array object. */
+export const isRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const DEM_DECIMALS = 9;
 const OS_PER_DEM = 1_000_000_000n;
 // The most digits an exact OS amount read from the node may have (enough for

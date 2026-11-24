@@ -112,7 +112,6 @@ async function effectEntries() {
   const ledger = createSellerChallengeLedger({ db: ledgerDb, transaction: never('the transaction'), now: never('the clock'), generation: 'guard-probe',
     sessionState: never('a terminal observation'), admissionCounts: never('the counts'), ready: never('readiness'), stopped: never('the stop check') });
   const { createSellerAgentClient, createSellerHttpHandler } = await import('../../src/dacs/seller-http.mjs');
-  const { createSellerWireClientAuth } = await import('../../src/dacs/seller-wire-client-auth.mjs');
   const { createSellerDurableState } = await import('../../src/dacs/seller-durable-state.mjs');
   const { createSignedCreateJournal, createPaymentEvidenceWalletJournal } = await import('../../src/dacs/payment-evidence-wallet-journal.mjs');
   const { createNativePaymentEvidenceConsumer } = await import('../../src/dacs/native-payment-evidence-consumer.mjs');
@@ -150,7 +149,6 @@ async function effectEntries() {
   admissionStore.close();
   await attempt('createSellerHttpHandler', () => createSellerHttpHandler({}));
   await attempt('createSellerAgentClient', () => createSellerAgentClient({}));
-  await attempt('createSellerWireClientAuth', () => createSellerWireClientAuth({}));
   await attempt('reserveAccounted', () => accounting.reserveAccounted({}));
   await attempt('reserveCoordinated', () => coordinator.reserveCoordinated({}));
   await attempt('createNativePaymentEvidenceConsumer', () => createNativePaymentEvidenceConsumer({ anchorEvidence: async () => { effects.sends++; } }));
@@ -158,14 +156,20 @@ async function effectEntries() {
   await attempt('signAnchorWrite', () => signAnchorWrite(signBytes, 'logical', 'hash'));
   await attempt('submitNativeDemDelivery', () => submitNativeDemDelivery({}, {}));
   await attempt('signatureCommitmentAnchor', () => signatureCommitmentAnchor({ onCreateAuthorized: () => { effects.sends++; }, anchorAgreement: async () => { effects.sends++; } }, {}, true).anchorAgreement({}));
-  await attempt('createDevnetDemoListingPublisher', () => createDevnetDemoListingPublisher({ sign: signBytes, scanOwnListings: async () => [], loadRailResolution: async () => null,
-    anchor: { publish: async () => { effects.sends++; }, read: async () => { effects.sends++; }, verifyReceipt: async () => { effects.sends++; } } })({}));
   const probeBoundary = createEffectBoundary({ stopped: () => { effects.sends++; return false; }, binding: { profile: { pinVersion: 'probe' }, localDigest: 'probe' }, currentLocal: () => ({}),
     history: { read: async () => { effects.sends++; return []; }, append: async () => { effects.sends++; } }, clock: { now: () => 0, after: () => () => {} } });
+  // The publisher is built with an issued runCreate over the probe boundary, so its call, not its construction, reaches the guard.
+  const { createSellerCreatePass } = await import('../../src/devnet-demo/create-pass.mjs');
+  const probeSession = { acquireConnectionFence: async () => { effects.sends++; }, effectPass: () => { effects.sends++; }, runInEffectPass: async () => { effects.sends++; } };
+  const { runCreate } = createSellerCreatePass({ effectBoundary: probeBoundary, session: probeSession, stopped: () => false, feeCeilingOs: null, clock: { now: () => 0 } });
+  await attempt('createDevnetDemoListingPublisher', () => createDevnetDemoListingPublisher({ sign: signBytes, scanOwnListings: async () => [], loadRailResolution: async () => null, runCreate,
+    anchor: { publish: async () => { effects.sends++; }, read: async () => { effects.sends++; }, verifyReceipt: async () => { effects.sends++; } } })({}));
   await attempt('effectBoundary', () => probeBoundary.pass({}, () => { effects.signs++; }, () => { effects.sends++; }));
   await attempt('storageWriteRpcSigner', () => storageWriteRpcSigner({ claim: 'writer', sign: signBytes }, 'writer')('message'));
   const { createSellerNodeWallet } = await import('../../src/devnet-demo/seller-node-wallet.mjs');
   await attempt('createSellerNodeWallet', () => createSellerNodeWallet({ dataDirectory: directory, keyRecord: new Uint8Array(1) }));
+  const { createSellerWalletSession } = await import('../../src/devnet-demo/seller-wallet-session.mjs');
+  await attempt('createSellerWalletSession', () => createSellerWalletSession({ loadKeyRecord: () => { effects.signs++; } }));
 
   const delivery = { authority: 'TEST-native', writer: seller.claim, publish: async () => { effects.sends++; }, read: async () => ({ status: 'absent' }), readRetained: async () => ({ status: 'absent' }), verifyReceipt: async () => 'valid' };
   await attempt('createDevnetDemoDeliveryCapability.submit', () => nativeDemDeliverySubmitsOf(createDevnetDemoDeliveryCapability({ authority: delivery.authority, anchor: delivery })).submit({}));
@@ -174,13 +178,13 @@ async function effectEntries() {
   const signsBeforeStore = effects.signs; // every refusal above must have signed nothing
   const storeSignatures = [];
   const storeSign = (bytes) => { storeSignatures.push(Buffer.from(bytes).toString().startsWith(LOCAL_RECORD_DOMAIN)); return signBytes(bytes); };
-  const store = await createSellerDurableState({ dir: directory, signer: { claim: seller.claim, sign: storeSign }, listingPin: { contentHash: 'a'.repeat(64) } });
+  const store = await createSellerDurableState({ dir: directory, integritySigner: { claim: seller.claim, sign: storeSign }, listingPin: { contentHash: 'a'.repeat(64) } });
   const storeSignaturesAtOpen = [...storeSignatures];
   store.retainContext({ probe: 'local write while off' });
   const storeSignaturesAfterWrite = [...storeSignatures];
   effects.signs = 0; // the refusals below must add none
   readable.durableState = typeof store.retainContext;
-  await attempt('signOnce', () => store.signOnce('signature:probe', Buffer.from('bytes')));
+  await attempt('signOnce', () => store.signOnce('signature:probe', Buffer.from('bytes'), (bytes) => { effects.signs++; return signBytes(bytes); }));
   // A complete request with a valid external writer signature: only the guard can stop it before it keeps an intent and writes.
   const { anchorWriteMessage } = await import('../../src/dacs/fixture-anchors.mjs');
   const anchorAddress = 'dacs4:probe:anchor', anchorArtifact = { probe: 'artifact' };

@@ -43,7 +43,7 @@ if (phase === 'sdk-failure') fsPromises.mkdir = async function(path, ...args) {
 };
 syncBuiltinESMExports();
 const { createSellerDurableState } = await import('../../src/dacs/seller-durable-state.mjs');
-const config = { dir, signer: { claim: seller.claim, sign: seller.signBytes }, listingPin: { contentHash: 'a'.repeat(64) } };
+const config = { dir, integritySigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: { contentHash: 'a'.repeat(64) } };
 if (phase === 'sdk-failure') {
   await assert.rejects(createSellerDurableState(config), e => e.cause === cause);
   fsPromises.mkdir = mkdir; syncBuiltinESMExports();

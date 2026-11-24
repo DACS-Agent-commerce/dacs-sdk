@@ -1,0 +1,25 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF move the record anchor past the merged README choice with the signature routing and the paid renewal margin",
+  "kind": "checkpoint",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "411fa8a5d41a7ee645549710756e7e4fe6406f3d",
+      "after": "411fa8a5d41a7ee645549710756e7e4fe6406f3d"
+    },
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "d288f7bf3637c4ba47472608888e7f3175fbfd07",
+      "after": "d288f7bf3637c4ba47472608888e7f3175fbfd07"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-837819758c1a.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "The merged README differs from both sides' anchored copies, and the base's anchor (its README and protocol purchases resolution with the paid renewal margin) stands before this branch's first README record, which no longer starts from it. The anchor moves to the resolution commit whose parent already holds the chosen copies; it names the merged README as it stands there, and the other anchored blobs, the package manifest among them, are unchanged. The checkpoint keeps the unchanged README and package manifest recorded after the anchor, and the controls are re-pinned."
+}

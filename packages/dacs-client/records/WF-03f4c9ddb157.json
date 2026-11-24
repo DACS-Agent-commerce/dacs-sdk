@@ -1,0 +1,61 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record a host stop's or a re-hold's suspension at a seller request, in the continuation or at the public gate whether or not work is queued, and keep a purchase's first suspension",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "3995e33161becd49863a11fe57bf6cc782bb9696",
+      "after": "5b1c29027eaf9e60b69f310084266225d1d6b2a0"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "862078b5d7080ce4d2ad3ef060fbfdccec74599e",
+      "after": "271a5e6058878bd55a01a8eabab3c7a1948b79be"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "18ee45b20922db9880c5c4c809f79532dc408f99",
+      "after": "d583527e59411dc99ee07d1df26ead2d4226cdac"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/request-boundary.mjs",
+      "before": "185f912b2f4500513c45205462331a0d38a36a76",
+      "after": "876f924298880ab90dff43630147c2dda9cc3683"
+    },
+    {
+      "path": "packages/dacs-client/test/host-stop-wire.test.mjs",
+      "before": "941a3e6210e0efe7bfc4a7610ebe070cce2f8848",
+      "after": "07b8dc2b6d61fcbc2bfa0ca65df6ba0c1dfd806b"
+    },
+    {
+      "path": "packages/dacs-client/test/public-readback.test.mjs",
+      "before": "6674b54365ccd75f0ec9623205622e85bbfe9a21",
+      "after": "01f8552769e144f41f99b6e00632ad9500a578dc"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-suspension.test.mjs",
+      "before": "4bc9e533a2d472ec4d15025b86a201193df65cd2",
+      "after": "f331fbdc2ae3d119075534f238a7499630b89b64"
+    },
+    {
+      "path": "packages/dacs-client/test/stop-seam.test.mjs",
+      "before": null,
+      "after": "4c7f7104e5fb82bc5a245a8429a2cd9fbabeca6a"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-03f4c9ddb157.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/purchases.mjs",
+    "packages/dacs-client/test/helpers/request-boundary.mjs",
+    "packages/dacs-client/test/host-stop-wire.test.mjs",
+    "packages/dacs-client/test/public-readback.test.mjs",
+    "packages/dacs-client/test/seller-suspension.test.mjs",
+    "packages/dacs-client/test/stop-seam.test.mjs"
+  ],
+  "note": "A host stop or a re-hold seen when a seller request that stores its bytes starts, before its send or at the wire signer, by verifyDeal's continuation, or a host stop refusing a public service method for the purchase its request authenticates for, now records state.protocol.sellerSuspension whether or not work is queued; on the two read routes only queued work records one. A purchase keeps its first suspension and its id, a later stop or re-hold writes nothing, and only resume(id) clears it. createSellerRequestRecords' suspendQueued(cause) becomes suspend(cause), with no queued-work condition. Restated tests: the start-without-queued-work and gate cases now expect the suspension, and the re-hold barrier readback expects only the re-hold's suspension. New test file test/stop-seam.test.mjs covers the durable record, a killed wallet-lane holder, the lstat stop file check at each boundary, the kept first suspension, a failed suspension write, and two resumes racing."
+}

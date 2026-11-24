@@ -10,6 +10,7 @@ import {JOBS} from './helpers/bilateral-vet-fixture.mjs';
 import {SellerAgentError,transportOutcome} from '../src/dacs/seller-agent.mjs';
 import {createOperatorBuyerAccess} from '../src/devnet-demo/buyer-access.mjs';
 import {privateModule} from './helpers/private-module.mjs';
+import {agentSigning} from './helpers/agent-signing.mjs';
 
 const {createSellerAgent:createOperationAgent}=await privateModule(new URL('../src/dacs/seller-agent.mjs',import.meta.url),[],source=>source.replace(
  '  return api;',
@@ -27,7 +28,7 @@ for(const path of ['/dacs/v1/payments','/dacs/v1/commitments'])for(const [label,
 }
 for(const path of ['/dacs/v1/payments','/dacs/v1/commitments'])test(`fenced operations reject failures on ${path}`,async t=>{
  const f=await agentFixture();f.agent.close();
- let agent;t.after(()=>{agent?.close();f.close();});agent=await createOperationAgent(f.config);
+ let agent;t.after(()=>{agent?.close();f.close();});agent=await createOperationAgent({...f.config,...agentSigning(f.config.signer)});
  for(const [label,failure] of operationFailures)for(const asynchronous of [false,true])await t.test(`${label} ${asynchronous?'rejection':'throw'}`,async()=>{
   const settled=[];
   const transport={path,check(){},settle:result=>settled.push(result)};
@@ -87,7 +88,7 @@ test('unfinished work is read from the saved session for the route asked about',
 // cold2-5c363cc F2 / cold-d0e148d F1: only the durable final checkpoint completes read only.
 for(const changed of ['checkpoint','proposal','bundle','signature'])test(`read-only contribution recovery before final checkpoint stays indeterminate: ${changed}`,async t=>{
  const f=await proposalAdmissionFixture(t,{assembled:true}),agent=await f.open(),body=await f.proposal(agent);await agent.receiveProposal(body);agent.close();
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:agent.listingPin});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.config.signer,listingPin:agent.listingPin});
  try{await state.withJob(JOB,session=>{delete session.transportIdentity;session.proposal=null;delete session.agreementHash;if(changed==='proposal')session.sellerContributionProposalHash='f'.repeat(64);if(changed==='bundle')session.buyerBundleHash='e'.repeat(64);if(changed==='signature')session.sellerContribution.signature.value='TEST-invalid-signature';state.saveSession(session);});}finally{state.close();}
  if(changed==='bundle'){await assert.rejects(f.open());return;}
  const fresh=await f.open(),signed=f.signed.length,request=command(fresh,'/dacs/v1/agreements/proposals',body,body.proposal.plan.agreementHash);

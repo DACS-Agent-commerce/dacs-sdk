@@ -11,10 +11,14 @@ const pin = { dirty: false, commit: QUALIFIED_NODE_COMMITS[0], artifactSha256: '
 const rpc = (result, response, extra = null) => ({ result, response, extra, require_reply: false });
 
 test('qualified deployment requires exact operation list, artifact and verifier', async () => {
-  await assertQualifiedDeployment({ pins: { deployment: pin }, verifyDeployment: async value => { assert.deepEqual(value, pin); return true; } });
-  for (const qualifiedOperations of ['not-fee not-nonce not-broadcast not-confirmation', {}, ['fee','nonce','broadcast'], null]) await assert.rejects(assertQualifiedDeployment({ pins: { deployment: { ...pin, qualifiedOperations } }, verifyDeployment: async () => true }), e => e.code === 'deployment_unqualified');
-  for (const change of [{ dirty: true }, { artifactSha256: 'bad' }, { commit: 'b'.repeat(40) }]) await assert.rejects(assertQualifiedDeployment({ pins: { deployment: { ...pin, ...change } }, verifyDeployment: async () => true }), e => e.code === 'deployment_unqualified');
-  await assert.rejects(assertQualifiedDeployment({ pins: { deployment: pin }, verifyDeployment: async () => false }));
+  assert.deepEqual(QUALIFIED_NODE_COMMITS, ['61b8e75aa8db5e408c49e1c3a89db4d673f45578', 'e6af8f4023fa4e77f482503dae97f1ca00834bf9']);
+  for (const commit of QUALIFIED_NODE_COMMITS) {
+    const listed = { ...pin, commit };
+    await assertQualifiedDeployment({ pins: { deployment: listed }, verifyDeployment: async value => { assert.deepEqual(value, listed); return true; } });
+    for (const qualifiedOperations of ['not-fee not-nonce not-broadcast not-confirmation', {}, ['fee','nonce','broadcast'], null]) await assert.rejects(assertQualifiedDeployment({ pins: { deployment: { ...listed, qualifiedOperations } }, verifyDeployment: async () => true }), e => e.code === 'deployment_unqualified');
+    for (const change of [{ dirty: true }, { artifactSha256: 'bad' }, { commit: 'b'.repeat(40) }, { commit: commit.slice(0, 7) }]) await assert.rejects(assertQualifiedDeployment({ pins: { deployment: { ...listed, ...change } }, verifyDeployment: async () => true }), e => e.code === 'deployment_unqualified');
+    await assert.rejects(assertQualifiedDeployment({ pins: { deployment: listed }, verifyDeployment: async () => false }), e => e.code === 'deployment_unqualified');
+  }
 });
 test('factory refuses an unconstructed capability before injected effects', () => {
   let calls=0; const effect=()=>{calls++;throw new Error('TEST effect');};

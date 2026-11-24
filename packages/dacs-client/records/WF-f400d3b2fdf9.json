@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF count the evidence recorder subpath among the package entries the keystore check reads",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+      "before": "8a6ef1af34f3045b0b28ee0fc8124790b6fc29c3",
+      "after": "def522dd3544c465818c54bd50d90df3d876f3f1"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-f400d3b2fdf9.json",
+    "packages/dacs-client/test/keystore-wallet-session.test.mjs"
+  ],
+  "note": "The keystore module check reads every package entry for readKeystorePhrase and createKeystoreWalletOpener. The manifest now has five entries with ./purchase/evidence-recorder, so its entry count moves from four to five; the check still reads each entry."
+}

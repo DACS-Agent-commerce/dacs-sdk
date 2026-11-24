@@ -48,7 +48,7 @@ async function startHolder(t, dir, job, { save = false } = {}) {
 async function openStore(t, prefix, options = {}) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const store = await createSellerDurableState({ dir, signer, listingPin: LISTING_PIN, ...options });
+  const store = await createSellerDurableState({ dir, integritySigner: signer, listingPin: LISTING_PIN, ...options });
   t.after(() => store.close());
   store.retainContext({ TEST: 'context' });
   return { dir, store };
@@ -58,7 +58,7 @@ const lockOf = (store, job) => store.inspectLocks().find((row) => row.job === jo
 test('releaseStaleLocks releases rows of holders that are gone, keeps live and unproven holders, and changes no saved record', async (t) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'stale-locks-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const store = await createSellerDurableState({ dir, signer, listingPin: LISTING_PIN });
+  const store = await createSellerDurableState({ dir, integritySigner: signer, listingPin: LISTING_PIN });
   t.after(() => store.close());
   store.retainContext({ TEST: 'context' });
   const [exitedJob, liveJob, otherBootJob, earlierFormatJob, unprovenJob, ownJob] = Array.from({ length: 6 }, () => core.generateCanonicalJobId());
@@ -87,7 +87,7 @@ test('releaseStaleLocks releases rows of holders that are gone, keeps live and u
 test('releaseStaleLocks keeps this process\'s own acquisition fenced and held', async (t) => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'stale-locks-own-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const store = await createSellerDurableState({ dir, signer, listingPin: LISTING_PIN });
+  const store = await createSellerDurableState({ dir, integritySigner: signer, listingPin: LISTING_PIN });
   t.after(() => store.close());
   store.retainContext({ TEST: 'context' });
   const job = core.generateCanonicalJobId();

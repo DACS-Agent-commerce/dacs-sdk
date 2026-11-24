@@ -9,7 +9,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathS
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { EXPORT_CLASSIFICATION } from './helpers/kit-guard-classification.mjs';
+import { ALSO_CONSTRUCTORS, EXPORT_CLASSIFICATION, NO_CAPABILITY, OTHER_GUARDS, RETURNED_CLASSIFICATION } from './helpers/kit-guard-classification.mjs';
 
 const packageDirectory = fileURLToPath(new URL('../', import.meta.url));
 const probePath = fileURLToPath(new URL('./helpers/kit-guard-probe.mjs', import.meta.url));
@@ -22,18 +22,23 @@ const LOADER_SETTER = 'setKitOperationGuardForTest';
 const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs'];
 // Guarded entries that exist only on a capability the guarded `reserveContext` issues, or on the store's internal adapter, so the
 // off-state probe cannot reach them; context-admission-transaction.test.mjs flips the guard off after the capability exists and pins
-// `complete`, and helpers/coordinator-guard-off-probe.mjs pins `terminalSession`.
-const REACHED_BY_ISSUED_CAPABILITY = ['complete', 'terminalSession'];
+// `complete`, and helpers/coordinator-guard-off-probe.mjs pins `terminalSession`. The wallet-session port's `finalize` exists only on
+// a port built while the guard is on; seller-wallet-session.test.mjs flips the guard off after construction and pins it. The Vet
+// provider's entries and the kit client's methods exist only on a capability built while the guard is on;
+// seller-effect-paths.test.mjs flips the guard off after construction and pins each refusal.
+const PROVIDER_ENTRIES = ['agreementContextProvider.resolveBuyer', 'agreementContextProvider.recoverBuyer', 'agreementContextProvider.resolveSeller'];
+const CLIENT_METHODS = ['propose', 'agreementState', 'commit', 'commitOnSignature', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy', 'agreementContext',
+  'contextChallenge'].map((method) => `sellerAgentClient.${method}`);
+const REACHED_BY_ISSUED_CAPABILITY = ['complete', 'terminalSession', 'sellerWalletSession.finalize', ...PROVIDER_ENTRIES, ...CLIENT_METHODS];
 // The entries each module guards, named as the error's `entry` (51-2, 51-3).
 const GUARD_SITES = {
   'src/host.mjs': ['startSellerHost'],
   'src/dacs/seller-agent.mjs': ['createSellerAgent'],
   'src/dacs/seller-admission-transaction.mjs': ['begin', 'runningCheck', 'reserveContext', 'complete', 'compensate'],
   'src/dacs/seller-challenge-ledger.mjs': ['issue'],
-  'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient'],
+  'src/dacs/seller-http.mjs': ['createSellerHttpHandler', 'createSellerAgentClient', ...CLIENT_METHODS],
   'src/dacs/seller-transport-auth.mjs': ['terminalSession'],
   'src/dacs/seller-reservation-accounting.mjs': ['reserveAccounted', 'reserveCoordinated'],
-  'src/dacs/seller-wire-client-auth.mjs': ['createSellerWireClientAuth'],
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],
   'src/dacs/effect-boundary.mjs': ['effectBoundary'],
   'src/dacs/payment-evidence-wallet-journal.mjs': ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'],
@@ -41,11 +46,12 @@ const GUARD_SITES = {
   'src/dacs/native-dem-delivery-consumer.mjs': ['submitNativeDemDelivery'],
   'src/dacs/fixture-anchors.mjs': ['signAnchorWrite'],
   'src/dacs/commit-on-signature.mjs': ['signatureCommitmentAnchor'],
-  'src/devnet-demo/agreement-context.mjs': ['createDevnetDemoAgreementContextProvider'],
+  'src/devnet-demo/agreement-context.mjs': ['createDevnetDemoAgreementContextProvider', ...PROVIDER_ENTRIES],
   'src/devnet-demo/artifact-anchor.mjs': ['publish'],
   'src/devnet-demo/listing.mjs': ['createDevnetDemoListingPublisher'],
   'src/devnet-demo/native-delivery.mjs': ['createDevnetDemoDeliveryCapability.submit'],
   'src/devnet-demo/seller-node-wallet.mjs': ['createSellerNodeWallet'],
+  'src/devnet-demo/seller-wallet-session.mjs': ['createSellerWalletSession', 'sellerWalletSession.finalize'],
   'src/devnet-demo/storage-write-recovery.mjs': ['storageWriteRpcSigner'],
   'src/seller-key.mjs': ['sellerKey.sign', 'sellerKey.readOnlyAnswerSigner'],
 };
@@ -76,10 +82,45 @@ const sourceOf = (file) => readFileSync(join(packageDirectory, file), 'utf8');
 const withoutComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 const functionNames = (module) => Object.entries(module).filter(([, value]) => typeof value === 'function').map(([name]) => name).sort();
 // The exports a classification row does not name, and the names it holds that the module no longer exports.
-const classificationDrift = (exported, { effect, pure }) => {
-  const classified = [...Object.keys(effect), ...pure];
+const classificationDrift = (exported, { effect, pure, role = [] }) => {
+  const classified = [...Object.keys(effect), ...role, ...pure];
   return { unclassified: exported.filter((name) => !classified.includes(name)), stale: classified.filter((name) => !exported.includes(name)) };
 };
+const isPlainObject = (value) => value !== null && typeof value === 'object' && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+// The function members a capability hands out: `()` for a function, else each own enumerable function member, and the function
+// members of a plain object member as `<key>.<inner>`, one level deep. Data (strings, Maps, arrays, getters that answer data) is skipped.
+const returnedMembers = (value) => {
+  if (typeof value === 'function') return ['()'];
+  if (value === null || typeof value !== 'object') return [];
+  const members = [];
+  for (const [key, member] of Object.entries(value)) {
+    if (typeof member === 'function') members.push(key);
+    else if (isPlainObject(member)) for (const [inner, nested] of Object.entries(member)) if (typeof nested === 'function') members.push(`${key}.${inner}`);
+  }
+  return members.sort();
+};
+// A row's drift against the capability it classifies; an `as` member is enumerated against the row it names, its findings prefixed.
+const capabilityDrift = (capability, row) => {
+  const delegated = Object.entries(row.as ?? {});
+  const own = returnedMembers(capability).filter((member) => !delegated.some(([key]) => member.startsWith(`${key}.`)));
+  const drift = classificationDrift(own, row);
+  for (const [key, rowKey] of delegated) {
+    if (!isPlainObject(capability[key])) { drift.stale.push(key); continue; }
+    const inner = capabilityDrift(capability[key], RETURNED_CLASSIFICATION[rowKey]);
+    drift.unclassified.push(...inner.unclassified.map((member) => `${key}.${member}`));
+    drift.stale.push(...inner.stale.map((member) => `${key}.${member}`));
+  }
+  return drift;
+};
+const CONSTRUCTOR_NAME = /^(create|open|take|compose|late)/;
+// The constructors the two rules name, as '<file>#<export>', for a classification of exports by file.
+const namedConstructors = (classification, also) => Object.entries(classification).flatMap(([file, { effect, pure }]) => [...Object.keys(effect), ...pure]
+  .filter((name) => CONSTRUCTOR_NAME.test(name) || also.includes(name)).map((name) => `${file}#${name}`));
+// The named constructors with neither a row nor a NO_CAPABILITY entry.
+const missingRows = (named, rows, noCapability) => named.filter((key) => {
+  const [file, name] = key.split('#');
+  return !Object.hasOwn(rows, key) && !(noCapability[file] ?? []).includes(name);
+});
 
 test('while the guard is off, startSellerHost refuses kit_operation_guard_off before it reads options or opens any file', () => {
   const { refusal, optionReads, fsCalls } = runProbe('startWithHostileOptions');
@@ -135,6 +176,55 @@ test('every function exported by a shipped module is classified as an effect ent
   }
   const guarding = modules.filter((file) => file !== 'src/kit-operation-guard.mjs' && sourceOf(file).includes('assertKitOperationAdmitted('));
   assert.deepEqual(guarding, Object.keys(GUARD_SITES).sort(), 'every module that calls the guard is listed with its entries');
+});
+
+test('every capability a shipped constructor returns, whatever its export class, is classified as an effect entry guarded at each call, a closed non-effect signing role, or pure; an unclassified returned method, including one added to a constructor whose export is pure, fails', async (t) => {
+  const { returnedCapabilities } = await import('./helpers/kit-returned-capabilities.mjs');
+  const capabilities = await returnedCapabilities(t);
+  const noCapability = Object.entries(NO_CAPABILITY).flatMap(([file, names]) => names.map((name) => `${file}#${name}`));
+  assert.deepEqual([...capabilities.keys()].sort(), [...Object.keys(RETURNED_CLASSIFICATION), ...noCapability].sort(), 'every classified constructor was built, and only those');
+  const exportsOf = (file) => [...Object.keys(EXPORT_CLASSIFICATION[file]?.effect ?? {}), ...(EXPORT_CLASSIFICATION[file]?.pure ?? [])];
+
+  // Completeness: every export the name rule or ALSO_CONSTRUCTORS names, in any export class, has a row or a NO_CAPABILITY entry.
+  const named = namedConstructors(EXPORT_CLASSIFICATION, ALSO_CONSTRUCTORS);
+  assert.deepEqual(missingRows(named, RETURNED_CLASSIFICATION, NO_CAPABILITY), [], 'every constructor the two rules name has a row or a NO_CAPABILITY entry');
+  for (const name of ALSO_CONSTRUCTORS) assert.ok(named.some((key) => key.endsWith(`#${name}`)), `${name} is an export of a classified module`);
+  for (const key of noCapability) {
+    assert.ok(!Object.hasOwn(RETURNED_CLASSIFICATION, key), `${key} is not both a row and a NO_CAPABILITY entry`);
+    assert.ok(exportsOf(key.split('#')[0]).includes(key.split('#')[1]), `${key} names an existing export`);
+    assert.deepEqual(returnedMembers(capabilities.get(key)), [], `${key} hands out no function`);
+  }
+  const injectedExports = { ...EXPORT_CLASSIFICATION, 'src/dacs/answer-signers.mjs': { effect: {}, pure: ['createAnswerSigners', 'createInjected', 'injectedHelper'] } };
+  assert.deepEqual(missingRows(namedConstructors(injectedExports, [...ALSO_CONSTRUCTORS, 'injectedHelper']), RETURNED_CLASSIFICATION, NO_CAPABILITY),
+    ['src/dacs/answer-signers.mjs#createInjected', 'src/dacs/answer-signers.mjs#injectedHelper'], 'a new constructor of a pure module, by name or by the named list, has no row and fails');
+
+  // Each row's members, against the guards they reach: kit guard entries, or a guard named in OTHER_GUARDS whose check is in its source.
+  for (const [name, sites] of Object.entries(OTHER_GUARDS)) for (const [file, text] of sites) assert.ok(sourceOf(file).includes(text), `${file} makes the ${name} check`);
+  const guarded = new Set([...Object.values(GUARD_SITES).flat(), ...Object.keys(OTHER_GUARDS)]);
+  for (const [key, row] of Object.entries(RETURNED_CLASSIFICATION)) {
+    const [file, constructor] = key.split('#');
+    assert.ok(exportsOf(file).includes(constructor.split('.')[0]), `${key} names an existing export`);
+    assert.deepEqual(capabilityDrift(capabilities.get(key), row), { unclassified: [], stale: [] }, `${key} returned-member classification drifted`);
+    for (const [member, entries] of Object.entries(row.effect)) for (const entry of entries) assert.ok(guarded.has(entry), `${key} ${member} reaches ${entry}, which no module guards`);
+  }
+  const rowOf = (key) => RETURNED_CLASSIFICATION[key];
+  const PROVIDER = 'src/devnet-demo/agreement-context.mjs#createDevnetDemoAgreementContextProvider', PORT = 'src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession';
+  const ROUTE = 'src/dacs/seller-context-route.mjs#createWireSellerContextRoute', ANSWERS = 'src/dacs/answer-signers.mjs#createAnswerSigners';
+  const injected = () => {};
+  assert.deepEqual(classificationDrift(returnedMembers({ ...capabilities.get(PROVIDER), injected }), rowOf(PROVIDER)).unclassified, ['injected'], 'an extra provider member');
+  const port = capabilities.get(PORT);
+  assert.deepEqual(classificationDrift(returnedMembers({ ...port, artifactAnchor: { ...port.artifactAnchor, injected } }), rowOf(PORT)).unclassified, ['artifactAnchor.injected'], 'a nested extra member');
+  const FINALIZED = `${PORT}.finalize()`, session = capabilities.get(FINALIZED);
+  assert.deepEqual(capabilityDrift({ ...session, paymentEvidence: { ...session.paymentEvidence, injected } }, rowOf(FINALIZED)).unclassified, ['paymentEvidence.injected'],
+    'an extra member of a capability another row covers');
+  for (const key of [ROUTE, ANSWERS]) {
+    assert.deepEqual(classificationDrift(returnedMembers({ ...capabilities.get(key), injected }), rowOf(key)).unclassified, ['injected'], `an extra member of ${key}, whose export is pure`);
+  }
+  assert.deepEqual(classificationDrift(returnedMembers({}), rowOf(ANSWERS)).stale, ['signAnswer'], 'a row naming a member the capability lacks is stale');
+  assert.ok(EXPORT_CLASSIFICATION['src/dacs/seller-context-route.mjs'].pure.includes('createWireSellerContextRoute') && EXPORT_CLASSIFICATION['src/dacs/answer-signers.mjs'].pure.includes('createAnswerSigners'),
+    'both constructors are pure exports');
+  assert.ok(rowOf(ROUTE).effect.handleContext.includes('agreementContextProvider.resolveBuyer') && !rowOf(ROUTE).pure.includes('handleContext'), 'the context route\'s handleContext is an effect member');
+  assert.ok(rowOf(ANSWERS).effect.signAnswer.includes('effectBoundary') && !rowOf(ANSWERS).pure.includes('signAnswer'), 'signAnswer is an effect member');
 });
 
 test('an environment variable, a CLI argument or a host option naming the guard changes nothing', () => {

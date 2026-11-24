@@ -26,10 +26,15 @@ function littleEndianInteger(bytes: Uint8Array): bigint {
   return value;
 }
 
-/** Build an Ed25519 private key from its 32-byte seed. */
+/**
+ * Build an Ed25519 private key from its 32-byte seed. A seed of any other
+ * length throws a `DacsError` with code `key.seed_length_invalid`.
+ */
 export function privateKeyFromSeed(seed: Uint8Array): KeyObject {
   if (seed.length !== 32) {
-    throw new DacsError(`ed25519 seed must be 32 bytes, got ${seed.length}`);
+    throw new DacsError(`ed25519 seed must be 32 bytes, got ${seed.length}`, {
+      code: "key.seed_length_invalid",
+    });
   }
   const encoded = Buffer.alloc(PKCS8_PREFIX.length + seed.byteLength);
   PKCS8_PREFIX.copy(encoded);
@@ -48,15 +53,20 @@ export function privateKeyFromSeed(seed: Uint8Array): KeyObject {
   }
 }
 
-/** Derive the public key from a 32-byte seed. */
+/** Derive the public key from a 32-byte seed. Any other length throws as {@link privateKeyFromSeed} does. */
 export function publicKeyFromSeed(seed: Uint8Array): KeyObject {
   return createPublicKey(privateKeyFromSeed(seed));
 }
 
-/** Build an Ed25519 public key from its raw 32 bytes. */
+/**
+ * Build an Ed25519 public key from its raw 32 bytes. Any other length throws a
+ * `DacsError` with code `key.public_key_length_invalid`.
+ */
 export function publicKeyFromRaw(raw: Uint8Array): KeyObject {
   if (raw.length !== 32) {
-    throw new DacsError(`ed25519 public key must be 32 bytes, got ${raw.length}`);
+    throw new DacsError(`ed25519 public key must be 32 bytes, got ${raw.length}`, {
+      code: "key.public_key_length_invalid",
+    });
   }
   return createPublicKey({
     key: Buffer.concat([SPKI_PREFIX, Buffer.from(raw)]),

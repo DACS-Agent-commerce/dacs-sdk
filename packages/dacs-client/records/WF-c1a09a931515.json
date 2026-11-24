@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF pass an effect boundary to the seller transport of the base's delegation-first bootstrap world",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/helpers/kit-bootstrap-world.mjs",
+      "before": "61dd5017b9c4b10c1aefb44d4be399d2101cff2b",
+      "after": "1351bfd716de1d46a480cf91f24ce2f79a719be2"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-c1a09a931515.json",
+    "packages/dacs-client/test/helpers/kit-bootstrap-world.mjs"
+  ],
+  "note": "The base's bootstrap test world builds a declared seller transport, which on this branch requires the client's effect boundary. It now passes a request effect boundary bound to the world's admission, so the session key's challenge and later request signatures are made through the boundary's signer. No test changes."
+}

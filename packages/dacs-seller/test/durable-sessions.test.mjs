@@ -88,7 +88,7 @@ test('a lost exact owner row fences subsequent saves', async t => {
 });
 test('wrong signer, listing context and tampered session signatures refuse', async t => {
   const f = await durableFixture(t); await f.store.withJob(JOB, () => f.store.saveSession({ jobId: JOB })); f.store.close();
-  await assert.rejects(createSellerDurableState({ ...f.config, signer: { claim: buyer.claim, sign: buyer.signBytes } }), e => e.code === 'seller_state_corrupt');
+  await assert.rejects(createSellerDurableState({ ...f.config, integritySigner: { claim: buyer.claim, sign: buyer.signBytes } }), e => e.code === 'seller_state_corrupt');
   await assert.rejects(createSellerDurableState({ ...f.config, listingPin: { contentHash: 'b'.repeat(64) } }), e => e.code === 'seller_state_corrupt');
   const db = connect(f.path), row = db.prepare('SELECT value FROM seller_jobs WHERE job=?').get(JOB), value = JSON.parse(row.value); value.payload.body.session.TEST = 'tampered';
   db.prepare('UPDATE seller_jobs SET value=? WHERE job=?').run(JSON.stringify(value), JOB); db.close();
@@ -108,7 +108,7 @@ test('a session whose job id reads differently when copied is refused and nothin
 });
 test('retaining the same context again succeeds when it holds a value JSON stores differently', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'TEST-durable-context-')); t.after(() => rm(dir, { recursive: true, force: true }));
-  const store = await createSellerDurableState({ dir, signer: { claim: seller.claim, sign: seller.signBytes }, listingPin: { contentHash: 'a'.repeat(64) } });
+  const store = await createSellerDurableState({ dir, integritySigner: { claim: seller.claim, sign: seller.signBytes }, listingPin: { contentHash: 'a'.repeat(64) } });
   const context = { admittedAt: new Date(0) };
   store.retainContext(context); store.retainContext(context);
   assert.deepEqual(store.context(), { admittedAt: '1970-01-01T00:00:00.000Z' });

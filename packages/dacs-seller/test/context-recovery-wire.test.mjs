@@ -5,6 +5,7 @@
 // native anchor's reads (those are covered with the real provider in context-provider-checkpoints.test.mjs).
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { causeOf } from './helpers/refusal-body.mjs';
 import { readFile } from 'node:fs/promises';
 import { canonicalize, contentHash, deriveFixedPriceAgreement, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS, completeWireEffect } from '@kynesyslabs/dacs/wire';
@@ -326,7 +327,7 @@ test('register context present and non-pass in the shared completed-source matri
         const { request, answer } = await settled(w), outcome = w.operationOf(WIRE_JOB).outcome.text, before = effects(w);
         w.behaviour.source = async () => source(JSON.parse(answer.text));
         const refused = await w.post(await resign(w, request));
-        assert.deepEqual([...summary(refused), refused.body.cause], [503, 'seller_source_unavailable', cause]);
+        assert.deepEqual([...summary(refused), causeOf(refused.body)], [503, 'seller_source_unavailable', cause]);
         assert.equal(w.operationOf(WIRE_JOB).outcome.text, outcome, 'the outcome is unchanged');
         assert.deepEqual(effects(w), before);
         w.behaviour.source = null;
@@ -650,7 +651,7 @@ test('an address whose intent outcome is unknown keeps the context attempt open 
   w.behaviour.unknownIntent = true;
   const held = await retryAfterLease(w, request);
   await w.settleJob();
-  assert.deepEqual([held.status, held.body.error, held.body.cause], [503, 'operation_uncertain', 'context_recovery_held']);
+  assert.deepEqual([held.status, held.body.error, causeOf(held.body)], [503, 'operation_uncertain', 'context_recovery_held']);
   assert.deepEqual([w.counts.vetWrites, w.counts.resolves, w.operationOf(WIRE_JOB).state, w.rowOf().state, w.openHolds().length], [1, 1, 'pending', 'running', 1]);
   assert.equal(w.privateRow().attemptFence, 'open', 'only reads were made: no write authority was latched');
 });
@@ -731,7 +732,7 @@ test('after the deadline closed an attempt at each of three stall points, a succ
       w.tick(DEADLINE_MS);
       t.mock.timers.tick(DEADLINE_MS);
       const held = await pending;
-      assert.deepEqual([...summary(held), held.body.cause], [503, 'operation_uncertain', 'context_deadline']);
+      assert.deepEqual([...summary(held), causeOf(held.body)], [503, 'operation_uncertain', 'context_deadline']);
       release.resolve();
       await w.settleJob();
       w.behaviour.provider = null; w.behaviour.afterFirstWrite = null; w.behaviour.answer = null;
@@ -793,7 +794,7 @@ test('a retained read that runs past the deadline leaves the context attempt ope
   w.tick(DEADLINE_MS);
   t.mock.timers.tick(DEADLINE_MS);
   const answer = await pending;
-  assert.deepEqual([...summary(answer), answer.body.cause], [503, 'operation_uncertain', 'context_deadline']);
+  assert.deepEqual([...summary(answer), causeOf(answer.body)], [503, 'operation_uncertain', 'context_deadline']);
   assert.deepEqual([w.operationOf(WIRE_JOB).state, w.rowOf().state, w.counts.vetWrites], ['pending', 'running', 1]);
   gate.resolve(null);
   await w.settleJob();
@@ -852,7 +853,7 @@ test('a recovery whose row was closed between its reservation and its work reads
   w.behaviour.beforeWork = async () => { w.behaviour.beforeWork = null; await w.admission.compensate(WIRE_JOB, 'a'); };
   const answer = await retryAfterLease(w, request);
   await w.settleJob();
-  assert.deepEqual([answer.status, answer.body.error, answer.body.cause], [503, 'operation_uncertain', 'context_admission_closed']);
+  assert.deepEqual([answer.status, answer.body.error, causeOf(answer.body)], [503, 'operation_uncertain', 'context_admission_closed']);
   assert.deepEqual([w.counts.resolves, w.counts.sourceReads, w.counts.vetWrites], [resolves, sourceReads, vetWrites]);
   assert.notEqual(w.rowOf().state, 'running');
 });

@@ -12,7 +12,8 @@ import { mock } from 'node:test';
 import DatabaseSync from 'better-sqlite3';
 import * as core from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
-import { testWallet } from './protocol-fixture.mjs';
+import { RECEIPT_FEE_CEILINGS, testWallet } from './protocol-fixture.mjs';
+import { integrityRoleOf, readOnlyRoleOf } from './agent-signing.mjs';
 import { T0 } from './reservation-accounting-fixture.mjs';
 import { sellerApi as seller } from './seller-internal-api.mjs';
 import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
@@ -22,13 +23,15 @@ import { createSessionAdmissionFixture } from './session-admission-fixture.mjs';
 import { presentContextAnswer } from './host-context-callbacks.mjs';
 import { hostBuyer } from './host-context-client.mjs';
 import { wireAuthentication, wireBuyer } from './wire-buyer.mjs';
+import { signedBuyerClient } from './signed-buyer-driver.mjs';
 import { fetchAsHost, proxyListener } from './listener-host.mjs';
 import { createSellerTransportStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { finalizedCommitmentReader } from './finalized-commitment-reader.mjs';
 import { createNativeRetrySeam } from './native-retry-seam.mjs';
 import { railSteward } from './rail-authority-fixture.mjs';
-import { testNetwork, FIXTURE_PROFILE } from './wire-authority-fixture.mjs';
+import { hostAuthority } from './kit-wallet-session.mjs';
+import { FIXTURE_PROFILE } from './wire-authority-fixture.mjs';
 import { createSellerDurableState } from '../../src/dacs/seller-durable-state.mjs';
 import { createDemDeliveryContext } from '../../src/dacs/dem-delivery-context-consumer.mjs';
 import { KIT_TP1_VET_MODE, startSellerHost } from '../../src/host.mjs';
@@ -98,7 +101,9 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   // The wire times an admission with `performance.now`, which moves forward with the world's clock.
   const monotonicNow = performance.now.bind(performance);
   mock.method(performance, 'now', () => monotonicNow() + advancedMs);
-  t.after(() => mock.restoreAll());
+  // A mock that stays installed or listed keeps every call it records, and with it each caller's stack. So the world forgets
+  // the tracker's mocks and hands back the process clock, also when another world of the same test mocked it on top of this one.
+  t.after(() => { mock.reset(); delete performance.now; });
   const admission = createSessionAdmissionFixture({ seller: sellerKey, buyer: buyerKey, now: clock });
   const draft = seller.buildListingDraft({ identityBundle: identityFor(sellerKey, T0 - 1000), displayName: 'Native payment seller', publicEndpoint: 'https://seller.invalid',
     listingId: 'native-payment-wire', listingVersion: 1, title: 'Native payment report', description: 'A paid report delivered through the wire handler.',
@@ -142,6 +147,9 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     }
     return sellerKey.sign(bytes);
   } };
+  // The host takes the key's roles: the effect signer above and a journal-only integrity role over it.
+  sellerSigner.integritySigner = integrityRoleOf(sellerSigner);
+  sellerSigner.readOnlyAnswerSigner = readOnlyRoleOf(sellerSigner);
 
   const buyerBundles = new Map(), inputs = new Map(), agreements = new Map();
   // The buyer asks the host's challenge route for the job's challenge and presents it on the context route, which admits the session.
@@ -271,7 +279,8 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: node.rpcUrl, fetchImpl: node.fetchImpl, anchorEvidence: wallet.anchorEvidence, now: clock }),
     reconcilePaymentEvidence: wallet.reconcilePaymentEvidence, demDeliveryContext,
     nativeDemDelivery: createDevnetDemoDeliveryCapability({ authority: AUTHORITY, anchor: { ...artifactAnchor, authority: AUTHORITY }, deliveryEvidenceEnabled: true }),
-    railAuthority: rails.authority, sessionAdmission: admission.sessionAdmission, tp1Network: testNetwork(), listener: proxyListener({ publicOrigin: listing.seller.publicEndpoint }), now: clock, artifactAnchor, dataDirectory });
+    railAuthority: rails.authority, sessionAdmission: admission.sessionAdmission, ...hostAuthority(), listener: proxyListener({ publicOrigin: listing.seller.publicEndpoint }), now: clock, artifactAnchor, dataDirectory,
+    receiptFeeCeilings: RECEIPT_FEE_CEILINGS });
   const start = async () => { const running = await startSellerHost(capabilities()); hosts.push(running); return running; };
   let host = await start();
   // The commitment the buyer attaches to a request: the seller's CREATE as the node and its finality reader show it.
@@ -300,7 +309,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   const purchase = async ({ resume = null } = {}) => {
     const jobId = resume ?? `01J8N4YV7YVYQ4DB7M8T${String(++jobSequence).padStart(6, '0')}`;
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(await vettedInput(jobId)));
-    const client = () => seller.createSellerAgentClient({ url: host.url, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: hostFetch, authentication: wireAuthentication(
+    const client = () => signedBuyerClient({ url: host.url, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: hostFetch, authentication: wireAuthentication(
       { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash) });
     if (resume === null) {
       const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });
@@ -348,7 +357,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   const inDurableState = async (work) => {
     await host.close();
     hosts.splice(hosts.indexOf(host), 1);
-    const state = await createSellerDurableState({ dir: join(dataDirectory, 'seller'), signer: sellerSigner, listingPin: pin });
+    const state = await createSellerDurableState({ dir: join(dataDirectory, 'seller'), integritySigner: sellerSigner, listingPin: pin });
     try { return await work(state); } finally { state.close(); host = await start(); }
   };
   const transportFile = join('transport', 'transport.sqlite');

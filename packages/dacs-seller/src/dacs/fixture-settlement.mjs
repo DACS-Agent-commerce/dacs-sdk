@@ -1,5 +1,5 @@
 import { canonicalize, contentHash, identityBundleHash, paymentEvidenceAddress, sameCanonicalClaimIdentity, sha256Hex, verifySellerPaymentIntake, verifySettlementEvidence } from '@kynesyslabs/dacs';
-import { fixtureRef, signAnchorWrite, verifyFixtureRecord } from './fixture-anchors.mjs';
+import { anchorWriteMessage, fixtureRef, signAnchorWrite, verifyFixtureRecord } from './fixture-anchors.mjs';
 import { readAdmissionCapability } from './session-admission.mjs';
 import { observedTransferMatches } from './native-payment-evidence-consumer.mjs';
 import { agreementTerms, deliverableAddress, deliveryEvidenceAddress, DEM_RAIL_DEFINITION, ed25519Deps, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
@@ -63,7 +63,9 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
             error('payment_readback_required', 'fixture artifact readback is unavailable');
         if (!durable && intents.has(address))
             error('payment_readback_required', 'an earlier fixture write has no authenticated readback');
-        const authorize = () => { guard(jobId); return signAnchorWrite(sign, address, contentHash(artifact)); };
+        // Signed in its own pass first; the synchronous transaction's closure rechecks and returns those retained bytes.
+        const writeSignature = await sign(Buffer.from(anchorWriteMessage(address, contentHash(artifact)), 'utf8'), { jobId, recheck: () => guard(jobId) });
+        const authorize = () => { guard(jobId); return signAnchorWrite(() => writeSignature, address, contentHash(artifact)); };
         if (durable)
             await durable.anchor({ jobId, logicalAddress: address, artifact, anchors, authorize });
         else {
@@ -150,13 +152,13 @@ export function createFixtureSettlement({ listing, validation, sellerBundle, cla
             saved.report = reportFor(session, intake.settlementId);
         persist(session);
         guard(jobId);
-        const evidence = await signEvidence(structuredClone(saved.intake.evidenceInput));
+        const evidence = await signEvidence(jobId, structuredClone(saved.intake.evidenceInput));
         if (contentHash(evidence) !== saved.intake.evidenceHash)
             error('evidence_hash_mismatch', 'signed evidence differs from the retained authorization');
         const terms = agreementTerms(session.agreement), paymentAnchor = await anchorOnce(jobId, paymentEvidenceAddress(jobId, terms.rail, terms.paymentPhaseIndex), evidence);
         const report = saved.report, deliverableAnchor = await anchorOnce(jobId, deliverableAddress(jobId), report), deliveredAt = saved.deliveredAt;
         guard(jobId);
-        const deliveryEvidence = await signEvidence({ evidenceVersion: '1', jobId, phase: 'deliver-storage-program', outcome: 'success', deliverableContentHash: sha256Hex(canonicalize(report)), deliverableAnchor: { kind: 'storage-program', locator: deliverableAddress(jobId) }, observedAt: deliveredAt });
+        const deliveryEvidence = await signEvidence(jobId, { evidenceVersion: '1', jobId, phase: 'deliver-storage-program', outcome: 'success', deliverableContentHash: sha256Hex(canonicalize(report)), deliverableAnchor: { kind: 'storage-program', locator: deliverableAddress(jobId) }, observedAt: deliveredAt });
         const checked = await verifySettlementEvidence(deliveryEvidence, { orchestrator: claim, agreement: { amount: terms.price.amount, currency: terms.price.currency }, attestationRef: fixtureRef(deliveryEvidenceAddress(jobId), contentHash(deliveryEvidence)), result: { ok: true }, expectedAnchorLocator: deliverableAddress(jobId) }, ed25519Deps);
         if (checked.decision !== 'pass')
             error('delivery_evidence_invalid', checked.reasons.join('; '));

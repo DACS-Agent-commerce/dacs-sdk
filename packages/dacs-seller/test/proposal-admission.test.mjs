@@ -84,7 +84,7 @@ test('a saved proposal stage session without its accepted presentation does not 
  // is rewritten to hold another presentation, as the test above empties it.
  const bundle=input.buyerIdentityBundle,other=fixtureIdentityBundle(buyer,NOW+1),db=new Database(f.storePath);
  try{assert.equal(db.prepare("UPDATE kit_challenges SET accepted = json_set(accepted, '$.buyerBundleText', ?, '$.buyerBundleHash', ?) WHERE state = 'accepted'").run(canonicalize(other),identityBundleHash(other)).changes,1);}finally{db.close();}
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.config.signer,listingPin:listingPin(f.listing)});
  await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:identityBundleHash(bundle),stage:'proposed'}));state.close();
  await assert.rejects(f.open(),error=>error.code==='seller_state_unverified'&&/accepted presentation/.test(error.message));
 });
@@ -98,7 +98,7 @@ test('an admitted proposal that claims no Vet stays readable at its proposed sta
 
 test('a retained session past proposal without a Vet checkpoint refuses the restart',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);agent.close();
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.config.signer,listingPin:listingPin(f.listing)});
  await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'agreed'}));
  state.close();
  await assert.rejects(f.open(),error=>error.code==='seller_state_unverified'&&/Vet checkpoint/.test(error.message));
@@ -106,7 +106,7 @@ test('a retained session past proposal without a Vet checkpoint refuses the rest
 
 test('a retained proposal stage session restores with only its challenge binding',async t=>{
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent);await assert.rejects(agent.stagedProposal(input),staged);agent.close();
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.config.signer,listingPin:listingPin(f.listing)});
  await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'proposed'}));
  state.close();
  const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
@@ -120,7 +120,7 @@ test('a challenge for the parameter-free buyer restores a presentation carrying 
  const parameterized={...buyer,claim:`${buyer.claim}?jurisdiction=GB`};
  const input=await f.input(agent,JOB,parameterized,undefined,buyer.claim),bundle=input.buyerIdentityBundle;input.transportIdentity.buyer=buyer.claim;
  await assert.rejects(agent.stagedProposal(input),staged);agent.close();
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.config.signer,listingPin:listingPin(f.listing)});
  await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:identityBundleHash(bundle),stage:'proposed'}));state.close();
  const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
 });
@@ -134,11 +134,11 @@ test('a closed agent refuses proposal admission before it consumes the challenge
 
 test('the native profile reads no session admission without its capability',async t=>{
  const f=await proposalAdmissionFixture(t),input=f.unadmitted();
- const missing=await createSellerAgent({...f.config,maxJobs:1,sessionAdmission:null});t.after(()=>missing.close());
+ const missing=await createSellerAgent({...f.config,...f.signing,maxJobs:1,sessionAdmission:null});t.after(()=>missing.close());
  await assert.rejects(missing.admitSessionPresentation(admitRequest(input)),error=>error.code==='session_admission_required'&&error.status===503);
  missing.close();
  // A refused read retains nothing: the same presentation is still admitted by an agent that has the capability.
- const agent=await createSellerAgent({...f.config,maxJobs:1});t.after(()=>agent.close());
+ const agent=await createSellerAgent({...f.config,...f.signing,maxJobs:1});t.after(()=>agent.close());
  assert.equal((await agent.admitSessionPresentation(admitRequest(input))).disposition,'admitted');
 });
 
@@ -149,7 +149,7 @@ test('an accepted presentation carrying an extra bundle member stays readable an
  const f=await proposalAdmissionFixture(t),agent=await f.open(),input=await f.input(agent,JOB,buyer,bundle=>{bundle.signature='TEST bundle extension';});
  await assert.rejects(agent.stagedProposal(input),staged);
  assert.equal(agent.stageOf(JOB),'proposed');agent.close();
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.config.signer,listingPin:listingPin(f.listing)});
  await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:input.buyerIdentityBundle,buyerBundleHash:identityBundleHash(input.buyerIdentityBundle),stage:'proposed'}));state.close();
  const fresh=await f.open();assert.equal(fresh.stageOf(JOB),'proposed');
 });

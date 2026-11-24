@@ -1,0 +1,20 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged README with the withheld broadcast reopen and the journal lane owner and move the record anchor to the merge",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "9d75116ec0b09813148821678dd0cf50e298b9c3",
+      "after": "9d75116ec0b09813148821678dd0cf50e298b9c3"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-84d36283f14d.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "Both sides of the merge recorded the README; this record chooses the merged copy. It keeps the base's evidence broadcast chain check, storage CREATE reference block and explicit one-use reopen of a withheld native broadcast, and this side's journal paragraph on the lane owner passed to work, the explicit owner option and the separate history and native budgets. The commit also moves the anchor to the merge, so the anchored files start from their merged copies."
+}

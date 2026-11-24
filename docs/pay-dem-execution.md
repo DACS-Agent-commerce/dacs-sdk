@@ -46,20 +46,28 @@ match the retained permanent proof. Configured network labels such as
 `demos:testnet` are bound by the rail's recovery context and durable outcome.
 
 When the rail authenticates the payer's total debit, a successful result may
-include `networkFeeOs`, a canonical non-negative integer OS string. The rail's
-durable settlement log retains this fee across restart, and the application
-copies it into its own session checkpoints if it needs it there; the evidence's
-payment amount continues to describe the agreed transfer amount.
+include `networkFeeOs`, a canonical non-negative integer OS string. The
+settlement store records it with the outcome. The evidence's payment amount
+continues to describe the agreed transfer amount.
 
-The durable `payDemSettle` bridge reauthenticates a recorded native-payment
-success after every restart: it calls the `reconcile` function you built it with,
-and refuses a recorded success that the reconciliation contradicts, including a
-permanent failure for the same transaction. Built without `reconcile`, it refuses
-a recorded outcome that it has not itself authenticated. Keep the original
-signed-transfer journal. Absent, indeterminate or conflicting observations
-withhold success and never authorize a replacement debit.
+After a restart, a recorded outcome is not trusted on its own. When the
+settlement store returns an outcome that this bridge has not itself produced or
+authenticated in this process, `payDemSettle` calls the `reconcile` function you
+built it with and returns the reconciled result. That result must carry the
+recorded transaction hash and block. The bridge refuses a recorded success that
+the reconciliation contradicts, including a permanent failure for the same
+transaction, and it refuses when `reconcile` returns `null`. Built without
+`reconcile`, it refuses a recorded outcome that it has not itself authenticated.
+Keep the original signed-transfer journal. Absent, indeterminate or conflicting
+observations withhold success and never authorize a replacement debit.
 
-The bridge keeps no durable mark of that authentication.
+The reconciled result is what the bridge returns after a restart, and it does
+not compare `networkFeeOs` with the recorded fee. A restarted payment therefore
+reports a fee only if your `reconcile` function returns one. Copy the fee into
+your own session checkpoints when you first receive it.
+
+The bridge keeps no durable mark of that authentication, so every new process
+repeats it.
 
 For a request carrying `priorAttempts`, `payDemSettle` performs only this audit;
 it never calls the submit-capable idempotency claim, even if the rail log has
@@ -247,7 +255,9 @@ service and fee accounting unchanged.
 The mapping was verified against kynesyslabs/node
 `stabilisation@61b8e75aa8db5e408c49e1c3a89db4d673f45578`, the commit node2
 (`0.9.9 RC`) reports at `GET /version`, and against
-`stabilisation@52e2e5698bd9785ddd709de33e4709d5dd7bc308`:
+`stabilisation@52e2e5698bd9785ddd709de33e4709d5dd7bc308`. The three storage-write
+rows marked e6af8f40 were read at `e6af8f4023fa4e77f482503dae97f1ca00834bf9`,
+which the seller's deployment check accepts next to 61b8e75:
 
 | Behaviour | Source |
 |---|---|
@@ -257,6 +267,9 @@ The mapping was verified against kynesyslabs/node
 | `content.nonce` is a pg `bigint` column and is served as a decimal string. `content.amount` is served as a number up to `Number.MAX_SAFE_INTEGER` and as a decimal string above it; the rail accepts both. | `src/model/entities/Transactions.ts`, `src/libs/blockchain/transaction.ts` (`fromEntityToWireNumber`) |
 | `getTxByHash` for an unknown hash returns `{result: 400, response: "error"}` at 61b8e75 and `{result: 404, response: null}` at 52e2e569. The bounded record reader refuses either non-200 result as a failed read; the rail polls again. demosdk's `getTxByHash` hands back only `response`, so the Demos adapter's write wait sees `"error"` or `null`. It accepts only `null` as "no row yet": the 52e2e569 answer, and the one node2 gives in `test/substrate/fixtures/demos-node-replies/write-lifecycle/`. Against a build that answers `"error"`, as 61b8e75 did, it stops the write as `demos-write-unresolved` at its first poll, including a write that is still pending; it keeps the journal entry and resends nothing. | node2 read; `src/libs/network/handlers/transactionHandlers.ts` at 52e2e569 |
 | A transaction whose `content.gcr_edits` are absent or empty is applied as a successful no-op, and a successfully applied transaction is recorded `confirmed`. Mempool admission of a received native transaction re-derives its edits from the body and refuses a mismatch; apply repeats that check only for a non-empty edit list. | `src/libs/blockchain/gcr/handleGCR.ts` (`applyTransaction`), `src/libs/consensus/v2/PoRBFT.ts`, `src/libs/blockchain/mempool.ts` (`receive`) at 61b8e75 |
+| A node that is not a staked validator answers `broadcastTx` with `{result: 400, response: {message}, extra: {error: "NOT_A_VALIDATOR"}}`. It answers before the transaction reaches its mempool or the transaction topic; there is no relay path. At 61b8e75 such a node relayed the transaction to validators. The storage-write classifier records this answer as `refused-not-validator`: nothing was submitted, nothing is resent, and the seller needs a staked node's RPC. | `src/libs/network/endpointExecution.ts` (`handleExecuteTransaction`), `src/libs/consensus/stakedSet.ts` (`isSelfStaked`) at e6af8f40 |
+| A storage write `broadcastTx` taken into the node's mempool answers `{result: 200, response: null, extra: {confirmationBlock, lastBlockNumber, published, hash, disposition: "mempool"}}`; the 61b8e75 reply `Transaction relayed to validators` no longer exists. The classifier counts it as accepted only with exactly those five members, `disposition` `"mempool"`, `hash` equal to the hash the SDK sent, both block numbers non-negative safe integers and `published` a boolean. Any other answer stays unknown, which storage-write recovery never resends. | `src/libs/network/endpointExecution.ts` (`withDisposition`), `src/libs/network/txSubmission.ts` at e6af8f40 |
+| `getTxByHash` for an unknown hash answers `{result: 404, response: null, extra: {reason: "not_found", checkedThroughBlock}}`, the head read before the search; a failed lookup answers `{result: 500, response: null, extra: {reason: "lookup_failed", error}}`. The node executes a storage write only in block R+1 or R+2 of its confirmation's reference block R; after that it can only record it as failed. Storage-write recovery reads the 404 as absence only with exactly those two members and `checkedThroughBlock` at or past R+2 of the write's kept confirmation, and never without a kept R. `lookup_failed` is never absence. The 61b8e75 answer `{result: 400, response: "error"}` is still read as before. | `src/libs/network/handlers/transactionHandlers.ts` (`getTxByHash`), `src/libs/consensus/v2/routines/mempoolFilters.ts` (`filterMempoolByRefBlock`) at e6af8f40 |
 
 The `testnet` snapshot at `ac8f45f02fc9c25082ce9b83595c2e3916b49c5a` has no
 `getTransactionStatus` and records every included transaction as `confirmed`;

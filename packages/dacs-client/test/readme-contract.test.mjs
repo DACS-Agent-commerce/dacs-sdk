@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import * as client from '@kynesyslabs/dacs-client';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
+import { createEphemeralWallet } from './fixtures/wallet.mjs';
 
 const { binding, currentLocal } = await bindFixture();
 const admission = { binding, currentLocal };
@@ -17,7 +18,7 @@ const NOW = Date.UTC(2030, 0, 1), HASH = 'a'.repeat(64), IDENTITY = 'f'.repeat(6
 const PAYER = '0x' + 'b'.repeat(64), PAYEE = '0x' + 'c'.repeat(64);
 const diagnostics = ['status', 'portalOperation', 'portalEvidence', 'verifyDeal'];
 const readers = ['network', 'pinnedIdentity', 'networkIdentity', 'observePassiveTransfer'];
-const passive = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment'];
+const passive = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'readRetainedNativePaymentLane'];
 const codes = ['purchase_store_persistent_attachment', 'purchase_store_unsupported_attachment',
   'purchase_store_unsupported_journal_mode', 'purchase_store_unsupported_synchronous',
   'purchase_store_unsupported_temp_journal_mode'];
@@ -65,6 +66,7 @@ function world(t, { native = false, expired = false, reader = 'present', disposi
   let activeCalls = 0;
   const chain = new Proxy({ network: 'testnet', pinnedIdentity: IDENTITY,
     networkIdentity: async () => ({ identity: IDENTITY, mode: 'public-chain-read' }),
+    getTransactionFees: async () => { activeCalls++; throw new Error('TEST-fee-read-called'); },
     observeTransfer: () => { activeCalls++; throw new Error('TEST-active-reader-called'); },
     ...(reader === 'absent' ? {} : { observePassiveTransfer: reader === 'noncallable' ? true : async () => observation ? observation() : ({
       status: 'included', txHash: HASH, payer: PAYER, payee: PAYEE, amountOs: '1000000000', blockNumber: 7,
@@ -72,7 +74,9 @@ function world(t, { native = false, expired = false, reader = 'present', disposi
     }) }),
   }, { get(target, key) { chainTouched.add(key); return target[key]; } });
   const service = client.createPurchaseService({ db, ops, coordinates, chain, store, now: () => NOW,
-    config: {}, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+    config: {}, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, feeCeilingOs: '50000000000', admission });
+  // Construction checks that the fee reader exists; only the reads made after it are the diagnostics' own.
+  chainTouched.clear();
   const token = savedOps.handoffTokenFor(op.id);
   return { db, op, coordinates, touched, chainTouched, service,
     activeCalls: () => activeCalls,
@@ -225,7 +229,8 @@ probe('README protocol pass-through behavior and every held method', passive.con
   const { db } = database(t), store = client.createSqlitePurchaseStore();
   let hostCalls = 0;
   const protocol = client.createProtocolPurchases({ db, store, ops: {}, coordinates: client.createCoordinateStore({ db }),
-    dacsProtocol: {}, buyerAccess: { assertWallet(wallet) { assert.equal(wallet, PAYER); hostCalls++; } }, admission });
+    dacsProtocol: {}, buyerAccess: { assertWallet(wallet) { assert.equal(wallet, PAYER); hostCalls++; } },
+    feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n }, admission });
   assert.deepEqual([...section('Protocol').matchAll(/`([^`]+)`/g)].map(m => m[1]), [...passive, 'profile_not_admitted']);
   assert.equal(protocol.assertBuyerAccess(PAYER), undefined);
   assert.equal(hostCalls, 1);
@@ -233,6 +238,8 @@ probe('README protocol pass-through behavior and every held method', passive.con
   assert.equal(await protocol.readIssued({}), null);
   assert.equal(await protocol.readIssuedPayment({}, HASH), null);
   assert.equal(await protocol.observeReportedPayment(HASH), null);
+  // Held, the lane readback still runs; with no native payment capability it is unavailable.
+  await assert.rejects(protocol.readRetainedNativePaymentLane({ id: 'TEST-operation' }, 'TEST-lane'), { code: 'dacs_protocol_unavailable' });
   for (const [name, method] of Object.entries(protocol)) {
     if (typeof method === 'function' && !passive.includes(name)) {
       await assert.rejects(method({ id: 'TEST-operation' }, 'TEST-hold'), { code: 'profile_not_admitted' }, name);
@@ -319,6 +326,33 @@ probe('README host contract: createIdempotent writes jobId to the job_id column'
     jobId: 'TEST-job' });
   assert.equal(db.prepare('SELECT job_id FROM operations WHERE id=?').get(operation.id).job_id, 'TEST-job');
 });
+probe('README shipped host adapters: required handoff options, the local account and its refusal, the challenge refusals and one consumption',
+  ['handoffSecret', 'handoffTtlMs', 'idempotency_conflict', 'handoff_expires_at', 'local:', 'local_account_mismatch', 'issue', 'origin',
+    'challenge_account_required', 'challenge_origin_not_accepted', 'verifyAndConsume'], t => {
+  const { db } = database(t), store = client.createSqlitePurchaseStore(), wallet = createEphemeralWallet(), now = () => NOW;
+  const handoff = { handoffSecret: 'TEST-'.repeat(8), handoffTtlMs: 60_000 };
+  for (const missing of ['handoffSecret', 'handoffTtlMs']) assert.throws(() => client.createPurchaseOperations({ db, store, ...handoff, [missing]: undefined }), TypeError);
+  const accounts = client.createLocalPurchaseAccount({ db, store, wallet: wallet.address, now });
+  assert.equal(accounts.accountId, `local:${wallet.address}`);
+  const ops = client.createPurchaseOperations({ db, store, ...handoff, now });
+  const request = { accountId: accounts.accountId, kind: 'purchase', idempotencyKey: 'TEST', request: {}, status: 'awaiting_approval', terms: {}, termsHash: IDENTITY,
+    expiresAt: new Date(NOW + 3600000).toISOString() };
+  const { operation } = ops.createIdempotent(request);
+  assert.equal(db.prepare('SELECT handoff_expires_at FROM operations WHERE id=?').get(operation.id).handoff_expires_at, new Date(NOW + 60_000).toISOString());
+  assert.throws(() => ops.createIdempotent({ ...request, request: { other: true } }), { code: 'idempotency_conflict' });
+  const other = database(t).db;
+  other.prepare('INSERT INTO accounts(id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('TEST-other', 'local-wallet', wallet.address, new Date(NOW).toISOString());
+  assert.throws(() => client.createLocalPurchaseAccount({ db: other, store, wallet: wallet.address, now }), { code: 'local_account_mismatch' });
+  const challenges = client.createPurchaseChallenges({ db, store, origin: 'https://portal.example.invalid', purpose: 'approve-purchase', ttlMs: 60_000, now });
+  const issue = { purpose: 'approve-purchase', address: wallet.address, accountId: accounts.accountId, binding: { operation: operation.id } };
+  assert.throws(() => challenges.issue({ ...issue, accountId: undefined }), { code: 'challenge_account_required' });
+  assert.throws(() => challenges.issue({ ...issue, origin: 'https://other.example.invalid' }), { code: 'challenge_origin_not_accepted' });
+  const issued = challenges.issue(issue);
+  const verify = () => challenges.verifyAndConsume({ challengeId: issued.challengeId, purpose: 'approve-purchase', expectedBinding: { operation: operation.id, address: wallet.address },
+    signature: wallet.signHex(issued.message), consumedBy: operation.id });
+  assert.equal(verify().challengeId, issued.challengeId);
+  assert.throws(verify, { code: 'challenge_replayed' });
+});
 probe('README required schema table exactly matches the exported schema', [], t => {
   const { db } = database(t);
   const expected = db.prepare("SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name").all()
@@ -329,7 +363,8 @@ probe('README required schema table exactly matches the exported schema', [], t 
   for (const [, name] of expected) covered.add(name);
 });
 test('README public contract has no private or coverage claims and closes every inline identifier', () => {
-  assert.doesNotMatch(contract, /retained|SIGKILL|\bCI\b|test.coverage|tests cover|tests also|fixture records/i);
+  // The word, not a method name that contains it (readRetainedNativePaymentLane).
+  assert.doesNotMatch(contract, /\bretained\b|SIGKILL|\bCI\b|test.coverage|tests cover|tests also|fixture records/i);
   assert.equal(section('Validation').trim(), 'Run `npm test --workspace @kynesyslabs/dacs-client` after building the SDK.');
   for (const [, id] of contract.matchAll(/(?<!`)`([^`\n]+)`(?!`)/g)) {
     assert.ok(Object.hasOwn(client, id) || covered.has(id) || id === 'npm test --workspace @kynesyslabs/dacs-client', id);
