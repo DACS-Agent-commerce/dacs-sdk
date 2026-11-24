@@ -108,7 +108,9 @@ export async function receiptWorld(t, { priceOs = PRICE_OS, payFeeOs = PAY_FEE_O
   };
   const hooks = { beforeNonce: () => {} };
   const chain = { network: 'testnet', pinnedIdentity: IDENTITY, networkIdentity: async () => ({ identity: IDENTITY, mode: 'public-chain-read' }),
-    getAddressNonce: async () => { await hooks.beforeNonce(); return HANDOFF_NONCE_FENCE; } };
+    getAddressNonce: async () => { await hooks.beforeNonce(); return HANDOFF_NONCE_FENCE; }, getTransactionFees: async () => 1n };
+  // The host's per-write fee ceiling, above the Agreement price plus the network fee, given to both factories.
+  const feeCeilingOs = '50000000000';
   const verifier = { verify: async () => ({ transactable: true, contentHash: made.pin.contentHash, price: { amountOs: osText(priceOs) },
     payee: agreementTerms(made.agreement).payee, checks: [], evidence: { chainMode: 'TEST' } }) };
   let approvals = 0;
@@ -124,9 +126,9 @@ export async function receiptWorld(t, { priceOs = PRICE_OS, payFeeOs = PAY_FEE_O
     globalThis[STATE] = state;
     const store = createSqlitePurchaseStore(), now = () => w.state.time;
     protocol = createProtocolPurchases({ db: p.db, ops: p.ops, coordinates: createCoordinateStore({ db: p.db, now }), dacsProtocol, admission: w.admission,
-      buyerAccess: { assertWallet() {} }, store, now, ...receiptLimits });
+      buyerAccess: { assertWallet() {} }, store, now, chain, feeCeilingOs, ...receiptLimits });
     service = createPurchaseService({ db: p.db, ops: p.ops, coordinates: createCoordinateStore({ db: p.db, now }), store, chain, verifier, challenges, protocol,
-      accounts: { listWallets: () => [{ address: w.buyer.address }] }, config: { demAmountEncoding: 'os-string' }, purposes: { APPROVE_PURCHASE: APPROVAL_PURPOSE }, now });
+      accounts: { listWallets: () => [{ address: w.buyer.address }] }, config: { demAmountEncoding: 'os-string' }, purposes: { APPROVE_PURCHASE: APPROVAL_PURPOSE }, now, feeCeilingOs });
   };
   build();
   // Each action runs against this world's seams, which a world built later in the same test replaces.

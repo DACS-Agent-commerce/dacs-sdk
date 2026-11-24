@@ -170,7 +170,7 @@ test('a stale operation cannot open Pay after the winning row changes', async (t
 test('missing fee ceilings refuse native payment composition and fixture only composition cannot open native Pay', async (t) => {
   const world = await receiptWorld(t);
   const options = { db: world.p.db, ops: world.p.ops, coordinates: { unresolvedForSender: () => [] }, dacsProtocol: world.p.config, admission: world.w.admission,
-    buyerAccess: { assertWallet() {} }, store: createSqlitePurchaseStore() };
+    buyerAccess: { assertWallet() {} }, store: createSqlitePurchaseStore(), feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } };
   const ceilings = FIXTURE_RECEIPT_LIMITS.receiptFeeCeilings, cap = FIXTURE_RECEIPT_LIMITS.buyerMandateCapOs;
   const build = (limits) => () => createProtocolPurchases({ ...options, ...limits });
   for (const receiptFeeCeilings of [undefined, null, {}, { payFeeCeilingOs: '1' }, { ...ceilings, extra: '1' }, { ...ceilings, payFeeCeilingOs: 1 },
