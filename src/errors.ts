@@ -32,10 +32,21 @@ const codeCategory = {
   "canonical.token_decimals_invalid": "permanent",
   "canonical.type_unsupported": "permanent",
   "canonical.unicode_invalid": "permanent",
+  "key.public_key_length_invalid": "permanent",
+  "key.seed_length_invalid": "permanent",
   "payment.amount_nonpositive": "permanent",
   "payment.amount_precision_exceeded": "permanent",
   "schema.invalid_field": "permanent",
   "settlement.unjournaled_rail": "permanent",
+  "signature.algorithm_unsupported": "permanent",
+  "signature.artifact_already_signed": "permanent",
+  "signature.framed_hex_invalid": "permanent",
+  "signature.separator_composite": "permanent",
+  "signature.separator_unregistered": "permanent",
+  "signature.signer_callback_invalid": "permanent",
+  "signature.signer_claim_invalid": "permanent",
+  "signature.signer_inputs_mutated": "permanent",
+  "signature.signer_output_invalid": "permanent",
 } as const satisfies Record<string, FaultCategory>;
 
 /** A code from the catalog. */

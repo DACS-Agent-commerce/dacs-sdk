@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildComponentSignature,
   contentHash,
+  DacsError,
   ed25519Sign,
   ed25519Verify,
   isComponentSignature,
@@ -1123,5 +1124,155 @@ describe("ComponentSignature foundation", () => {
         { algorithm: "ed25519", signer: seller, sign },
       ),
     ).rejects.toThrow("requires an unsigned artifact");
+  });
+});
+
+describe("component signature errors", () => {
+  const good = { algorithm: "ed25519", signer: seller, sign } as const;
+  const detachedBytes = (): Uint8Array => {
+    const bytes = new Uint8Array(64);
+    structuredClone(bytes.buffer, { transfer: [bytes.buffer] });
+    return bytes;
+  };
+  const badEncoding =
+    "component signer must return a canonical unpadded base64url signature value";
+  const badOutput =
+    "component signer must return signature bytes or a canonical unpadded base64url string";
+
+  it.each([
+    [
+      "an artifact that already has a signature",
+      () =>
+        signComponentArtifact(
+          { ...listing, signature: { algorithm: "ed25519", signer: seller, value: "x" } },
+          "dacs-listing:v1:",
+          good,
+        ),
+      "signature.artifact_already_signed",
+      "component-signature signing requires an unsigned artifact with no signature field",
+    ],
+    [
+      "a padded base64url string from the signer",
+      () =>
+        buildComponentSignature(listing, "dacs-listing:v1:", {
+          ...good,
+          sign: () => "YWJjZA==",
+        }),
+      "signature.signer_output_invalid",
+      badEncoding,
+    ],
+    [
+      "a number from the signer",
+      () =>
+        buildComponentSignature(listing, "dacs-listing:v1:", {
+          ...good,
+          sign: (() => 42) as never,
+        }),
+      "signature.signer_output_invalid",
+      badOutput,
+    ],
+    [
+      "a proxy from the signer",
+      () =>
+        buildComponentSignature(listing, "dacs-listing:v1:", {
+          ...good,
+          sign: () => new Proxy(new Uint8Array(64), {}),
+        }),
+      "signature.signer_output_invalid",
+      badOutput,
+    ],
+    [
+      "detached bytes from the signer",
+      () =>
+        buildComponentSignature(listing, "dacs-listing:v1:", {
+          ...good,
+          sign: detachedBytes,
+        }),
+      "signature.signer_output_invalid",
+      "component signer returned unreadable signature bytes",
+    ],
+    [
+      "empty bytes from the signer",
+      () =>
+        buildComponentSignature(listing, "dacs-listing:v1:", {
+          ...good,
+          sign: () => new Uint8Array(0),
+        }),
+      "signature.signer_output_invalid",
+      badEncoding,
+    ],
+    [
+      "an unsupported algorithm",
+      () =>
+        buildComponentSignature(listing, "dacs-listing:v1:", {
+          ...good,
+          algorithm: "rsa" as never,
+        }),
+      "signature.algorithm_unsupported",
+      "unsupported signature algorithm: rsa",
+    ],
+    [
+      "an empty signer name",
+      () =>
+        buildComponentSignature(listing, "dacs-listing:v1:", { ...good, signer: "" }),
+      "signature.signer_claim_invalid",
+      "component signature signer must be a non-empty valid JSON string",
+    ],
+    [
+      "a signer callback that is not a function",
+      () =>
+        buildComponentSignature(listing, "dacs-listing:v1:", {
+          ...good,
+          sign: "nope" as never,
+        }),
+      "signature.signer_callback_invalid",
+      "component signature signer callback must be a function",
+    ],
+    [
+      "an unregistered separator",
+      () => signComponentArtifact(listing, "dacs-nope:v1:" as DomainSeparator, good),
+      "signature.separator_unregistered",
+      "unregistered domain separator: dacs-nope:v1:",
+    ],
+    [
+      "a composite separator",
+      () => signComponentArtifact(listing, "dacs-auto-accept-instance:v1:", good),
+      "signature.separator_composite",
+      "composite-payload separator dacs-auto-accept-instance:v1: is not a single-hash " +
+        "ComponentSignature recipe (§B.7)",
+    ],
+    [
+      "a signer that changes its signing bytes",
+      () =>
+        buildComponentSignature(listing, "dacs-listing:v1:", {
+          ...good,
+          sign: (bytes: Uint8Array) => {
+            bytes[0] = 0;
+            return sign(bytes);
+          },
+        }),
+      "signature.signer_inputs_mutated",
+      "component signer must not mutate its signing inputs",
+    ],
+  ])("%s carries its catalog code", async (_name, call, code, message) => {
+    const thrown: unknown = await call().then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(thrown).toBeInstanceOf(DacsError);
+    expect(thrown).toMatchObject({ code, category: "permanent", message });
+  });
+
+  it("keeps the unreadable-bytes error's cause and gives it one code", async () => {
+    const thrown: unknown = await buildComponentSignature(listing, "dacs-listing:v1:", {
+      ...good,
+      sign: detachedBytes,
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(thrown).toMatchObject({ code: "signature.signer_output_invalid" });
+    expect((thrown as DacsError).cause).toBeInstanceOf(TypeError);
+    expect(Object.keys(thrown as object).sort()).toEqual(["category", "code", "name"]);
   });
 });
