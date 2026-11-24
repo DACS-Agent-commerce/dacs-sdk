@@ -56,8 +56,8 @@ test('a committed seller answer signs the Agreement hash and canonical reserved 
   assert.match(fresh.sellerReceipt.agreementHash, /^[0-9a-f]{64}$/);
   assert.match(fresh.sellerReceipt.reservedMaximumOs, OS_TEXT);
   // Each ceiling is its own addend: raising either one by one OS raises the declaration by exactly one OS.
+  agent.close();
   for (const [pay, anchor] of [[PAY + 1n, ANCHOR], [PAY, ANCHOR + 1n]]) {
-    agent.close();
     const raised = await f.open({ receiptFeeCeilings: ceilings(pay, anchor) });
     assert.deepEqual((await raised.commit({ jobId: agreement.jobId })).sellerReceipt, expectedReceipt(agreement, pay, anchor), `pay ${pay}, anchor ${anchor}`);
     raised.close();
