@@ -13,6 +13,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
 
@@ -701,5 +702,231 @@ describe("create-dacs-agent", () => {
       role: "verifier" as never,
       install: false,
     })).rejects.toThrow(/demo-all, buyer or seller/);
+  });
+});
+
+type Rails = "x402" | "pay-dem" | "both";
+
+const AUTHORITY_SCRIPTS = Object.freeze({
+  "dacs:authority": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js authority",
+  "dacs:authority:policy":
+    "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js authority-policy",
+});
+const NEW_AUTHORITY_SETTINGS = Object.freeze([
+  "DACS_WALLET_AUTHORITY_WITNESS_SEED_FILE",
+  "DACS_WALLET_AUTHORITY_DATA_DIRECTORY",
+  "DACS_WALLET_AUTHORITY_POLICY_FILE",
+]);
+const NODE_SOURCE = new URL("../../dacs-node/src/", import.meta.url);
+
+/** Reads one export of a node package source module; the core package must be built for its imports. */
+async function nodeSourceExport<T>(module: string, name: string): Promise<T> {
+  const loaded = await import(fileURLToPath(new URL(module, NODE_SOURCE))) as Record<string, unknown>;
+  if (!(name in loaded)) throw new Error(`${module} does not export ${name}`);
+  return loaded[name] as T;
+}
+
+async function generatedLiveProject(
+  rails: Rails,
+  deployment: "local" | "docker" = "docker",
+): Promise<string> {
+  const target = join(await temporaryDirectory(), `${rails}-agent`);
+  await createDacsAgentProject({
+    targetDirectory: target,
+    mode: "live-demos",
+    profile: "dacs-sdk:fixed-price-x402:v1",
+    role: "buyer",
+    deployment,
+    rails,
+    install: false,
+  });
+  return target;
+}
+
+/** The `NAME=value` lines of a generated `.env.example`. */
+function environmentLines(text: string): Map<string, string> {
+  const lines = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    const [, name, value] = /^([A-Z0-9_]+)=(.*)$/.exec(line) ?? [];
+    if (name !== undefined && value !== undefined) lines.set(name, value);
+  }
+  return lines;
+}
+
+/** The lines of one Compose service's `environment` block. */
+function composeEnvironment(compose: string, service: "buyer" | "seller"): string[] {
+  const lines = compose.split("\n");
+  const start = lines.indexOf(`  ${service}:`);
+  const environment = lines.indexOf("    environment:", start);
+  const volumes = lines.indexOf("    volumes:", environment);
+  if (start < 0 || environment < 0 || volumes < 0) throw new Error(`no ${service} environment`);
+  return lines.slice(environment + 1, volumes);
+}
+
+// The first import of the node package source transforms it, which takes several seconds.
+describe("generated testnet wallet-spend authority wiring", { timeout: 60_000 }, () => {
+  test("x402 projects get the authority scripts, settings and README", async () => {
+    const settingNames = await nodeSourceExport<readonly string[]>(
+      "walletSpendTestnetSettings.ts", "DACS_WALLET_SPEND_TESTNET_AUTHORITY_SETTING_NAMES",
+    );
+    expect(settingNames).toHaveLength(10);
+    for (const rails of ["x402", "both"] as const) {
+      const target = await generatedLiveProject(rails);
+      const manifest = JSON.parse(await readFile(join(target, "package.json"), "utf8")) as {
+        scripts: Record<string, string>;
+      };
+      expect(manifest.scripts, rails).toMatchObject(AUTHORITY_SCRIPTS);
+      const environment = environmentLines(await readFile(join(target, ".env.example"), "utf8"));
+      for (const name of settingNames) expect(environment.has(name), `${rails} ${name}`).toBe(true);
+      for (const name of NEW_AUTHORITY_SETTINGS) expect(environment.get(name), `${rails} ${name}`).toBe("");
+      const readme = await readFile(join(target, "secrets", "README.md"), "utf8");
+      for (const expected of [
+        ...Object.keys(AUTHORITY_SCRIPTS),
+        ...settingNames,
+        "eip155:84532",
+        "npm run dacs:authority -- --print-witness-public-key",
+        "npm run dacs:doctor -- --phase post-start --for buy",
+        "hold-needs-operator",
+        "wallet-spend-chain-nonce-used-unmatched",
+      ]) {
+        expect(readme, `${rails} ${expected}`).toContain(expected);
+      }
+      for (const bothOnly of ["--rail pay-dem", "pay-dem.service-limit"]) {
+        if (rails === "both") expect(readme).toContain(bothOnly);
+        else expect(readme).not.toContain(bothOnly);
+      }
+    }
+    const payDem = await generatedLiveProject("pay-dem");
+    const payDemManifest = await readFile(join(payDem, "package.json"), "utf8");
+    const payDemReadme = await readFile(join(payDem, "secrets", "README.md"), "utf8");
+    const payDemEnvironment = await readFile(join(payDem, ".env.example"), "utf8");
+    for (const script of Object.keys(AUTHORITY_SCRIPTS)) {
+      expect(payDemManifest).not.toContain(`"${script}"`);
+      expect(payDemReadme).not.toContain(script);
+    }
+    for (const name of NEW_AUTHORITY_SETTINGS) {
+      expect(payDemEnvironment).not.toContain(name);
+      expect(payDemReadme).not.toContain(name);
+    }
+    expect(payDemReadme).not.toContain("hold-needs-operator");
+  });
+
+  test("generation writes no secret", async () => {
+    for (const rails of ["x402", "pay-dem", "both"] as const) {
+      const target = await generatedLiveProject(rails);
+      const files = await filesBelow(target);
+      expect(files, rails).not.toContain(".env");
+      for (const file of files) {
+        expect(file, rails).not.toMatch(/(?:^|\/)[^/]*(?:token|seed|\.key|\.pem|\.wallet|\.mnemonic)[^/]*$/i);
+        const text = await readFile(join(target, file), "utf8");
+        // Raw private keys, witness seeds and 32-byte secrets are written as 64 hexadecimal characters.
+        expect(text, `${rails} ${file}`).not.toMatch(/(?<![0-9A-Za-z])(?:0x)?[0-9a-fA-F]{64}(?![0-9A-Za-z])/);
+      }
+      const environment = environmentLines(await readFile(join(target, ".env.example"), "utf8"));
+      for (const name of [
+        "DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE",
+        "DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY",
+        ...(rails === "pay-dem" ? [] : NEW_AUTHORITY_SETTINGS),
+      ]) {
+        expect(environment.get(name), `${rails} ${name}`).toBe("");
+      }
+    }
+  });
+
+  test("existing script and container assertions still pass", async () => {
+    for (const rails of ["x402", "pay-dem", "both"] as const) {
+      const target = await generatedLiveProject(rails);
+      const manifest = JSON.parse(await readFile(join(target, "package.json"), "utf8")) as {
+        scripts: Record<string, string>;
+      };
+      for (const command of Object.values(manifest.scripts)) {
+        if (command.includes("dist/src/") || command.includes("dist/test/")) {
+          expect(command, rails).toContain("node --import @kynesyslabs/dacs-node/demos-loader");
+        }
+      }
+      const dockerfile = await readFile(join(target, "Dockerfile"), "utf8");
+      expect(dockerfile, rails).toContain(
+        'CMD ["node", "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/service.js"]',
+      );
+      const compose = await readFile(join(target, "compose.yaml"), "utf8");
+      expect(compose, rails).not.toMatch(/^ {2}[a-z-]*authority[a-z-]*:/m);
+      expect(compose, rails).not.toContain("DACS_WALLET_AUTHORITY_DATA_DIRECTORY");
+      expect(dockerfile, rails).not.toContain("authority");
+    }
+  });
+
+  test("the generated buyer signs authorizations no longer than the service's expiry bound", async () => {
+    const bound = await nodeSourceExport<number>(
+      "walletSpendTestnetRecovery.ts", "DACS_WALLET_SPEND_TESTNET_HOLD_EXPIRY_SECONDS",
+    );
+    const target = await generatedLiveProject("x402");
+    const windows: number[] = [];
+    for (const file of (await filesBelow(target)).filter((path) => path.startsWith("src/"))) {
+      const text = await readFile(join(target, file), "utf8");
+      for (const match of text.matchAll(/maxTimeoutSeconds:\s*(\d+)/g)) windows.push(Number(match[1]));
+    }
+    expect(windows.length).toBeGreaterThan(0);
+    for (const window of windows) expect(window).toBeLessThanOrEqual(bound);
+  });
+
+  test("x402-capable buyer containers receive every wallet limit the x402 policy reads", async () => {
+    const limitNames: string[] = [];
+    for (const rails of ["x402", "both"] as const) {
+      const target = await generatedLiveProject(rails);
+      const config = await readFile(join(target, "src", "config.ts"), "utf8");
+      const start = config.indexOf("function walletPolicyLimits");
+      const end = config.indexOf("export function configuredPayDemWalletSpendPolicy");
+      expect(start, rails).toBeGreaterThan(0);
+      expect(end, rails).toBeGreaterThan(start);
+      const limits = [...config.slice(start, end).matchAll(
+        /(?:positiveIntegerEnvironment\(\s*"([A-Z0-9_]+)",\s*(\d+)|decimalEnvironment\(\s*"([A-Z0-9_]+)",\s*"([^"]+)")/g,
+      )].map((match) => ({ name: match[1] ?? match[3] ?? "", fallback: match[2] ?? match[4] ?? "" }));
+      expect(limits, rails).toHaveLength(8);
+      const compose = await readFile(join(target, "compose.yaml"), "utf8");
+      const buyer = composeEnvironment(compose, "buyer");
+      const seller = composeEnvironment(compose, "seller").join("\n");
+      const environment = environmentLines(await readFile(join(target, ".env.example"), "utf8"));
+      for (const { name, fallback } of limits) {
+        expect(buyer, `${rails} ${name}`).toContain(`      ${name}: \${${name}:-${fallback}}`);
+        expect(seller, `${rails} ${name}`).not.toContain(name);
+        expect(environment.get(name), `${rails} ${name}`).toBe(fallback);
+      }
+      limitNames.splice(0, limitNames.length, ...limits.map(({ name }) => name));
+    }
+    const payDemCompose = await readFile(join(await generatedLiveProject("pay-dem"), "compose.yaml"), "utf8");
+    for (const name of limitNames) expect(payDemCompose).not.toContain(name);
+  });
+
+  test("the docs list the testnet service's commands, settings and named codes", async () => {
+    const settingNames = await nodeSourceExport<readonly string[]>(
+      "walletSpendTestnetSettings.ts", "DACS_WALLET_SPEND_TESTNET_AUTHORITY_SETTING_NAMES",
+    );
+    const docs = await readFile(new URL("../../../docs/wallet-spend-authority.md", import.meta.url), "utf8");
+    for (const expected of [
+      ...settingNames,
+      "eip155:84532",
+      "npm run dacs:authority",
+      "npm run dacs:authority:policy",
+      "npm run dacs:authority -- --print-witness-public-key",
+      "hold-needs-operator",
+      "wallet-spend-testnet-authority-setting-missing",
+      "wallet-spend-testnet-authority-network-refused",
+      "wallet-spend-testnet-authority-witness-key-mismatch",
+      "wallet-spend-testnet-authority-listen-failed",
+      "wallet-spend-continuity-policy-mismatch",
+      "wallet-spend-file-witness-record-damaged",
+      "wallet-spend-testnet-authority-token-invalid",
+      "wallet-spend-testnet-authority-witness-seed-invalid",
+      "secret-file-owner-mismatch",
+    ]) {
+      expect(docs, expected).toContain(expected);
+    }
+    const slugs = new Set(docs.split("\n")
+      .filter((line) => /^#{1,6} /.test(line))
+      .map((line) => line.replace(/^#+ /, "").trim().toLowerCase()
+        .replace(/[^a-z0-9 -]/g, "").replace(/ /g, "-")));
+    const anchors = [...docs.matchAll(/\]\(#([^)]+)\)/g)].map((match) => match[1] ?? "");
+    expect(anchors).toContain("run-the-testnet-service");
+    for (const anchor of anchors) expect(slugs, anchor).toContain(anchor);
   });
 });
