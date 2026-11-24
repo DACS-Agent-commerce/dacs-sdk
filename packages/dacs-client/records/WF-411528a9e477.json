@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF list the delegation step among the active methods of the stop seam table",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/stop-seam.test.mjs",
+      "before": "752d74adc4b2ec855afd60be520b8034828cee12",
+      "after": "c605f80db64d715fdfb722f2cd3222dfd0cadbea"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-411528a9e477.json",
+    "packages/dacs-client/test/stop-seam.test.mjs"
+  ],
+  "note": "The purchase factories now return the delegation step from the part below, so the test's table of every member of their objects names it as an active method of both. No other test changes."
+}

@@ -72,7 +72,8 @@ export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = D
     connections.push(db);
     const ops = createOperationStore({ db, handoffSecret: 'TEST-wire-bootstrap-'.repeat(3), now: () => world.clock.time });
     const service = withSeller(fetchImpl, () => createProtocolPurchases({ db, ops, admission, now: () => world.clock.time, store: createSqlitePurchaseStore(),
-      coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, dacsProtocol: { sellerTransport: transport, sellerEndpoint: () => FIXTURE_ENDPOINT, sellerRequestTimeoutMs: SELLER_DEADLINE_MS, demDeliveryContext } }));
+      coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, dacsProtocol: { sellerTransport: transport, sellerEndpoint: () => FIXTURE_ENDPOINT, sellerRequestTimeoutMs: SELLER_DEADLINE_MS, demDeliveryContext },
+      feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } }));
     return { db, ops, service };
   };
   let current = open();

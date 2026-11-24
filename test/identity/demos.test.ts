@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "vitest";
 
+import { DacsError } from "../../src/errors.js";
 import {
   canonicalDemosAgentPublicKey,
   demosAgentClaimRef,
@@ -106,5 +107,25 @@ describe("DACS-1 §6.3.1 Demos agent ClaimReference", () => {
       expect(demosAgentPublicKey(invalid), invalid).toBeNull();
       expect(isDemosAgentClaimRef(invalid), invalid).toBe(false);
     }
+  });
+
+  test.each([
+    ["a short hex string", () => demosAgentClaimRef("ab")],
+    ["64 characters that are not hex", () => demosAgentClaimRef("g".repeat(64))],
+    ["a 31-byte key", () => demosAgentClaimRef(new Uint8Array(31))],
+  ])("%s carries its catalog code", (_name, call) => {
+    let thrown: unknown;
+    try {
+      call();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(DacsError);
+    expect(thrown).toMatchObject({
+      code: "identity.agent_public_key_invalid",
+      category: "permanent",
+      message: "Demos agent public key must be exactly 32 bytes",
+    });
+    expect(Object.keys(thrown as object).sort()).toEqual(["category", "code", "name"]);
   });
 });

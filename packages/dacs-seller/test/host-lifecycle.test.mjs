@@ -13,7 +13,7 @@ import * as core from '@kynesyslabs/dacs';
 import {commitmentFixture} from './helpers/commitment-fixture.mjs';
 import {privateModule} from './helpers/private-module.mjs';
 import {hostAuthority,testWalletSession} from './helpers/kit-wallet-session.mjs';
-import {seller,buyer,NOW,fixtureRecord} from './helpers/protocol-fixture.mjs';
+import {seller,buyer,NOW,fixtureRecord,RECEIPT_FEE_CEILINGS} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {startSellerHost,KIT_TP1_VET_MODE} from '../src/host.mjs';
 import {signedBuyerClient} from './helpers/signed-buyer-driver.mjs';
@@ -319,7 +319,7 @@ test('host refuses malformed options before opening any state',async t=>{
  // The data directory's mode must be exactly 0700: owner-only modes without full owner access refuse too.
  const notExactly0700=await Promise.all([0o500,0o600,0o710].map(async mode=>{const directory=await mkdtemp(join(root,'mode-'));await chmod(directory,mode);return [mode,directory];}));
  t.after(async()=>{await rm(root,{recursive:true,force:true});await rm(loose,{recursive:true,force:true});});
- const base=()=>({signer:{claim:seller.claim,sign:()=>{},integritySigner:{claim:seller.claim,sign:()=>{}},readOnlyAnswerSigner:async()=>{}},listing:{seller:{publicEndpoint:FIXTURE_ENDPOINT}},listener:proxyListener(),dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',...hostAuthority()});
+ const base=()=>({signer:{claim:seller.claim,sign:()=>{},integritySigner:{claim:seller.claim,sign:()=>{}},readOnlyAnswerSigner:async()=>{}},listing:{seller:{publicEndpoint:FIXTURE_ENDPOINT}},listener:proxyListener(),dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',receiptFeeCeilings:RECEIPT_FEE_CEILINGS,...hostAuthority()});
  const cases=[
   ['non-object',null,/must be an object/],
   ['array options',[],/must be an object/],
