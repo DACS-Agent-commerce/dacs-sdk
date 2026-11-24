@@ -16,6 +16,8 @@ import * as core from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
 import * as seller from '@kynesyslabs/dacs-seller';
 import { createSellerAgent } from '@kynesyslabs/dacs-seller/src/dacs/seller-agent.mjs';
+import { createEffectBoundary } from '@kynesyslabs/dacs-seller/src/dacs/effect-boundary.mjs';
+import { createEffectHistory } from '@kynesyslabs/dacs-seller/src/dacs/effect-history.mjs';
 import { createSellerTransportStore } from '@kynesyslabs/dacs-seller/src/dacs/seller-transport-auth.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from '@kynesyslabs/dacs-seller/src/dacs/agreement-context-consumer.mjs';
 import { purchaseSupport } from '@kynesyslabs/dacs-seller/src/dacs/listing.mjs';
@@ -205,9 +207,11 @@ const capabilities = () => ({
   observeDemosTransfer: refuse('observeDemosTransfer'),
   railAuthority,
   sessionAdmission,
+  receiptFeeCeilings: { payFeeCeilingOs: '7000013', anchorFeeCeilingOs: '300007' },
 });
 const dataDirectory = second ?? realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-host-')));
-const signer = { claim: sellerKey.claim, sign: sellerKey.sign };
+// The key's roles as the host takes them: the effect signer and the journal integrity role.
+const signer = { claim: sellerKey.claim, sign: sellerKey.sign, integritySigner: { claim: sellerKey.claim, sign: sellerKey.sign } };
 let activeHost=null;const start=async(extra={})=>activeHost=await seller.startSellerHost({signer,listing,dataDirectory,...capabilities(),...extra});
 
 // Refused configurations: each names its cause and starts nothing.
@@ -216,7 +220,11 @@ const refusal = async (options) => { try { const host = await seller.startSeller
 // The agent composes sessionAdmission only with the one challenge ledger, so the fixture opens the packed store the host would.
 const agentRefusal = async (options) => {
   const store = createSellerTransportStore({ path: join(journalDirectory, 'agent-transport.sqlite'), now: Date.now, generation: 'TEST-installed-agent' });
-  try { const agent = await createSellerAgent({ challengeLedger: store.challenges, ...options }); agent.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } finally { store.close(); }
+  // The agent signs only inside an effect boundary, built here over the approved record as the host's stages build it.
+  const binding = await wire.bindTp1Profile({ record: approvedRecord, local: buyerNetwork.connection(), readAuthority: buyerNetwork.readAuthority });
+  const effectBoundary = createEffectBoundary({ stopped: () => false, binding, currentLocal: () => buyerNetwork.connection(), history: createEffectHistory({ dataDirectory: journalDirectory }),
+    clock: { now: () => performance.now(), after: (ms, callback) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); } } });
+  try { const agent = await createSellerAgent({ challengeLedger: store.challenges, effectSigner: signer, integritySigner: signer.integritySigner, effectBoundary, ...options }); agent.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } finally { store.close(); }
 };
 if (second !== null) {
   process.stdout.write(`${JSON.stringify({ secondProcess: await refusal({ signer, listing, dataDirectory, ...capabilities() }) })}\n`);
@@ -249,9 +257,9 @@ out.refusedConfigurations = {
   publicInterface: await refusal({ signer, listing, dataDirectory, ...capabilities(), listener: { ...listener, host: '0.0.0.0' } }),
   unknownOption: await refusal({ signer, listing, dataDirectory, ...capabilities(), anchors: { read: async () => null, write: async () => null } }),
   relativeDirectory: await refusal({ signer, listing, dataDirectory: 'seller-data', ...capabilities() }),
-  otherSigner: await refusal({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, listing, dataDirectory, ...capabilities() }),
+  otherSigner: await refusal({ signer: { claim: buyerKey.claim, sign: buyerKey.sign, integritySigner: { claim: buyerKey.claim, sign: buyerKey.sign } }, listing, dataDirectory, ...capabilities() }),
   scriptedJournal: await refusal({ signer, listing, dataDirectory, ...capabilities(), reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
-  scriptedAgent: await agentRefusal({ signer, listing, vetMode: KIT_TP1_VET_MODE, ...withoutAdmission, nativeArtifactAnchor: capabilities().artifactAnchor, durableDirectory: join(journalDirectory, 'agent'),
+  scriptedAgent: await agentRefusal({ listing, vetMode: KIT_TP1_VET_MODE, ...withoutAdmission, nativeArtifactAnchor: capabilities().artifactAnchor, durableDirectory: join(journalDirectory, 'agent'),
     reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
 };
 

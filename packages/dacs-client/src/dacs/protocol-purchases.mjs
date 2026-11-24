@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
+import { purchaseActionsAdmitted, assertWriteWithinFeeCeiling, CREATE_STORAGE_RESERVE_OS } from '../public-admission.mjs';
 import { bindHostStop, createHostStop, isHostStopRefusal } from '../host-stop.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
@@ -336,13 +337,16 @@ function storedRequestBody(record, path) {
  * Creates the request records of one flow, bound to its `{get(), set(next)}` holder over the purchase row (DC-CW5).
  * `start(path, body)` runs in one transaction: it reloads the row, refuses a purchase that no longer authorizes the
  * request, stores the exact bytes (or finds the stored ones) and counts the attempt by revision compare-and-set, then
- * returns the attempt `{text, stored, continuation, newPurchase, check(), finish(answerClass, cause)}` (`stored` is false for reads;
+ * returns the attempt `{text, stored, continuation, newPurchase, check(), refused(error), finish(answerClass, cause)}` (`stored` is false for reads;
+ * `refused(error)` records the suspension for a re-hold or host stop raised before dispatch, while signing or before the first byte;
  * `finish('suspended', cause)` records the suspension with the outcome in one write). Throws StaleProtocolCheck when
  * the row moved on, stored_request_mismatch when the body differs from the stored one, stored_request_corrupt when the
  * stored bytes fail their hash, and invalid_state when the purchase is ended, expired or suspended. A profile_not_admitted
- * refusal, or a host stop refusal (writes_stopped, stop_check_failed, stop_check_invalid, stop_check_timeout), with queued work also records a suspension (K8).
+ * refusal while purchases are held, or a host stop refusal (writes_stopped, stop_check_failed, stop_check_invalid, stop_check_timeout), also records a
+ * suspension: on a route that stores its request whether or not work is queued, on a read route only with queued work.
+ * A purchase keeps its first suspension and its id.
  * `hostStop` is the factory's stop gate: `start` and the pre-send `check()` read it after the hold, and `assertNotStopped(path)` reads it for the wire signer.
- * `suspendQueued(cause)` records one for a caller that saw the re-hold, `resume(id)` clears it.
+ * `suspend(cause)` records one for a caller that saw the stop or re-hold, `resume(id)` clears it.
  * `failure(error)` records a swallowed failure for the operator, retaining its bounded class and cause.
  */
 export function createSellerRequestRecords({ db, ops, transaction, holder, now, hostStop = createHostStop() }) {
@@ -371,29 +375,32 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now, 
   const hasQueuedWork = (protocol) => Boolean(protocol.signatures) || Object.values(protocol.sellerRequests ?? {}).some((record) => UNRESOLVED_CLASSES.has(record.lastClass));
   // One transaction on the latest stored row: a newer save, even one that moved the status or stage, does not drop the suspension.
   // An ended purchase takes no further requests, so nothing is recorded for it.
-  // With an attempt id the route's unknown outcome becomes `suspended`; the attempt counts are untouched, so it stays possibly dispatched.
+  // A purchase keeps its first suspension and its id: a later stop or re-hold writes nothing, and only `resume(id)` clears it.
+  // With an attempt id the route's unknown outcome becomes `suspended`, under the kept suspension when there is one; the attempt
+  // counts are untouched, so it stays possibly dispatched.
   // A stop for an attempt that is no longer the route's unresolved one (a newer attempt replaced or answered it) records nothing.
   function recordSuspension(cause, path, { attemptId, queuedOnly = false } = {}) {
     const saved = transaction(db, () => {
       const seen = holder.get(), row = ops.get(seen.accountId, seen.id), protocol = row?.state.protocol;
       if (!row) throw new StaleProtocolCheck(seen);
-      const prior = protocol.sellerRequests?.[path];
+      const prior = protocol.sellerRequests?.[path], kept = protocol.sellerSuspension;
       const current = prior?.attemptId === attemptId && prior?.lastClass === SELLER_ANSWER_CLASS.UNKNOWN;
-      if ((ENDED_STATUSES.has(row.status) && row.status !== 'settled_verified') || (queuedOnly && !hasQueuedWork(protocol)) || (attemptId && !current)) return row;
+      if ((ENDED_STATUSES.has(row.status) && row.status !== 'settled_verified') || (queuedOnly && !hasQueuedWork(protocol)) || (attemptId ? !current : kept)) return row;
       const outcome = attemptId ? { sellerRequests: { ...protocol.sellerRequests, [path]: { ...prior, lastClass: SELLER_ANSWER_CLASS.SUSPENDED } } } : {};
-      return writeProtocol(row, { ...outcome, sellerSuspension: { id: randomUUID(), cause, path, at: new Date(now()).toISOString() } }, 'seller_suspended', { cause, path });
+      return writeProtocol(row, { ...outcome, sellerSuspension: kept ?? { id: randomUUID(), cause, path, at: new Date(now()).toISOString() } }, 'seller_suspended', { cause, path });
     });
     if (sameProgress(holder.get(), saved)) holder.set(saved);
   }
-  // An observed re-hold or host stop suspends queued work. The refusal keeps its own cause; a failed suspension write
-  // is kept as `error.details.suspensionWriteError`.
+  // An observed re-hold or host stop suspends the purchase on a route that stores its request, whether or not work is
+  // queued; a read route queues no effect, so there only queued work is suspended. `profile_not_admitted` is a re-hold
+  // only while purchases are held: a binding refusal while admitted is not. The refusal keeps its own cause; a failed
+  // suspension write is kept as `error.details.suspensionWriteError`.
+  function noteRefusal(path, error) {
+    if (!((error?.code === 'profile_not_admitted' && !purchaseActionsAdmitted()) || isHostStopRefusal(error))) return;
+    try { recordSuspension(error.code, path, { queuedOnly: !SELLER_REQUEST_POLICY[path]?.durable }); } catch (cause) { error.details = { ...error.details, suspensionWriteError: cause }; }
+  }
   function suspendOnHold(path, work) {
-    try { return work(); } catch (error) {
-      if (error?.code === 'profile_not_admitted' || isHostStopRefusal(error)) {
-        try { recordSuspension(error.code, path, { queuedOnly: true }); } catch (cause) { error.details = { ...error.details, suspensionWriteError: cause }; }
-      }
-      throw error;
-    }
+    try { return work(); } catch (error) { noteRefusal(path, error); throw error; }
   }
   function finishAttempt(path, attemptId, lastClass) {
     const saved = transaction(db, () => {
@@ -413,7 +420,8 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now, 
     if (prior.stage !== stage && !(SELLER_REQUEST_POLICY[path].retained && REPLAY_STAGES.has(stage))) throw new StaleProtocolCheck(row);
     return stored.text;
   }
-  const attemptFor = (path, text, newPurchase, finish) => ({ text, stored: SELLER_REQUEST_POLICY[path].durable, continuation: false, newPurchase, check: () => suspendOnHold(path, () => { const row = reload(); assertAuthorizes(row, path); holder.set(row); }), finish });
+  const attemptFor = (path, text, newPurchase, finish) => ({ text, stored: SELLER_REQUEST_POLICY[path].durable, continuation: false, newPurchase,
+    check: () => suspendOnHold(path, () => { const row = reload(); assertAuthorizes(row, path); holder.set(row); }), refused: (error) => noteRefusal(path, error), finish });
   return {
     /** Clears the suspension named `id` and nothing newer; throws StaleProtocolCheck when the row moved on or holds another id. */
     resume(id) {
@@ -424,8 +432,8 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now, 
       });
       holder.set(saved);
     },
-    /** Records a re-hold's suspension on the latest row, only when the purchase has queued work; throws StaleProtocolCheck when the row is gone. */
-    suspendQueued: (cause) => recordSuspension(cause, null, { queuedOnly: true }),
+    /** Records the purchase's suspension with `cause` on the latest row, whether or not work is queued, and keeps one already there; throws StaleProtocolCheck when the row is gone. */
+    suspend: (cause) => recordSuspension(cause, null),
     /** Reads the host stop for the wire signer and records a suspension when it refuses; throws the stop's OperationError. */
     assertNotStopped: (path) => suspendOnHold(path, () => hostStop.assert()),
     start(path, body) {
@@ -464,7 +472,9 @@ const EFFECT_ROUTE_PATHS = new Set(DACS_SELLER_HTTP_ROUTES.filter(route => route
 // that need one refuse with buyer_access_closed).
 // `stopped` is the host's synchronous stop check (host-stop.mjs): every place that reads the hold also reads it, so
 // while it answers stopped no request is signed with the session key and none is sent.
-export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, stopped }) {
+// `feeCeilingOs` is the host's per-write fee ceiling and `chain.getTransactionFees()` reads the fee it is compared with;
+// a missing ceiling or fee refuses the buyer's Agreement write.
+export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, stopped, chain, feeCeilingOs }) {
   const hostStop = createHostStop(stopped);
   const assertPurchaseOpen = () => { assertPurchaseActionsAdmitted(); hostStop.assert(); };
   const { transaction } = purchaseStore(store);
@@ -554,7 +564,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
     const sessionSigner = sellerTransport.sessionSignerFor(operation);
     assertDelegationNamesKey(p.sessionDelegation, sessionSigner);
-    const authentication = createSellerWireAuthentication({ admission, sessionSigner, delegation: p.sessionDelegation,
+    const authentication = createSellerWireAuthentication({ admission, effectBoundary: sellerTransport.effectBoundary, sessionSigner, delegation: p.sessionDelegation,
       seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
       assertNotStopped: requestRecords.assertNotStopped,
       job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), profile: operation.terms.protocol.wireProfile,
@@ -1204,6 +1214,9 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   async function submitAgreementCore(operation, { agreementSignature, anchorSignature } = {}) {
     if (!available) throw unavailable();
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
+    // Until a CREATE intent is retained this submission can issue the buyer's Agreement CREATE, a paid write whose debit
+    // is its network fee plus the storage reserve. A retained intent is only read back through the bridge's resume.
+    if (!operation.state.protocol.walletAnchor) await assertWriteWithinFeeCeiling(feeCeilingOs, CREATE_STORAGE_RESERVE_OS, chain);
     let current = operation;
     const p = current.state.protocol;
     if (agreementSignature || anchorSignature) {

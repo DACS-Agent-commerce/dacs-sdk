@@ -35,7 +35,7 @@ const EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
 const LISTING_REF_RE = /^stor-[0-9a-f]{40}$/;
 const REASON_CODE_RE = /^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$/;
 const CHECK_LINE_RE = /^(?:required|informational) ([a-z0-9][a-z0-9.-]*): (pass|fail|blocked)(?: \(([a-z0-9-]+)\))?(?: \[cause: [a-z0-9-]+\])?$/;
-const FUNDED_REASONS = "the repository has no runnable wallet-spend authority service, " +
+const FUNDED_REASONS = "the generated project does not start a wallet-spend authority service, " +
   "and the buyer reads the seller only over public HTTPS from a public address";
 
 const VALUED_OPTIONS = {

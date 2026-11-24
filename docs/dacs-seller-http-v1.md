@@ -938,7 +938,11 @@ and helpers outside these boundaries must be called with their documented input 
   than its limit (64 KiB for a request, 512 KiB for an answer, by the view's
   own length) is refused as its admission refuses it (`bad_json` or
   `response_json_rejected`, detail `BYTE-LIMIT-EXCEEDED`) before it is
-  copied, and so before any other check of that call.
+  copied. `checkWireRequest`, `authorizeWireRequest` and
+  `admitPreAgreementRequest` refuse it after reading the check and copying
+  its records, and before the TP-1 binding or any check of the request;
+  `verifyWireResponse` refuses it after reading the received options and
+  checking the request it sent, and before the binding or the answer's header.
 - **What is not copied:** a binding and an opened envelope are proved by
   membership in a set the SDK holds, and are frozen. A signer is a callback:
   its `claim` is read once and `sign` called once.
@@ -1063,7 +1067,7 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `peer_delegation_agreement_required`, `peer_delegation_agreement_mismatch` (409) | a delegated request without host-owned Agreement context, or with context naming another job, Listing or party |
 | `peer_agreement_party_mismatch` (409) | a request whose signed buyer or seller is not the party the host retained, or a direct request whose host-owned Agreement context names another job, Listing or party |
 | `peer_envelope_too_large`, `peer_response_too_large`, `body_too_large` (500) | a signer given a header, response body or request body over the limits: its own input, never the peer's fault; nothing is signed |
-| `explicit_resume_invalid` (401; 500 when signing) | a resume header over the limit, not canonical, failing admission, with other than the proof's members, or with an `expiresAt` outside the lifetime bound; when signing, a signer without a string `claim` and a `sign` function, or one that is not the buyer |
+| `explicit_resume_invalid` (401; 500 when signing) | a resume header over the limit, not canonical, failing admission, with other than the proof's members, or with an `expiresAt` outside the lifetime bound; when signing, a signer that is not the buyer |
 | `explicit_resume_signature_invalid` (401; 500 when signing) | the resume proof's signature is malformed, under another domain, or not the request's buyer's or delegation's key; when signing, the signer returned a malformed signature |
 | `explicit_resume_mismatch` (409) | a resume proof whose buyer, seller, Listing pin, job, lane, Agreement hash, profile or request hash differs from the request carrying it |
 | `explicit_resume_expired` (408) | a resume proof whose `expiresAt` is not after the verifier's clock, or not after the latest clock any caller has given the in-memory ledger |

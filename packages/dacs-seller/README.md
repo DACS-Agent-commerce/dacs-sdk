@@ -33,10 +33,16 @@ durable stores use the native `better-sqlite3` module. Use the same version of
 The private package uses a core tarball built from the same checkout.
 This build refuses to start (`kit_operation_guard_off`) until the testnet
 switch, and every other entry that signs for a send or sends refuses too. A
-durable store still signs its own local records through the signer you give it:
-when it creates a new store and when it creates or updates an authenticated
-record (reopening a store or taking a lock signs nothing). The kit publishes
-none of these signatures; what your own signer does with them is up to it.
+durable store still signs its own local records, with the key's integrity role
+only: when it creates a new store and when it creates or updates an
+authenticated record (reopening a store or taking a lock signs nothing). The
+kit publishes none of these signatures. The store holds no signer for anything
+else: each Agreement co-signature, commitment, evidence and audit-source
+signature of the seller agent is made inside one pass of the host's effect
+boundary, with the key's effect role. Every answer that carries the Agreement
+co-signature (the first one, a repeat served from the cache and a state read)
+is written to the response inside a dispatch pass of that boundary, after the
+pass's checks and before its acknowledgement is recorded.
 
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
@@ -122,7 +128,7 @@ untouched.
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
 
 const host = await startSellerHost({
-  signer,               // { claim: 'did:demos:agent:<hex>', sign(bytes) -> 64-byte Ed25519 signature }, synchronous
+  signer,               // the seller key's roles, as openSellerKey returns them: { claim, sign(bytes), integritySigner, ... }
   listing,              // the signed Listing this seller serves; the signer must control it
   dataDirectory,        // absolute real path of a private (0700) directory owned by this user
   contextSessionState,  // optional, synchronous ({ jobId }) -> DACS-5 state name or null
@@ -171,6 +177,8 @@ const host = await startSellerHost({
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
   readCommitmentReceipt, // Chain-bound current SR-2 receipt reader, with bounded I/O.
+  receiptFeeCeilings: { payFeeCeilingOs, anchorFeeCeilingOs }, // required, no default: the Pay and anchor fee
+                         // ceilings, each canonical decimal OS text (zero allowed); see "Seller receipt"
   walletSession,         // { authority, connectionAuthority, finalize, close? }: the seller's wallet session.
                          // authority is its read-only capability (it cannot sign or send); connectionAuthority
                          // is the client's createAuthorityReader over it; finalize({ binding, effectBoundary,
@@ -451,6 +459,21 @@ For `provenUnsignedAbsence` and `deadRefusedCreate`, that copy retains the
 process-local proof. Missing reasons become empty text; errors and
 message-bearing objects use their name and message; function and symbol
 reasons become text. Other reason values must pass the JSON reply limits.
+
+### Seller receipt
+
+Every ordinary `committed` answer of `/dacs/v1/commitments` carries
+`sellerReceipt: { agreementHash, reservedMaximumOs }`. `agreementHash` is the
+hash of the exact signed Agreement. `reservedMaximumOs` is the most the buyer
+reserves for this purchase: the Agreement price in OS plus `payFeeCeilingOs`
+plus `anchorFeeCeilingOs` from `receiptFeeCeilings`, as canonical decimal OS
+text. The wire response signature covers it with the rest of the answer. A
+fresh answer and a read-back of a retained commitment carry the same receipt,
+and a stored answer is replayed only while its receipt still matches the one
+the seller declares now. An early `commitment-held` answer carries none. The
+receipt is a declaration on the wire answer only: the Agreement, the commitment
+record and every transaction are unchanged. The host refuses to start without
+both ceilings; the SDK sets no default and infers none.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -1209,7 +1232,9 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
 - The signed challenge route is composed directly, not by the host:
   `createSellerHttpHandler(agent, { wire, context })` serves
   `POST /dacs/v1/agreements/context/challenge` through the SDK's `./wire` when the
-  `wire` context (`createWireContext`) carries the host's `stopped` predicate; without
+  `wire` context (`createWireContext`, from
+  `@kynesyslabs/dacs-seller/src/dacs/seller-wire-requests.mjs`) carries the host's
+  `stopped` predicate; without
   one the handler refuses construction. No Agreement exists yet and the wire journal is never
   written. The seller refuses in this order: the body (64 KiB, one JSON value, no duplicate
   members or lossy numbers: `body_too_large`, `bad_json`; unsigned, like the envelope's

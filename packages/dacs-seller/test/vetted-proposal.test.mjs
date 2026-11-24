@@ -151,7 +151,7 @@ test('a pre-upgrade session without a retained generatedAt keeps its context-tim
  // decided at the context time, so the signing gate must not re-interpret the
  // missing field as an out-of-window proposal.
  const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.config.signer,listingPin:listingPin(f.listing)});
  const {sha256Hex,canonicalize}=await import('@kynesyslabs/dacs'),{SELLER_PROFILE}=await import('../src/dacs/session-admission.mjs');
  const bundle=request.buyerIdentityBundle,nonce=bundle.sessionNonce,presentationHash=sha256Hex(canonicalize(bundle)),buyerBundleHash=identityBundleHash(bundle);
  const admission=await f.admission.sessionAdmission.admit({jobId:JOB,buyer:bundle.presentedBy,buyerBundleHash,sessionNonce:nonce,seller:f.config.signer.claim,listingPin:listingPin(f.listing),profile:structuredClone(SELLER_PROFILE)});

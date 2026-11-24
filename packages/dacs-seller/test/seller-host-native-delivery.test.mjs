@@ -15,8 +15,9 @@ import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync,readFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import DatabaseSync from 'better-sqlite3';
-import {testWallet,NOW}from './helpers/protocol-fixture.mjs';
+import {testWallet,NOW,RECEIPT_FEE_CEILINGS}from './helpers/protocol-fixture.mjs';
 import { HOST_CONTEXT_CALLBACKS, presentContextAnswer } from './helpers/host-context-callbacks.mjs';
+import { agentSigning, integrityRoleOf } from './helpers/agent-signing.mjs';
 import { hostBuyer } from './helpers/host-context-client.mjs';
 import * as core from '@kynesyslabs/dacs';
 import {sellerApi as seller}from './helpers/seller-internal-api.mjs';
@@ -272,6 +273,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
     if (faults.sign[0] === 'throw-evidence' && evidenceBytes(bytes)) { faults.sign.shift(); throw new Error('TEST the seller signer failed'); }
     return sellerKey.sign(bytes);
   } };
+  sellerSigner.integritySigner = integrityRoleOf(sellerSigner);
   // A seller bundle for the session: the Listing identity presented afresh.
   const sessionSeller = (signerKey) => {
     const { presentation: _publication, ...identity } = listing.seller.identity;
@@ -612,7 +614,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   };
   // Every request reaches the host under the Host its Listing's endpoint names.
   const hostFetch = fetchAsHost({ authority: new URL(listing.seller.publicEndpoint).host });
-  const capabilities = () => ({ readCommitmentReceipt, signer: sellerSigner, listing,
+  const capabilities = () => ({ readCommitmentReceipt, signer: sellerSigner, listing, receiptFeeCeilings: RECEIPT_FEE_CEILINGS,
     buyerAccess: seller.createOperatorBuyerAccess({ buyerForJob: jobId => buyerBundles.has(jobId) ? buyerKey.address : null, ...buyerAccessOptions }), agreementAnchor, deliverableProducer: producer, maxJobs, deliveryEvidenceEnabled,
     deliverySchemaVerifier: deliverySchemaVerifier ?? { schemaUrl: listing.offering.deliverable.schemaUrl, verify: ({ cleartextPayload: p }) => ({ disposition: p.reportVersion === '1' && typeof p.kind === 'string' && Array.isArray(p.body) && p.body.every(v => typeof v === 'string') ? 'valid' : 'invalid' }) },
     ...(compatibilityObserver ? { observeDemosTransfer: async () => { throw new Error('TEST the native profile observes transfers through native payment evidence'); } } : {}),
@@ -665,7 +667,7 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   // read with the host stopped, from the host's own durable state.
   const retainedSession = async (jobId) => {
     await stop();
-    const agent = await seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, challengeLedger: hostLedger(), closedBootstrapGate: () => null });
+    const agent = await seller.createSellerAgent({ ...capabilities(), ...agentSigning(sellerSigner, { historyDirectory: dataDirectory }), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: artifactAnchor, challengeLedger: hostLedger(), closedBootstrapGate: () => null });
     try { return agent.durableSessionOf(jobId); } finally { agent.close(); }
   };
   const PAYMENTS_PATH = '/dacs/v1/payments';
@@ -719,14 +721,14 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   const agentFor = async ({ stopHost = true, readIssued = null, deliveryEvidenceEnabled: publishEvidence = deliveryEvidenceEnabled, beforePublish = null } = {}) => {
     if (stopHost) await stop();
     const anchor = beforePublish ? { ...artifactAnchor, publish: async input => { await beforePublish(); return artifactAnchor.publish(input); } } : artifactAnchor;
-    return seller.createSellerAgent({ ...capabilities(), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: anchor, readIssued, deliveryEvidenceEnabled: publishEvidence, challengeLedger: hostLedger(), closedBootstrapGate: () => null });
+    return seller.createSellerAgent({ ...capabilities(), ...agentSigning(sellerSigner, { historyDirectory: dataDirectory }), vetMode: KIT_TP1_VET_MODE, durableDirectory: join(dataDirectory, 'seller'), nativeArtifactAnchor: anchor, readIssued, deliveryEvidenceEnabled: publishEvidence, challengeLedger: hostLedger(), closedBootstrapGate: () => null });
   };
   // Model an authenticated checkpoint written by an older agent before its
   // adapter recovery fix, using the store's own fenced save and signature.
   const editRetainedSession = async (jobId, edit) => {
     await stop();
     const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
-    const state = await createSellerDurableState({ dir: join(dataDirectory, 'seller'), signer: sellerSigner, listingPin: pin });
+    const state = await createSellerDurableState({ dir: join(dataDirectory, 'seller'), integritySigner: sellerSigner, listingPin: pin });
     try { await state.withJob(jobId, (session) => { edit(session); state.saveSession(session); }); }
     finally { state.close(); }
     host = await start();

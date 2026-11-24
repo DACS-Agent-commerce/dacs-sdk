@@ -22,6 +22,7 @@ import { wireAuthenticator } from './seller-wire-requests.mjs';
 import { createCompletionRecords } from './seller-completion-records.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 import { createSellerEffectRoutes } from './seller-effect-routes.mjs';
+import { COSIGNATURE_ANSWER } from './cosignature-answer.mjs';
 
 const MAX_BODY = 64 * 1024;
 /** How many requests one handler serves at once unless its `maxConcurrent` says otherwise; the host bounds its live bootstrap scopes by it too. */
@@ -65,6 +66,14 @@ const retainsPayment = (agent, jobId) => { try { return agent.retainsPaymentWork
 // A proposal effect is released only on the agent's proof that it signed and kept nothing.
 const retainsProposal = (agent, jobId) => { try { return agent.retainsProposalWork?.(jobId) !== false; } catch { return true; } };
 const retainedBy = (agent, path, jobId) => path === PAYMENT_PATH ? retainsPayment(agent, jobId) : path === PROPOSAL_PATH && retainsProposal(agent, jobId);
+// The answer pass of a completed proposal answer served from the cache, when that answer carries the Agreement
+// co-signature: the one the agent names for the same proposal. A co-signature the agent no longer names is refused.
+function cachedCosignature(agent, path, { status, text }, body) {
+  if (path !== PROPOSAL_PATH || status !== 200 || typeof JSON.parse(text)?.contribution?.signature?.value !== 'string') return undefined;
+  const cosignature = agent.agreementState(body.transportIdentity)?.[COSIGNATURE_ANSWER];
+  if (cosignature === undefined) throw new SellerTransportError('cosignature_answer_unavailable', 409);
+  return cosignature;
+}
 
 // What the agent holds for a table route's job, for the row's end rule. The agent settles inside its job lock, so a route
 // that retains nothing has no worker either. A route the agent cannot answer for is `unknown`, never `none`.
@@ -281,14 +290,24 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     res.writeHead(status, headers);
     res.end(text);
   };
+  // An answer that carries the Agreement co-signature is written only inside its answer pass, by the pass's last synchronous
+  // check: the response must still be open and, unless the signature's earlier transmission was already acknowledged (this
+  // send is then a readback of it), the request's context session must not have ended. The answer may already be stored
+  // then; a refusal leaves it stored, unacknowledged and unwritten, and only the refusal is sent.
+  const assertAnswerable = (res, request) => ({ readback = false } = {}) => {
+    if (res.destroyed || res.writableEnded) throw new SellerTransportError('response_closed', 503);
+    if (!readback) auth.store.assertSession(request);
+  };
   // A route sends a signed 200 only once the agent's credit check has settled within its deadline. A failure, a rejection or
   // a missed deadline throws, and a result that comes later releases nothing.
   const creditHeld = (jobId) => boundedCall(() => agent.assertSettlementCredit(jobId), { timeoutMs: SETTLEMENT_CREDIT_TIMEOUT_MS });
-  // Sends one answer: signed, then for a 200 the credit check, then written.
-  const send = async (res, status, body, request, { close = false, text = JSON.stringify(body) } = {}) => {
+  // Sends one answer: signed, then for a 200 the credit check, then written. An answer that carries the Agreement
+  // co-signature is written inside its answer pass (`cosignature`), right after the pass's checks; a refusal writes nothing.
+  const send = async (res, status, body, request, { close = false, text = JSON.stringify(body), cosignature } = {}) => {
     const headers = await signedHeaders(status, text, request, close);
     if (status === 200 && request) await creditHeld(request.jobId);
-    write(res, status, headers, text);
+    if (cosignature === undefined) write(res, status, headers, text);
+    else await cosignature.send({ recheck: assertAnswerable(res, request), write: () => write(res, status, headers, text) });
   };
   // The discovery document is public, so it is signed as a document and carries no response envelope; a GET with a body is refused.
   const serveDiscovery = async (req, res) => {
@@ -319,7 +338,23 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         await row.revalidate({ agent, jobId: request.jobId, outcome: { status: outcome.status, text } });
       }
     };
-    const conclude = async (outcome, end) => {
+    // The answer pass of a stored answer that carries the Agreement co-signature, set by `conclude` and run by `transmitted`
+    // once the agent's job lock is released, so the buyer's next request does not meet a job the pass still holds.
+    let transmit = null, written = false;
+    // A refusal that withheld an answer carrying the Agreement co-signature (the reservation check's before it is stored, or
+    // the answer pass's): the refusal is answered, with its own code and status.
+    const answerWithheld = (error) => send(res, Number.isSafeInteger(error.status) ? error.status : 503, { error: String(error.code ?? 'answer_withheld'), message: String(error.message) }, request);
+    let withheld = null;
+    // Runs that pass, whose own checks decide whether the answer goes out: it is written to the response inside the pass,
+    // after the pass's checks and before its acknowledgement. A refusal withholds it: the stored answer is sent only through
+    // a later pass. Once written, a lost acknowledgement record leaves the history at `dispatch-started`, which reads as unknown.
+    const transmitted = async () => {
+      const pass = transmit;
+      if (pass === null) return;
+      transmit = null;
+      try { await pass(); } catch (error) { if (!written) await answerWithheld(error); }
+    };
+    const conclude = async (outcome, end, recheck = () => {}) => {
       if (concluded) throw new SellerTransportError('peer_reconciliation_conflict', 503);
       await revalidateFinalPayment(outcome);
       if (concluded) throw new SellerTransportError('peer_reconciliation_conflict', 503);
@@ -327,16 +362,21 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const text = auth.encode(JSON.stringify(outcome.value)), sent = await pointed(outcome.status, text, request.jobId, req.url);
       const headers = await signedHeaders(outcome.status, sent, request);
       if (outcome.status === 200) await creditHeld(request.jobId);
+      // An answer that carries the co-signature is that signature's transmission: it is stored here, after its reservation check,
+      // and written only by its answer pass (`transmitted`), as a repeat served from the cache and a state read are.
+      const cosignature = outcome.status === 200 ? outcome.value?.[COSIGNATURE_ANSWER] : undefined;
+      if (cosignature === undefined) { end(text); delivered = true; write(res, outcome.status, headers, sent); return; }
+      try { recheck(); } catch (error) { withheld = error; throw error; }
       end(text);
       delivered = true;
-      write(res, outcome.status, headers, sent);
+      transmit = () => cosignature.send({ recheck: assertAnswerable(res, request), write: () => { write(res, outcome.status, headers, sent); written = true; } });
     };
     // The options an answer is stored with: its classification and, for a route with a row, the row's end decision for the exact text.
     const endOptions = (outcome, text) => {
       const row = rowOfRoute();
       return { noEffect: outcome.noEffect, retry: outcome.retry, ...(row === undefined ? {} : { decision: row.endAfter({ ...outcome, text }, routeEvidence(agent, req.url, request.jobId, outcome)) }) };
     };
-    const finishWith = (outcome) => conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, endOptions(outcome, text)));
+    const finishWith = (outcome) => conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, endOptions(outcome, text)), () => auth.store.assertPending(reservation));
     try {
       if (listener?.mode !== 'tls' && (!loopbackSocket(req.socket.remoteAddress) || !loopbackSocket(req.socket.localAddress))) return await send(res, 403, { error: 'loopback_only' }, null, { close: true });
       if (now() - windowStart >= rateWindowMs) { windowStart = now(); requests = 0; }
@@ -374,7 +414,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       // A signed read reserves and completes nowhere: it answers from the agent's current state.
       if (opened.read) {
         const outcome = transportOutcome(req.url, { answer: await route(agent, body, {}) }, { retained: false });
-        return await send(res, outcome.status, outcome.value, request);
+        // A read that carries the Agreement co-signature transmits it too, inside its answer pass.
+        return await send(res, outcome.status, outcome.value, request, { cosignature: outcome.value?.[COSIGNATURE_ANSWER] });
       }
       // Payment evidence is taken only on an assembled settlement profile.
       if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
@@ -389,7 +430,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           if (agent.retainsPaymentWork(request.jobId) && !agent.retainsPaymentClaim(request.jobId, body)) throw new SellerTransportError('payment_already_recorded', 409);
         }
         await rowOfRoute()?.revalidate({ agent, jobId: request.jobId, outcome: { status: reservation.status, text: reservation.text } });
-        return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
+        return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url),
+          cosignature: cachedCosignature(agent, req.url, reservation, body) });
       }
       if (reservation.disposition === 'uncertain') {
         // A request its expired delegation admits only for readback reconciles read only.
@@ -404,14 +446,14 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           claim: () => (claimed = auth.store.claim(reservation, request, { live: !readOnly })),
           settle: (outcome) => {
             if (!claimed) throw new SellerTransportError('peer_reconciliation_conflict', 503);
-            return conclude(outcome, reconcile(outcome));
+            return conclude(outcome, reconcile(outcome), () => claimed.check());
           },
         });
         if (typeof agent.reconcileTransport === 'function') {
           const row = rowOfRoute();
           await (row === undefined ? agent.reconcileTransport({ request, body, rawBody, readOnly, transport }) : row.recover({ agent, request, body, rawBody, transport }));
         }
-        if (delivered) return;
+        if (delivered) return await transmitted();
         return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; its outcome is not established.' }, request);
       }
       // One classification (seller-agent.mjs transportOutcome). An agent run checks its reservation inside its job fence before
@@ -420,8 +462,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const transport = Object.freeze({ path: req.url, check: () => auth.store.assertPending(reservation), settle: finishWith });
       const answer = await route(agent, body, { transport });
       if (!delivered) await finishWith(classified({ answer }));
+      await transmitted();
     } catch (error) {
-      if (delivered) return;
+      if (delivered) return await transmitted();
+      if (withheld !== null) return await answerWithheld(withheld);
       const beforeEffect = !reservation || reservation.disposition !== 'perform';
       // A refusal keeps its code, status and cause, never `operation_uncertain`. After the effect started, only the
       // refusal to store an unsignable answer and a source that cannot confirm a final answer do; any other error leaves the effect uncertain.

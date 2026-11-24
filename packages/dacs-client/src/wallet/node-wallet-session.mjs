@@ -13,7 +13,7 @@ import { OperationError } from '../client-errors.mjs';
 import { isTp1AuthorityLabel } from '../dacs/tp1-authority-label.mjs';
 import { assertPurchaseActionsAdmitted } from '../dacs/action-admission.mjs';
 import { isTp1AuthorityToken, registerTp1Token } from '../dacs/tp1-authority-token.mjs';
-import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
+import { AUTHORITY_READ_DEADLINE_MS, POSITIVE_OS_AMOUNT, admitPublicFactory, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
 import { claimForAddress } from '../signatures.mjs';
 import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
 import { createAuthorityReader } from './authority-reader.mjs';
@@ -25,6 +25,7 @@ import { createReopenGrants } from './withheld-reopen-grants.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
 import { createPaymentEvidenceCreateAdapter } from './node-payment-evidence-adapter.mjs';
 import { assertCurrentAuthorization, currentPassContext, isPassContext, passContext, relayPassContext, runInPassContext } from './pass-context.mjs';
+import { createReadQueue } from './read-queue.mjs';
 import { createSignerReservations } from './signer-reservation.mjs';
 import { createKeystoreWalletOpener, JOURNAL_METHODS } from './keystore-wallet-opener.mjs';
 import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError, normalizeMnemonic } from '../public/portal/embedded-wallet/sdk-provider.mjs';
@@ -51,7 +52,6 @@ const RPC_INVALID = 'node_wallet_rpc_invalid';
 const STAGE_NOT_DISPATCHED = 'not_dispatched';
 const STAGE_DISPATCHED_NO_ACK = 'dispatched_no_ack';
 const OS_AMOUNT = /^(?:0|[1-9][0-9]*)$/;
-const POSITIVE_OS_AMOUNT = /^[1-9][0-9]*$/;
 // The `extra` values of a JSON-RPC `execute` body that put a transaction in front of the node; the gate runs at each.
 const GATED_EXECUTE_STAGES = ['confirmTx', 'broadcastTx'];
 const TP1_LABEL_PREFIX = 'TP1-';
@@ -247,26 +247,6 @@ function listsWithin(value, limit) {
     for (const member of members) pending.push(member);
   }
   return true;
-}
-
-// Runs at most `limit` reads at once. The rest wait in order, and a waiter leaves with the signal's reason when its signal aborts.
-function createReadQueue(limit) {
-  let running = 0;
-  const waiting = [];
-  const release = () => { const next = waiting.shift(); if (next) next(); else running -= 1; };
-  return async function runQueued(read, signal) {
-    signal.throwIfAborted();
-    if (running < limit) running += 1;
-    else {
-      await new Promise((resolve, reject) => {
-        const turn = () => { signal.removeEventListener('abort', leave); resolve(); };
-        const leave = () => { waiting.splice(waiting.indexOf(turn), 1); reject(signal.reason); };
-        waiting.push(turn);
-        signal.addEventListener('abort', leave, { once: true });
-      });
-    }
-    try { return await read(); } finally { release(); }
-  };
 }
 
 /**
@@ -496,7 +476,7 @@ function routeCryptoThroughAccessor(demos) {
   assertCryptoGuarded(demos);
 }
 
-function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate }) {
+function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate, boundary, pinVersion }) {
   const signScope = new AsyncLocalStorage(), guards = new WeakMap();
   return class NodeDemos extends Demos {
     constructor() {
@@ -516,13 +496,21 @@ function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate }) {
 
     /**
      * Signs like the SDK. Only the session's own RPC authentication passes `raw`; a call without it is a general signing request, which
-     * rejects `payload_mismatch` before any signature when the message has the shape of a transaction hash.
+     * rejects `payload_mismatch` before any signature when the message has the shape of a transaction hash. A general signature is an
+     * effect of its own (an identity presentation, a delegation, an Agreement or its anchor authorization): it is made and released
+     * through the effect boundary, which records it and refuses without a signature when a stop, a re-hold or a reconnect came first.
      */
     async signMessage(message, options) {
-      if (options?.raw !== true && hasTransactionHashShape(message)) {
+      if (options?.raw === true) return super.signMessage(message, options);
+      if (hasTransactionHashShape(message)) {
         throw new EmbeddedWalletError('payload_mismatch', 'a general signing request may not sign a transaction hash; nothing was signed');
       }
-      return super.signMessage(message, options);
+      let answer;
+      // One lane per signature: Ed25519 signs the same message to the same bytes, and the history keys a record by its lane and bytes.
+      const operationId = `wallet-message:${randomUUID()}`;
+      const operation = { operationId, lane: operationId, kind: 'signature', paidWrite: false, pinVersion };
+      await boundary.signerFor(operation, { sign: async () => { answer = await super.signMessage(message, options); return answer.data; } }).sign(Buffer.from(message));
+      return answer;
     }
 
     async connect(url) {
@@ -755,7 +743,7 @@ async function buildNodeComposition(options, seller, requirePass = false) {
       : createDevnetAgreementTransport(transportOptions);
     const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN });
     const anchorJournal = Object.fromEntries(['get', 'put', 'withWalletLock'].map(name => [name, (...args) => (selectedJournal.getStore() ?? journal)[name](...args)]));
-    const NodeDemos = nodeDemosClass(Demos, { transport, rpcUrl: transactionTransport.rpcUrl, stamps, attempts, gate });
+    const NodeDemos = nodeDemosClass(Demos, { transport, rpcUrl: transactionTransport.rpcUrl, stamps, attempts, gate, boundary: effectBoundary, pinVersion: expected.pinVersion });
     session = createSdkWalletSession({ DemosCtor: NodeDemos, approve, transactionTransport,
       validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity), recordCause });
     const mnemonic = decodeMnemonic(keyCopy);

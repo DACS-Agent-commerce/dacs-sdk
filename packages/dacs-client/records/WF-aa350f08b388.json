@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged package manifest with the wallet lane view and the read queue",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "5b2100f2dc10cb3226b44be881a3066de5281073",
+      "after": "5b2100f2dc10cb3226b44be881a3066de5281073"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-aa350f08b388.json"
+  ],
+  "note": "Both sides of the merge recorded the package manifest; this record chooses the merged copy, which lists both the wallet lane view module and the read queue module."
+}

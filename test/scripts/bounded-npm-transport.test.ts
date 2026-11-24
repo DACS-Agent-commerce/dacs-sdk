@@ -2,7 +2,7 @@ import { createRequire } from "node:module";
 import { createServer, get as httpGet, request as httpRequest } from "node:http";
 import { EventEmitter } from "node:events";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { PassThrough, Readable } from "node:stream";
@@ -433,7 +433,12 @@ describe("total command deadline and retry budget", () => {
     });
   function running(pid: number) {
     try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; }
-    try { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); return !stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z"); } catch { return false; }
+    if (existsSync("/proc")) {
+      try { const stat = readFileSync(`/proc/${pid}/stat`, "utf8"); return !stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z"); } catch { return false; }
+    }
+    // No /proc (macOS): ask ps for the process state. A zombie's state starts with Z.
+    const ps = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" });
+    return ps.status === 0 && !ps.stdout.trim().startsWith("Z");
   }
   it.each([["SIGTERM", 143], ["SIGHUP", 129], ["SIGQUIT", 131]] as const)("stops a running command when the wrapper receives %s", async (signal, expectedCode) => {
     const wrapper = spawn(process.execPath, ["scripts/bounded-command.mjs", "30", "1", process.execPath, "-e", "console.log(process.pid);setInterval(()=>{},1000)"],
@@ -543,8 +548,10 @@ describe("total command deadline and retry budget", () => {
 const buildModule = "../../scripts/bounded-build.mjs";
 const { prepareBoundedBuild, replaceFile } = await import(buildModule);
 describe("bounded generated build", () => {
+  // prepareBoundedBuild refuses a project path with a linked component; macOS tmpdir() is under the /var link.
+  const tempProject = (prefix: string) => realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   it("inserts admission into the build stage and keeps the generated source available for review", () => {
-    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-build-"));
+    const root = tempProject("dacs-bounded-build-");
     try {
       const original = "FROM node:20 AS build\nRUN npm ci\nFROM node:20\nCOPY --from=build /app /app\n";
       writeFileSync(join(root, "Dockerfile"), original); writeFileSync(join(root, ".dockerignore"), "**\n");
@@ -556,7 +563,7 @@ describe("bounded generated build", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("inserts admission into a CRLF build stage instead of returning the source unchanged", () => {
-    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-build-crlf-"));
+    const root = tempProject("dacs-bounded-build-crlf-");
     try {
       const original = "FROM node:20 AS build\r\nRUN npm ci\r\n";
       writeFileSync(join(root, "Dockerfile"), original); writeFileSync(join(root, ".dockerignore"), "**\n");
@@ -567,7 +574,7 @@ describe("bounded generated build", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("keeps the original file when a replacement write is interrupted", () => {
-    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-replace-"));
+    const root = tempProject("dacs-bounded-replace-");
     try {
       const target = join(root, ".dockerignore");
       writeFileSync(target, "**\n");
@@ -580,7 +587,7 @@ describe("bounded generated build", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("flushes a replacement to durable storage before publishing it", () => {
-    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-flush-"));
+    const root = tempProject("dacs-bounded-flush-");
     try {
       const target = join(root, ".dockerignore");
       writeFileSync(target, "**\n");
@@ -594,7 +601,7 @@ describe("bounded generated build", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("does not duplicate an existing ignore exception when preparation repeats", () => {
-    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-repeat-"));
+    const root = tempProject("dacs-bounded-repeat-");
     try {
       writeFileSync(join(root, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\n");
       writeFileSync(join(root, ".dockerignore"), "**\n!acceptance-npm-http.cjs\n");
@@ -606,7 +613,7 @@ describe("bounded generated build", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it("finishes a preparation interrupted after the support file was published", () => {
-    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-restart-"));
+    const root = tempProject("dacs-bounded-restart-");
     try {
       writeFileSync(join(root, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\n");
       writeFileSync(join(root, ".dockerignore"), "**\n");
@@ -619,7 +626,7 @@ describe("bounded generated build", () => {
   });
   it.each(["Dockerfile.acceptance", "acceptance-npm-http.cjs"])(
     "refuses a different existing %s before changing the project", name => {
-      const root = mkdtempSync(join(tmpdir(), "dacs-bounded-conflict-"));
+      const root = tempProject("dacs-bounded-conflict-");
       try {
         writeFileSync(join(root, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\n");
         writeFileSync(join(root, ".dockerignore"), "**\n");
@@ -632,7 +639,7 @@ describe("bounded generated build", () => {
       } finally { rmSync(root, { recursive: true, force: true }); }
     });
   it("refuses an empty ignore file without publishing generated files", () => {
-    const root = mkdtempSync(join(tmpdir(), "dacs-bounded-empty-"));
+    const root = tempProject("dacs-bounded-empty-");
     try {
       writeFileSync(join(root, "Dockerfile"), "FROM node:20 AS build\nRUN npm ci\n");
       writeFileSync(join(root, ".dockerignore"), "");

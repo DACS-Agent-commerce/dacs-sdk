@@ -102,6 +102,13 @@ export const SELLER_RETRY_DELAY_MS = 5000;
 const SELLER_CLOCK = Object.freeze({ now: () => performance.now(), sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)) });
 // A refusal raised by the request records (stale row, purchase no longer authorizing): not a seller answer.
 const recordRefusals = new WeakSet();
+// A re-hold raised before dispatch reaches the caller as an unsent SellerUnavailableError; this keeps the re-hold behind it.
+const heldBehind = new WeakMap();
+// The client's own refusal raised before dispatch, while signing or wrapped once by the connector: a host stop or a re-hold.
+function localRefusalOf(error) {
+  const raised = error instanceof SellerHttpsConnectorError ? error.cause : error;
+  return isHostStopRefusal(raised) || raised?.code === 'profile_not_admitted' ? raised : undefined;
+}
 const SELLER_OPERATOR_MESSAGE = 'the seller reports this operation is unresolved and needs the seller operator; it is not retried automatically';
 const UNAVAILABLE_ANSWER_MESSAGE = 'seller agent response is unavailable or unauthenticated; the operation outcome may be unknown';
 const { RESULT, PROGRESS, DEFINITE, FAILED_BOOTSTRAP } = SELLER_ANSWER_CLASS;
@@ -136,16 +143,21 @@ export const sellerEndpointOrigin = (publicEndpoint) => parsePublicEndpoint(publ
 /**
  * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
  * requestRecords is the adapter's durable record store (`start(path, body)` returns
- * `{text, stored, continuation, newPurchase, check(), finish(answerClass, answerCode)}`; `stored: true` identifies a durably
+ * `{text, stored, continuation, newPurchase, check(), refused(error), finish(answerClass, answerCode)}`; `stored: true` identifies a durably
  * recorded effect attempt, while reads use false, and `failure(error)` records a refusal). Authenticated calls with
  * stored attempts retry unknown dispatches twice; all other calls send once. A suspended answer is recorded and never retried.
+ * A host stop raised before the first byte, while signing or by the transmit guards, rejects as the stop's own OperationError and
+ * leaves the attempt unfinished; a re-hold there rejects as an unsent SellerUnavailableError. Both are given to the attempt's
+ * `refused(error)` first, which records the purchase's suspension.
  * clock supplies `now()` and `sleep(ms)` so a test injects time. connector is `{send(options)}` from createSellerHttpsConnector.
  * `explicitResume(path)` (optional) is the caller's one-shot taker: it answers true at most once, for the route a buyer's explicit
  * resume named. The first attempt of that call then carries a fresh proof of the resume (see `authentication.resumeProof`) in the `x-dacs-seller-resume` header.
  * No automatic retry of the call, and no other call, sends one; the proof is never kept.
- * `request(path, body, {prepareTransmit, beforeTransmit})` hands the effect boundary's two callbacks to the connector unchanged;
- * neither the construction options nor the named methods accept them. Throws TypeError for an option it does not take, an
- * endpoint that is not a public https origin, or a missing authentication or connector.
+ * The authentication returns each signed request with its `transmitGuards`, the signature's own last checks. The connector runs
+ * them right before the first byte, and a request they refuse is not written. `request(path, body, {prepareTransmit, beforeTransmit})`
+ * adds the effect boundary's two callbacks after them; neither the construction options nor the named methods accept them.
+ * Throws TypeError for an option it does not take, an endpoint that is not a public https origin, a missing authentication or
+ * connector, or an authentication that returns a signed request without transmit guards.
  */
 export function createSellerHttpsClient(options) {
   const unaccepted = Object.keys(options).find((name) => !CLIENT_OPTIONS.has(name));
@@ -186,6 +198,9 @@ export function createSellerHttpsClient(options) {
         attempt?.finish(answer.answerClass);
         return answer.body;
       } catch (error) {
+        // A host stop or re-hold raised before dispatch is recorded as the purchase's suspension before the attempt's own outcome.
+        const local = isHostStopRefusal(error) ? error : heldBehind.get(error);
+        if (local) attempt?.refused?.(local);
         if (!(error instanceof SellerUnavailableError) && !(error instanceof SellerRefusedError)) throw error;
         // A suspended answer stops retries even when its suspension write fails; the write failure is kept as its cause.
         try { attempt?.finish(error.answerClass, error.answerCode); } catch (writeFailure) {
@@ -224,12 +239,17 @@ export function createSellerHttpsClient(options) {
       checkDeadline();
       phase = 'other';
       const { pathname } = routeUrl(path);
+      const guards = signed.transmitGuards;
+      if (typeof guards?.prepareTransmit !== 'function' || typeof guards.beforeTransmit !== 'function') throw new TypeError('the wire authentication returned a request without transmit guards');
       let response;
       try {
+        // The signature's own last checks come first; the caller's callbacks follow, all before the first byte.
         response = await connector.send({ origin, path: pathname, method: 'POST', body: Buffer.from(text),
           headers: { accept: 'application/json', 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header, ...(resumeHeader ? { [DACS_SELLER_RESUME_HEADER]: resumeHeader } : {}) },
           deadlineMs: Math.max(1, Math.ceil(deadline - clock.now())), maxResponseBytes: DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes,
-          maxResponseHeaderBytes: SELLER_RESPONSE_HEADER_BYTES, prepareTransmit, beforeTransmit });
+          maxResponseHeaderBytes: SELLER_RESPONSE_HEADER_BYTES,
+          prepareTransmit: async () => { await guards.prepareTransmit(); await prepareTransmit?.(); },
+          beforeTransmit: () => { guards.beforeTransmit(); beforeTransmit?.(); } });
         dispatched = true;
       } catch (failure) {
         // Only a rejection that says nothing was written leaves the call unsent.
@@ -253,13 +273,15 @@ export function createSellerHttpsClient(options) {
       return { body: answerOrError(verdict, answer, response.status), answerClass: verdict.answerClass };
     } catch (error) {
       if (recordRefusals.has(error)) throw error;
-      if (!dispatched && isHostStopRefusal(error)) throw error;
+      const local = dispatched ? undefined : localRefusalOf(error);
+      if (isHostStopRefusal(local)) throw local;
       if (phase === 'client-sign' && preDispatchFailures.has(error)) { lastFailureCause = 'tls'; lastFailureDispatched = false; throw error; }
       if (error instanceof SellerRefusedError) throw error;
       if (phase === 'classified' && error instanceof SellerUnavailableError) { lastFailureCause = error.causeCode; throw error; }
       lastFailureCause = error instanceof SellerHttpsConnectorError ? error.causeCode : failureCause(error, phase, signal);
       const unavailable = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, lastFailureCause, { answerClass: dispatched ? SELLER_ANSWER_CLASS.UNKNOWN : SELLER_ANSWER_CLASS.NOT_SENT });
       if (!dispatched) { preDispatchFailures.add(unavailable); lastFailureDispatched = false; }
+      if (local) heldBehind.set(unavailable, local);
       if (error instanceof RawJsonAdmissionError) { unavailable.admissionCode = error.code; unavailable.admissionStage = error.stage; }
       // A refusal while signing (the wire's own, such as seller_not_ready) happened before dispatch; it stays the cause.
       if (lastFailureCause === 'client-sign') unavailable.cause = error;

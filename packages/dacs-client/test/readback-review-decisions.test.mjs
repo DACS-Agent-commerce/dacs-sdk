@@ -27,7 +27,7 @@ const { createProtocolPurchases, protocolStageHelp }=await import('../src/dacs/p
 const { SellerRefusedError }=await import('../src/dacs/seller-http.mjs');
 const { createSourceDemoSellerTransport }=await import('../src/dacs/source-demo-seller-transport.mjs');
 // A paid purchase always declares its seller transport. The seller client and its wire authentication are stand-ins here.
-const sellerTransport=createSourceDemoSellerTransport({authority:'TEST-review',sessionSignerFor:()=>({}),sessionPolicyFor:()=>({}),endpointProofFor:()=>({})});
+const sellerTransport=createSourceDemoSellerTransport({authority:'TEST-review',sessionSignerFor:()=>({}),sessionPolicyFor:()=>({}),endpointProofFor:()=>({}),effectBoundary:readOnlyBoundary});
 // The seller is a real key pair so payment evidence can carry a real signature.
 const keyPair=seedByte=>{const seed=new Uint8Array(32).fill(seedByte),hex=Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString('hex');return {key:privateKeyFromSeed(seed),hex,claim:'did:demos:agent:'+hex};};
 const sellerKeys=keyPair(17),otherKeys=keyPair(23);
@@ -96,7 +96,7 @@ function coordinator(t, { status='settled_verified', stage='delivered', retained
    ...(retainedDelivery?{delivery:{...delivery,report},nativeEvidence:{status:'verified'},paymentEvidence:{ref:{contentHash:'d'.repeat(64)}}}:{}),...protocolPatch};
  const op=ops.createIdempotent({accountId:'TEST-buyer',kind:'purchase',idempotencyKey:'TEST',request:{},status,terms,termsHash:CHAIN,state:{protocol},expiresAt:new Date(Date.now()+3600000).toISOString()}).operation;
  const nativeEvidence=createNativePaymentEvidenceConsumer({rpcUrl:sourceCapability.pins.endpoint,sourceCapability});
- const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerTransport,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess});
+ const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerTransport,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess,feeCeilingOs:'50000000000',chain:{getTransactionFees:async()=>1n}});
  return {op,ops,service};
 }
 test('host chain-readback bookkeeping keeps its source and records a repeated hold once', t => {

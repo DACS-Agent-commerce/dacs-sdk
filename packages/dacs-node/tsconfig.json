@@ -12,7 +12,8 @@
       "@kynesyslabs/dacs/negotiate": ["../../src/negotiate/index.ts"],
       "@kynesyslabs/dacs/rails": ["../../src/rails/index.ts"],
       "@kynesyslabs/dacs/seller": ["../../src/seller/index.ts"],
-      "@kynesyslabs/dacs/substrate": ["../../src/substrate/index.ts"]
+      "@kynesyslabs/dacs/substrate": ["../../src/substrate/index.ts"],
+      "@kynesyslabs/dacs/wire": ["../../src/wire/index.ts"]
     }
   },
   "include": [

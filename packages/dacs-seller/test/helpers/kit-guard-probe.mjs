@@ -176,13 +176,13 @@ async function effectEntries() {
   const signsBeforeStore = effects.signs; // every refusal above must have signed nothing
   const storeSignatures = [];
   const storeSign = (bytes) => { storeSignatures.push(Buffer.from(bytes).toString().startsWith(LOCAL_RECORD_DOMAIN)); return signBytes(bytes); };
-  const store = await createSellerDurableState({ dir: directory, signer: { claim: seller.claim, sign: storeSign }, listingPin: { contentHash: 'a'.repeat(64) } });
+  const store = await createSellerDurableState({ dir: directory, integritySigner: { claim: seller.claim, sign: storeSign }, listingPin: { contentHash: 'a'.repeat(64) } });
   const storeSignaturesAtOpen = [...storeSignatures];
   store.retainContext({ probe: 'local write while off' });
   const storeSignaturesAfterWrite = [...storeSignatures];
   effects.signs = 0; // the refusals below must add none
   readable.durableState = typeof store.retainContext;
-  await attempt('signOnce', () => store.signOnce('signature:probe', Buffer.from('bytes')));
+  await attempt('signOnce', () => store.signOnce('signature:probe', Buffer.from('bytes'), (bytes) => { effects.signs++; return signBytes(bytes); }));
   // A complete request with a valid external writer signature: only the guard can stop it before it keeps an intent and writes.
   const { anchorWriteMessage } = await import('../../src/dacs/fixture-anchors.mjs');
   const anchorAddress = 'dacs4:probe:anchor', anchorArtifact = { probe: 'artifact' };

@@ -1,19 +1,39 @@
-// The seller's CREATE lanes at the artifact anchor's publish, over the production wallet session. Every refusal here is raised
-// before publish reaches the wallet: no stored intent and no signature follows any of them, and a refusal before the admitted binding check makes no node read.
+// The seller's effect paths. The CREATE lanes at the artifact anchor's publish, over the production wallet session: every
+// refusal is raised before publish reaches the wallet, with no stored intent and no signature, and a refusal before the admitted
+// binding check makes no node read.
+// The agent's signatures and the answer that carries its Agreement co-signature, through the host's effect boundary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import * as core from '@kynesyslabs/dacs';
+import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
 import { T0, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
 
 // Static imports are all resolved before any module runs, so a module that reaches the client's admission state must be imported
 // after the world helper above has installed the purchase-admission hook.
 const { anchorFixture, signSdkCreate } = await import('./helpers/anchor-isolated-fixture.mjs');
+const { agentFixture, fixtureProposal } = await import('./helpers/seller-agent-isolated-fixture.mjs');
+const { countedKeyRoles } = await import('./helpers/counted-key-roles.mjs');
+const { proposalWireWorld } = await import('./helpers/proposal-wire-world.mjs');
+const { PATHS } = await import('./helpers/wire-routes-world.mjs');
+const { MONOTONIC_CLOCK, TEST_BINDING, integrityRoleOf } = await import('./helpers/agent-signing.mjs');
+const { TEST_CONNECTION } = await import('./helpers/wire-authority-fixture.mjs');
+const { JOBS } = await import('./helpers/bilateral-vet-fixture.mjs');
 const guard = await import('../src/kit-operation-guard.mjs');
 const { createDevnetDemoArtifactAnchor } = await import('../src/devnet-demo/artifact-anchor.mjs');
 const { createDevnetDemoListingPublisher } = await import('../src/devnet-demo/listing.mjs');
 const { createDevnetDemoDeliveryCapability } = await import('../src/devnet-demo/native-delivery.mjs');
 const { submitNativeDemDelivery } = await import('../src/dacs/native-dem-delivery-consumer.mjs');
 const { fixtureListing } = await import('./fixtures/listings.mjs');
+const { createSellerAgent } = await import('../src/dacs/seller-agent.mjs');
+const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
+const { WRITE_FEE_CEILING_OS, createEffectBoundary } = await import('../src/dacs/effect-boundary.mjs');
+const { createEffectHistory } = await import('../src/dacs/effect-history.mjs');
+const { createDemDeliveryContext } = await import('../src/dacs/dem-delivery-context-consumer.mjs');
+const { anchorWriteMessage } = await import('../src/dacs/fixture-anchors.mjs');
 
 const JOB_ID = '01M5YKPJG0248H248H248H248H';
 const LISTING_ADDRESS = 'dacs1:listing:fixture-report:1';
@@ -145,4 +165,375 @@ test('a runCreate refusal before a retained CREATE\'s resend records no recovery
   f.controls.runCreate = undefined;
   await f.open().read(input, resend);
   assert.equal(resends.length, 1, 'the next read used the one resend');
+});
+
+// ---- The agent's signatures and the answer that carries its Agreement co-signature ----
+
+const AGREEMENT_PREFIX = 'dacs-payee-bound-agreement:v1:';
+const ANCHOR_PREFIX = anchorWriteMessage('', '').slice(0, -1);
+const isAgreement = (bytes) => Buffer.from(bytes).toString().startsWith(AGREEMENT_PREFIX);
+const isAnchorWrite = (bytes) => Buffer.from(bytes).toString().startsWith(ANCHOR_PREFIX);
+const laneStates = async (directory, jobId) => (await createEffectHistory({ dataDirectory: directory }).read(`job-${jobId}`)).map((record) => record.state);
+const signedOperations = async (directory, jobIds) => {
+  const history = createEffectHistory({ dataDirectory: directory });
+  return (await Promise.all(jobIds.map((jobId) => history.read(`job-${jobId}`)))).flat().filter((record) => record.state === 'signed').map((record) => record.operationId);
+};
+// The world's next proposal answer is computed and signed as a response, then `change(w)` runs before its answer pass writes it.
+const changeBeforeAnswerWritten = (w, change) => {
+  const receive = w.agent.receiveProposal;
+  w.agent.receiveProposal = (...args) => {
+    w.agent.receiveProposal = receive;
+    w.signing.before = (bytes) => {
+      assert.ok(Buffer.from(bytes).toString().startsWith(DACS_SELLER_HTTP_DOMAINS.response), 'the next signature is the answer\'s');
+      change(w);
+    };
+    return receive(...args);
+  };
+};
+// Moves the wire's clock past the open attempt's lease, so the next request recovers it.
+const pastLease = (w) => { w.state.time += w.leaseMs + 1; };
+const readState = async (w) => w.send(PATHS.state, await w.buyerWire.signRequest(PATHS.state, { transportIdentity: w.body.transportIdentity },
+  { jobId: w.jobId, agreementHash: w.body.transportIdentity.agreementHash }));
+
+test('an answer that carries a new co-signature is withheld when the stop check or the guard flips before it is written, and a signed refusal goes out instead', async (t) => {
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  for (const [label, flip, unflip, code] of [
+    ['the stop check', (w) => { w.f.stop.requested = true; }, (w) => { w.f.stop.requested = false; }, 'seller_stopped'],
+    ['the guard', () => guard.setKitOperationGuardForTest('off'), () => guard.setKitOperationGuardForTest('testnet-tp1'), 'kit_operation_guard_off'],
+  ]) {
+    const w = await proposalWireWorld(t);
+    changeBeforeAnswerWritten(w, flip);
+    const withheld = await w.post();
+    unflip(w);
+    assert.deepEqual([withheld.body.error, withheld.signed, withheld.body.contribution], [code, true, undefined], `${label}: a signed refusal, with no co-signature`);
+    assert.equal(w.agreementSignatures(), 1, `${label}: the Agreement was signed once`);
+    assert.deepEqual(await laneStates(w.f.effectsDirectory, w.jobId), ['signed'], `${label}: the signature is held, never dispatched`);
+    pastLease(w);
+    const answered = await w.post();
+    assert.deepEqual([answered.status, answered.body.disposition], [200, 'complete'], `${label}: the next request answers the held signature`);
+    assert.equal(w.agreementSignatures(), 1, `${label}: nothing new was signed`);
+    assert.equal((await laneStates(w.f.effectsDirectory, w.jobId)).at(-1), 'dispatch-acknowledged', label);
+  }
+});
+
+test('an agent composed without the host\'s effect boundary refuses at construction; the non-durable branch signs only as the boundary\'s inner signer, refusing a wrong identity and signing the approved control', async (t) => {
+  const counted = { agreementSignatures: 0 };
+  const w = await agentFixture({ memory: true });
+  t.after(() => w.close());
+  const effectSigner = { claim: w.seller.claim, sign: (bytes) => { if (isAgreement(bytes)) counted.agreementSignatures++; return w.seller.sign(bytes); } };
+  const integritySigner = integrityRoleOf(effectSigner);
+  const history = mkdtempSync(join(tmpdir(), 'TEST-agent-identity-'));
+  t.after(() => rmSync(history, { recursive: true, force: true }));
+  const boundaryOver = (connection) => createEffectBoundary({ stopped: () => false, binding: TEST_BINDING, currentLocal: () => ({ ...connection }), feeCeilingOs: String(WRITE_FEE_CEILING_OS),
+    history: createEffectHistory({ dataDirectory: history }), clock: MONOTONIC_CLOCK });
+  for (const [label, signing] of [
+    ['no boundary', { effectSigner, integritySigner }],
+    ['an object that is not the host\'s boundary', { effectSigner, integritySigner, effectBoundary: { signPass: () => {} } }],
+    ['no effect role', { integritySigner, effectBoundary: boundaryOver(TEST_CONNECTION) }],
+    ['no integrity role', { effectSigner, effectBoundary: boundaryOver(TEST_CONNECTION) }],
+  ]) await assert.rejects(createSellerAgent({ ...w.config, ...signing }), TypeError, label);
+  const negotiate = async (effectBoundary) => {
+    const agent = await createSellerAgent({ ...w.config, effectSigner, integritySigner, effectBoundary });
+    try { return await agent.receiveProposal((await fixtureProposal(w.listing, JOBS[0])).body); } finally { agent.close(); }
+  };
+  const refused = await negotiate(boundaryOver({ ...TEST_CONNECTION, connectionId: 'TEST-other-connection' }));
+  assert.notEqual(refused.disposition, 'complete', 'a connection other than the bound identity signs nothing');
+  assert.equal(counted.agreementSignatures, 0, 'the effect role was never called');
+  const approved = await negotiate(boundaryOver(TEST_CONNECTION));
+  assert.equal(approved.disposition, 'complete', 'the approved control signs');
+  assert.equal(counted.agreementSignatures, 1, 'once');
+});
+
+test('journal-authentication signatures sign only their local domain, never enter the effect boundary, and persisting boundary evidence starts no nested pass; the durable state is built with the integrity role only and holds no effect signer; integrity signatures are counted apart from effect signatures, and the integrity role refuses Agreement, commitment, evidence and wire bytes with no cryptographic signer call', async (t) => {
+  const roles = await countedKeyRoles(t);
+  const w = await agentFixture({ roles });
+  t.after(() => w.close());
+  assert.equal((await w.agent.commit({ jobId: JOBS[0] })).status, 'committed');
+  const effectSignatures = roles.counts.effect;
+  assert.ok(roles.counts.integrity > 0 && effectSignatures > 0, 'both roles signed, each counted on its own');
+  assert.deepEqual((await signedOperations(w.effectsDirectory, JOBS)).sort(), roles.effectBytes.map((bytes) => `signature-${core.sha256Hex(bytes)}`).sort(),
+    'the boundary recorded each effect signature once and no journal signature, and the run finished with no nested pass waiting on its fence');
+
+  const directory = mkdtempSync(join(tmpdir(), 'TEST-integrity-only-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const integrityBefore = roles.counts.integrity;
+  const state = await createSellerDurableState({ dir: directory, integritySigner: roles.integritySigner, listingPin: w.pin });
+  t.after(() => state.close());
+  assert.ok(roles.counts.integrity > integrityBefore, 'a new store signs its journal with the integrity role');
+  const agreementBytes = roles.effectBytes.find(isAgreement), beforeSignOnce = { ...roles.counts };
+  await state.withJob(JOBS[0], () => {
+    assert.throws(() => state.signOnce(`signature:${core.sha256Hex(agreementBytes)}`, agreementBytes), /seller_effect_signer_required/, 'the store has no effect signer of its own');
+    assert.deepEqual(roles.counts, beforeSignOnce, 'refused before its intent: nothing was signed');
+    assert.throws(() => state.signOnce(`signature:${core.sha256Hex(agreementBytes)}`, agreementBytes, roles.integritySigner.sign), { code: 'seller_key_role_refused' }, 'the integrity role signs no effect');
+  });
+  assert.deepEqual(roles.counts, { effect: beforeSignOnce.effect, integrity: beforeSignOnce.integrity + 1 }, 'the only signature was the intent\'s journal record');
+  const counts = { ...roles.counts };
+  const wireBytes = Buffer.from(`${DACS_SELLER_HTTP_DOMAINS.response}{}`);
+  for (const bytes of [...roles.effectBytes, wireBytes]) assert.throws(() => roles.integritySigner.sign(bytes), { code: 'seller_key_role_refused' });
+  assert.deepEqual(roles.counts, counts, 'none of the refusals made a cryptographic call');
+});
+
+test('durable and non-durable simulated fixture anchoring awaits the shared authorization under the effect boundary before the synchronous validation transaction, whose closure returns the retained signature bytes synchronously; a settlement change refuses before anchoring, the unchanged controls anchor once, no promise reaches the signature bytes, and effect and integrity calls are counted apart', async (t) => {
+  const roles = await countedKeyRoles(t);
+  // After an anchor authorization is signed, the pass's next stop check runs `beforeAnchor`, while the pass is still open.
+  const hook = { armed: false, beforeAnchor: null };
+  const effectSigner = { claim: roles.effectSigner.claim, sign: (bytes) => { const signature = roles.effectSigner.sign(bytes); if (isAnchorWrite(bytes) && hook.beforeAnchor) hook.armed = true; return signature; } };
+  const stopped = async () => { if (hook.armed) { hook.armed = false; await hook.beforeAnchor(); } return false; };
+  const w = await agentFixture({ roles: { effectSigner, integritySigner: roles.integritySigner }, stopped });
+  t.after(() => w.close());
+  const pay = (jobId, txHash) => w.agent.submitPayment({ jobId, txHash, payerPayingKey: w.buyer.claim });
+  const anchorSignatures = () => roles.effectBytes.filter(isAnchorWrite).length;
+
+  const integrityBefore = roles.counts.integrity, buyerWrites = w.anchors.writes.length;
+  assert.equal((await w.agent.commit({ jobId: JOBS[0] })).status, 'committed');
+  assert.equal((await pay(JOBS[0], 'a'.repeat(64))).status, 'delivered', 'the durable control anchors');
+  // The local anchor accepts a write only when its writer signature verifies over the exact write message.
+  const sellerWrites = w.anchors.writes.slice(buyerWrites);
+  assert.ok(sellerWrites.length > 0 && sellerWrites.every((address) => w.anchors.rows.get(address)?.receipt.evidence.kind === 'fixture-writer-signature'), 'every anchor write carries a verified signature');
+  assert.equal(anchorSignatures(), sellerWrites.length, 'one authorization per anchor write');
+  assert.ok(roles.counts.integrity > integrityBefore && roles.counts.effect === roles.effectBytes.length, 'the journal writes used the integrity role; each effect signature one call');
+
+  assert.equal((await w.agent.commit({ jobId: JOBS[1] })).status, 'committed');
+  const writes = w.anchors.writes.length, authorized = anchorSignatures();
+  hook.beforeAnchor = async () => {
+    const session = w.store.loadSession(JOBS[1]), settlementId = session.paymentWork?.intake?.settlementId ?? session.payment?.settlementId;
+    await w.store.withJob(JOBS[0], () => w.store.bindSettlement(settlementId, JOBS[0], { jobId: JOBS[0], phaseIndex: 2 }));
+  };
+  const contested = await pay(JOBS[1], 'b'.repeat(64)).catch((error) => ({ status: error.code }));
+  hook.beforeAnchor = null;
+  assert.notEqual(contested.status, 'delivered');
+  assert.equal(anchorSignatures(), authorized + 1, 'the authorization was signed under its pass');
+  assert.equal(w.anchors.writes.length, writes, 'the settlement change refused before the anchor transaction');
+
+  const memory = await agentFixture({ memory: true, roles: { effectSigner, integritySigner: roles.integritySigner } });
+  t.after(() => memory.close());
+  const memoryWrites = memory.anchors.writes.length;
+  assert.equal((await memory.agent.commit({ jobId: JOBS[0] })).status, 'committed');
+  assert.equal((await memory.agent.submitPayment({ jobId: JOBS[0], txHash: 'c'.repeat(64), payerPayingKey: memory.buyer.claim })).status, 'delivered', 'the non-durable control anchors');
+  const added = memory.anchors.writes.slice(memoryWrites);
+  assert.ok(added.length > 0 && added.every((address) => memory.anchors.rows.get(address)?.receipt.evidence.kind === 'fixture-writer-signature'), 'every non-durable anchor write carries a verified signature');
+});
+
+test('an answer withheld after its co-signature was retained leaves held evidence in its job\'s history; after a restart neither the retried proposal nor the Agreement state read returns the held signature while the seller is stopped, and a lost answer makes no new Agreement signature', async (t) => {
+  const w = await proposalWireWorld(t);
+  changeBeforeAnswerWritten(w, () => { w.f.stop.requested = true; });
+  assert.equal((await w.post()).body.error, 'seller_stopped');
+  assert.deepEqual(await laneStates(w.f.effectsDirectory, w.jobId), ['signed'], 'the signature is held, never dispatched');
+  await w.restart();
+  pastLease(w);
+  const retried = await w.post(), read = await readState(w);
+  assert.deepEqual([retried.body.contribution, read.body.contribution], [undefined, undefined], 'no answer carries the held signature');
+  assert.deepEqual([retried.body.error, read.body.error], ['seller_stopped', 'seller_stopped']);
+  w.f.stop.requested = false;
+  const state = await readState(w);
+  assert.equal(state.status, 200);
+  assert.equal(typeof state.body.contribution?.signature?.value, 'string', 'once admitted, the state read returns the retained signature');
+  assert.equal(w.agreementSignatures(), 1, 'the lost answer made no new Agreement signature');
+});
+
+test('a repeated proposal answered from the completed-answer cache carries its co-signature only through its answer pass: while the seller is stopped it is refused with no co-signature and nothing recorded, and once admitted the same answer is sent with its dispatch recorded and no new signature', async (t) => {
+  const w = await proposalWireWorld(t);
+  const first = await w.post();
+  assert.deepEqual([first.status, typeof first.body.contribution?.signature?.value], [200, 'string']);
+  const recorded = await laneStates(w.f.effectsDirectory, w.jobId);
+  w.f.stop.requested = true;
+  const stopped = await w.post();
+  assert.deepEqual([stopped.body.error, stopped.signed, stopped.body.contribution], ['seller_stopped', true, undefined], 'a signed refusal, with no co-signature');
+  assert.deepEqual(await laneStates(w.f.effectsDirectory, w.jobId), recorded, 'the refused repeat recorded nothing');
+  w.f.stop.requested = false;
+  const repeated = await w.post();
+  assert.deepEqual([repeated.status, repeated.text], [200, first.text], 'the completed answer, as it was first sent');
+  assert.deepEqual((await laneStates(w.f.effectsDirectory, w.jobId)).slice(recorded.length), ['dispatch-started', 'dispatch-acknowledged']);
+  assert.equal(w.agreementSignatures(), 1, 'nothing new was signed');
+});
+
+test('a repeated proposal whose cached answer carries a co-signature the agent no longer names for that proposal is refused, never sent without its answer pass', async (t) => {
+  const w = await proposalWireWorld(t);
+  assert.equal((await w.post()).status, 200);
+  const recorded = await laneStates(w.f.effectsDirectory, w.jobId);
+  w.agent.agreementState = () => ({ proposal: null, contribution: null });
+  const refused = await w.post();
+  assert.deepEqual([refused.status, refused.body.error, refused.body.contribution], [409, 'cosignature_answer_unavailable', undefined]);
+  assert.deepEqual(await laneStates(w.f.effectsDirectory, w.jobId), recorded);
+});
+
+// The state of the job's last boundary record, read synchronously at the moment an answer is written.
+const lastLaneState = (directory, jobId) => {
+  const lane = join(directory, 'effects', `job-${jobId}`);
+  return JSON.parse(readFileSync(join(lane, readdirSync(lane).filter((name) => name.endsWith('.json')).sort().at(-1)), 'utf8')).state;
+};
+
+test('a co-signature answer sent outside the agent\'s job lock (a repeated proposal served from the cache, and a state read) is written inside its answer pass, after the pass\'s checks and before its acknowledgement is recorded', async (t) => {
+  const w = await proposalWireWorld(t);
+  assert.equal((await w.post()).status, 200);
+  const atWrite = [];
+  const handler = w.handle.handler;
+  w.handle.handler = (req, res) => {
+    const end = res.end;
+    res.end = function (text) { atWrite.push(lastLaneState(w.f.effectsDirectory, w.jobId)); return end.call(this, text); };
+    return handler(req, res);
+  };
+  const answers = [await w.post(), await readState(w)];
+  assert.deepEqual(answers.map((answer) => [answer.status, typeof answer.body.contribution?.signature?.value]), [[200, 'string'], [200, 'string']]);
+  assert.deepEqual(atWrite, ['dispatch-started', 'dispatch-started'], 'each answer went out while its pass held the dispatch open');
+  assert.equal((await laneStates(w.f.effectsDirectory, w.jobId)).at(-1), 'dispatch-acknowledged');
+});
+
+// Wraps the world's handler: `at.states` collects the job's last boundary record at each write of an answer, and `at.response` is the
+// response being answered.
+const watchResponses = (w) => {
+  const at = { states: [], response: null };
+  const handler = w.handle.handler;
+  w.handle.handler = (req, res) => {
+    at.response = res;
+    const end = res.end;
+    res.end = function (text) { at.states.push(lastLaneState(w.f.effectsDirectory, w.jobId)); return end.call(this, text); };
+    return handler(req, res);
+  };
+  return at;
+};
+
+test('a first proposal answer and a recovered one are written inside their answer pass, while the dispatch is recorded as started and before it is acknowledged', async (t) => {
+  const first = await proposalWireWorld(t);
+  const atFirst = watchResponses(first);
+  assert.deepEqual([(await first.post()).status], [200]);
+  assert.deepEqual(atFirst.states, ['dispatch-started'], 'the first answer went out while its pass held the dispatch open');
+  assert.equal((await laneStates(first.f.effectsDirectory, first.jobId)).at(-1), 'dispatch-acknowledged');
+
+  const recovered = await proposalWireWorld(t);
+  changeBeforeAnswerWritten(recovered, (w) => { w.f.stop.requested = true; });
+  assert.equal((await recovered.post()).body.error, 'seller_stopped');
+  recovered.f.stop.requested = false;
+  pastLease(recovered);
+  const atRecovered = watchResponses(recovered);
+  const answered = await recovered.post();
+  assert.deepEqual([answered.status, typeof answered.body.contribution?.signature?.value], [200, 'string']);
+  assert.deepEqual(atRecovered.states, ['dispatch-started'], 'the recovered answer went out while its pass held the dispatch open');
+  assert.equal(recovered.agreementSignatures(), 1, 'nothing new was signed');
+});
+
+test('an answer carrying the co-signature whose response is already closed is never acknowledged: a first proposal, a cached repeat and a state read are refused inside their pass and the next request is answered', async (t) => {
+  const answeredLater = async (w, request) => {
+    assert.equal((await laneStates(w.f.effectsDirectory, w.jobId)).includes('dispatch-acknowledged'), false, 'a closed response is never acknowledged as sent');
+    pastLease(w);
+    const answered = await request();
+    assert.deepEqual([answered.status, typeof answered.body.contribution?.signature?.value], [200, 'string']);
+    assert.equal(w.agreementSignatures(), 1, 'nothing new was signed');
+  };
+
+  const first = await proposalWireWorld(t);
+  const atFirst = watchResponses(first);
+  changeBeforeAnswerWritten(first, () => { atFirst.response.destroyed = true; });
+  await first.post().catch(() => {});
+  assert.deepEqual(atFirst.states, [], 'nothing was written to the closed response');
+  await answeredLater(first, () => first.post());
+
+  for (const [label, request] of [['a cached repeat', (w) => w.post()], ['a state read', readState]]) {
+    const w = await proposalWireWorld(t);
+    assert.equal((await w.post()).status, 200);
+    const recorded = (await laneStates(w.f.effectsDirectory, w.jobId)).length;
+    const state = w.agent.agreementState;
+    const at = watchResponses(w);
+    w.agent.agreementState = (...args) => { const answer = state(...args); at.response.destroyed = true; return answer; };
+    await request(w).catch(() => {});
+    w.agent.agreementState = state;
+    assert.deepEqual(at.states, [], `${label}: nothing was written to the closed response`);
+    assert.equal((await laneStates(w.f.effectsDirectory, w.jobId)).slice(recorded).includes('dispatch-acknowledged'), false, `${label}: a closed response is never acknowledged as sent`);
+    assert.equal(w.agreementSignatures(), 1, label);
+  }
+});
+
+for (const [label, change, refusal] of [
+  ...['aborted-by-other', 'finalised', 'aborted-by-self'].map((terminal) => [`the context session ending as ${terminal}`, (w) => { w.state.session = terminal; }, 'context_session_terminal']),
+  ['the transport reservation lapsing to a new owner', pastLease, 'peer_reconciliation_conflict'],
+]) {
+  test(`an authenticated proposal through the real route and stores refuses its Agreement signature at the signing-time recheck when ${label} during its held context read, and withholds the answer when it happens after the signature and before the answer is written; the unchanged control signs once and answers 200`, async (t) => {
+    // The proposal's context read is held open while `hold.during(w)` runs.
+    const hold = { during: null };
+    const heldContext = (f) => {
+      f.config.demDeliveryContext = createDemDeliveryContext({ authority: 'TEST-held-context', resolveBuyer: async () => null, resolveSeller: async ({ jobId }) => {
+        await hold.during?.();
+        return { disposition: 'present', value: structuredClone(f.contexts.get(jobId)) };
+      } });
+    };
+    const during = await proposalWireWorld(t, { configure: heldContext });
+    hold.during = () => { hold.during = null; change(during); };
+    const refused = await during.post();
+    assert.deepEqual([refused.status, refused.body.contribution], [503, undefined], 'the attempt answers no co-signature');
+    assert.equal(during.agreementSignatures(), 0, 'no cryptographic signer call for the Agreement');
+    const kept = during.realAgent().durableSessionOf(during.jobId);
+    assert.deepEqual([kept?.agreementSignatureKey, kept?.railPinSigned, kept?.sellerContribution], [undefined, undefined, undefined], 'no signing pointer, rail pin or contribution is kept');
+    assert.deepEqual(await laneStates(during.f.effectsDirectory, during.jobId), [], 'the boundary kept no signature');
+
+    const after = await proposalWireWorld(t);
+    changeBeforeAnswerWritten(after, change);
+    const withheld = await after.post();
+    assert.deepEqual([withheld.body.error, withheld.body.contribution], [refusal, undefined], 'the answer is withheld');
+    assert.equal(after.agreementSignatures(), 1);
+    assert.deepEqual(await laneStates(after.f.effectsDirectory, after.jobId), ['signed'], 'the retained signature stays evidence only, never dispatched');
+
+    const control = await proposalWireWorld(t);
+    const answered = await control.post();
+    assert.deepEqual([answered.status, answered.body.disposition], [200, 'complete']);
+    assert.equal(control.agreementSignatures(), 1);
+  });
+}
+
+// Runs `change(w)` at the boundary's stop read inside the dispatch pass of the world's next answer: after the answer is stored,
+// while the pass awaits its reads, and before its synchronous callback.
+const changeDuringDispatch = (w, change) => {
+  let flipped = false;
+  const stateNow = () => { try { return lastLaneState(w.f.effectsDirectory, w.jobId); } catch { return null; } };
+  Object.defineProperty(w.f.stop, 'requested', { configurable: true, get: () => {
+    if (!flipped && stateNow() === 'dispatch-started') { flipped = true; change(w); }
+    return false;
+  } });
+};
+
+test('an answer carrying the co-signature is withheld when the context session ends during its answer pass, after the answer was stored: a first proposal, a recovered one and a stored answer never acknowledged, while a repeat of an acknowledged answer is still returned', async (t) => {
+  for (const terminal of ['aborted-by-other', 'finalised', 'aborted-by-self']) {
+    const ends = (w) => { w.state.session = terminal; };
+    const first = await proposalWireWorld(t);
+    changeDuringDispatch(first, ends);
+    const refused = await first.post();
+    assert.deepEqual([refused.status, refused.body.error, refused.body.contribution], [409, 'context_session_terminal', undefined], `${terminal}: a first proposal's answer is withheld`);
+    assert.equal((await laneStates(first.f.effectsDirectory, first.jobId)).includes('dispatch-acknowledged'), false, `${terminal}: never acknowledged as sent`);
+    assert.equal(first.agreementSignatures(), 1, terminal);
+
+    const recovered = await proposalWireWorld(t);
+    changeBeforeAnswerWritten(recovered, (w) => { w.f.stop.requested = true; });
+    assert.equal((await recovered.post()).body.error, 'seller_stopped');
+    recovered.f.stop.requested = false;
+    pastLease(recovered);
+    changeDuringDispatch(recovered, ends);
+    const withheld = await recovered.post();
+    assert.deepEqual([withheld.status, withheld.body.error, withheld.body.contribution], [409, 'context_session_terminal', undefined], `${terminal}: a recovered proposal's answer is withheld`);
+    assert.equal((await laneStates(recovered.f.effectsDirectory, recovered.jobId)).includes('dispatch-acknowledged'), false, `${terminal}: never acknowledged as sent`);
+    assert.equal(recovered.agreementSignatures(), 1, terminal);
+
+    // A repeat of an answer that was acknowledged only reads it back, so the session ending during its pass does not withhold it.
+    const cached = await proposalWireWorld(t);
+    const delivered = await cached.post();
+    assert.equal(delivered.status, 200);
+    const recorded = await laneStates(cached.f.effectsDirectory, cached.jobId);
+    changeDuringDispatch(cached, ends);
+    const repeat = await cached.post();
+    assert.deepEqual([repeat.status, repeat.text], [200, delivered.text], `${terminal}: a cached repeat returns the retained answer`);
+    assert.deepEqual((await laneStates(cached.f.effectsDirectory, cached.jobId)).slice(recorded.length), ['dispatch-started', 'dispatch-acknowledged'], terminal);
+    assert.equal(cached.agreementSignatures(), 1, `${terminal}: no new signature`);
+
+    // A stored answer that was never acknowledged is a first transmission: a retry is refused while the session has ended,
+    // both when it ends during the retry's pass and when it had ended before the retry.
+    for (const [when, endBefore] of [['during the retry', false], ['before the retry', true]]) {
+      const unsent = await proposalWireWorld(t);
+      changeDuringDispatch(unsent, ends);
+      assert.equal((await unsent.post()).body.error, 'context_session_terminal', terminal);
+      if (endBefore) assert.equal(unsent.state.session, terminal);
+      else { unsent.state.session = null; changeDuringDispatch(unsent, ends); }
+      const retry = await unsent.post();
+      assert.deepEqual([retry.status, retry.body.error, retry.body.contribution], [409, 'context_session_terminal', undefined], `${terminal}: a retry of an unsent answer ${when} is refused`);
+      assert.equal((await laneStates(unsent.f.effectsDirectory, unsent.jobId)).includes('dispatch-acknowledged'), false, `${terminal}: never acknowledged as sent`);
+      assert.equal(unsent.agreementSignatures(), 1, terminal);
+    }
+  }
 });

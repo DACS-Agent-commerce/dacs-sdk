@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { compositeVerificationAddress, contentHash } from '@kynesyslabs/dacs';
 import { TESTNET_PROFILE_TP1 } from '@kynesyslabs/dacs/wire';
 import { createCoordinateStore, createSqlitePurchaseStore, createProtocolPurchases, createPurchaseService, SellerTlsUnusableError, PURCHASE_STATE_SCHEMA,
-  createPurchaseOperations, createPurchaseChallenges, createLocalPurchaseAccount, createNativePaymentEvidenceConsumer, createSourceDemoSellerTransport } from '../../src/index.mjs';
+  createPurchaseOperations, createPurchaseChallenges, createLocalPurchaseAccount, createNativePaymentEvidenceConsumer, createSourceDemoSellerTransport, PAID_WRITE_FEE_CEILING_OS } from '../../src/index.mjs';
 import { createDevnetNativeCommitmentCapability } from '../../src/devnet-demo/commitment-consumer.mjs';
 import { OFFLINE_AGREEMENT_MODE } from '../../src/dacs/protocol-purchases.mjs';
 import { buildUnsignedIdentityBundle } from '../../src/dacs/listing.mjs';
@@ -66,11 +66,14 @@ function presentAnswer({ scope, buyerIdentityBundle }, listing) {
 /**
  * Builds the composed world. `sellerEndpoint(claim, options)` answers the protocol's seller lookups; `contextGate` (a Promise) holds the
  * operator's context read; `demDeliveryContext` (a capability) replaces the operator context. `unpaid` composes the default
- * configuration instead: no native payment, no payment evidence and no seller transport. With `shippedAdapters`, the world runs on a
- * fresh schema with the package's own operations, accounts and challenges adapters under the local account, and `rebuild({ now })`
- * builds new adapters and both factories on the same database, as after a restart.
+ * configuration instead: no native payment, no payment evidence and no seller transport. `passiveOnly` builds both factories
+ * read-only; `native` replaces the native source world (a `passiveNativeWorld` over another journal, say). With `shippedAdapters`,
+ * the world runs on a fresh schema with the package's own operations, accounts and challenges adapters under the local account,
+ * and `rebuild({ now })` builds new adapters and both factories on the same database, as after a restart. `feeCeilingOs` is the
+ * host's per-write fee ceiling (the exported testnet value by default); the chain double's fee is 1 OS.
  */
-export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, unpaid = false, stopped, shippedAdapters = false } = {}) {
+export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, unpaid = false, stopped,
+  passiveOnly = false, native = passiveNativeWorld(), shippedAdapters = false, feeCeilingOs = PAID_WRITE_FEE_CEILING_OS } = {}) {
   // The fixture authority's answer, with every participant it was asked about (the buyer and seller of the session
   // delegation) on the bound profile; its gate, failure and call count still apply.
   const authority = createAuthorityFixture();
@@ -92,7 +95,6 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   const accountId = shippedAdapters ? adapters.accounts.accountId : ACCOUNT_ID;
   const purposes = { APPROVE_PURCHASE: shippedAdapters ? APPROVAL_PURPOSE : 'TEST-approve' };
   const coordinates = createCoordinateStore({ db, now: () => NOW });
-  const native = passiveNativeWorld();
   const commitment = createDevnetNativeCommitmentCapability({ authority: AUTHORITY,
     anchor: { authority: AUTHORITY, readRetained() { throw new Error('not used'); }, verifyReceipt() { throw new Error('not used'); } } });
   // `observation` answers the passive transfer read; broadcast and signer counts stay at 0 in held tests.
@@ -110,20 +112,21 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   const unused = (what) => () => { throw new Error(`TEST ${what} not in scope`); };
   const session = createEphemeralWallet();
   const sellerTransport = createSourceDemoSellerTransport({ authority: AUTHORITY, sessionSignerFor: () => ({ claim: session.claim, sign: unused('session signing') }),
-    sessionPolicyFor: () => ({ expiresAt: NOW + 1_800_000 }), endpointProofFor: unused('endpoint proof') });
+    sessionPolicyFor: () => ({ expiresAt: NOW + 1_800_000 }), endpointProofFor: unused('endpoint proof'), effectBoundary: readOnlyBoundary });
   const evidenceSource = createDevnetSettlementTransport({ boundary: readOnlyBoundary, journal: native.journal,
     settlementPublication: { policy: DEVNET_SETTLEMENT_POLICY, artifactKind: 'SettlementEvidence', phase: 'pay-dem', railId: 'demos-native:DEM', phaseIndex: 2, authority: AUTHORITY },
     expected: { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: native.source.pins.endpoint, transportAuthority: 'TEST-owner' },
     transportOwner: { getContext: unused('evidence context'), acquireConnectionFence: unused('evidence fence') } });
   const compose = ({ ops, accounts, challenges }, now) => {
-    const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, stopped, now, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
+    const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, stopped, chain, feeCeilingOs, ...(passiveOnly ? { passiveOnly } : {}), now, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
       dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
         nativeSellerCommitment: commitment,
         ...(unpaid ? {} : { nativeAgreementPayment: native.source, sellerTransport,
           nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: native.source.pins.endpoint, sourceCapability: evidenceSource }) }),
         ...(demDeliveryContext ? { demDeliveryContext } : { agreementContext }), sellerEndpoint: (claim, options) => { counters.sellerLookups++; return sellerEndpoint(claim, options); } } });
     const service = createPurchaseService({ db, ops, coordinates, store, accounts, verifier, chain, protocol,
-      challenges, config: { demAmountEncoding: 'os-string', publicOrigin: APPROVAL_ORIGIN }, now, purposes, admission, stopped });
+      challenges, config: { demAmountEncoding: 'os-string', publicOrigin: APPROVAL_ORIGIN }, now, purposes, admission, stopped, feeCeilingOs,
+      ...(passiveOnly ? { passiveOnly } : {}) });
     return { protocol, service };
   };
   const { protocol, service } = compose(adapters, () => NOW);

@@ -1,0 +1,41 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF keep a seller request signature out of the wallet journal unless it is refused, and give the legacy test authentication its transmit guards",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "14524a051f629bef134075604bbfa214fffc0970",
+      "after": "3a674b5142a182b5a251c67240e6478a6cd910b6"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+      "before": "dcfd73a1d154c393ee34a2d55061dcdc3bbc142f",
+      "after": "1268e3f531617ada71c50655dba5e2c583dbcc39"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+      "before": "5abf97778662ac66ccd0078d2a92536ec7e4cfd4",
+      "after": "073336a8a49569481e0d15900a1bdb97d339b2bb"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs",
+      "before": "8d54b1b94d6f83f52629c11c40c10e4d3d1a8e9c",
+      "after": "318ef11d22fe49b609f0a10c68151ed808b333aa"
+    },
+    {
+      "path": "packages/dacs-client/test/signature-effect-paths.test.mjs",
+      "before": "c3f82d09faf80a9b7a57942153c3144c7909e77d",
+      "after": "b7e4893bd05c1f8a429d2ed3589d19dab0eb4e0d"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-bd90799e6da0.json",
+    "packages/dacs-client/src/dacs/seller-wire-authentication.mjs",
+    "packages/dacs-client/src/wallet/effect-boundary.mjs",
+    "packages/dacs-client/test/helpers/legacy-seller-client-auth.mjs",
+    "packages/dacs-client/test/signature-effect-paths.test.mjs"
+  ]
+}
