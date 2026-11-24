@@ -538,7 +538,7 @@ test('with the shipped guard off, the host refuses before it creates its data di
   assert.equal(existsSync(dataDirectory), false, 'the refused host created nothing');
 });
 
-test('P11a1-T23: through a signed buyer client, with response verification paused, no answer or downstream action is available; released, a valid response succeeds; a bad signature, another profile, a mismatched body or status and a refusing authority reader each fail as response authentication; verification past the client timeout fails timeout, and its late result releases nothing', async (t) => {
+test('through a signed buyer client, with response verification paused, no answer or downstream action is available; released, a valid response succeeds; a bad signature, another profile, a mismatched body or status and a refusing authority reader each fail as response authentication; verification past the client timeout fails timeout, and its late result releases nothing', async (t) => {
   const w = await world(t);
   const job = await proposeJob(w, 't23');
   const stateBody = identityBody(job.jobId, job.agreementHash);
