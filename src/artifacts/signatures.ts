@@ -388,13 +388,15 @@ async function buildComponentSignatureFromSnapshot(
  * accepts only the closed v0.x separator registry; SIG-4 `dacs-x-*` extension
  * signing remains on the lower-level signing surface until it has a typed API.
  *
- * Failures throw a `DacsError`. These carry a catalog code:
- * `signature.algorithm_unsupported`, `signature.signer_claim_invalid`,
+ * Failures raised by this function throw a `DacsError` and carry one of these
+ * catalog codes: `signature.algorithm_unsupported`, `signature.signer_claim_invalid`,
  * `signature.signer_callback_invalid`, `signature.artifact_already_signed`,
  * `signature.separator_unregistered`, `signature.separator_composite`,
  * `signature.signer_inputs_mutated` and `signature.signer_output_invalid`.
  * The two errors raised while the artifact is copied, "… is not stable
  * canonical JSON" and "… must be a JSON object in canonical form", carry no code.
+ * An error thrown by the `sign` callback itself is passed through unchanged and
+ * is not a `DacsError`.
  */
 export async function buildComponentSignature(
   artifact: object,

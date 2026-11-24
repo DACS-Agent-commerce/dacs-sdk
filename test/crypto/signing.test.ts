@@ -300,7 +300,7 @@ describe("signing and key errors", () => {
       "session_key must be a 64-character lowercase hex string (composite framing, §B.7)",
     ],
     [
-      "an upper-case agreement hash",
+      "an upper-case commitment hash",
       () => autoAcceptInstanceBytes(goodHex, "A".repeat(64)),
       "signature.framed_hex_invalid",
       "autoAcceptCommitmentHash must be a 64-character lowercase hex string (composite framing, §B.7)",
