@@ -99,6 +99,16 @@ Active: `propose`, `agreementState`, `commit`, `submitPayment`, `bundleRequest`,
 
 Passive: `origin` (a string)
 
+### createPurchaseEvidenceRecorder
+
+`import { createPurchaseEvidenceRecorder } from '@kynesyslabs/dacs-client/purchase/evidence-recorder'`. It records the transaction hash, nonce and state a wallet reported for a delivery, and reads back what the journal retains for that delivery's CREATE. It can cause nothing: it signs, sends, continues and asks a wallet for nothing.
+
+`createPurchaseEvidenceRecorder({ admission, journal })` takes the open durable wallet journal from `./wallet/durable-journal` and opens no store of its own. Construction applies the admission shape and Node floor checks of the factories above and throws `TypeError('journal_required')` unless `journal` has `get`, `entries`, `withWalletLock` and `appendUnderLock`. No call runs the binding check, the hold or the stop check, so every method works while held, stopped and with a failing binding. Recording never lifts a suspension.
+
+- `recordWalletResult({ deliveryId, hash, nonce, state })` resolves `{ status, count }`. `hash` is 64 lowercase hex, `nonce` a non-negative safe integer, `state` one of `submitted`, `rejected` or `unknown`. The report is not rejected with an error when it is malformed: it resolves `{ status: 'invalid_report' }` and writes nothing, so check `status`. Otherwise `status` is `recorded`, `repeat` for a report identical to one kept (no slot used), or `evidence_limit` for a ninth distinct report (history unchanged). Journal errors, such as a busy lane, reject unchanged.
+- `resultHistory(deliveryId)` resolves the kept reports in the order they were accepted, each frozen with `verified: false`. A report is a pointer the wallet gave, never proof that a transfer happened or settled; check the chain before relying on it.
+- `openRetainedCreateJournal({ deliveryId, laneKey })` resolves a frozen copy of the journal records under `laneKey` and the retained CREATEs that name `deliveryId`. It reads the whole journal once and has no write, lock or resume member.
+
 ### Other exports
 
 - The capability constructors `createDemDeliveryContext`, `createNativeDemDeliveryCapability`, `createNativePaymentEvidenceConsumer`, `createSourceDemoSellerTransport` and `createDevnetNativeCommitmentCapability` return a frozen opaque capability and throw `TypeError` for a missing or malformed input. All but `createNativePaymentEvidenceConsumer` take an `authority` that is a `TEST-` label (a `TEST-RUN-` label for the commitment capability) or an authority token, and, with a token, the `binding` it was admitted for (see "Authority tokens and labels" below).
