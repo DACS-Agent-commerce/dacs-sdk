@@ -1149,7 +1149,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           const status=await raw({method:'nodeCall',params:[{message:'getTransactionStatus',data:{hash}}]});
           const found=await raw({method:'nodeCall',params:[{message:'getTxByHash',data:{hash}}]});
           const nonce=await readNonce();
-          return storageWriteAbsent(status,found) && nonce===storageWriteAccountNonce(r.nonce)-1
+          return storageWriteAbsent(status,found,r.storageWriteReferenceBlock) && nonce===storageWriteAccountNonce(r.nonce)-1
             && storageWriteAccountNonce(r.nonce)>0;
         };
         try {
