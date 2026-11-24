@@ -397,6 +397,24 @@ describe("Demos write evidence program-name support", () => {
     expect(() => assertDemosWriteEvidence(invalid))
       .toThrow(/only SDK-derived program names are supported/);
   });
+  it.each(["create", "update"] as const)(
+    "explains an alternate native read name for %s evidence",
+    (operation) => {
+      const invalid = structuredClone(evidence);
+      invalid.operation = operation;
+      const signed = JSON.parse(invalid.signedTransaction);
+      if (operation === "update") {
+        signed.content.data[1].operation = "WRITE_STORAGE";
+        delete signed.content.data[1].programName;
+      }
+      invalid.signedTransaction = canonicalize(signed);
+      invalid.signedTransactionHash = demosSignedTransactionProofHash(signed);
+      expect(() => assertDemosWriteEvidence(invalid)).not.toThrow();
+      invalid.nativeRead!.programName = "other-implementation-deliverable";
+      expect(() => assertDemosWriteEvidence(invalid))
+        .toThrow(/only SDK-derived program names are supported/);
+    },
+  );
   it("continues accepting the SDK-derived program name", () => {
     expect(() => assertDemosWriteEvidence(evidence)).not.toThrow();
   });
