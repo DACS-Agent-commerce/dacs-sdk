@@ -9,15 +9,15 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { assertTp1Binding, bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
-import { OperationError } from '../client-errors.mjs';
 import { isTp1AuthorityLabel } from '../dacs/tp1-authority-label.mjs';
 import { assertPurchaseActionsAdmitted } from '../dacs/action-admission.mjs';
 import { isTp1AuthorityToken, registerTp1Token } from '../dacs/tp1-authority-token.mjs';
 import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
 import { claimForAddress } from '../signatures.mjs';
 import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
+import { NODE_WALLET_NETWORK, approvedSourcePolicy, checkConstruction, fail, readExpectedPins, withinAuthorityDeadline } from './approved-record-pins.mjs';
 import { createAuthorityReader } from './authority-reader.mjs';
-import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, DEVNET_NODE2_BLOCK_LAYOUT, TP1_REVIEWED_BLOCK_TWO_HASH } from './devnet-native-transport.mjs';
+import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade } from './devnet-native-transport.mjs';
 import { createEffectBoundary } from './effect-boundary.mjs';
 import { createEffectFence } from './effect-fence.mjs';
 import { createEffectHistory } from './effect-history.mjs';
@@ -33,8 +33,6 @@ import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedW
 // A comparison value inside the descriptor only: `_doPost` checks the URL it is given equals the
 // descriptor's `rpcUrl` and never fetches it, and `bindingRelay` replaces the binding fetches.
 const NODE_WALLET_RELAY_ORIGIN = 'https://node-wallet.invalid';
-const NODE_WALLET_NETWORK = TP1_APPROVED_IDENTITY_RECORD.network;
-const IDENTITY_RECORD_DIGEST = createHash('sha256').update(canonicalize(TP1_APPROVED_IDENTITY_RECORD)).digest('hex');
 const TRANSPORT_AUTHORITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/;
 const PASSIVE_METHODS = ['getPublicAccount', 'getWriteProfile', 'isLocked', 'lock'];
 // The facade members that only read or observe; every other function member is an effect entry (DN-4). `binding` is split by phase.
@@ -74,14 +72,15 @@ const passFence = new AsyncLocalStorage();
 // Each seller composition's signer reservations, over its own journal; never a member of the composition.
 const sellerReservations = new WeakMap();
 
-const fail = (code, cause) => { throw new OperationError(code, code, undefined, cause === undefined ? undefined : { cause }); };
-
 /**
  * Makes the context of a job pass for `effectPass({..., context})`; the seller composition takes no other pass. The host that owns the job
  * gives its class (`'job-create'`, `'payment-evidence'` or `'job-resume'`), optionally the job's operation id, and `currentAuthorization`,
  * a synchronous function that returns `true` while the job's authority is current and throws its cause otherwise. Throws `TypeError` for any other class.
  */
 export { passContext } from './pass-context.mjs';
+
+/** The key-free Agreement relay view and the pure public Agreement profile; see `keyless-agreement-transport.mjs`. */
+export { createKeylessAgreementTransport, keylessAgreementProfile } from './keyless-agreement-transport.mjs';
 
 /** Removes dead holders' lock rows from a client durable journal, given the host's state-ownership proof; see `signer-reservation.mjs`. */
 export { releaseAbandonedJournalLocks } from './signer-reservation.mjs';
@@ -193,15 +192,6 @@ export function createNodeTransportOwner({ endpoint, transportAuthority, fetchIm
       return fetchImpl(input, { ...init, redirect: 'error' });
     },
     close() { closed = true; for (const lease of held) lease.release(); } });
-}
-
-// Runs one authority or node read under the 10 s deadline; a timeout is tp1_authority_timeout with the timer's error as cause.
-async function withinAuthorityDeadline(read, signal) {
-  try { return await observeWithDeadline(read, { timeoutMs: AUTHORITY_READ_DEADLINE_MS, signal }); }
-  catch (error) {
-    if (error instanceof OutboundError && error.kind === 'timeout') throw new OperationError('tp1_authority_timeout', 'the authority read did not answer within the deadline', undefined, { cause: error });
-    throw error;
-  }
 }
 
 /**
@@ -556,15 +546,6 @@ function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate, boun
   };
 }
 
-// The pins come from the admitted binding alone (DN-10), and only for the SDK-held approved record.
-function readExpectedPins(binding, owner) {
-  const { profile, local, recordDigest } = binding;
-  if (recordDigest !== IDENTITY_RECORD_DIGEST || typeof profile?.chainIdentity !== 'string' || typeof profile.pinVersion !== 'string'
-    || typeof local?.endpoint !== 'string' || typeof local.transportAuthority !== 'string') fail('admission_required');
-  if (typeof owner?.fetchImpl !== 'function') fail('invalid_transport_owner');
-  return { network: NODE_WALLET_NETWORK, chainIdentity: profile.chainIdentity, pinVersion: profile.pinVersion, endpoint: local.endpoint, transportAuthority: local.transportAuthority };
-}
-
 function decodeMnemonic(keyBytes) {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(keyBytes); } catch (cause) { return fail('invalid_mnemonic', cause); }
 }
@@ -576,9 +557,6 @@ function createBindingRelay(transport) {
     catch (error) { return Object.assign(new Response(JSON.stringify({ error: error.code ?? 'network_binding_unavailable' }), { status: 409 }), { cause: error }); }
   };
 }
-
-// P52's construction checks (admission shape, untrusted options, Node floor) run before anything is built or imported.
-const checkConstruction = admitPublicFactory(options => ({ options }), { purchase: true });
 
 /**
  * Returns a Promise for `{wallet, walletFactory({anchorJournal}), internalCauseOf(envelope), effectPass(pass), runInEffectPass(handle, work), effectBoundary, transport, withheldReopen, close()}`.
@@ -734,9 +712,7 @@ async function buildNodeComposition(options, seller, requirePass = false) {
     const stamps = createRpcStampSource(clock);
     const reopenGrants = createReopenGrants();
     const transportOptions = { expected, transportOwner: owner, journal, fetchImpl, boundary: effectBoundary, now: () => clock.now(), stamps, reopenGrants: { consume: reopenGrants.consume },
-      fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation },
-      blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE,
-      blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: TP1_REVIEWED_BLOCK_TWO_HASH, authorityBinding: admission.binding };
+      ...approvedSourcePolicy(), authorityBinding: admission.binding };
     transport = seller
       ? createDevnetDemoTransport({ ...transportOptions, settlementPublication: publications?.settlementPublication, deliveryPublication: publications?.deliveryPublication,
         demoArtifactPublication: publications?.demoArtifactPublication,
