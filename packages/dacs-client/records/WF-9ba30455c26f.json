@@ -1,0 +1,49 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF pass an effect boundary to the base's new seller transport callers and expect the host stop refusal for a stop while a request is signed",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+      "before": "b7b291fd28e12276481221240c694fd7403e09f5",
+      "after": "90139d90e94e6a1eedbcda2fc21c0354bfc2e2e9"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/read-only-boundary.mjs",
+      "before": "ed3e87de2e33f3d511b8c87cfd92d4cbb453e712",
+      "after": "0cb11ecf75a322aa6e0305e7ca5866591199a894"
+    },
+    {
+      "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+      "before": "a537a83a557e3a8cee30dccc0f164a2db7ee5607",
+      "after": "adcd517277f4b565b875f600321845e5fca7d5fc"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-session-restart.test.mjs",
+      "before": "49791011a0355a067e25dafbe37ddc6cc0736c1a",
+      "after": "f0ceae932e99f76ef883ff6a952e57b2c7048ae5"
+    },
+    {
+      "path": "packages/dacs-client/test/signature-effect-paths.test.mjs",
+      "before": "b7e4893bd05c1f8a429d2ed3589d19dab0eb4e0d",
+      "after": "dc542c1dc9b2f3f9c1e422f03585acd2b3379c4a"
+    },
+    {
+      "path": "packages/dacs-client/test/tp1-authority.test.mjs",
+      "before": "e26ddb7fad57e45f8e5d28b49535b55b3b9549ef",
+      "after": "c860190a825443308a674bdd81e29e68bd153339"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-9ba30455c26f.json",
+    "packages/dacs-client/test/helpers/public-composition-world.mjs",
+    "packages/dacs-client/test/helpers/read-only-boundary.mjs",
+    "packages/dacs-client/test/readback-review-decisions.test.mjs",
+    "packages/dacs-client/test/seller-session-restart.test.mjs",
+    "packages/dacs-client/test/signature-effect-paths.test.mjs",
+    "packages/dacs-client/test/tp1-authority.test.mjs",
+    "test/kit-client/client-purchase.mjs"
+  ],
+  "note": "The merge brought in seller transport callers written before this side made the effect boundary a required option, so each threw at construction. The review decisions test, the authority test, the public composition world and the client kit, whose sessions never sign, pass the read-only test boundary, which now also refuses a signer; the session restart test, which signs, passes its flow world's own boundary once the flow starts, as it already does for the endpoint proof. The base passes a host stop refusal through the seller client when nothing was written, so a stop that arrives while a request is being signed now reaches the caller as that refusal rather than as an unsent seller call; the signature path test expects that refusal for the stop case, keeps the unsent class for a re-hold and a reconnect, and still checks that no request is written."
+}

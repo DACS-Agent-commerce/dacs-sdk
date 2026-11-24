@@ -554,7 +554,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
     const sessionSigner = sellerTransport.sessionSignerFor(operation);
     assertDelegationNamesKey(p.sessionDelegation, sessionSigner);
-    const authentication = createSellerWireAuthentication({ admission, sessionSigner, delegation: p.sessionDelegation,
+    const authentication = createSellerWireAuthentication({ admission, effectBoundary: sellerTransport.effectBoundary, sessionSigner, delegation: p.sessionDelegation,
       seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
       assertNotStopped: requestRecords.assertNotStopped,
       job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), profile: operation.terms.protocol.wireProfile,

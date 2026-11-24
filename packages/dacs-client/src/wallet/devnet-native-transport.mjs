@@ -129,7 +129,7 @@ const isTestRunLabel = (value) => typeof value === 'string' && /^TEST-RUN-[A-Za-
 // A publication policy as the transport declares it: a frozen copy whose authority is its label. A token counts only for `binding`.
 const declaredPolicy = (policy, binding, isFixtureLabel, requirement) => Object.freeze(clone({ ...policy, authority: authorityLabel(policy.authority, binding, isFixtureLabel, requirement) }));
 // What the transport calls on the effect boundary (the required `boundary` option of the transport constructors).
-const BOUNDARY_METHODS = ['holdFence', 'withOperation', 'signPass', 'dispatchPass'];
+const BOUNDARY_METHODS = ['holdFence', 'withOperation', 'signPass', 'dispatchPass', 'signAuthentication'];
 // The lease's expiry timer fires this long after the lease expires, so a timer that fires early still finds it expired.
 const LEASE_EXPIRY_MARGIN_MS = 1;
 // The fee members of a confirmation's gas operation, each a canonical decimal OS string.
@@ -1161,7 +1161,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           if(!await absent()) return pending;
           const headers=async()=>{
             const identity=`ed25519:${address}`,timestamp=String(stamps.next(identity));
-            return {identity,timestamp,signature:await signRpc(sha(`${identity}:${timestamp}`))};
+            return {identity,timestamp,signature:await boundary.signAuthentication(()=>signRpc(sha(`${identity}:${timestamp}`)))};
           };
           const confirmBody={method:'execute',params:[{extra:'confirmTx',data:clone(tx)}]},auth=await headers();
           signedTransaction(confirmBody,auth);
