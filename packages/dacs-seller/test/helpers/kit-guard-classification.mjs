@@ -10,6 +10,8 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/cli/node-identity.mjs': { effect: {}, pure: ['deriveWalletIdentity', 'generateWalletMnemonic', 'validateMnemonic'] },
   'src/dacs/abandoned-purchase.mjs': { effect: {}, pure: ['createAbandonedPurchaseState'] },
   'src/dacs/accounting-reconciliation.mjs': { effect: {  }, pure: ['createAccountingReconciler'] },
+  // Its signer signs only inside a pass of the guarded effect boundary, with the key's guarded effect role.
+  'src/dacs/agent-effect-signer.mjs': { effect: {}, pure: ['agentEffectOperation', 'createAgentEffectSigner'] },
   'src/dacs/authority-reader.mjs': { effect: {}, pure: ['createSellerAuthorityReader'] },
   'src/dacs/bootstrap-scope.mjs': { effect: {}, pure: ['createBootstrapScopes'] },
   'src/dacs/bounded-call.mjs': { effect: {  }, pure: ['boundedCall', 'isBoundedCallTimeout'] },
@@ -18,6 +20,8 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/closed-bootstrap-gate.mjs': { effect: {  }, pure: ['createClosedBootstrapGate'] },
   'src/dacs/compensation-proof.mjs': { effect: {  }, pure: ['classifyAddress', 'compensationProof', 'createContextEffectEvidence'] },
   'src/dacs/context-work-registry.mjs': { effect: {  }, pure: ['createContextWorkRegistry'] },
+  // Its answer is written only inside a pass of the guarded effect boundary.
+  'src/dacs/cosignature-answer.mjs': { effect: {}, pure: ['createCosignatureAnswer'] },
   'src/dacs/deliverable-wallet-journal.mjs': { effect: { createDeliverableWalletJournal: ['guardedCreate'] }, pure: ['deliverableJournalFor'] },
   'src/dacs/delivery-evidence.mjs': { effect: {  }, pure: ['isNativeDeliveryEvidence'] },
   'src/dacs/dem-delivery-context-consumer.mjs': { effect: {  }, pure: ['createDemDeliveryContext', 'demDeliveryContextConfig', 'demDeliveryContextHost', 'demDeliveryContextUsage', 'demDeliveryContextVetMode', 'isDemDeliveryContextAuthority', 'releaseDemDeliveryContext', 'resolveDemDeliverySellerContext'] },

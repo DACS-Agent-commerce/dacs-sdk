@@ -73,7 +73,7 @@ test('a session saved with the negotiate phase by earlier code still commits wit
   agent.close();
   const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
   const { listingPin } = await import('../src/dacs/purchase-protocol.mjs');
-  const state = await createSellerDurableState({ dir: f.dir, signer: f.config.signer, listingPin: listingPin(f.listing) });
+  const state = await createSellerDurableState({ dir: f.dir, integritySigner: f.config.signer, listingPin: listingPin(f.listing) });
   let earlier;
   try {
     await state.withJob(JOB, (session) => {

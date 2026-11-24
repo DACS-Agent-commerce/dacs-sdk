@@ -13,6 +13,7 @@ import DatabaseSync from 'better-sqlite3';
 import * as core from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
 import { testWallet } from './protocol-fixture.mjs';
+import { integrityRoleOf } from './agent-signing.mjs';
 import { T0 } from './reservation-accounting-fixture.mjs';
 import { sellerApi as seller } from './seller-internal-api.mjs';
 import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
@@ -145,6 +146,8 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     }
     return sellerKey.sign(bytes);
   } };
+  // The host takes the key's roles: the effect signer above and a journal-only integrity role over it.
+  sellerSigner.integritySigner = integrityRoleOf(sellerSigner);
 
   const buyerBundles = new Map(), inputs = new Map(), agreements = new Map();
   // The buyer asks the host's challenge route for the job's challenge and presents it on the context route, which admits the session.
@@ -351,7 +354,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   const inDurableState = async (work) => {
     await host.close();
     hosts.splice(hosts.indexOf(host), 1);
-    const state = await createSellerDurableState({ dir: join(dataDirectory, 'seller'), signer: sellerSigner, listingPin: pin });
+    const state = await createSellerDurableState({ dir: join(dataDirectory, 'seller'), integritySigner: sellerSigner, listingPin: pin });
     try { return await work(state); } finally { state.close(); host = await start(); }
   };
   const transportFile = join('transport', 'transport.sqlite');

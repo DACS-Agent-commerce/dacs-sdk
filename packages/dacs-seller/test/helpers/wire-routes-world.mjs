@@ -127,9 +127,13 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
   t.after(() => mock.restoreAll());
   const clock = () => state.time;
   const connection = () => ({ ...state.connection });
-  const signing = { calls: 0, failures: 0 };
+  // `signing.before`, when set, runs once before the next signature, with its bytes.
+  const signing = { calls: 0, failures: 0, before: null };
   const sellerSigner = { claim: seller.claim, sign: (bytes) => {
     signing.calls++;
+    const before = signing.before;
+    signing.before = null;
+    before?.(bytes);
     if (signing.failures > 0) { signing.failures--; throw new Error('TEST signer failure'); }
     return seller.signBytes(bytes);
   } };
