@@ -580,8 +580,9 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     });
   }
   // Fences a row that is still running with trigger (a), in one transaction with the read. A startup sweep runs before any begin, so a running
-  // row it finds belongs to a process that stopped, direct request or delegated. An `admitted` row is not fenced here: a direct request's
-  // leftover keeps its hold and slot, and a delegated one is ended by trigger (c) once its expiry plus the grace has passed.
+  // row it finds belongs to a process that stopped, direct request or delegated. An `admitted` row is not fenced here: a direct one is ended
+  // by the age rule in fenceExpiredDirect once DIRECT_REQUEST_LIFETIME_MS has passed after admission, and a delegated one is ended by
+  // trigger (c) once its expiry plus the grace has passed.
   function fenceRunningLeftover(jobId) {
     return transaction(() => {
       const row = read(jobId);
