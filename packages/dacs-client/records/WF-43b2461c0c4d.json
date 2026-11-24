@@ -1,0 +1,37 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged files of the delegation-first bootstrap carry-up",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "2b7f47c05f1db7223900c8b7c2130b452b47219a",
+      "after": "2b7f47c05f1db7223900c8b7c2130b452b47219a"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "182949b8fec7efdf62661a399e7f812c570c2fb0",
+      "after": "182949b8fec7efdf62661a399e7f812c570c2fb0"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+      "before": "77b379fcde25b06b7c79c771a1a459efb50310c5",
+      "after": "77b379fcde25b06b7c79c771a1a459efb50310c5"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/kit-bootstrap-world.mjs",
+      "before": "61dd5017b9c4b10c1aefb44d4be399d2101cff2b",
+      "after": "61dd5017b9c4b10c1aefb44d4be399d2101cff2b"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-response-classification.test.mjs",
+      "before": "8986469bbfe11e7770c41190f0dffb6cdb85afe2",
+      "after": "8986469bbfe11e7770c41190f0dffb6cdb85afe2"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-43b2461c0c4d.json"
+  ],
+  "note": "Both sides of the merge recorded these files; this record chooses the merged copy, which holds the delegation-first bootstrap changes together with the failed-bootstrap and party-vet changes."
+}

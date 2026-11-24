@@ -92,7 +92,7 @@ test('a stop that turns on inside the agreement exchange signs nothing, fetches 
       stop.on = true;
       const wallet = createEphemeralWallet(), sellerWallet = createEphemeralWallet();
       const listing = fixtureListing(sellerWallet, { listingId: 'host-stop-exchange', price: '1', now: T0 });
-      const unsigned = buildUnsignedIdentityBundle({ address: wallet.address, presentedAt: T0, sessionSeed: 'host-stop-exchange-buyer' });
+      const unsigned = buildUnsignedIdentityBundle({ address: wallet.address, presentedAt: T0, sessionNonce: 'e'.repeat(64) });
       const buyerBundle = attachIdentityPresentation(unsigned, wallet.signHex(unsigned.message));
       const planned = planAgreement({ jobId: JOB, listing, buyerBundle, generatedAt: T0 });
       return exchangeAgreement({ plan: planned.plan, draft: planned.draft, buyerClaim: wallet.claim, buyerBundle,
