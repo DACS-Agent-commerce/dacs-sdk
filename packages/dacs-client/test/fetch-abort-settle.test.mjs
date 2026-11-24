@@ -33,7 +33,7 @@ test('bounded fetch settles on caller abort when fetchImpl ignores abort', async
   await assert.rejects(settles(request), error => error === reason);
 });
 test('bounded fetch settles on its deadline when fetchImpl ignores abort', async () => {
-  await assert.rejects(settles(bounded(never, { timeoutMs: 1 })), { kind: 'unavailable', message: 'request timed out' });
+  await assert.rejects(settles(bounded(never, { timeoutMs: 1 })), { kind: 'timeout', message: 'request timed out' });
 });
 test('bounded fetch cancels the body of a response that arrives after abort', async () => {
   const controller = new AbortController(), { state, body } = trackedStream();
