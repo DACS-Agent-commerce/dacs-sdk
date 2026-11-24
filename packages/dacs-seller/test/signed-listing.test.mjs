@@ -6,6 +6,7 @@ import { fixtureListing } from './fixtures/listings.mjs';
 import { anchorWriteMessage, fixtureWriteHash, verifyFixtureReceipt, FIXTURE_SUBSTRATE, FIXTURE_FINALITY } from '../src/dacs/fixture-anchors.mjs';
 import { createDevnetDemoListingPublisher } from '../src/devnet-demo/listing.mjs';
 import { requestStop } from '../src/devnet-demo/stop-request.mjs';
+import { testRunCreate } from './helpers/agent-signing.mjs';
 
 const NOW = 1_780_000_000_000, seed = new Uint8Array(32).fill(17), privateKey = privateKeyFromSeed(seed);
 const address = `0x${Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString('hex')}`;
@@ -27,7 +28,7 @@ function publisherWorld({ editReceipt = value => value, read = value => value, s
     async read() { calls.read++; return read(structuredClone(kept)); },
     async verifyReceipt(input) { return verifyFixtureReceipt({ receipt: input.receipt, logicalAddress: input.logicalAddress, hash: contentHash(input.artifact), expectedWriter: wallet.claim }); },
   };
-  const publish = createDevnetDemoListingPublisher({ anchor, sign: (...args) => { calls.sign++; return sign(...args); }, scanOwnListings, loadRailResolution: railAuthority });
+  const publish = createDevnetDemoListingPublisher({ anchor, sign: (...args) => { calls.sign++; return sign(...args); }, scanOwnListings, loadRailResolution: railAuthority, runCreate: testRunCreate().runCreate });
   const { signature, ...draft } = fixtureListing(wallet, { now: NOW });
   return { publish, draft, calls };
 }

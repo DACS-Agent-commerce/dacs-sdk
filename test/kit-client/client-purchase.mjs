@@ -20,7 +20,7 @@ import { withSeller } from '../../packages/dacs-client/test/helpers/seller-stand
 import { bindFixture, createAuthorityFixture } from '../../packages/dacs-client/test/fixtures/tp1-authority-reader.mjs';
 import { createEphemeralWallet } from '../../packages/dacs-client/test/fixtures/wallet.mjs';
 import { NOW, buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
-import { createSellerAgentClient } from '../../packages/dacs-seller/src/dacs/seller-http.mjs';
+import { signedBuyerClient } from '../../packages/dacs-seller/test/helpers/signed-buyer-driver.mjs';
 import { clientAuthFor } from './kit-host.mjs';
 import { FIXTURE_ENDPOINT } from '../../packages/dacs-seller/test/helpers/wire-buyer.mjs';
 import { fetchAsHost } from '../../packages/dacs-seller/test/helpers/listener-host.mjs';
@@ -59,7 +59,7 @@ export async function purchaseWorld(t, { host, listing }) {
   // Every request this client sends to the host, by path; the host's raw answers to the challenge and context requests.
   const sellerRequests = [], challengeAnswers = [], contextAnswers = [];
   const rawAnswer = async (response) => ({ status: response.status, signed: response.headers.has(DACS_SELLER_HTTP_HEADER), text: await response.clone().text() });
-  const sellerClient = createSellerAgentClient({ url: host.url, authentication: clientAuthFor(host),
+  const sellerClient = signedBuyerClient({ url: host.url, authentication: clientAuthFor(host),
     fetchImpl: async (url, init) => {
       sellerRequests.push(new URL(url).pathname);
       const response = await fetchAsHost()(url, init);
