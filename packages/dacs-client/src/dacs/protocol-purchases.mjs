@@ -55,6 +55,7 @@ import { DEM_DELIVERY_CONTEXT_SOURCE, demDeliveryContextConfig, readBackDemDeliv
 import { SELLER_SR2_PUBLIC_PROJECTION } from './seller-sr2-agreement-consumer.mjs';
 import { NATIVE_AGREEMENT_PAYMENT, usesNativeAgreementPayment, nativeAgreementPaymentConfig } from './native-agreement-payment-consumer.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, usesNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
+import { assertRetainedProofUnchanged, readRetainedNativeLaneProof } from './retained-native-lane-proof.mjs';
 import { sourceDemoSellerTransportConfig } from './source-demo-seller-transport.mjs';
 import { verifySellerSessionDelegation, sellerSessionDelegationSigningBytes, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_ROUTES } from '@kynesyslabs/dacs/wire';
 import { SELLER_ANSWER_CLASS } from './seller-response-class.mjs';
@@ -1899,6 +1900,19 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
         save(current, { nativePaymentLaneIssued: true }, { event: 'protocol_native_wallet_guard_issued', data: { createHash: record.hash, createNonce: record.nonce } });
         return record;
       }));
+    },
+    // Passive readback of the lane whose guard was already issued: the retained proof is re-read from the stores and
+    // checked against this source's own pins, before and after the one journal read. No recheck, lock, stop or write.
+    readRetainedNativePaymentLane: async (operation, key) => {
+      if (!nativePayment || !sourceCapability) throw unavailable();
+      const sourcePins = { network: sourceCapability.pins.network, chainIdentity: sourceCapability.pins.chainIdentity, transportBinding: sourceCapability.transportBinding };
+      const read = () => readRetainedNativeLaneProof({ approvalFor: (id) => db.prepare('SELECT * FROM approvals WHERE operation_id = ?').get(id), ops, coordinates,
+        assertBuyerAccess, accountId: operation.accountId, id: operation.id, sourcePins });
+      const before = read();
+      if (canonicalize(before.operation) !== canonicalize(operation)) throw new OperationError('native_payment_lane_unverified', 'the purchase given differs from the stored purchase; nothing was read');
+      const record = await nativePayment.readRetainedLane(before.operation, key);
+      assertRetainedProofUnchanged(read, before);
+      return record;
     },
     checkDelivery: endIfStale(checkDelivery),
     recheck: endIfStale(recheck),

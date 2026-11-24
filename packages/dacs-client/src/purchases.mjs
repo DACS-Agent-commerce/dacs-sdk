@@ -29,9 +29,8 @@
 // claim, DACS-4 evidence, delivery and DACS-5 copies (operation.state.protocol).
 // All approval and payment handoffs, including legacy purchases without
 // terms.protocol, remain held by the package's purchase-action admission.
-import { createHash } from 'node:crypto';
 import { createPortalCapability } from './portal-capability.mjs';
-import { contentHash, canonicalize } from './dacs/listing.mjs';
+import { contentHash } from './dacs/listing.mjs';
 import { walletPurposes } from './seams/wallet-actions-not-wired.mjs';
 import { generateCanonicalJobId, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { OperationError, requestHashOf } from './client-errors.mjs';
@@ -44,6 +43,7 @@ import { normalizeDemosAddress } from './signatures.mjs';
 import { projectDiagnostic, projectDiagnosticOperation, DIAGNOSTIC_LIMITS } from './diagnostic-projection.mjs';
 import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymentHeld, protocolApprovalFields, protocolStageHelp, protocolView, diagnosticProtocolView, planRunningOf, createSellerRequestRecords } from './dacs/protocol-purchases.mjs';
 import { usesNativeAgreementPayment } from './dacs/native-agreement-payment-consumer.mjs';
+import { assertRetainedProofUnchanged, purchaseCommitment, readRetainedNativeLaneProof, sellerCommitmentWitness } from './dacs/retained-native-lane-proof.mjs';
 import { PURCHASE_LIMITS } from './purchase-limits.mjs';
 import { buyerFundingError } from './buyer-funding.mjs';
 import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
@@ -93,8 +93,7 @@ async function raceWithDeadline(read, { timeoutMs, signal } = {}) {
     controller.abort();
   }
 }
-// Domain separator of the purchase commitment (approval-bound, not on chain).
-export const COMMITMENT_DOMAIN = 'dacs-chatgpt-plugin/fixed-price-dem-purchase-commitment/v1';
+export { COMMITMENT_DOMAIN, purchaseCommitment } from './dacs/retained-native-lane-proof.mjs';
 // Recorded with every payment observation so no reader mistakes it for more.
 export const OBSERVATION_LIMITS = Object.freeze({
   observationScope: 'single-rpc',
@@ -172,27 +171,6 @@ export function networkIdentityLabel(domain) {
 
 const sameDomain = (a, b) => Boolean(a && b) && a.network === b.network && a.rail === b.rail && a.mode === b.mode && a.chainIdentity === b.chainIdentity;
 
-// Unique per purchase (operation id), domain-separated, over the terms hash and
-// the fields the transfer must match. Bound in the wallet-signed approval only:
-// the native DEM transfer cannot carry it.
-export function purchaseCommitment(operation) {
-  const t = operation.terms;
-  return createHash('sha256').update(canonicalize({
-    domain: COMMITMENT_DOMAIN,
-    operation: operation.id,
-    termsHash: operation.termsHash,
-    listing: `${t.listing.listingId}@v${t.listing.version}`,
-    listingHash: t.listing.contentHash,
-    payer: t.buyer.wallet,
-    payee: t.seller.payee,
-    amountOs: t.price.amountOs,
-    network: t.network,
-    rail: t.rail,
-    domainMode: t.domain?.mode ?? null,
-    chainIdentity: t.domain?.chainIdentity ?? null,
-  })).digest('hex');
-}
-
 export function approvalBinding(operation) {
   const t = operation.terms;
   return {
@@ -217,7 +195,7 @@ export function approvalBinding(operation) {
 // CORE §11.1.2(3): profile admission is held while the one constant says so;
 // readback chooses its projection on each call. Host diagnostics are not
 // artifact verification or the archival path described in §11.1.2(4).
-// `passiveOnly: true` keeps every reader on the diagnostic projection after the hold lifts.
+// `passiveOnly: true` keeps every reader on the diagnostic projection after the hold lifts; the native lane readback has none.
 // verifyDeal accepts an optional signal to cancel its passive chain reads.
 export function createPublicPurchaseService({ passiveOnly, ...options }) {
   return createPurchaseService(options, () => passiveOnly === true || !purchaseActionsAdmitted());
@@ -654,8 +632,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return challenges.issue({ purpose: PURPOSES.APPROVE_PURCHASE, address, accountId: operation.accountId, binding: approvalBinding(operation) });
   }
 
+  const protocolUnavailable = () => new OperationError('dacs_protocol_unavailable', 'DACS protocol purchases are not configured on this server; nothing was signed or sent');
   async function protocolGate(operation, stage) {
-    if (!protocol?.available) throw new OperationError('dacs_protocol_unavailable', 'DACS protocol purchases are not configured on this server; nothing was signed or sent');
+    if (!protocol?.available) throw protocolUnavailable();
     try {
       await protocol.recheckCommitment(operation, { reuseVerified: stage === 'pre-approval' });
     } catch (error) {
@@ -800,7 +779,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       if (consumed) throw new OperationError('nonce_readback_unavailable', 'a verified payment consumed this nonce while handoff was being prepared; retry the handoff to read the current nonce', { operationId: consumed.operationId });
       const saved = coordinates.save({ operationId: operation.id, kind: 'dem-transfer', network: t.network, from: t.buyer.wallet, nonceFence, expectedNonce, target: t.seller.payee, amountOs: t.price.amountOs, payload });
       issued = true;
-      ops.transition(operation.id, 'approved', 'payment_handoff', { data: { nonceFence, expectedNonce, payloadHash: saved.payloadHash, recheck: recheck.evidence.chainMode, commitment: purchaseCommitment(operation) } });
+      // A native handoff also binds the seller commitment it was verified against, as saved, for later readback.
+      const witness = usesNativeAgreementPayment(operation) ? { sellerCommitmentWitness: sellerCommitmentWitness(ops.get(operation.accountId, operation.id).state.protocol.commitment) } : {};
+      ops.transition(operation.id, 'approved', 'payment_handoff', { data: { nonceFence, expectedNonce, payloadHash: saved.payloadHash, recheck: recheck.evidence.chainMode, commitment: purchaseCommitment(operation), ...witness } });
       return saved;
     });
     return { operation: ops.get(operation.accountId, operation.id), payload: usesNativeAgreementPayment(operation) && !issued ? null : coords.payload, expectedNonce };
@@ -814,6 +795,23 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       || !approval || approval.terms_hash !== operation.termsHash || approval.signer_address !== operation.terms.buyer.wallet) throw new OperationError('native_payment_lane_held', 'a normal approved, one-time native handoff is required; CREATE authority is not payment authority');
     await assertBoundDomain(operation); await protocolGate(operation, 'wallet-native-lane-read');
     return { record: await protocol.readNativePaymentLane(operation, key) };
+  }
+  // Passive readback of a native purchase's wallet lane after its one-time guard was issued, also while held or stopped:
+  // the handoff token, the retained proof, the configured chain against the declared binding and the live chain identity
+  // are checked before the one journal read, and every row and event is read again after it. Nothing is rechecked or saved.
+  async function nativePaymentLaneRead({ operationId, token, key }) {
+    const found = authorizedPortalPurchase(operationId, token);
+    if (!protocol?.available) throw protocolUnavailable();
+    const read = () => readRetainedNativeLaneProof({ approvalFor: (id) => approvalFor.get(id), ops, coordinates, assertBuyerAccess: protocol.assertBuyerAccess,
+      accountId: found.accountId, id: found.id });
+    const before = read(), t = before.operation.terms, binding = t.protocol.transportBinding;
+    if (t.network !== chain.network || t.domain.chainIdentity !== chain.pinnedIdentity || binding.network !== chain.network || binding.chainIdentity !== chain.pinnedIdentity) {
+      throw new OperationError('native_payment_lane_unverified', 'the purchase\'s declared transport binding is not the configured chain; nothing was read');
+    }
+    await assertBoundDomain(before.operation);
+    const record = await protocol.readRetainedNativePaymentLane(before.operation, key);
+    assertRetainedProofUnchanged(read, before);
+    return { record };
   }
   async function reportWalletResult({ operationId, token, txHash, walletError, walletErrorCode }) {
     if (diagnostic()) assertPurchaseActionsAdmitted();
@@ -1757,7 +1755,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   const service = {
-    prepare, status, issueApprovalChallenge, approve, prepareHandoff, nativePaymentLane, reportWalletResult, verifyDeal, cancel, portalOperation, portalEvidence,
+    prepare, status, issueApprovalChallenge, approve, prepareHandoff, nativePaymentLane, nativePaymentLaneRead, reportWalletResult, verifyDeal, cancel, portalOperation, portalEvidence,
     agreementIdentity, agreementDelegation, sessionRenewal, sessionRenewalAccept, agreementPlan, planRunning, agreementSubmit, completionRequest, completionCountersign, protocolRecheck,
   };
   stopRefusalRecorders.set(service, suspendOnStopRefusal);

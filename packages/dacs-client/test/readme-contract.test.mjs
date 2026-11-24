@@ -18,7 +18,7 @@ const NOW = Date.UTC(2030, 0, 1), HASH = 'a'.repeat(64), IDENTITY = 'f'.repeat(6
 const PAYER = '0x' + 'b'.repeat(64), PAYEE = '0x' + 'c'.repeat(64);
 const diagnostics = ['status', 'portalOperation', 'portalEvidence', 'verifyDeal'];
 const readers = ['network', 'pinnedIdentity', 'networkIdentity', 'observePassiveTransfer'];
-const passive = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'assertSellerReceiptReservation'];
+const passive = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'assertSellerReceiptReservation', 'readRetainedNativePaymentLane'];
 const codes = ['purchase_store_persistent_attachment', 'purchase_store_unsupported_attachment',
   'purchase_store_unsupported_journal_mode', 'purchase_store_unsupported_synchronous',
   'purchase_store_unsupported_temp_journal_mode'];
@@ -239,6 +239,8 @@ probe('README protocol pass-through behavior and every held method', passive.con
   assert.equal(await protocol.readIssuedPayment({}, HASH), null);
   assert.equal(await protocol.observeReportedPayment(HASH), null);
   assert.throws(() => protocol.assertSellerReceiptReservation({ terms: {}, state: { protocol: {} } }), { code: 'seller_receipt_reservation_insufficient' });
+  // Held, the lane readback still runs; with no native payment capability it is unavailable.
+  await assert.rejects(protocol.readRetainedNativePaymentLane({ id: 'TEST-operation' }, 'TEST-lane'), { code: 'dacs_protocol_unavailable' });
   for (const [name, method] of Object.entries(protocol)) {
     if (typeof method === 'function' && !passive.includes(name)) {
       await assert.rejects(method({ id: 'TEST-operation' }, 'TEST-hold'), { code: 'profile_not_admitted' }, name);
@@ -362,7 +364,8 @@ probe('README required schema table exactly matches the exported schema', [], t 
   for (const [, name] of expected) covered.add(name);
 });
 test('README public contract has no private or coverage claims and closes every inline identifier', () => {
-  assert.doesNotMatch(contract, /retained|SIGKILL|\bCI\b|test.coverage|tests cover|tests also|fixture records/i);
+  // The word, not a method name that contains it (readRetainedNativePaymentLane).
+  assert.doesNotMatch(contract, /\bretained\b|SIGKILL|\bCI\b|test.coverage|tests cover|tests also|fixture records/i);
   assert.equal(section('Validation').trim(), 'Run `npm test --workspace @kynesyslabs/dacs-client` after building the SDK.');
   for (const [, id] of contract.matchAll(/(?<!`)`([^`\n]+)`(?!`)/g)) {
     assert.ok(Object.hasOwn(client, id) || covered.has(id) || id === 'npm test --workspace @kynesyslabs/dacs-client', id);
