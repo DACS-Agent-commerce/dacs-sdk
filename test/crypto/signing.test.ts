@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   autoAcceptInstanceBytes,
   COMPOSITE_DOMAIN_SEPARATORS,
+  DacsError,
   dacsXSeparator,
   ed25519Sign,
   ed25519Verify,
@@ -12,6 +13,7 @@ import {
   publicKeyFromRaw,
   publicKeyFromSeed,
   rawPublicKey,
+  sessionBindingBytes,
   signArtifact,
   signAutoAcceptInstance,
   signSessionBinding,
@@ -19,6 +21,7 @@ import {
   verifyArtifact,
   verifyAutoAcceptInstance,
   verifySessionBinding,
+  type DomainSeparator,
 } from "../../src/index.js";
 
 // §B.7 signing vectors (DACS-Standard), anchored to the golden vector.
@@ -270,5 +273,72 @@ describe("signing (§B.7)", () => {
     const x = dacsXSeparator("my-custom-kind");
     expect(x.startsWith("dacs-x-")).toBe(true);
     expect(isRegisteredSeparator(x)).toBe(false);
+  });
+});
+
+describe("signing and key errors", () => {
+  const goodHex = "a".repeat(64);
+
+  it.each([
+    [
+      "an unregistered separator",
+      () => signArtifact("dacs-nope:v1:" as DomainSeparator, GOLDEN.doc, seed),
+      "signature.separator_unregistered",
+      "unregistered domain separator: dacs-nope:v1:",
+    ],
+    [
+      "a composite separator",
+      () => signArtifact("dacs-session-binding:v1:", GOLDEN.doc, seed),
+      "signature.separator_composite",
+      "composite-payload separator dacs-session-binding:v1: cannot be signed as a single " +
+        "hash — use its recipe-specific helper (§B.7)",
+    ],
+    [
+      "a short session key",
+      () => sessionBindingBytes("tooshort", goodHex),
+      "signature.framed_hex_invalid",
+      "session_key must be a 64-character lowercase hex string (composite framing, §B.7)",
+    ],
+    [
+      "an upper-case agreement hash",
+      () => autoAcceptInstanceBytes(goodHex, "A".repeat(64)),
+      "signature.framed_hex_invalid",
+      "autoAcceptCommitmentHash must be a 64-character lowercase hex string (composite framing, §B.7)",
+    ],
+    [
+      "a short seed",
+      () => privateKeyFromSeed(new Uint8Array(31)),
+      "key.seed_length_invalid",
+      "ed25519 seed must be 32 bytes, got 31",
+    ],
+    [
+      "a short seed for a public key",
+      () => publicKeyFromSeed(new Uint8Array(31)),
+      "key.seed_length_invalid",
+      "ed25519 seed must be 32 bytes, got 31",
+    ],
+    [
+      "a short raw public key",
+      () => publicKeyFromRaw(new Uint8Array(31)),
+      "key.public_key_length_invalid",
+      "ed25519 public key must be 32 bytes, got 31",
+    ],
+    [
+      "a short raw public key given to verifyArtifact",
+      () =>
+        verifyArtifact("dacs-listing:v1:", GOLDEN.doc, new Uint8Array(64), new Uint8Array(31)),
+      "key.public_key_length_invalid",
+      "ed25519 public key must be 32 bytes, got 31",
+    ],
+  ])("%s carries its catalog code", (_name, call, code, message) => {
+    let thrown: unknown;
+    try {
+      call();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(DacsError);
+    expect(thrown).toMatchObject({ code, category: "permanent", message });
+    expect(Object.keys(thrown as object).sort()).toEqual(["category", "code", "name"]);
   });
 });

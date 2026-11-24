@@ -223,7 +223,9 @@ function snapshotReadArtifact<T extends object>(artifact: T): T {
     typeof snapshot !== "object" ||
     Array.isArray(snapshot)
   ) {
-    throw new DacsError("component signature artifact must be a JSON object");
+    throw new DacsError("component signature artifact must be a JSON object", {
+      code: "canonical.container_not_plain",
+    });
   }
   return snapshot as T;
 }
@@ -236,6 +238,7 @@ function assertUnsignedComponentArtifact(artifact: object): void {
   ) {
     throw new DacsError(
       "component-signature signing requires an unsigned artifact with no signature field",
+      { code: "signature.artifact_already_signed" },
     );
   }
 }
@@ -245,6 +248,7 @@ function encodedSignatureValue(value: unknown): string {
     if (!isCanonicalBase64Url(value)) {
       throw new DacsError(
         "component signer must return a canonical unpadded base64url signature value",
+        { code: "signature.signer_output_invalid" },
       );
     }
     return value;
@@ -257,6 +261,7 @@ function encodedSignatureValue(value: unknown): string {
   ) {
     throw new DacsError(
       "component signer must return signature bytes or a canonical unpadded base64url string",
+      { code: "signature.signer_output_invalid" },
     );
   }
   let encoded: string;
@@ -268,11 +273,13 @@ function encodedSignatureValue(value: unknown): string {
   } catch (cause) {
     throw new DacsError("component signer returned unreadable signature bytes", {
       cause,
+      code: "signature.signer_output_invalid",
     });
   }
   if (!isCanonicalBase64Url(encoded)) {
     throw new DacsError(
       "component signer must return a canonical unpadded base64url signature value",
+      { code: "signature.signer_output_invalid" },
     );
   }
   return encoded;
@@ -296,15 +303,20 @@ function captureComponentSignatureOptions(
   const signer = options.signer;
   const signCandidate = options.sign;
   if (!ALGORITHM_SET.has(algorithm)) {
-    throw new DacsError(`unsupported signature algorithm: ${algorithm}`);
+    throw new DacsError(`unsupported signature algorithm: ${algorithm}`, {
+      code: "signature.algorithm_unsupported",
+    });
   }
   if (!isNonEmptyString(signer) || !isSafeJsonString(signer)) {
     throw new DacsError(
       "component signature signer must be a non-empty valid JSON string",
+      { code: "signature.signer_claim_invalid" },
     );
   }
   if (typeof signCandidate !== "function") {
-    throw new DacsError("component signature signer callback must be a function");
+    throw new DacsError("component signature signer callback must be a function", {
+      code: "signature.signer_callback_invalid",
+    });
   }
 
   return {
@@ -324,7 +336,9 @@ async function buildComponentSignatureFromSnapshot(
 ): Promise<ComponentSignature> {
   assertUnsignedComponentArtifact(artifact);
   if (!isRegisteredSeparator(separator)) {
-    throw new DacsError(`unregistered domain separator: ${separator}`);
+    throw new DacsError(`unregistered domain separator: ${separator}`, {
+      code: "signature.separator_unregistered",
+    });
   }
   if (isCompositeSeparator(separator)) {
     // A ComponentSignature is a single-hash envelope; a composite-payload
@@ -332,6 +346,7 @@ async function buildComponentSignatureFromSnapshot(
     throw new DacsError(
       `composite-payload separator ${separator} is not a single-hash ` +
         `ComponentSignature recipe (§B.7)`,
+      { code: "signature.separator_composite" },
     );
   }
 
@@ -358,7 +373,9 @@ async function buildComponentSignatureFromSnapshot(
     callbackContext.signer !== signer ||
     Object.keys(callbackContext).length !== 2
   ) {
-    throw new DacsError("component signer must not mutate its signing inputs");
+    throw new DacsError("component signer must not mutate its signing inputs", {
+      code: "signature.signer_inputs_mutated",
+    });
   }
 
   return { ...context, value: encodedSignatureValue(rawValue) };
@@ -370,6 +387,14 @@ async function buildComponentSignatureFromSnapshot(
  * an existing signature while producing a new envelope. This foundation
  * accepts only the closed v0.x separator registry; SIG-4 `dacs-x-*` extension
  * signing remains on the lower-level signing surface until it has a typed API.
+ *
+ * Failures throw a `DacsError`. These carry a catalog code:
+ * `signature.algorithm_unsupported`, `signature.signer_claim_invalid`,
+ * `signature.signer_callback_invalid`, `signature.artifact_already_signed`,
+ * `signature.separator_unregistered`, `signature.separator_composite`,
+ * `signature.signer_inputs_mutated` and `signature.signer_output_invalid`.
+ * The two errors raised while the artifact is copied, "… is not stable
+ * canonical JSON" and "… must be a JSON object in canonical form", carry no code.
  */
 export async function buildComponentSignature(
   artifact: object,
@@ -385,7 +410,10 @@ export async function buildComponentSignature(
   );
 }
 
-/** Build and attach a ComponentSignature without mutating the input artifact. */
+/**
+ * Build and attach a ComponentSignature without mutating the input artifact.
+ * Failures throw as {@link buildComponentSignature} does, with the same codes.
+ */
 export async function signComponentArtifact<T extends object>(
   artifact: T,
   separator: DomainSeparator,
