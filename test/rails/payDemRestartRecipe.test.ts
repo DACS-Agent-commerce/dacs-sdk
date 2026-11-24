@@ -148,22 +148,33 @@ interface FirstProcess {
   loseOutcome?: boolean;
   /** Build the rail without a journal hook. */
   unjournaled?: boolean;
+  /** How long the rail watches for inclusion before it gives up. */
+  inclusionTimeoutMs?: number;
 }
 
 /**
  * The operator's reconcile function: bind the hash the recipe supplies to the
- * journal's record, then ask the node for that record. It returns the executed
- * result only for a confirmed record, and `null` for anything it cannot prove,
- * including a call that carries no hash.
+ * journal's record, then read the node's record for that hash. It throws if the
+ * record's nonce is not the journaled one, and otherwise reports the payer,
+ * payee and amount the record itself carries, so the bridge compares them with
+ * the request. It returns `null` for anything else it cannot prove, including a
+ * call that carries no hash.
  */
 const reconcileFromJournalAndNode = async (context: Readonly<PayDemSettlementRecoveryContext>) => {
   const prepared = journal.find((entry) =>
     entry.recovery?.settlementKey === context.settlementKey && entry.txHash === context.txHash);
   if (prepared === undefined) return null;
-  if (node.get(prepared.txHash)?.status !== "confirmed") return null;
+  const record = node.get(prepared.txHash);
+  if (record?.status !== "confirmed") return null;
+  const content = record.transaction.content as {
+    nonce: number; from: string; to: string; amount: string;
+  };
+  if (content.nonce !== prepared.nonce) {
+    throw new Error(`node record carries nonce ${content.nonce}, the journal signed nonce ${prepared.nonce}`);
+  }
   return {
-    ok: true as const, txHash: prepared.txHash, payer: prepared.payer, payee: prepared.payee,
-    chainId: "demos", amountOs: prepared.amountOs, blockNumber: INCLUSION_BLOCK, txRefKind: "demos",
+    ok: true as const, txHash: prepared.txHash, payer: content.from, payee: content.to,
+    chainId: "demos", amountOs: content.amount, blockNumber: INCLUSION_BLOCK, txRefKind: "demos",
     finality: { model: "bft-final" as const }, execution: "executed" as const,
   };
 };
@@ -172,6 +183,7 @@ async function buildBridge(now: number, options: FirstProcess = {}) {
   const rail = await createPayDemRail({
     rpc: `https://restart-recipe-${rpcCounter}.test`,
     secret: "test-secret",
+    ...(options.inclusionTimeoutMs === undefined ? {} : { inclusionTimeoutMs: options.inclusionTimeoutMs }),
     ...(options.unjournaled === true ? {} : {
       journalPreparedTransfer: async (prepared: Readonly<PayDemPreparedTransfer>) => {
         journal.push(prepared);
@@ -261,17 +273,20 @@ describe("recovering a pay-dem purchase after a restart", () => {
 
   it("refuses while the transfer is pending at the node, then completes it with one payment once included", async () => {
     const request = requestFor("restart-pending");
-    await crashFirstProcess(request, {
-      afterJournal: (prepared) => {
-        // The node received the transfer; the process died before observing it.
-        node.set(prepared.txHash, { status: "pending", transaction: {
-          hash: prepared.txHash,
-          content: { nonce: prepared.nonce, type: "native", from: PAYER, to: PAYEE, amount: prepared.amountOs,
-            data: ["native", { nativeOperation: "send", args: [PAYEE, prepared.amountOs] }] },
-        } });
-        throw new Error("process died before observing the transfer");
-      },
+    // The node accepts the broadcast and holds the transfer pending, so the first
+    // process never sees it included and stops watching.
+    demosSdk.broadcast.mockImplementationOnce(async (validity: {
+      response: { data: { transaction: { hash: string; content: Record<string, unknown> } } };
+    }) => {
+      broadcastCalls += 1;
+      const { transaction } = validity.response.data;
+      node.set(transaction.hash, { status: "pending", transaction });
+      return { response: { hash: transaction.hash } };
     });
+    const first = await (await buildBridge(CRASH_AT, { inclusionTimeoutMs: 50 }))(request);
+    expect(first.ok).toBe(false);
+    expect(broadcastCalls).toBe(1);
+    expect(node.get(journal[0]?.txHash ?? "")?.status).toBe("pending");
 
     await expect(recoverAfterRestart(request, 1)).rejects.toThrow(/proof of absence/);
     expect(executedTransfers()).toBe(0);
@@ -283,7 +298,31 @@ describe("recovering a pay-dem purchase after a restart", () => {
     });
     expect(executedTransfers()).toBe(1);
     expect(signed).toBe(1);
-    expect(broadcastCalls).toBe(0);
+    expect(broadcastCalls).toBe(1);
+  });
+
+  it("refuses a confirmed record that names another payee, and never signs or sends again", async () => {
+    const request = requestFor("restart-other-payee");
+    await crashFirstProcess(request, { loseOutcome: true });
+    const record = node.get(journal[0]?.txHash ?? "");
+    const content = record?.transaction.content as { to: string };
+    content.to = `0x${"ee".repeat(32)}`;
+
+    await expect(recoverAfterRestart(request, 1)).rejects.toThrow(/payee/);
+    expect(signed).toBe(1);
+    expect(broadcastCalls).toBe(1);
+  });
+
+  it("refuses a confirmed record that carries another nonce, and never signs or sends again", async () => {
+    const request = requestFor("restart-other-nonce");
+    await crashFirstProcess(request, { loseOutcome: true });
+    const record = node.get(journal[0]?.txHash ?? "");
+    const content = record?.transaction.content as { nonce: number };
+    content.nonce += 1;
+
+    await expect(recoverAfterRestart(request, 1)).rejects.toThrow(/nonce/);
+    expect(signed).toBe(1);
+    expect(broadcastCalls).toBe(1);
   });
 
   it("never finishes a purchase whose nonce was used by another transaction, and a new job id pays once", async () => {
