@@ -415,7 +415,9 @@ function maxAgeMilliseconds(seconds: unknown, label: string): number {
     seconds < 0 ||
     !Number.isSafeInteger(seconds * 1_000)
   ) {
-    throw new DacsError(`${label} must be a non-negative safe integer`);
+    throw new DacsError(`${label} must be a non-negative safe integer`, {
+      code: "identity.cci_freshness_policy_invalid",
+    });
   }
   return seconds * 1_000;
 }
@@ -438,6 +440,12 @@ function freshnessOmission(
  * The input must carry runtime authentication provenance. Signals remain
  * supplementary: callers pass `projection.signals` to Vet, whose aggregation
  * algorithm never uses them to elevate or downgrade `overallDecision`.
+ *
+ * Throws `DacsError` with `identity.cci_record_unauthenticated` when the record
+ * was not authenticated at runtime, with `identity.cci_freshness_policy_invalid`
+ * when the policy is malformed or has an invalid time or maximum age, and with
+ * `identity.cci_evaluation_predates_resolution` when `evaluatedAt` is earlier
+ * than the authenticated read.
  */
 export function projectCciSupplementarySignals(
   record: AuthenticatedCciRecord,
@@ -446,7 +454,9 @@ export function projectCciSupplementarySignals(
   const authenticated = authenticatedCciRecords.get(record);
   const provenance = authenticated?.provenance;
   if (!authenticated || !provenance) {
-    throw new DacsError("CCI supplementary signals require an authenticated GCR record");
+    throw new DacsError("CCI supplementary signals require an authenticated GCR record", {
+      code: "identity.cci_record_unauthenticated",
+    });
   }
   let capturedPolicy: CciSupplementaryFreshnessPolicy;
   try {
@@ -455,7 +465,9 @@ export function projectCciSupplementarySignals(
       "CCI supplementary freshness policy",
     );
   } catch {
-    throw new DacsError("CCI supplementary freshness policy is malformed");
+    throw new DacsError("CCI supplementary freshness policy is malformed", {
+      code: "identity.cci_freshness_policy_invalid",
+    });
   }
   if (
     Reflect.ownKeys(capturedPolicy).length !== 2 ||
@@ -469,13 +481,19 @@ export function projectCciSupplementarySignals(
     !Object.prototype.hasOwnProperty.call(capturedPolicy.maxAgeSec, "humanPassport") ||
     !Object.prototype.hasOwnProperty.call(capturedPolicy.maxAgeSec, "ethos")
   ) {
-    throw new DacsError("CCI supplementary freshness policy is malformed");
+    throw new DacsError("CCI supplementary freshness policy is malformed", {
+      code: "identity.cci_freshness_policy_invalid",
+    });
   }
   if (!isSafeTime(capturedPolicy.evaluatedAt)) {
-    throw new DacsError("CCI signal evaluatedAt must be a non-negative safe integer");
+    throw new DacsError("CCI signal evaluatedAt must be a non-negative safe integer", {
+      code: "identity.cci_freshness_policy_invalid",
+    });
   }
   if (provenance.observedAt > capturedPolicy.evaluatedAt) {
-    throw new DacsError("CCI signal evaluation predates the authenticated GCR read");
+    throw new DacsError("CCI signal evaluation predates the authenticated GCR read", {
+      code: "identity.cci_evaluation_predates_resolution",
+    });
   }
 
   const maxAge = {
@@ -647,7 +665,9 @@ function captureTlsnContext(value: unknown): CciTlsnSessionContext {
       retained.sessionNonce.normalize("NFC") !== retained.sessionNonce ||
       /[\u0000-\u001f\u007f]/.test(retained.sessionNonce) ||
       !isSafeTime(retained.evaluatedAt)) {
-    throw new DacsError("CCI TLSN session context is malformed");
+    throw new DacsError("CCI TLSN session context is malformed", {
+      code: "identity.cci_tlsn_request_invalid",
+    });
   }
   requireCanonicalJobId(retained.jobId, "CCI TLSN jobId");
   maxAgeMilliseconds(retained.maxResolutionAgeSec, "CCI resolution maxAgeSec");
@@ -657,11 +677,17 @@ function captureTlsnContext(value: unknown): CciTlsnSessionContext {
 }
 
 function captureTlsnDeps(value: unknown): Required<ClassifyCciTlsnDeps> {
-  if (!isPlainRecord(value)) throw new DacsError("CCI TLSN verifiers are malformed");
+  if (!isPlainRecord(value)) {
+    throw new DacsError("CCI TLSN verifiers are malformed", {
+      code: "identity.cci_tlsn_request_invalid",
+    });
+  }
   const keys = Reflect.ownKeys(value);
   if (keys.length !== 2 || !keys.includes("verifyIdentityPresentation") ||
       !keys.includes("verifyNativeTlsn")) {
-    throw new DacsError("CCI TLSN verifiers are malformed");
+    throw new DacsError("CCI TLSN verifiers are malformed", {
+      code: "identity.cci_tlsn_request_invalid",
+    });
   }
   return Object.freeze({
     verifyIdentityPresentation: ownDataFunction<

@@ -106,13 +106,15 @@ function world(view: View, variant: Variant, gate: Gate, o: Opts = {}) {
   };
   const reader = createDemosChainReader({ rpcUrl: 'https://rpc.invalid', network: 'test', fetchImpl: rpc });
   const chainApi: any = { ...reader, network: 'testnet', pinnedIdentity: CHAIN, rpcOrigin: 'https://rpc.invalid', evidenceMode: 'TEST-stub',
-    networkIdentity: async () => ({ identity: CHAIN, mode: 'public-chain-read' }) };
+    networkIdentity: async () => ({ identity: CHAIN, mode: 'public-chain-read' }), getTransactionFees: async () => 1n };
   if (o.noSeam) delete chainApi.findTransferAtNonce;
   const verifier = { verify: async () => ({ transactable: true, contentHash: CHAIN, price: { amountOs: AMOUNT }, payee: PAYEE, checks: [], evidence: { chainMode: 'public-chain-read' } }) };
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8) });
   const coordinates = createCoordinateStore({ db });
   const protocol = o.sellerRecheck ? { available: true, assertBuyerAccess() {}, recheckCommitment: async () => {}, recheck: o.sellerRecheck } : null;
-  const purchases = createPurchaseService({ db, ops, coordinates, config: { demAmountEncoding: 'os-string', nonceSlotProof: gate }, chain: chainApi, verifier, protocol, store, purposes });
+  // The per-write fee ceiling the cancel release is checked against.
+  const purchases = createPurchaseService({ db, ops, coordinates, config: { demAmountEncoding: 'os-string', nonceSlotProof: gate }, chain: chainApi, verifier, protocol, store, purposes,
+    feeCeilingOs: '50000000000' });
   db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('TEST-buyer', 'TEST', 'TEST-buyer', new Date().toISOString());
   const terms = { buyer: { wallet: WALLET }, seller: { payee: PAYEE, claim: 'TEST-seller' }, price: { amountOs: AMOUNT, amount: '2.5' },
     listing: { listingId: 'TEST-listing', version: 1, contentHash: CHAIN }, network: 'testnet', rail: 'demos-native:DEM',

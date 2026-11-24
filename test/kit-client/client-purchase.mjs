@@ -7,7 +7,7 @@ import { contentHash } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_PATHS, TESTNET_PROFILE_TP1 } from '@kynesyslabs/dacs/wire';
 import { OFFLINE_AGREEMENT_MODE } from '../../packages/dacs-client/src/dacs/protocol-purchases.mjs';
 import { createCoordinateStore, createNativePaymentEvidenceConsumer, createProtocolPurchases, createPurchaseService, createSourceDemoSellerTransport,
-  createSqlitePurchaseStore } from '../../packages/dacs-client/src/index.mjs';
+  createSqlitePurchaseStore, PAID_WRITE_FEE_CEILING_OS } from '../../packages/dacs-client/src/index.mjs';
 import { createDevnetNativeCommitmentCapability } from '../../packages/dacs-client/src/devnet-demo/commitment-consumer.mjs';
 import { createDevnetSettlementTransport, DEVNET_SETTLEMENT_POLICY } from '../../packages/dacs-client/src/wallet/devnet-native-transport.mjs';
 import { openDatabase } from '../../packages/dacs-client/test/helpers/purchase-integrity-database.mjs';
@@ -93,14 +93,16 @@ export async function purchaseWorld(t, { host, listing }) {
     settlementPublication: { policy: DEVNET_SETTLEMENT_POLICY, artifactKind: 'SettlementEvidence', phase: 'pay-dem', railId: 'demos-native:DEM', phaseIndex: 2, authority: COMMITMENT_AUTHORITY },
     expected: { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: native.source.pins.endpoint, transportAuthority: 'TEST-owner' },
     transportOwner: { getContext: unused('evidence context'), acquireConnectionFence: unused('evidence fence') } });
-  const protocol = withSeller(reachHost, () => createProtocolPurchases({ db, ops, coordinates, store, admission, now, buyerAccess: { assertWallet() {} },
+  // The testnet host's per-write fee ceiling, passed explicitly to both factories.
+  const feeCeilingOs = PAID_WRITE_FEE_CEILING_OS;
+  const protocol = withSeller(reachHost, () => createProtocolPurchases({ db, ops, coordinates, store, admission, chain, feeCeilingOs, now, buyerAccess: { assertWallet() {} },
     receiptFeeCeilings: RECEIPT_FEE_CEILINGS, buyerMandateCapOs: MANDATE_CAP_OS,
     dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
       nativeSellerCommitment: commitment, nativeAgreementPayment: native.source, sellerTransport,
       nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: native.source.pins.endpoint, sourceCapability: evidenceSource }),
       agreementContext, sellerEndpoint: () => FIXTURE_ENDPOINT } }));
   const service = createPurchaseService({ db, ops, coordinates, store, accounts: { listWallets: () => [{ address: buyer.address }] }, verifier, chain, protocol,
-    challenges: {}, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+    challenges: {}, config: { demAmountEncoding: 'os-string', publicOrigin: 'https://portal.example.invalid' }, now, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, feeCeilingOs, admission });
   const prepare = () => service.prepare({ accountId: ACCOUNT_ID, listingId: listing.listingId, version: listing.listingVersion, seller: seller.claim,
     idempotencyKey: IDEMPOTENCY_KEY, walletAddress: buyer.address, protocol: OFFLINE_AGREEMENT_MODE });
   return { service, ops, prepare, sellerRequests, challengeAnswers, contextAnswers, contextFailures, native, chain };

@@ -274,8 +274,9 @@ test('admitted: each public factory built with a live currentLocal object that c
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => 1 });
   const coordinates = client.createCoordinateStore({ db });
   const store = client.createSqlitePurchaseStore();
-  const protocol = client.createProtocolPurchases({ db, ops, coordinates, store, admission });
-  const service = client.createPurchaseService({ db, ops, coordinates, chain: {}, config: {}, store, protocol, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+  const feeCeiling = { feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } };
+  const protocol = client.createProtocolPurchases({ db, ops, coordinates, store, admission, ...feeCeiling });
+  const service = client.createPurchaseService({ db, ops, coordinates, ...feeCeiling, config: {}, store, protocol, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
   const verifier = client.createListingVerifier({ directory: {}, chain: {}, admission });
   authority.state.gate = async () => { current.connectionId = 'vector-conn-2'; };
   for (const [name, member] of [['protocol.holdChainReadback', protocol.holdChainReadback], ['service.prepare', service.prepare], ['verifier.verify', verifier.verify]]) {
@@ -341,8 +342,9 @@ async function realFactories(t, { stopped, protocolStopped = stopped, withProtoc
   const ops = createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => 1 });
   const coordinates = client.createCoordinateStore({ db });
   const store = client.createSqlitePurchaseStore();
-  const protocol = client.createProtocolPurchases({ db, ops, coordinates, store, admission, ...(protocolStopped ? { stopped: protocolStopped } : {}) });
-  const build = () => client.createPurchaseService({ db, ops, coordinates, chain: {}, config: {}, store, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission,
+  const feeCeiling = { feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } };
+  const protocol = client.createProtocolPurchases({ db, ops, coordinates, store, admission, ...feeCeiling, ...(protocolStopped ? { stopped: protocolStopped } : {}) });
+  const build = () => client.createPurchaseService({ db, ops, coordinates, ...feeCeiling, config: {}, store, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission,
     ...(withProtocol ? { protocol } : {}), ...(stopped ? { stopped } : {}) });
   return { authority, admission, db, ops, coordinates, store, protocol, build, service: withProtocol && construct ? build() : null };
 }

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
-import { purchaseActionsAdmitted } from '../public-admission.mjs';
+import { purchaseActionsAdmitted, assertWriteWithinFeeCeiling, CREATE_STORAGE_RESERVE_OS } from '../public-admission.mjs';
 import { bindHostStop, createHostStop, isHostStopRefusal } from '../host-stop.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
@@ -497,8 +497,10 @@ const EFFECT_ROUTE_PATHS = new Set(DACS_SELLER_HTTP_ROUTES.filter(route => route
 // that need one refuse with buyer_access_closed).
 // `stopped` is the host's synchronous stop check (host-stop.mjs): every place that reads the hold also reads it, so
 // while it answers stopped no request is signed with the session key and none is sent.
+// `feeCeilingOs` is the host's per-write fee ceiling and `chain.getTransactionFees()` reads the fee it is compared with;
+// a missing ceiling or fee refuses the buyer's Agreement write.
 // `receiptFeeCeilings` and `buyerMandateCapOs` are the host's explicit seller receipt inputs; a native payment composition needs both.
-export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, stopped, receiptFeeCeilings, buyerMandateCapOs }) {
+export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, stopped, chain, feeCeilingOs, receiptFeeCeilings, buyerMandateCapOs }) {
   const hostStop = createHostStop(stopped);
   const assertPurchaseOpen = () => { assertPurchaseActionsAdmitted(); hostStop.assert(); };
   const { transaction } = purchaseStore(store);
@@ -1249,6 +1251,9 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   async function submitAgreementCore(operation, { agreementSignature, anchorSignature } = {}) {
     if (!available) throw unavailable();
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
+    // Until a CREATE intent is retained this submission can issue the buyer's Agreement CREATE, a paid write whose debit
+    // is its network fee plus the storage reserve. A retained intent is only read back through the bridge's resume.
+    if (!operation.state.protocol.walletAnchor) await assertWriteWithinFeeCeiling(feeCeilingOs, CREATE_STORAGE_RESERVE_OS, chain);
     let current = operation;
     const p = current.state.protocol;
     if (agreementSignature || anchorSignature) {

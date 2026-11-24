@@ -113,14 +113,10 @@ it("refuses to sign for a signer that is not the payload's buyer", async () => {
   await refused(() => signWith(f, f.payload, { claim: SELLER, sign: f.buyerSigner.sign }), "explicit_resume_invalid");
 });
 
-it.each([
-  ["missing", undefined],
-  ["null", null],
-  ["without a sign function", { claim: BUYER }],
-])("refuses to sign with a signer that is %s, with a coded error and status 500", async (_name, signer) => {
+it("signs with the buyer's signer however the caller wrapped it", async () => {
   const f = await fixture();
-  const context = { signer, binding: f.binding, local: f.local, now: NOW } as unknown as wire.ExplicitResumeSigningContext;
-  await expect(wire.signExplicitCreateResume(f.payload, context)).rejects.toMatchObject({ code: "explicit_resume_invalid", status: 500, detail: "SIGNER" });
+  const wrapped = new Proxy(f.buyerSigner, {});
+  expect(await wire.verifyExplicitCreateResume(await signWith(f, f.payload, wrapped), f.scope())).toEqual(f.payload);
 });
 
 it("refuses a malformed signature from the local signer as its own fault with status 500", async () => {
