@@ -1,12 +1,14 @@
 import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 // Bounded outbound JSON requests: fixed origin, no redirects, hard timeout,
 // post-decompression byte cap, no ambient credentials. Failures are typed so
-// callers can distinguish "unavailable" from "invalid". A caller's abort
-// rejects with the caller's own reason, unchanged.
+// callers can distinguish "timeout" and "unavailable" from "invalid". A
+// deadline is kind 'timeout' with the deadline's TimeoutError as cause, at
+// every stage of the request. A caller's abort rejects with the caller's own
+// reason, unchanged.
 export class OutboundError extends Error {
   constructor(kind, message, { status, cause } = {}) {
     super(message, cause === undefined ? undefined : { cause });
-    this.kind = kind; // 'unavailable' | 'invalid' | 'not-found' | 'timeout' (observeWithDeadline)
+    this.kind = kind; // 'unavailable' | 'invalid' | 'not-found' | 'timeout'
     this.status = status;
   }
 }
@@ -36,12 +38,13 @@ export function settleOnAbort(pending, signal, discardLate = () => {}) {
 }
 
 const unavailable = (message, cause) => new OutboundError('unavailable', message, { cause });
+const timedOut = (cause) => new OutboundError('timeout', 'request timed out', { cause });
 
 // Every exit reports one shape: the caller's abort reason first, then this
 // request's own timeout, else the failure found at that exit.
 function settled({ signal, timeout }, error) {
   if (signal?.aborted) return signal.reason;
-  if (timeout.aborted) return unavailable('request timed out', timeout.reason);
+  if (timeout.aborted) return timedOut(timeout.reason);
   return error;
 }
 
@@ -99,7 +102,7 @@ export async function fetchBoundedJson(url, { fetchImpl = globalThis.fetch, meth
       signal: cancellation,
     }), cancellation, cancelResponseBody);
   } catch (error) {
-    throw settled(stop, unavailable(error?.name === 'TimeoutError' ? 'request timed out' : 'request failed', error));
+    throw settled(stop, error?.name === 'TimeoutError' ? timedOut(error) : unavailable('request failed', error));
   }
   if (cancellation.aborted) {
     cancelResponseBody(response);

@@ -753,3 +753,33 @@ test("a challenge whose resource or requirements are not canonical JSON is rejec
   expect(bindAuthorization).not.toHaveBeenCalled();
   expect(createPaymentPayload).not.toHaveBeenCalled();
 });
+
+test("a challenge resource the stored payment input would refuse is rejected before the authorization is bound", async () => {
+  const inner = client();
+  // Like the x402 client, the signed payload carries the challenge's resource.
+  const createPaymentPayload = vi.fn(async (value: unknown) => ({
+    ...await inner.createPaymentPayload(value) as Record<string, unknown>,
+    resource: (value as { resource: unknown }).resource,
+  }));
+  const bindAuthorization = vi.fn(async () => ({ validBefore: 4_102_444_800 }));
+  const nested = (depth: number): unknown => (depth === 0 ? 1 : { n: nested(depth - 1) });
+  const prepare = (resource: unknown) => prepareX402BuyerSettlement({ authority: authority(), bindAuthorization }, {
+    client: { ...inner, createPaymentPayload },
+    transportPolicy: { mode: "insecure-test" as const },
+    fetchImpl: async () => new Response(JSON.stringify({ x402Version: 2, resource, accepts: [requirements()] }),
+      { status: 402 }),
+  });
+  for (const resource of [
+    undefined,
+    { url: RESOURCE, description: "\ud800" },
+    { url: RESOURCE, deep: nested(125) },
+    { url: "https://other.example/resource" },
+  ]) {
+    await expect(prepare(resource))
+      .resolves.toEqual({ disposition: "rejected", reason: "x402-payment-requirements-mismatch" });
+  }
+  expect(bindAuthorization).not.toHaveBeenCalled();
+  expect(createPaymentPayload).not.toHaveBeenCalled();
+
+  await expect(prepare({ url: RESOURCE, deep: nested(124) })).resolves.toMatchObject({ disposition: "prepared" });
+});

@@ -1,0 +1,13 @@
+{
+  "provenance": {
+    "repository": "Community",
+    "commit": "6c89f34",
+    "path": "reference-implementations/dacs-directory/src/catalog/contracts.ts",
+    "lines": "6-102"
+  },
+  "statuses": ["active", "revoked"],
+  "revocationMembers": ["sellerPrimaryClaim", "listingId", "listingVersion", "listingContentHash", "logicalAddress", "markerAnchor", "markerContentHash"],
+  "markerAnchorMembers": ["kind", "locator"],
+  "logicalAddressPrefix": "dacs1-revoked:",
+  "transactionReadiness": { "disposition": "unassessed", "reason": "catalog only" }
+}
