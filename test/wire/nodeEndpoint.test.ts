@@ -8,9 +8,14 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const leafFile = `${root}dist/wire/node-endpoint.js`;
 const sourceFile = `${root}src/wire/node-endpoint.ts`;
 
+// The package names resolve through the package's exports map to dist/, which the
+// typecheck runs before; held as plain strings, tsc leaves them to the test run.
+const leafExport: string = "@kynesyslabs/dacs/wire/node-endpoint";
+const wireExport: string = "@kynesyslabs/dacs/wire";
+
 const fromDist = await import(pathToFileURL(leafFile).href);
-const fromLeafExport = await import("@kynesyslabs/dacs/wire/node-endpoint");
-const fromWireExport = await import("@kynesyslabs/dacs/wire");
+const fromLeafExport = await import(leafExport);
+const fromWireExport = await import(wireExport);
 
 const approved = { chainIdentity: fromWireExport.TP1_APPROVED_IDENTITY_RECORD.chainIdentity };
 
