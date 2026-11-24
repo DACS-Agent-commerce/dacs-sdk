@@ -127,6 +127,10 @@ export function signedBytes(separator: string, artifactHash: string): Uint8Array
  * REJECTED here: its `signed_bytes` frames more than one value, so signing it as
  * a single hash would produce the wrong payload. Use the recipe-specific helper
  * ({@link signSessionBinding}, {@link signAutoAcceptInstance}) instead.
+ *
+ * Throws a `DacsError` with code `signature.separator_unregistered` for an
+ * unregistered separator, `signature.separator_composite` for a composite one,
+ * and `key.seed_length_invalid` for a seed that is not 32 bytes.
  */
 export function signArtifact(
   separator: DomainSeparator,
@@ -134,12 +138,15 @@ export function signArtifact(
   signer: Uint8Array | KeyObject,
 ): Uint8Array {
   if (!isRegisteredSeparator(separator)) {
-    throw new DacsError(`unregistered domain separator: ${separator}`);
+    throw new DacsError(`unregistered domain separator: ${separator}`, {
+      code: "signature.separator_unregistered",
+    });
   }
   if (isCompositeSeparator(separator)) {
     throw new DacsError(
       `composite-payload separator ${separator} cannot be signed as a single ` +
         `hash — use its recipe-specific helper (§B.7)`,
+      { code: "signature.separator_composite" },
     );
   }
   const key = signer instanceof Uint8Array ? privateKeyFromSeed(signer) : signer;
@@ -152,6 +159,8 @@ export function signArtifact(
  * signature whose payload can't be reproduced (or under the wrong separator)
  * fails. A composite-payload separator fails closed for the same reason
  * {@link signArtifact} rejects it — verify it via its recipe-specific helper.
+ * A raw `publicKey` that is not 32 bytes throws a `DacsError` with code
+ * `key.public_key_length_invalid`.
  */
 export function verifyArtifact(
   separator: DomainSeparator,
@@ -183,6 +192,7 @@ function assertFramedHex(label: string, value: string): void {
   if (!HEX_64.test(value)) {
     throw new DacsError(
       `${label} must be a 64-character lowercase hex string (composite framing, §B.7)`,
+      { code: "signature.framed_hex_invalid" },
     );
   }
 }
@@ -191,7 +201,8 @@ function assertFramedHex(label: string, value: string): void {
  * `signed_bytes := "dacs-session-binding:v1:" || session_key || bundle_hash`
  * (§6.3.2) — the root key's binding of a session key to an identity bundle.
  * `sessionKeyHex` is the session public key as fixed-length lowercase hex;
- * `bundleHash` is the bundle's sha256 hex.
+ * `bundleHash` is the bundle's sha256 hex. A value that is not 64 lowercase hex
+ * characters throws a `DacsError` with code `signature.framed_hex_invalid`.
  */
 export function sessionBindingBytes(
   sessionKeyHex: string,
@@ -233,7 +244,8 @@ export function verifySessionBinding(
  * `signed_bytes := "dacs-auto-accept-instance:v1:" || agreementHash ||
  * autoAcceptCommitmentHash` (§8.4.1) — the seller's per-session auto-accept
  * signature binding a constructed agreement to the anchored AutoAcceptCommitment.
- * Both inputs are sha256 hex.
+ * Both inputs are sha256 hex; a value that is not 64 lowercase hex characters
+ * throws a `DacsError` with code `signature.framed_hex_invalid`.
  */
 export function autoAcceptInstanceBytes(
   agreementHash: string,

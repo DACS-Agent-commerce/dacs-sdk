@@ -217,7 +217,7 @@ test('K5-R6 a proposal answered waiting after its signature intent stays open: p
   t.after(() => agent.close());
   failNextSignature();
   assert.notEqual((await agent.receiveProposal(body)).disposition, 'complete', 'the failed signer completes nothing');
-  assert.equal(agent.retainsProposalWork(JOB), true, 'the intent keeps the work');
+  assert.equal(agent.retainsProposalWork(JOB), false, 'a failed signer leaves no signing pointer: only signOnce\'s intent, which released nothing');
   assert.deepEqual(signatures, []);
   const recovered = await agent.reconcileTransport({ ...reconcileInput(agent, body), transport: claimedTransport });
   assert.deepEqual([recovered.disposition, recovered.value.disposition], ['present', 'complete']);

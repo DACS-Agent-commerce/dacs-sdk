@@ -319,7 +319,7 @@ test('host refuses malformed options before opening any state',async t=>{
  // The data directory's mode must be exactly 0700: owner-only modes without full owner access refuse too.
  const notExactly0700=await Promise.all([0o500,0o600,0o710].map(async mode=>{const directory=await mkdtemp(join(root,'mode-'));await chmod(directory,mode);return [mode,directory];}));
  t.after(async()=>{await rm(root,{recursive:true,force:true});await rm(loose,{recursive:true,force:true});});
- const base=()=>({signer:{claim:seller.claim,sign:()=>{}},listing:{seller:{publicEndpoint:FIXTURE_ENDPOINT}},listener:proxyListener(),dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',receiptFeeCeilings:RECEIPT_FEE_CEILINGS,...hostAuthority()});
+ const base=()=>({signer:{claim:seller.claim,sign:()=>{},integritySigner:{claim:seller.claim,sign:()=>{}}},listing:{seller:{publicEndpoint:FIXTURE_ENDPOINT}},listener:proxyListener(),dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',receiptFeeCeilings:RECEIPT_FEE_CEILINGS,...hostAuthority()});
  const cases=[
   ['non-object',null,/must be an object/],
   ['array options',[],/must be an object/],

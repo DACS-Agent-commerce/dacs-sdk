@@ -7,7 +7,7 @@ import { SellerTlsUnusableError, sellerFailureAttempt } from '../src/dacs/seller
 const P = PATHS.proposals;
 const timeout = e => e.causeCode === 'timeout';
 
-for (const boundary of ['storage', 'evidence', 'authority', 'connection-check', 'host-sign', 'signed', 'check']) {
+for (const boundary of ['storage', 'evidence', 'authority', 'stop-check', 'host-sign', 'signed', 'check']) {
   test(`one absolute deadline stops a send after ${boundary} consumes the budget`, async t => {
     t.mock.method(AbortSignal, 'timeout', () => new AbortController().signal);
     const s = await storedWorld(t); let authentication = s.auth, requestRecords = s.records(), path = P;
@@ -20,10 +20,7 @@ for (const boundary of ['storage', 'evidence', 'authority', 'connection-check', 
         s.advance(15000); return { commitment: bytes(s.made.anchored), agreement: bytes(s.made.agreement), signedListing: bytes(s.made.listing) };
       } });
     }
-    if (boundary === 'connection-check') {
-      let reads = 0;
-      authentication = s.w.createSellerWireAuthentication({ ...s.w.options, admission: { ...s.w.admission, currentLocal() { if (++reads === 2) s.advance(15000); return s.w.local; } } });
-    }
+    if (boundary === 'stop-check') s.w.requests.control.onStop = () => { s.advance(15000); };
     if (boundary === 'host-sign') authentication = s.w.createSellerWireAuthentication({ ...s.w.options, sessionSigner: { claim: s.w.session.claim,
       async sign(bytes) { s.w.state.signs.push(bytes); s.advance(15000); return s.w.session.sign(bytes); } } });
     if (boundary === 'signed') authentication = { ...s.auth, async request(...args) { const signed = await s.auth.request(...args); s.advance(15000); return signed; } };

@@ -27,7 +27,7 @@ const { createProtocolPurchases, protocolStageHelp }=await import('../src/dacs/p
 const { SellerRefusedError }=await import('../src/dacs/seller-http.mjs');
 const { createSourceDemoSellerTransport }=await import('../src/dacs/source-demo-seller-transport.mjs');
 // A paid purchase always declares its seller transport. The seller client and its wire authentication are stand-ins here.
-const sellerTransport=createSourceDemoSellerTransport({authority:'TEST-review',sessionSignerFor:()=>({}),sessionPolicyFor:()=>({}),endpointProofFor:()=>({})});
+const sellerTransport=createSourceDemoSellerTransport({authority:'TEST-review',sessionSignerFor:()=>({}),sessionPolicyFor:()=>({}),endpointProofFor:()=>({}),effectBoundary:readOnlyBoundary});
 // The seller is a real key pair so payment evidence can carry a real signature.
 const keyPair=seedByte=>{const seed=new Uint8Array(32).fill(seedByte),hex=Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString('hex');return {key:privateKeyFromSeed(seed),hex,claim:'did:demos:agent:'+hex};};
 const sellerKeys=keyPair(17),otherKeys=keyPair(23);

@@ -217,9 +217,10 @@ export function approvalBinding(operation) {
 // CORE §11.1.2(3): profile admission is held while the one constant says so;
 // readback chooses its projection on each call. Host diagnostics are not
 // artifact verification or the archival path described in §11.1.2(4).
+// `passiveOnly: true` keeps every reader on the diagnostic projection after the hold lifts.
 // verifyDeal accepts an optional signal to cancel its passive chain reads.
-export function createPublicPurchaseService(options) {
-  return createPurchaseService(options, () => !purchaseActionsAdmitted());
+export function createPublicPurchaseService({ passiveOnly, ...options }) {
+  return createPurchaseService(options, () => passiveOnly === true || !purchaseActionsAdmitted());
 }
 
 // Schema rows as plain objects with numbers, whatever the host's connection
@@ -560,10 +561,17 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   // Entry for the portal's approval and payment actions, which save expiry.
-  // The public diagnostic service projects it without saving.
+  // The public diagnostic service projects it without saving, and so does a call while the host is stopped.
   function portalOperation(operationId, token) {
     const found = authorizedPortalPurchase(operationId, token);
-    return diagnostic() ? projectDiagnosticOperation(projectExpiry(found)) : expireIfNeeded(found);
+    if (diagnostic()) return projectDiagnosticOperation(projectExpiry(found));
+    return stopRefusal() ? projectExpiry(found) : expireIfNeeded(found);
+  }
+
+  // The host stop's refusal while it answers stopped (a failed or invalid check counts as stopped), otherwise undefined.
+  function stopRefusal() {
+    try { hostStop.assert(); } catch (refusal) { return refusal; }
+    return undefined;
   }
 
   // Evidence the portal may show, taken only from what was recorded: the
@@ -836,34 +844,50 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   // After a verified transfer observation, a DACS purchase drives its seller
   // claim, evidence and delivery checks. Every retry re-claims the same
   // observed transaction; no step here can send or re-send a payment.
-  // A recorded suspension (K8) stops the continuation: the readback stands, and only an explicit request naming it resumes.
-  // A re-hold or a host stop seen by the continuation suspends queued work; a binding failure while admitted is not a re-hold.
-  // While the host is stopped a call that names no suspension suspends queued work, returns the readback and starts nothing;
+  // A recorded suspension stops the continuation: the readback stands, and only an explicit request naming it resumes.
+  // A re-hold or a host stop seen by the continuation suspends the purchase, whether or not work is queued; a binding
+  // failure while admitted is not a re-hold.
+  // While the host is stopped a call that names no suspension suspends the purchase, returns the readback and starts nothing;
   // one that names a suspension is refused and leaves that suspension, with its id, as it was.
   async function continueProtocol(result, resumeSuspensionId) {
     const operation = result.operation;
-    if (!operation.terms.protocol || !protocol?.available) return result;
-    if (operation.status !== 'settled_verified' && operation.status !== 'agreement_pending') return result;
+    if (!continuesProtocol(operation)) return result;
     const stored = ops.get(operation.accountId, operation.id);
     if (stored?.state?.protocol?.sellerSuspension && !resumeSuspensionId) return { ...result, operation: stored };
     try { hostStop.assert(); } catch (refusal) {
       if (resumeSuspensionId) throw refusal;
-      suspendQueuedWork(stored, refusal);
+      suspendPurchase(stored, refusal);
       return { ...result, operation: ops.get(operation.accountId, operation.id) ?? operation };
     }
     let advanced;
     try { advanced = await protocol.recheck(operation, coordinates.get(operation.id), { resumeSuspensionId }); } catch (error) {
-      if ((error?.code === 'profile_not_admitted' && !purchaseActionsAdmitted()) || isHostStopRefusal(error)) suspendQueuedWork(stored, error);
+      if ((error?.code === 'profile_not_admitted' && !purchaseActionsAdmitted()) || isHostStopRefusal(error)) suspendPurchase(stored, error);
       throw error;
     }
     return { ...result, operation: advanced };
   }
 
-  // Records a refusal as a suspension of the stored purchase's queued work. A failed write does not replace the refusal:
-  // its error is kept as `refusal.details.suspensionWriteError`, and the refusal's own cause is left as it was.
-  function suspendQueuedWork(stored, refusal) {
+  // Whether continueProtocol has work for `operation`: a protocol purchase at agreement_pending or settled_verified.
+  function continuesProtocol(operation) {
+    return Boolean(operation.terms.protocol && protocol?.available)
+      && (operation.status === 'settled_verified' || operation.status === 'agreement_pending');
+  }
+
+  // verifyDeal while the host is stopped: where the continuation would run it records the purchase's suspension, then
+  // returns the stored row with expiry projected, unsaved. A failed suspension write rejects with the stop's refusal,
+  // which carries the write's error as details.suspensionWriteError, and returns no readback.
+  function stoppedReadback(found, refusal) {
+    if (continuesProtocol(projectExpiry(found))) suspendPurchase(ops.get(found.accountId, found.id), refusal);
+    if (refusal.details?.suspensionWriteError) throw refusal;
+    const stored = ops.get(found.accountId, found.id) ?? found;
+    return { operation: projectExpiry(stored), verification: { outcome: 'readback_only', reason: refusal.code } };
+  }
+
+  // Records a refusal as the stored purchase's suspension; a purchase already suspended keeps its own. A failed write does
+  // not replace the refusal: its error is kept as `refusal.details.suspensionWriteError`, and the refusal's own cause is left as it was.
+  function suspendPurchase(stored, refusal) {
     if (!stored?.state?.protocol) return;
-    try { createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored, set() {} }, now, hostStop }).suspendQueued(refusal.code); } catch (cause) {
+    try { createSellerRequestRecords({ db, ops, transaction, holder: { get: () => stored, set() {} }, now, hostStop }).suspend(refusal.code); } catch (cause) {
       refusal.details = { ...refusal.details, suspensionWriteError: cause };
     }
   }
@@ -876,8 +900,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return undefined;
   }
 
-  // A host stop that refuses a service action suspends the queued work of the purchase its request names, as the
-  // continuation does, so only protocolRecheck with resumeSuspensionId continues it. A request that does not
+  // A host stop that refuses a service action suspends the purchase its request names, whether or not work is queued,
+  // as the continuation does, so only protocolRecheck with resumeSuspensionId continues it. A request that does not
   // authenticate for that action records nothing, and a purchase already suspended keeps its suspension and id.
   function suspendOnStopRefusal(action, request, refusal) {
     let stored;
@@ -886,7 +910,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       if (!found) return;
       stored = ops.get(found.accountId, found.id);
     } catch { return; }
-    if (stored?.terms?.protocol && !stored.state?.protocol?.sellerSuspension) suspendQueuedWork(stored, refusal);
+    if (stored?.terms?.protocol && !stored.state?.protocol?.sellerSuspension) suspendPurchase(stored, refusal);
   }
 
   function canonicalHash(value) {
@@ -1430,6 +1454,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
 
   async function verifyDealOnce({ accountId, operationId, token, txHash, attachOnly = false, signal }) {
     const found = ownedPurchase(accountId, operationId, token);
+    // The stop is read once, here; a stopped call saves nothing but the purchase's suspension.
+    const stop = diagnostic() ? undefined : stopRefusal(), stopReason = stop ? { reason: stop.code } : {};
     try{protocol?.assertBuyerAccess?.(found.terms.buyer.wallet, found);}
     catch(error){
       if(error?.code!=='buyer_access_closed'||error?.details?.buyerAccessMissing)throw error;
@@ -1437,15 +1463,20 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       if(!coords?.reportedTxHash||(txHash&&canonicalHash(txHash)!==coords.reportedTxHash))throw error;
       if(diagnostic())return diagnosticReadback(found,txHash,signal);
       const native=await protocol?.readIssuedPayment?.(found,coords.reportedTxHash);
-      if(native)return {operation:found,verification:{outcome:'readback_only',...native,...OBSERVATION_LIMITS}};
+      if(native)return {operation:found,verification:{outcome:'readback_only',...native,...stopReason,...OBSERVATION_LIMITS}};
       if(usesNativeAgreementPayment(found))throw error;
       let observation;
       try{await assertBoundDomain(found);observation=await protocol?.observeReportedPayment?.(coords.reportedTxHash)??await chain.observeTransfer(coords.reportedTxHash);}
       catch(readError){observation={status:'unavailable',reason:errorText(readError)};}
       observation=transferObservationRecord(observation,coords.reportedTxHash);
-      return {operation:found,verification:{outcome:'readback_only',observation,...OBSERVATION_LIMITS}};
+      return {operation:found,verification:{outcome:'readback_only',observation,...stopReason,...OBSERVATION_LIMITS}};
     }
     if (diagnostic()) return diagnosticReadback(found, txHash, signal);
+    if (stop) {
+      // A stopped call attaches no hash, but a malformed one is still refused, before any write.
+      if (txHash) canonicalHash(txHash);
+      return stoppedReadback(found, stop);
+    }
     const operation = expireIfNeeded(found);
     if (txHash) {
       assertAgreementPaymentHeld(operation);
@@ -1724,7 +1755,7 @@ const TOKEN_ACTIONS = new Set(['issueApprovalChallenge', 'approve', 'prepareHand
 // Each service's recorder for host stop refusals of its actions. Module-private.
 const stopRefusalRecorders = new WeakMap();
 
-/** recordStopRefusal(service, action, args, refusal) suspends the queued work of the purchase `args[0]` names when the host stop refused that call of the `service` action `action`, before or while it ran. The request must authenticate as that action authenticates it. Returns undefined; it never throws for an unknown object, action or request. */
+/** recordStopRefusal(service, action, args, refusal) records the suspension of the protocol purchase `args[0]` names, whether or not work is queued, when the host stop refused that call of the `service` action `action`, before or while it ran. The request must authenticate as that action authenticates it. Returns undefined; it never throws for an unknown object, action or request. */
 export function recordStopRefusal(service, action, args, refusal) {
   stopRefusalRecorders.get(service)?.(action, args[0], refusal);
 }

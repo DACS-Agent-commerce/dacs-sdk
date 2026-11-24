@@ -1,0 +1,49 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record a stop or re-hold that the effect boundary raises while signing or the connector raises before the first byte",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "5b1c29027eaf9e60b69f310084266225d1d6b2a0",
+      "after": "523efa6bca03d48447df4b08744a42d15b728e7a"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/seller-http.mjs",
+      "before": "b780c9f11acfe7ec2c2d1166a7fe6ee6b5d2761f",
+      "after": "4b82a7e9a490390f26bcf3f217b166d7e17085bc"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "271a5e6058878bd55a01a8eabab3c7a1948b79be",
+      "after": "1c2b47a4b08a6288772361bc086567c38e848bc9"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/request-boundary.mjs",
+      "before": "876f924298880ab90dff43630147c2dda9cc3683",
+      "after": "3f70eab3222a3dc049146949bae2e68830c4a857"
+    },
+    {
+      "path": "packages/dacs-client/test/signature-effect-paths.test.mjs",
+      "before": "dc542c1dc9b2f3f9c1e422f03585acd2b3379c4a",
+      "after": "71d82a8d879493af30d6de101dccce0e1024bf7c"
+    },
+    {
+      "path": "packages/dacs-client/test/stop-seam.test.mjs",
+      "before": "4c7f7104e5fb82bc5a245a8429a2cd9fbabeca6a",
+      "after": "83097c562635d630921870754bbbd5d3aad4f26d"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-9585cdcac166.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/dacs/seller-http.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/test/helpers/request-boundary.mjs",
+    "packages/dacs-client/test/signature-effect-paths.test.mjs",
+    "packages/dacs-client/test/stop-seam.test.mjs"
+  ],
+  "note": "A host stop or a re-hold that the effect boundary raises while a seller request is signed, or that the connector's transmit step raises before the first byte, now records state.protocol.sellerSuspension through the attempt's new refused(error), before the attempt's own outcome; on the two read routes only queued work records one. A host stop the connector wrapped now rejects as the stop's own OperationError and leaves the attempt unknown; a re-hold still rejects as an unsent SellerUnavailableError. profile_not_admitted counts as a re-hold only while purchases are held. Restated tests: the two effect-path tests that expected an unsent SellerUnavailableError for a stop refused before the first byte now expect the stop's OperationError. The request-boundary test helper takes an optional clock for the bounded stop-check timeout."
+}

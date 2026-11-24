@@ -14,6 +14,7 @@ import { openDatabase } from '../../packages/dacs-client/test/helpers/purchase-i
 import { createOperationStore } from '../../packages/dacs-client/test/helpers/purchase-integrity-operations.mjs';
 import { IDENTITY, passiveNativeWorld } from '../../packages/dacs-client/test/helpers/passive-native-world.mjs';
 import { readOnlyBoundary } from '../../packages/dacs-client/test/helpers/read-only-boundary.mjs';
+import { requestBoundary } from '../../packages/dacs-client/test/helpers/request-boundary.mjs';
 import { kitEndpointProof } from '../../packages/dacs-client/test/helpers/kit-endpoint-proof.mjs';
 import { withSeller } from '../../packages/dacs-client/test/helpers/seller-stand-in.mjs';
 import { bindFixture, createAuthorityFixture } from '../../packages/dacs-client/test/fixtures/tp1-authority-reader.mjs';
@@ -79,7 +80,7 @@ export async function purchaseWorld(t, { host, listing }) {
   const session = createEphemeralWallet();
   const proof = await kitEndpointProof({ binding, local: currentLocal(), listingPin: host.listingPin, now: NOW });
   const sellerTransport = createSourceDemoSellerTransport({ authority: COMMITMENT_AUTHORITY, sessionSignerFor: () => ({ claim: session.claim, sign: (bytes) => session.signBytes(bytes) }),
-    sessionPolicyFor: () => ({ expiresAt: NOW + 1_800_000 }), endpointProofFor: () => proof });
+    sessionPolicyFor: () => ({ expiresAt: NOW + 1_800_000 }), endpointProofFor: () => proof, effectBoundary: requestBoundary(t, { binding, currentLocal }).boundary });
   // The service's own seller requests, answered by the host.
   const reachHost = async (url, init) => {
     const path = new URL(url).pathname;

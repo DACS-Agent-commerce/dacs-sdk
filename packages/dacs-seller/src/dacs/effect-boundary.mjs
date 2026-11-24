@@ -373,8 +373,10 @@ export function createEffectBoundary({ stopped, binding, currentLocal, feeCeilin
         .catch((cause) => { throw refuse('eb_persist_failed', `the ${stage}-withheld record for ${refusal.code} could not be written`, cause); });
       throw refusal;
     }
+    // Whether this artifact's earlier transmission was already acknowledged, so that this send is a readback of it.
+    const acknowledged = records.some((record) => record.artifactHash === artifactHash && record.state === `${stage}-acknowledged`);
     let answer;
-    try { answer = await answerWithinWindow(newWindow(), innerSend(Uint8Array.from(bytes)), 'eb_send_timeout', holdSendUntilSettled); } catch (error) {
+    try { answer = await answerWithinWindow(newWindow(), innerSend(Uint8Array.from(bytes), { acknowledged }), 'eb_send_timeout', holdSendUntilSettled); } catch (error) {
       // A missing record leaves `-started`, which already means "possibly sent", so the send's own error is what the caller gets.
       await history.append(op.lane, { state: `${stage}-unknown`, ...base(op, artifactHash), of, cause: describeCause(error) }).catch(() => {});
       throw error;

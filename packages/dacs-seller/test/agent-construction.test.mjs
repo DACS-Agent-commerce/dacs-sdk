@@ -14,13 +14,14 @@ import {buildUnsignedIdentityBundle,attachIdentityPresentation} from '../src/dac
 import {listingPin} from '../src/dacs/purchase-protocol.mjs';
 import {createSellerTransportStore} from './helpers/bound-transport-store.mjs';
 import {admittedSession} from './helpers/challenge-api.mjs';
+import {agentSigning} from './helpers/agent-signing.mjs';
 function fixture(t){
  const dir=mkdtempSync(join(tmpdir(),'TEST-agent-construction-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
  const listing=fixtureListing(seller,{now:NOW}),signer={claim:seller.claim,sign:seller.signBytes},unreachable=()=>assert.fail('unexpected external operation');let time=NOW;
  const storeDirectory=mkdtempSync(join(tmpdir(),'TEST-agent-construction-ledger-'));t.after(()=>rmSync(storeDirectory,{recursive:true,force:true}));
  const store=createSellerTransportStore({path:join(storeDirectory,'transport.sqlite'),now:()=>time,generation:'TEST-generation'});t.after(()=>store.close());
  const admission=createSessionAdmissionFixture({seller:{claim:seller.claim,sign:seller.signBytes},buyer:{claim:buyer.claim,sign:buyer.signBytes},now:()=>time});
- const config={signer,listing,durableDirectory:dir,challengeLedger:store.challenges,now:()=>time,agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission,receiptFeeCeilings:RECEIPT_FEE_CEILINGS};
+ const config={...agentSigning(signer),listing,durableDirectory:dir,challengeLedger:store.challenges,now:()=>time,agreementAnchor:{source:'TEST-native',readAgreement:unreachable},nativeArtifactAnchor:{writer:seller.claim,publish:unreachable,readRetained:unreachable,verifyReceipt:unreachable},deliverableProducer:unreachable,deliverySchemaVerifier:{schemaUrl:listing.offering.deliverable.schemaUrl,verify:unreachable},railAuthority:railSteward().railAuthority(),sessionAdmission:admission.sessionAdmission,receiptFeeCeilings:RECEIPT_FEE_CEILINGS};
  return{config,dir,listing,signer,admission,ledger:store.challenges,store,storePath:join(storeDirectory,'transport.sqlite'),advance:ms=>{time+=ms;},open:changes=>createSellerAgent({...config,...changes})};
 }
 // The simulated fixture profile: no session admission, so no retained Vet
@@ -28,7 +29,7 @@ function fixture(t){
 function fixtureProfile(t){
  const dir=mkdtempSync(join(tmpdir(),'TEST-agent-construction-fixture-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));
  const listing=fixtureListing(seller,{now:NOW}),signer={claim:seller.claim,sign:seller.signBytes};
- const config={signer,listing,durableDirectory:dir,now:()=>NOW,anchors:{read:async()=>null,write:async()=>null},simulatedFixture:true};
+ const config={...agentSigning(signer),listing,durableDirectory:dir,now:()=>NOW,anchors:{read:async()=>null,write:async()=>null},simulatedFixture:true};
  return{config,dir,listing,signer,open:changes=>createSellerAgent({...config,...changes})};
 }
 // A buyer presentation that carries exactly the nonce the seller issued.
@@ -53,7 +54,7 @@ const admitWith=(ledger,nonce,session)=>{
  assert.equal(ledger.accept(owner,nonce,{buyerBundleText:core.canonicalize(bundle),buyerBundleHash:bundleHash,admission,admittedAt:NOW,firstAdmission:{challengeExpiresAt:NOW,generatedAt:NOW,checkedAt:NOW}}),true);
 };
 async function saveSession(f,session,prepare){
- const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.signer,listingPin:listingPin(f.listing)});
  try{prepare?.(state);await state.withJob(session.jobId,()=>state.saveSession(session));}finally{state.close();}
 }
 test('retained Listing admission rejects a substituted signature on restart',async t=>{
@@ -156,7 +157,7 @@ test('restart refuses a Vet record the counterparty did not sign or a receipt be
   const bundle=presentWith(buyer,issued.sessionNonce);
   const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
   const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement,...options});
-  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+  const state=await createSellerDurableState({dir:f.dir,integritySigner:f.signer,listingPin:listingPin(f.listing)});
   try{
    admitWith(f.ledger,issued.sessionNonce,{buyerBundle:bundle});
    await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
@@ -171,7 +172,7 @@ test('restart restores a session bound to its admitted challenge and to verified
  const bundle=presentWith(buyer,issued.sessionNonce);
  const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement});
- const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.signer,listingPin:listingPin(f.listing)});
  try{
   admitWith(f.ledger,issued.sessionNonce,{buyerBundle:bundle});
   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
@@ -182,7 +183,7 @@ test('restart restores a session bound to its admitted challenge and to verified
 
 test('explicit fixture sessions reopen without native-only admission checkpoints',async t=>{
  const f=fixture(t),{fixtureIdentityBundle}=await import('./fixtures/listings.mjs'),{localAnchor}=await import('./helpers/local-anchor-fixture.mjs');
- const options={signer:f.signer,listing:f.listing,anchors:localAnchor({now:()=>NOW}),simulatedFixture:true,durableDirectory:f.dir,now:()=>NOW};
+ const options={...agentSigning(f.signer),listing:f.listing,anchors:localAnchor({now:()=>NOW}),simulatedFixture:true,durableDirectory:f.dir,now:()=>NOW};
  const initial=await createSellerAgent(options);initial.close();
  await saveSession(f,sessionFor(JOB,fixtureIdentityBundle(buyer,NOW)));
  const reopened=await createSellerAgent(options);t.after(()=>reopened.close());
@@ -198,7 +199,7 @@ async function vettedSession(t,requirementHash={}){
  const bundle=presentWith(buyer,issued.sessionNonce);
  const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement,...requirementHash.buyer?{requirementHash:requirementHash.buyer}:{}});
  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement,...requirementHash.seller?{requirementHash:requirementHash.seller}:{}});
- const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.signer,listingPin:listingPin(f.listing)});
  try{
   admitWith(f.ledger,issued.sessionNonce,{buyerBundle:bundle});
   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
@@ -242,7 +243,7 @@ test('restart refuses a retained session admitted for a different presentation',
  assert.notEqual(core.contentHash(other),core.contentHash(bundle));
  const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
  const sellerRef=await admission.vetRecord(JOB,seller.claim,f.listing.seller.identity,{requirement:f.listing.buyerRequirement});
- const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.signer,listingPin:listingPin(f.listing)});
  try{
   admitWith(f.ledger,issued.sessionNonce,{buyerBundle:other});
   await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle:f.listing.seller.identity,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
@@ -264,7 +265,7 @@ test('live reads refuse a shape-valid session another writer saved after open',a
 test('live reads refuse a retained session changed after this instance verified it',async t=>{
  const {f,admission}=await vettedSession(t),agent=await f.open({sessionAdmission:admission.sessionAdmission});t.after(()=>agent.close());
  assert.equal(agent.stageOf(JOB),'vetted');
- const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.signer,listingPin:listingPin(f.listing)});
  try{await state.withJob(JOB,()=>state.saveSession({...state.loadSession(JOB),stage:'delivered'}));}finally{state.close();}
  assert.throws(()=>agent.stageOf(JOB),error=>error.code==='seller_state_unverified'&&/changed after this seller instance verified it/.test(error.message));
 });
@@ -281,7 +282,7 @@ test('restart refuses a retained seller bundle that is not the Listing identity 
   const bundle=presentWith(buyer,issued.sessionNonce),sellerBundle=build(f.listing);
   const buyerRef=await admission.vetRecord(JOB,buyer.claim,bundle,{requirement:f.listing.buyerRequirement});
   const sellerRef=await admission.vetRecord(JOB,seller.claim,sellerBundle,{requirement:f.listing.buyerRequirement});
-  const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+  const state=await createSellerDurableState({dir:f.dir,integritySigner:f.signer,listingPin:listingPin(f.listing)});
   try{
    admitWith(f.ledger,issued.sessionNonce,{buyerBundle:bundle});
    await state.withJob(JOB,()=>state.saveSession({jobId:JOB,buyerBundle:bundle,buyerBundleHash:core.identityBundleHash(bundle),sellerBundle,stage:'vetted',vetCheckpoint:{buyer:buyerRef,seller:sellerRef}}));
@@ -332,7 +333,7 @@ test('a native seller without a session admission cannot admit a presentation',a
 // its fabricated catalog row is not a revocation reading and is not retained.
 test('the retained Listing admission never records a revocation reading',async t=>{
  const f=fixture(t),agent=await f.open();agent.close();
- const state=await createSellerDurableState({dir:f.dir,signer:f.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.signer,listingPin:listingPin(f.listing)});
  try{const context=state.context();assert.equal(context.validation.disposition,'verified');assert.equal(Object.hasOwn(context.validation,'revocation'),false,'the construction check is not a revocation reading');}finally{state.close();}
 });
 // A close during the live revocation read must not let the issuance settle:

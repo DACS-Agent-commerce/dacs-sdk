@@ -176,14 +176,14 @@ test('a signed seller_stopped for a purchase that ended during the request recor
   assert.equal(s.p.get().status, 'cancelled'); assert.equal(suspension(s), undefined); assert.equal(s.fetches.length, 1);
 });
 
-test('a re-hold seen from an older snapshot is recorded on the latest row only when it has queued work, and keeps its stage', async t => {
+test('a re-hold seen from an older snapshot is recorded on the latest row, with or without queued work, and keeps its stage', async t => {
   for (const queued of [true, false]) {
     const s = await storedWorld(t), older = s.p.get();
     s.patch({ stage: 'agreement-anchored', ...(queued ? { signatures: { agreement: 'TEST-queued-contribution' } } : {}) });
-    s.records({ get: () => older, set() {} }).suspendQueued('profile_not_admitted');
+    s.records({ get: () => older, set() {} }).suspend('profile_not_admitted');
     const protocol = s.p.get().state.protocol;
     assert.equal(protocol.stage, 'agreement-anchored', `${queued}`);
-    assert.equal(protocol.sellerSuspension?.cause, queued ? 'profile_not_admitted' : undefined, `${queued}`);
+    assert.equal(protocol.sellerSuspension?.cause, 'profile_not_admitted', `${queued}`);
     assert.equal(protocol.signatures?.agreement, queued ? 'TEST-queued-contribution' : undefined, `${queued}`);
   }
 });
@@ -275,13 +275,14 @@ test('a host stop observed with queued work suspends it with cause writes_stoppe
   assert.deepEqual(suspension(s), held); assert.equal(s.fetches.length, 1);
 });
 
-test('a host stop seen when a request starts on a purchase with no queued work records no suspension, and a stop no check observed records none', async t => {
+test('a host stop seen when a request starts on a purchase with no queued work records the suspension and stores no bytes, and a stop no check observed records none', async t => {
   const s = await storedWorld(t);
   await assert.rejects(s.client({ stopped: () => true }).propose(bodyFor(P)), hostStopRefusal('writes_stopped'));
-  assert.equal(suspension(s), undefined); assert.equal(s.record(P), undefined); assert.equal(s.fetches.length, 0);
+  assert.equal(suspension(s).cause, 'writes_stopped'); assert.equal(s.record(P), undefined); assert.equal(s.fetches.length, 0);
+  const unobserved = await storedWorld(t);
   let stopped = true; stopped = false;
-  await s.client({ stopped: () => stopped }).propose(bodyFor(P));
-  assert.equal(suspension(s), undefined); assert.equal(s.fetches.length, 1);
+  await unobserved.client({ stopped: () => stopped }).propose(bodyFor(P));
+  assert.equal(suspension(unobserved), undefined); assert.equal(unobserved.fetches.length, 1);
 });
 
 test('restart under a host stop with the client admitted: verifyDeal returns its readback with seller, session-signer and fetch counters at 0 and suspends queued work', async t => {
@@ -338,9 +339,9 @@ test('a stop refusal from the effect boundary of the wallet that reaches the con
   }
 });
 
-test('a stopped public protocolRecheck or agreementSubmit given {operationId, token} suspends queued work before it refuses, and lifting the stop alone starts none of it', async t => {
-  for (const method of ['protocolRecheck', 'agreementSubmit']) {
-    const s = await storedWorld(t, { paid: true }); queueWork(s);
+test('a stopped public protocolRecheck or agreementSubmit given {operationId, token} records the suspension before it refuses, with or without queued work, and lifting the stop alone starts none of it', async t => {
+  for (const [method, queued] of [['protocolRecheck', true], ['agreementSubmit', true], ['protocolRecheck', false], ['agreementSubmit', false]]) {
+    const s = await storedWorld(t, { paid: true }); if (queued) queueWork(s);
     // The queued agreement submit takes this lane first; without the suspension, verifyDeal would continue into it.
     const journal = s.p.config.walletAgreement.journal, lock = journal.withWalletLock, agreementLanes = [];
     journal.withWalletLock = (key, work) => { if (key.startsWith('plugin/agreement/')) agreementLanes.push(key); return lock(key, work); };

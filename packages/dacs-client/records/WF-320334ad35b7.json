@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client entry point when the third part is carried up into the fourth",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "38ae9ef1cfe56d7f17fbb5e9c90fb54f6fda48cf",
+      "after": "38ae9ef1cfe56d7f17fbb5e9c90fb54f6fda48cf"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-320334ad35b7.json"
+  ],
+  "note": "Both sides of the merge recorded this file and git merged them without a conflict; this record names the merged copy, which keeps both sides' changes. No file other than this record changes."
+}

@@ -142,6 +142,12 @@ test('one table drives every directory created by this adapter under dataDirecto
   assert.deepEqual(retried.map((event) => relative(directory, event.path)), ['effects', '']);
 });
 
+test('initHistory reports a failed sync with the directory in its message and the filesystem error as cause and code', async (t) => {
+  const missing = join(newDirectory(t), 'effects');
+  const io = { ...DEFAULT_HISTORY_IO, mkdir: async () => {} };
+  await assert.rejects(initHistory(missing, io), (error) => error.message.includes(missing) && error.cause?.code === 'ENOENT' && error.code === 'ENOENT' && error.syscall === undefined && error.path === undefined);
+});
+
 test('restart cuts around sequence allocation and publication: an identical existing record from our own prior run is idempotent and grants no new send, and a conflicting one refuses eb_persist_failed with zero transmissions; when a directory sync throws after the link, the record stays unacknowledged and the pass transmits nothing; retry re-syncs the existing identical record before acknowledgement, with transmission only after a successful sync; run the same failure-then-retry cut for the lane directory and its parent, counting at least one sync on each existing-record branch', async (t) => {
   // A listing that hides the newest record, as allocation sees after a restart cut: the allocated sequence already exists.
   const staleList = (control) => async (path) => {

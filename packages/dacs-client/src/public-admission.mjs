@@ -43,6 +43,12 @@ function readAdmission(options) {
   return { binding: admission.binding, currentLocal: admission.currentLocal };
 }
 
+// `passiveOnly` is exactly true or absent.
+function readPassiveOnly(options) {
+  if (options.passiveOnly !== undefined && options.passiveOnly !== true) throw new TypeError('passive_only_invalid');
+  return options.passiveOnly === true;
+}
+
 // Step 3: the wire's binding check, bounded by the read deadline. The timer is
 // cleared on every path; a late answer finds the race already settled. Returns
 // the canonical text of the connection that was checked, taken before the
@@ -104,7 +110,9 @@ async function callAdmitted(original, receiver, args, admission, purchase, hostS
  * again in the same synchronous step, then invokes the original once with its receiver and arguments. When either stop read refuses, or the
  * original rejects with a host stop refusal, `onStopRefused(original, name, args, refusal)` runs before the refusal is thrown. `actionsAdmitted` is a construction-time snapshot, never
  * authority. `onCreated(publicObject, original)` runs once after construction.
- * Throws TypeError(admission_required | admission_input_untrusted | stop_seam_invalid) and, for purchase factories, OperationError(runtime_unsupported) before building anything.
+ * When `hostStop` is set, `passiveOnly: true` builds the object from the names in `passive` and the non-function members only: no other function is wrapped or exposed.
+ * Throws, in this order and before building anything: TypeError(admission_required | admission_input_untrusted); for purchase factories, OperationError(runtime_unsupported);
+ * TypeError(stop_seam_invalid); and when `hostStop` is set, TypeError(passive_only_invalid) for a `passiveOnly` that is neither true nor absent.
  * Wrapped calls reject with OperationError(profile_not_admitted) carrying the cause, or with writes_stopped, stop_check_failed or stop_check_invalid, or runtime_unsupported or the original's own error.
  */
 export function admitPublicFactory(factory, { passive = [], purchase = false, hostStop = false, onStopRefused, onCreated } = {}) {
@@ -113,13 +121,17 @@ export function admitPublicFactory(factory, { passive = [], purchase = false, ho
     const admission = readAdmission(options);
     if (purchase) assertPurchaseRuntime(process.version);
     const gate = createHostStop(hostStop ? options.stopped : undefined);
+    const passiveOnly = hostStop && readPassiveOnly(options);
     const factoryOptions = { ...options };
     factoryOptions.admission = admission;
     const original = factory(factoryOptions);
-    const members = Object.entries(original).map(([name, value]) => [name,
-      typeof value !== 'function' || passiveNames.has(name) ? value : function admittedAction(...args) {
+    const members = Object.entries(original).flatMap(([name, value]) => {
+      if (typeof value !== 'function' || passiveNames.has(name)) return [[name, value]];
+      if (passiveOnly) return [];
+      return [[name, function admittedAction(...args) {
         return callAdmitted(value, original, args, admission, purchase, gate, onStopRefused && (refusal => onStopRefused(original, name, args, refusal)));
-      }]);
+      }]];
+    });
     const publicObject = Object.freeze({ ...Object.fromEntries(members), actionsAdmitted: purchaseActionsAdmitted() });
     if (hostStop) bindHostStop(publicObject, options.stopped);
     onCreated?.(publicObject, original);

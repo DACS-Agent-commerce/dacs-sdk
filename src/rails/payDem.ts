@@ -1336,6 +1336,44 @@ function confirmedEditDebitOs(
     : null;
 }
 
+/**
+ * Payer's real total debit (amount plus the fee the chain removed) of a confirmed native send
+ * record, in OS, as a decimal string. The unit comes from the native payload's own encoding: a
+ * string payload is post-fork OS and a number payload is pre-fork DEM. Pure: no I/O.
+ * @returns null unless the record is `confirmed`, within the observation limits, and binds exactly
+ *   this hash, nonce, block, payer, payee and amount, with one removal and one credit of the amount.
+ */
+export function payDemConfirmedTotalDebitOs(record: unknown, expected: Readonly<{
+  txHash: string; nonce: number; blockNumber: number; payer: string; payee: string; amountOs: string;
+}>): string | null {
+  if (!transactionRecordWithinLimits(record) || !/^(?:0|[1-9][0-9]*)$/.test(expected.amountOs)) return null;
+  let snapshot: unknown;
+  try {
+    snapshot = snapshotCanonicalJsonRead(record, "pay-dem confirmed record");
+  } catch {
+    return null;
+  }
+  const identity = transactionIdentityBinding(snapshot, {
+    signedHash: expected.txHash,
+    signedNonce: expected.nonce,
+  });
+  if (identity.status !== "bound") return null;
+  const transaction = identity.transaction;
+  const payload = (transaction.content as { data?: [unknown, { args?: unknown[] }?] }).data?.[1]?.args?.[1];
+  if (transaction.status !== DEMOS_EXECUTED_RECORD_STATUS ||
+      confirmedNonce(transaction.blockNumber) !== expected.blockNumber ||
+      (typeof payload !== "string" && typeof payload !== "number")) return null;
+  const binding = {
+    payer: expected.payer,
+    payee: expected.payee,
+    amountOs: BigInt(expected.amountOs),
+    nonce: expected.nonce,
+    postFork: typeof payload === "string",
+  };
+  if (!nativeTransferBodyMatches(transaction, binding, "confirmed")) return null;
+  return confirmedEditDebitOs(transaction, binding)?.toString() ?? null;
+}
+
 /** The confirmed transfer's real total debit and the fee its record declares, both in OS. */
 interface ConfirmedDebit {
   /** Amount plus what the chain debits as fee: the payer's balance removals. */
