@@ -416,7 +416,7 @@ The public diagnostics are `status`, `portalOperation`, `portalEvidence` and `ve
 
 ### Protocol
 
-The protocol pass-through methods are exactly `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`, `observeReportedPayment`, `assertSellerReceiptReservation` and `readRetainedNativePaymentLane`. `assertSellerReceiptReservation` is synchronous and refuses a missing, unequal or over-cap seller receipt with seller_receipt_reservation_insufficient. Methods outside this list refuse with `profile_not_admitted` before host effects. No caller option lifts the action hold.
+The protocol pass-through methods are exactly `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`, `observeReportedPayment`, `assertSellerReceiptReservation` and `readRetainedNativePaymentLane`. The seller receipt reservation check is synchronous and refuses a missing, unequal or over-cap seller receipt with seller_receipt_reservation_insufficient. Methods outside this list refuse with `profile_not_admitted` before host effects. No caller option lifts the action hold.
 
 ### Writers
 
