@@ -27,6 +27,8 @@ export function party(seed) {
 export const encode = (payload, signer, domain) => Buffer.from(canonicalize({ payload, signature: signer.sign(Buffer.from(domain + canonicalize(payload))).toString('base64url') })).toString('base64url');
 export const code = (expected) => (error) => error.code === expected;
 export const PUBLIC_ENDPOINT = 'https://seller.example.test';
+/** The explicit receipt fee ceilings and mandate cap a native protocol factory needs; a test that reaches no payment gate uses these. */
+export const FIXTURE_RECEIPT_LIMITS = Object.freeze({ receiptFeeCeilings: Object.freeze({ payFeeCeilingOs: '1000', anchorFeeCeilingOs: '2000' }), buyerMandateCapOs: '100000000000' });
 export const validReceipt =Object.assign(async () => 'valid', { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
 /** A transport that reaches no seller: every request fails before an answer. */
 export const unreachableSeller = async () => { throw new TypeError('TEST no seller is reachable'); };
@@ -166,7 +168,7 @@ export async function purchase(t, w, { policy = () => ({ expiresAt: T0 + 1800000
     ops = createOperationStore({ db, handoffSecret: 'TEST-wire-fixture-'.repeat(3), now: () => w.state.time });
     service = withSeller(seller, () => createProtocolPurchases({
       db, ops, admission: w.admission, now: () => w.state.time, store: createSqlitePurchaseStore(), coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {
-        } }, dacsProtocol: config
+        } }, dacsProtocol: config, ...FIXTURE_RECEIPT_LIMITS
     }));
   };
   reopen();

@@ -2,6 +2,7 @@ import * as moduleApi from 'node:module';
 import { sellerSessionDelegationSigningBytes } from '@kynesyslabs/dacs/wire';
 import { contentHash, finalityCommitmentAddress, fixedPriceAgreementLogicalAddress } from '@kynesyslabs/dacs';
 import { storedWorld, PATHS, bodyFor } from './stored-request-fixture.mjs';
+import { FIXTURE_RECEIPT_LIMITS } from './wire-client-fixture.mjs';
 import { createSqlitePurchaseStore } from '../../src/seams/purchase-store-not-wired.mjs';
 import { agreementTerms } from '../../src/dacs/purchase-protocol.mjs';
 import { signatureCommitmentAnchor } from '../../src/dacs/commit-on-signature.mjs';
@@ -64,7 +65,7 @@ async function run(s, kind, beforeRun, configOverrides, stopped) {
     };
   }
   const service = createProtocolPurchases({ db: p.db, ops: p.ops, dacsProtocol: config, admission: w.admission,
-    coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, store: createSqlitePurchaseStore(), now: () => w.state.time, stopped });
+    coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, store: createSqlitePurchaseStore(), now: () => w.state.time, stopped, ...FIXTURE_RECEIPT_LIMITS });
   await beforeRun(s, state, service);
   let result;
   if (kind === 'payment') {

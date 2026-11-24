@@ -18,7 +18,7 @@ const NOW = Date.UTC(2030, 0, 1), HASH = 'a'.repeat(64), IDENTITY = 'f'.repeat(6
 const PAYER = '0x' + 'b'.repeat(64), PAYEE = '0x' + 'c'.repeat(64);
 const diagnostics = ['status', 'portalOperation', 'portalEvidence', 'verifyDeal'];
 const readers = ['network', 'pinnedIdentity', 'networkIdentity', 'observePassiveTransfer'];
-const passive = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment'];
+const passive = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'assertSellerReceiptReservation'];
 const codes = ['purchase_store_persistent_attachment', 'purchase_store_unsupported_attachment',
   'purchase_store_unsupported_journal_mode', 'purchase_store_unsupported_synchronous',
   'purchase_store_unsupported_temp_journal_mode'];
@@ -234,6 +234,7 @@ probe('README protocol pass-through behavior and every held method', passive.con
   assert.equal(await protocol.readIssued({}), null);
   assert.equal(await protocol.readIssuedPayment({}, HASH), null);
   assert.equal(await protocol.observeReportedPayment(HASH), null);
+  assert.throws(() => protocol.assertSellerReceiptReservation({ terms: {}, state: { protocol: {} } }), { code: 'seller_receipt_reservation_insufficient' });
   for (const [name, method] of Object.entries(protocol)) {
     if (typeof method === 'function' && !passive.includes(name)) {
       await assert.rejects(method({ id: 'TEST-operation' }, 'TEST-hold'), { code: 'profile_not_admitted' }, name);

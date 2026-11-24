@@ -66,6 +66,7 @@ import { DEVNET_NATIVE_COMMITMENT_MARKER, devnetNativeCommitmentConfig } from '.
 import { BuyerChainReadbackUnsupported, createBuyerChainReadback, POINTER_MISSING, signedCreateBytes, signedCreateFor } from './buyer-chain-readback.mjs';
 import { cutText } from '../util/text.mjs';
 import { settleOnAbort } from '../util/http.mjs';
+import { isRecord, OS_INTEGER } from './chain.mjs';
 
 // Retained native Agreement profile; consumer capabilities are bound in terms.
 export const OFFLINE_AGREEMENT_MODE = 'dacs-sr2-wallet-agreement';
@@ -140,6 +141,30 @@ const sellerSr2CommitmentLimits = (operation) => ({
 export function assertAgreementPaymentHeld(operation) {
   if (usesNativeAgreementPayment(operation)) return;
   if (isOfflineWalletAgreement(operation)) throw new OperationError('agreement_payment_held', 'this offline wallet Agreement profile stops before verified commitment; payment, claims and completion remain held');
+}
+
+// The seller receipt: the seller's signed ordinary commit answer declares `sellerReceipt: {agreementHash, reservedMaximumOs}`, the
+// most the buyer reserves for this Agreement. It is a contract budget, not proof of held funds. Pay opens only when it equals the
+// buyer's own price plus its Pay and anchor fee ceilings and stays within the buyer's mandate cap.
+const RECEIPT_FEE_CEILING_NAMES = ['anchorFeeCeilingOs', 'payFeeCeilingOs'];
+const SELLER_RECEIPT_NAMES = ['agreementHash', 'reservedMaximumOs'];
+const AGREEMENT_HASH_TEXT = /^[0-9a-f]{64}$/;
+const isOsText = (value) => typeof value === 'string' && OS_INTEGER.test(value);
+const hasExactly = (value, names) => isRecord(value) && Object.keys(value).sort().join() === names.join();
+const receiptRefusal = () => new OperationError('seller_receipt_reservation_insufficient',
+  'the seller receipt is missing, malformed, bound to another Agreement, unequal to the price plus both fee ceilings, or above the mandate cap; nothing was reserved, offered or signed');
+// The native composition's two explicit ceilings and mandate cap, each canonical decimal OS text. Nothing is defaulted or inferred.
+function receiptLimitsConfig(receiptFeeCeilings, buyerMandateCapOs) {
+  if (!hasExactly(receiptFeeCeilings, RECEIPT_FEE_CEILING_NAMES) || !RECEIPT_FEE_CEILING_NAMES.every((name) => isOsText(receiptFeeCeilings[name]))) {
+    throw new OperationError('receipt_fee_ceilings_invalid', 'native payment needs receiptFeeCeilings: exactly { payFeeCeilingOs, anchorFeeCeilingOs }, each canonical decimal OS text');
+  }
+  if (!isOsText(buyerMandateCapOs)) throw new OperationError('buyer_mandate_cap_invalid', 'native payment needs buyerMandateCapOs as canonical decimal OS text');
+  return Object.freeze({ payFeeOs: BigInt(receiptFeeCeilings.payFeeCeilingOs), anchorFeeOs: BigInt(receiptFeeCeilings.anchorFeeCeilingOs), capOs: BigInt(buyerMandateCapOs) });
+}
+// A copy of the receipt when it is exactly the two members, canonical, and names this Agreement; otherwise null.
+function boundSellerReceipt(receipt, agreementHash) {
+  if (!hasExactly(receipt, SELLER_RECEIPT_NAMES) || !AGREEMENT_HASH_TEXT.test(receipt.agreementHash) || receipt.agreementHash !== agreementHash || !isOsText(receipt.reservedMaximumOs)) return null;
+  return { agreementHash: receipt.agreementHash, reservedMaximumOs: receipt.reservedMaximumOs };
 }
 
 // One line per stage; the layers below keep transfer, DACS purchase evidence,
@@ -464,7 +489,8 @@ const EFFECT_ROUTE_PATHS = new Set(DACS_SELLER_HTTP_ROUTES.filter(route => route
 // that need one refuse with buyer_access_closed).
 // `stopped` is the host's synchronous stop check (host-stop.mjs): every place that reads the hold also reads it, so
 // while it answers stopped no request is signed with the session key and none is sent.
-export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, stopped }) {
+// `receiptFeeCeilings` and `buyerMandateCapOs` are the host's explicit seller receipt inputs; a native payment composition needs both.
+export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, stopped, receiptFeeCeilings, buyerMandateCapOs }) {
   const hostStop = createHostStop(stopped);
   const assertPurchaseOpen = () => { assertPurchaseActionsAdmitted(); hostStop.assert(); };
   const { transaction } = purchaseStore(store);
@@ -518,6 +544,17 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   if (nativeEvidence && !nativePayment) throw new TypeError('native payment evidence requires the existing native Agreement/payment capability');
   if (nativeDemDelivery && (!demDeliveryContext || !nativeEvidence)) throw new TypeError('native DEM delivery requires DEM context and native payment evidence');
   if (nativeEvidence && nativeEvidence.rpcOrigin !== new URL(walletConfig.rpcUrl).origin) throw new TypeError('native evidence and the approved native wallet must use the same owned fixture origin');
+  const receiptLimits = dacsProtocol?.nativeAgreementPayment ? receiptLimitsConfig(receiptFeeCeilings, buyerMandateCapOs) : null;
+  // Synchronous and read-only: refuses unless this native composition's operation carries a seller receipt bound to its Agreement
+  // that equals its approved price plus both fee ceilings and stays within the mandate cap.
+  function assertSellerReceiptReservation(operation) {
+    if (!receiptLimits || !usesNativeAgreementPayment(operation)) throw receiptRefusal();
+    const p = operation.state?.protocol, priceOs = operation.terms.price?.amountOs;
+    const receipt = boundSellerReceipt(p?.sellerReceipt, p?.agreement?.hash);
+    if (!receipt || !isOsText(priceOs)) throw receiptRefusal();
+    const reservedOs = BigInt(receipt.reservedMaximumOs);
+    if (reservedOs !== BigInt(priceOs) + receiptLimits.payFeeOs + receiptLimits.anchorFeeOs || reservedOs > receiptLimits.capOs) throw receiptRefusal();
+  }
   const anchors = null; // No fixture substrate remains.
   const unavailable = () => new OperationError('dacs_protocol_unavailable', 'source-bound DACS protocol purchases are not configured on this server; nothing was prepared');
 
@@ -1332,8 +1369,11 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     }
     const readback = await readCurrentCommitment(current, { answer: commitAnswer });
     if (readback.status === 'verified') {
+      // Only the wire-verified ordinary answer this call obtained can carry the receipt; the chain readback never supplies one.
+      const sellerReceipt = boundSellerReceipt(commitAnswer?.status === 'committed' ? commitAnswer.sellerReceipt : undefined, current.state.protocol.agreement.hash);
       return note(current, 'commitment', 'verified', null, {
         stage: 'seller-committed',
+        ...(sellerReceipt ? { sellerReceipt } : {}),
         commitment: { address: readback.address, ref: readback.ref, contentHash: readback.contentHash, signer: readback.signer, committedAt: readback.committedAt, verifiedAt: new Date(now()).toISOString(), substrate: 'source-native-one-node', ...anchoredTupleMembers(readback.anchored) },
         ...chainRetained(current, readback.chainSignedCreate ? { [readback.address]: readback.chainSignedCreate } : null),
       }, usesNativeAgreementPayment(current) ? { toStatus: 'awaiting_approval' } : {});
@@ -1681,6 +1721,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     },
     // A refused buyer's reported pointer, observed without any journal write.
     observeReportedPayment:(hash)=>sourceCapability?observeTransferReadOnly({sourceCapability,hash}):null,
+    assertSellerReceiptReservation,
     readIssued:async(operation)=>{
       if(!sourceCapability)return null;
       if(!buyerAccess)assertBuyerAccess(operation.terms.buyer.wallet,operation);
@@ -1838,6 +1879,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       return nativePayment.withWorkflow(operation, () => nativePayment.withPaymentLane(operation, async () => {
         const current = ops.get(operation.accountId, operation.id);
         if (current.state.protocol.nativePaymentLaneIssued) throw new OperationError('native_payment_already_issued', 'the wallet guard was delivered once; readback only, never resend');
+        assertSellerReceiptReservation(current);
         const record = await nativePayment.readLane(current, key);
         // Consume before releasing this read to the packaged wallet. A lost
         // response or rejected/unknown wallet result never grants another send.

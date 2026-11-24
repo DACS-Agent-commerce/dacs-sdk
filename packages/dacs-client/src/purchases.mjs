@@ -739,6 +739,16 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         return { operation, payload: null, refused: error.code };
       }
     }
+    // A native payment opens only on the seller's signed receipt for exactly this price and the buyer's ceilings and cap.
+    if (usesNativeAgreementPayment(operation)) {
+      try {
+        protocol.assertSellerReceiptReservation(operation);
+      } catch (error) {
+        if (!(error instanceof OperationError)) throw error;
+        ops.record(operation.id, 'handoff_refused', { reason: error.code });
+        return { operation, payload: null, refused: error.code };
+      }
+    }
     const nonceFence = await chain.getAddressNonce(t.buyer.wallet);
     const expectedNonce = nonceFence + 1;
     const payload = buildNativeTransferPayload({
@@ -766,6 +776,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       // A concurrent handoff may have saved first; its coordinates win.
       const existing = coordinates.get(operation.id);
       if (existing) return existing;
+      // The row this transaction writes, not the snapshot checked above, must still carry a usable receipt.
+      if (usesNativeAgreementPayment(operation)) protocol.assertSellerReceiptReservation(ops.get(operation.accountId, operation.id));
       assertNoUnresolved(t.buyer.wallet, operation.id);
       const consumed = coordinates.walletConsumedSenderNonce(t.buyer.wallet, t.network, expectedNonce)
         .find(({ operationId }) => sameDomain(ops.get(operation.accountId, operationId)?.terms.domain, t.domain));

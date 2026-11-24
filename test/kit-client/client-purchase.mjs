@@ -18,7 +18,7 @@ import { kitEndpointProof } from '../../packages/dacs-client/test/helpers/kit-en
 import { withSeller } from '../../packages/dacs-client/test/helpers/seller-stand-in.mjs';
 import { bindFixture, createAuthorityFixture } from '../../packages/dacs-client/test/fixtures/tp1-authority-reader.mjs';
 import { createEphemeralWallet } from '../../packages/dacs-client/test/fixtures/wallet.mjs';
-import { NOW, buyer, seller } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
+import { NOW, buyer, seller, RECEIPT_FEE_CEILINGS } from '../../packages/dacs-seller/test/helpers/protocol-fixture.mjs';
 import { createSellerAgentClient } from '../../packages/dacs-seller/src/dacs/seller-http.mjs';
 import { clientAuthFor } from './kit-host.mjs';
 import { FIXTURE_ENDPOINT } from '../../packages/dacs-seller/test/helpers/wire-buyer.mjs';
@@ -32,6 +32,8 @@ const COMMITMENT_AUTHORITY = 'TEST-RUN-kitclient0';
 const CONTEXT_AUTHORITY = 'test:kit-client-operator';
 const HANDOFF_SECRET = 'TEST-'.repeat(8);
 const IDEMPOTENCY_KEY = 'TEST-idempotency';
+// The buyer's mandate cap: the native composition needs one, and this purchase stops before any payment gate.
+const MANDATE_CAP_OS = '100000000000';
 
 /** The purchase world: the public service, the stores it writes and a count of everything it sends or does. */
 export async function purchaseWorld(t, { host, listing }) {
@@ -91,6 +93,7 @@ export async function purchaseWorld(t, { host, listing }) {
     expected: { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: native.source.pins.endpoint, transportAuthority: 'TEST-owner' },
     transportOwner: { getContext: unused('evidence context'), acquireConnectionFence: unused('evidence fence') } });
   const protocol = withSeller(reachHost, () => createProtocolPurchases({ db, ops, coordinates, store, admission, now, buyerAccess: { assertWallet() {} },
+    receiptFeeCeilings: RECEIPT_FEE_CEILINGS, buyerMandateCapOs: MANDATE_CAP_OS,
     dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
       nativeSellerCommitment: commitment, nativeAgreementPayment: native.source, sellerTransport,
       nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: native.source.pins.endpoint, sourceCapability: evidenceSource }),
