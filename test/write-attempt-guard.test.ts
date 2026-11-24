@@ -544,11 +544,14 @@ describe("what the guard leaves alone and what it refuses outright", () => {
     refusing = false;
     const keypair = demos.keypair;
     const unsupported = { name: "WriteAttemptRefusedError", code: "write_attempt_unsupported_signer" };
+    // Newer demosdk versions require `referenceBlock` in the options of `sign`; older ones do not
+    // declare it. A variable (not a literal) satisfies both without an excess-property error.
+    const signOptions = { algorithm: "ed25519" as const, referenceBlock: 1 };
     const aliases = [
       () => demos.tx.signWithAlgorithm("hello", keypair, { algorithm: "ed25519" }),
-      () => demos.transactions.sign(nativeSend(demos), keypair, { algorithm: "ed25519" }),
+      () => demos.transactions.sign(nativeSend(demos), keypair, signOptions),
       () => demos.transactions.signWithAlgorithm("hello", keypair, { algorithm: "ed25519" }),
-      () => demos.DemosTransactions.sign(nativeSend(demos), keypair, { algorithm: "ed25519" }),
+      () => demos.DemosTransactions.sign(nativeSend(demos), keypair, signOptions),
       () => demos.DemosTransactions.signWithAlgorithm("hello", keypair, { algorithm: "ed25519" }),
     ];
     for (const alias of aliases) await expect(alias()).rejects.toMatchObject(unsupported);
