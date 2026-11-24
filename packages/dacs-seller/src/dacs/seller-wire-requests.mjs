@@ -345,6 +345,10 @@ export function wireAuthenticator(wire, agent) {
       if (expired(request)) return refuse(lapse(request), 408);
       if (sessionEnded(request)) return refuse('context_session_terminal', 409);
     },
+    // The session check alone, for an answer written after its attempt ended: `assertPending` no longer holds then.
+    assertSession: (request) => {
+      if (sessionEnded(request)) return refuse('context_session_terminal', 409);
+    },
   });
   return Object.freeze({
     store,

@@ -4,7 +4,7 @@ import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
 // reported explicitly so the model (and user) can see exactly what held.
 import { canonicalize, contentHash, validateListing, purchaseSupport, SDK_PROVENANCE } from './listing.mjs';
 import { addressForClaim } from '../signatures.mjs';
-import { normalizeCatalogObservedAt } from './directory.mjs';
+import { normalizeCatalogObservedAt, DIRECTORY_CONTRACT_CODES } from './directory.mjs';
 
 export class NotConfiguredError extends Error {
   constructor(dependency) {
@@ -38,9 +38,16 @@ export function createListingVerifier({ directory, chain, now = () => Date.now()
     const checks = [];
     const add = (name, ok, detail) => checks.push({ name, ok, ...(detail ? { detail } : {}) });
 
-    const summary = await directory.findSummary({ listingId, version, seller });
+    const refusedAtDirectory = (disposition, check) => ({ listingId, version, seller, transactable: false, eligibility: 'not-transactable', disposition, standardReaderInput: null, checks: [check] });
+    let summary;
+    try {
+      summary = await directory.findSummary({ listingId, version, seller });
+    } catch (error) {
+      if (!DIRECTORY_CONTRACT_CODES.includes(error?.code)) throw error;
+      return refusedAtDirectory('directory-row-invalid', { name: 'directory-row-contract', ok: false, detail: `${error.code}: ${error.message}` });
+    }
     if (!summary) {
-      return { listingId, version, seller, transactable: false, eligibility: 'not-transactable', disposition: 'not-found', standardReaderInput: null, checks: [{ name: 'directory-summary', ok: false, detail: 'listing not in directory catalog' }] };
+      return refusedAtDirectory('not-found', { name: 'directory-summary', ok: false, detail: 'listing not in directory catalog' });
     }
     const detail = await directory.getListingDetail({ listingId, version, seller });
     const detailHash = contentHash(detail);
@@ -71,7 +78,7 @@ export function createListingVerifier({ directory, chain, now = () => Date.now()
     const listing = onChain ? readback.data : detail;
     const { observedAt, fresh: catalogFresh } = checkCatalogObservation(summary.catalogObservedAt, checkedAt);
     add('catalog-observation-fresh', catalogFresh, catalogFresh ? undefined : 'catalog observation older than 24h, in the future or missing; revocation absence cannot be established');
-    const surfaces = [{ kind: 'catalog', status: summary.status, readStatus: 'ok', ...(observedAt !== undefined ? { catalogObservedAt: observedAt } : {}), ...(summary.revocationBinding ? { binding: summary.revocationBinding } : {}) }];
+    const surfaces = [{ kind: 'catalog', status: summary.status, readStatus: 'ok', ...(observedAt !== undefined ? { catalogObservedAt: observedAt } : {}), ...(summary.revocation ? { binding: summary.revocation } : {}) }];
     const standard = await validateListing(listing, {
       now: () => checkedAt,
       revocationSurfaces: surfaces,

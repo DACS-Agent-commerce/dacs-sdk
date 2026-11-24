@@ -41,7 +41,8 @@ else: each Agreement co-signature, commitment, evidence and audit-source
 signature of the seller agent is made inside one pass of the host's effect
 boundary, with the key's effect role. Every answer that carries the Agreement
 co-signature (the first one, a repeat served from the cache and a state read)
-is sent only through a dispatch pass of that boundary.
+is written to the response inside a dispatch pass of that boundary, after the
+pass's checks and before its acknowledgement is recorded.
 
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
@@ -220,7 +221,7 @@ that marker, or with another one, is from an older kit format and is refused
 with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
 or `unreadable`); nothing is migrated. A transport store that still has the
 tables an earlier version created and the kit no longer uses (`peer_slots`,
-`peer_transactions`, `peer_nonces`, `peer_nonce_retention`) drops them when they are all
+`peer_transactions`, `peer_nonces`, `peer_nonce_retention`, `kit_context_reservations`) drops them when they are all
 empty, and is refused with `kit_store_format_unsupported` and left unchanged when any holds a
 row. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with

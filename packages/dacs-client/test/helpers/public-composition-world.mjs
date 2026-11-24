@@ -10,6 +10,8 @@ import { createCoordinateStore, createSqlitePurchaseStore, createProtocolPurchas
   createPurchaseOperations, createPurchaseChallenges, createLocalPurchaseAccount, createNativePaymentEvidenceConsumer, createSourceDemoSellerTransport } from '../../src/index.mjs';
 import { createDevnetNativeCommitmentCapability } from '../../src/devnet-demo/commitment-consumer.mjs';
 import { OFFLINE_AGREEMENT_MODE } from '../../src/dacs/protocol-purchases.mjs';
+import { buildUnsignedIdentityBundle } from '../../src/dacs/listing.mjs';
+import { agreementChallengeScope } from '../../src/dacs/agreement-context-consumer.mjs';
 import { createDevnetSettlementTransport, DEVNET_SETTLEMENT_POLICY } from '../../src/wallet/devnet-native-transport.mjs';
 import { readOnlyBoundary } from './read-only-boundary.mjs';
 import { openDatabase } from './purchase-integrity-database.mjs';
@@ -27,6 +29,7 @@ const AUTHORITY = 'TEST-RUN-composition0';
 const OPERATOR_CONTEXT_AUTHORITY = 'test:composition-operator';
 const THIRD_PARTY_SIGNER = 'did:demos:agent:' + 'd'.repeat(64);
 const HANDOFF_NONCE_FENCE = 6;
+const SELLER_NONCE = 'e'.repeat(64);
 const HANDOFF_SECRET = 'TEST-'.repeat(8);
 export const HANDOFF_TTL_MS = 24 * 60 * 60 * 1000;
 const APPROVAL_ORIGIN = 'https://portal.example.invalid';
@@ -107,7 +110,7 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   const unused = (what) => () => { throw new Error(`TEST ${what} not in scope`); };
   const session = createEphemeralWallet();
   const sellerTransport = createSourceDemoSellerTransport({ authority: AUTHORITY, sessionSignerFor: () => ({ claim: session.claim, sign: unused('session signing') }),
-    sessionPolicyFor: () => ({ expiresAt: NOW + 1_800_000 }), endpointProofFor: unused('endpoint proof') });
+    sessionPolicyFor: () => ({ expiresAt: NOW + 1_800_000 }), endpointProofFor: unused('endpoint proof'), effectBoundary: readOnlyBoundary });
   const evidenceSource = createDevnetSettlementTransport({ boundary: readOnlyBoundary, journal: native.journal,
     settlementPublication: { policy: DEVNET_SETTLEMENT_POLICY, artifactKind: 'SettlementEvidence', phase: 'pay-dem', railId: 'demos-native:DEM', phaseIndex: 2, authority: AUTHORITY },
     expected: { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: native.source.pins.endpoint, transportAuthority: 'TEST-owner' },
@@ -131,12 +134,21 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
   };
   const prepare = (idempotencyKey = 'TEST-key') => service.prepare({ accountId, listingId: 'TEST-listing', version: 1, seller: seller.claim,
     idempotencyKey, walletAddress: wallet.address, protocol: OFFLINE_AGREEMENT_MODE });
-  // Prepares a purchase and has the buyer present their identity and sign the seller session delegation; returns what agreementPlan needs.
+  // Prepares a purchase, has the buyer sign the seller session delegation, and saves the accepted delegation and the presentation
+  // request the bootstrap leaves over a seller challenge (no test here reaches a seller, so none is asked); returns what
+  // agreementPlan needs, with the buyer's presentation signature.
   const preparedWithIdentity = async () => {
     const { operation } = await prepare();
     const token = ops.handoffTokenFor(operation.id);
-    const { message, delegation } = await service.agreementIdentity({ operationId: operation.id, token, address: wallet.address });
-    return { operationId: operation.id, token, signature: wallet.signHex(message), delegationSignature: wallet.signHex(delegation.message) };
+    const { operation: requested, delegation } = await service.agreementIdentity({ operationId: operation.id, token, address: wallet.address });
+    const sessionDelegation = { payload: delegation.payload, signature: wallet.signBytes(Buffer.from(delegation.message, 'utf8')).toString('base64url') };
+    const identity = buildUnsignedIdentityBundle({ address: wallet.address, presentedAt: NOW, sessionNonce: SELLER_NONCE });
+    // The challenge scope the delegation step saves with the accepted delegation.
+    const challengeScope = agreementChallengeScope({ operation: requested, buyer: identity.bundle.presentedBy, generatedAt: NOW });
+    const protocol = requested.state.protocol;
+    ops.transition(requested.id, requested.status, requested.status, { state: { ...requested.state, protocol: { ...protocol, sessionDelegation, challengeScope, identity, revision: (protocol.revision ?? 0) + 1,
+      progressGeneration: (protocol.progressGeneration ?? protocol.revision ?? 0) + 1 } }, event: 'TEST-identity-requested', data: {} });
+    return { operationId: operation.id, token, signature: wallet.signHex(identity.message) };
   };
   const tableCounts = () => Object.fromEntries(['operations', 'operation_events', 'write_coordinates'].map((name) => [name, db.prepare(`SELECT count(*) n FROM ${name}`).get().n]));
   // Seeds a saved purchase row directly, as a host database would hold it after earlier work.

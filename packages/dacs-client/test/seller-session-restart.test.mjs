@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canonicalize } from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
-import { world, purchase, code, setPurchaseAdmission, T0 } from './helpers/wire-client-fixture.mjs';
+import { sellerWorld, purchase, challengeSeller, code, setPurchaseAdmission, T0 } from './helpers/wire-client-fixture.mjs';
 import { createSellerSessionKeys } from '../src/dacs/seller-session-keys.mjs';
 
 const CLAIM_PREFIX = 'did:demos:agent:';
@@ -21,17 +21,22 @@ const verifiesUnder = (claim, bytes, signature) => verify(null, bytes, createPub
 const SESSION_EVENTS = ['seller_request_failed', 'protocol_commit-request', 'protocol_native-evidence', 'protocol_agreement-context'];
 
 // A purchase whose session key comes from a registry; `restart` stands for a new process: an empty registry, then a fresh key, over the same saved row.
-async function openPurchase(t, { plan = false } = {}) {
-  const w = await world(t), session = { keys: createSellerSessionKeys() }, signed = [];
-  const p = await purchase(t, w, { sessionSignerFor: (operation) => {
+// Without `plan` it stops after the delegation message, before the wallet's signature is accepted; with it, the seller's challenge is answered and the Agreement planned.
+async function openPurchase(t, { plan = false, challenge = plan } = {}) {
+  const w = await sellerWorld(t), session = { keys: createSellerSessionKeys() }, signed = [];
+  const p = await purchase(t, w, { seller: challengeSeller(w), sessionSignerFor: (operation) => {
     const signer = session.keys.signerFor(operation);
     return { claim: signer.claim, async sign(bytes) { const signature = await signer.sign(bytes); signed.push({ claim: signer.claim, bytes: Buffer.from(bytes), signature }); w.state.signs.push(Buffer.from(bytes)); return signature; } };
   } });
   session.keys.start(p.op.id);
   const first = await identity(p);
   const old = { payload: first.delegation.payload, signature: buyerSignsDelegation(w, first.delegation.payload) };
-  const presentation = w.buyer.sign(Buffer.from(first.message)).toString('base64url');
-  if (plan) await p.service.planRequest(first.operation, presentation, old.signature);
+  let presentation;
+  if (challenge) {
+    const { message } = await p.service.agreementDelegation(first.operation, old.signature);
+    presentation = w.buyer.sign(Buffer.from(message)).toString('base64url');
+  }
+  if (plan) await p.service.planRequest(p.get(), presentation);
   return { w, p, session, signed, old, presentation,
     restart() { session.keys = createSellerSessionKeys(); session.keys.start(p.op.id); p.reopen(); return session.keys; } };
 }
@@ -45,9 +50,11 @@ async function sellerRun(t, kind, keys, beforeRun = () => {}) {
   const { createSourceDemoSellerTransport } = await import('../src/dacs/source-demo-seller-transport.mjs');
   const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');
   const proof = {};
-  const sellerTransport = createSourceDemoSellerTransport({ authority: 'TEST-wire', sessionSignerFor: (operation) => keys.signerFor(operation), sessionPolicyFor: () => ({ expiresAt: T0 + 1800000 }), endpointProofFor: () => proof.value });
+  // The flow's world, with its endpoint proof and its effect boundary, exists only once the flow starts.
+  const effectBoundary = { signerFor: (...args) => proof.boundary.signerFor(...args) };
+  const sellerTransport = createSourceDemoSellerTransport({ authority: 'TEST-wire', sessionSignerFor: (operation) => keys.signerFor(operation), sessionPolicyFor: () => ({ expiresAt: T0 + 1800000 }), endpointProofFor: () => proof.value, effectBoundary });
   const seen = {};
-  const run = sellerFlow(t, kind, async (s, state, service) => { proof.value = s.w.endpointProof; seen.s = s; seen.service = service; await beforeRun(s, service); }, { sellerTransport });
+  const run = sellerFlow(t, kind, async (s, state, service) => { proof.value = s.w.endpointProof; proof.boundary = s.w.options.effectBoundary; seen.s = s; seen.service = service; await beforeRun(s, service); }, { sellerTransport });
   return { run, seen };
 }
 const noSellerTraffic = (s) => {
@@ -86,7 +93,7 @@ test('session_gone_reapprove from the commit and replayed-commit paths, which pr
     noSellerTraffic(seen.s);
   }
   const source = readFileSync(new URL('../src/dacs/protocol-purchases.mjs', import.meta.url), 'utf8');
-  assert.equal(source.match(/\bsellerFor\(/g).length, 5, 'a new sellerFor call site needs its catch reviewed for session_gone_reapprove');
+  assert.equal(source.match(/\bsellerFor\(/g).length, 6, 'a new sellerFor call site needs its catch reviewed for session_gone_reapprove');
 });
 
 test('after a restart, the payment evidence step of a paid purchase returns the purchase with a held attempt naming session_gone_reapprove, and sends and signs nothing', async (t) => {
@@ -358,19 +365,61 @@ test('two concurrent sessionRenewal calls in one process save one pending payloa
   assert.deepEqual(protocolOf(s.p), before);
 });
 
-test('after a renewal, agreementPlan with the old delegation signature is refused peer_delegation_signature_invalid before an Agreement is planned, and is ignored once one is planned; in neither case is anything saved or signed with it', async (t) => {
-  for (const planned of [false, true]) {
-    const s = await openPurchase(t, { plan: planned });
+test('after a renewal, agreementDelegation with the old delegation signature is refused peer_delegation_signature_invalid before the seller is asked, is ignored once the challenge was answered, and is refused invalid_state once an Agreement is planned; in no case is anything saved or signed with it', async (t) => {
+  for (const reached of ['message', 'challenge', 'plan']) {
+    const s = await openPurchase(t, { challenge: reached !== 'message', plan: reached === 'plan' });
     s.restart();
     const { renewal, signature } = await renewed(s);
     await s.p.service.sessionRenewalAccept(s.p.get(), signature);
     const before = eventCount(s.p), saved = protocolOf(s.p), signsBefore = s.signed.length;
-    const retry = s.p.service.planRequest(s.p.get(), s.presentation, s.old.signature);
-    if (planned) assert.ok((await retry).request);
-    else await assert.rejects(retry, code('peer_delegation_signature_invalid'));
+    const retry = s.p.service.agreementDelegation(s.p.get(), s.old.signature);
+    if (reached === 'message') await assert.rejects(retry, code('peer_delegation_signature_invalid'));
+    if (reached === 'challenge') assert.equal((await retry).message, saved.identity.message);
+    if (reached === 'plan') {
+      await assert.rejects(retry, code('invalid_state'));
+      assert.ok((await s.p.service.planRequest(s.p.get(), s.presentation)).request);
+    }
     assert.equal(eventCount(s.p), before);
     assert.deepEqual(protocolOf(s.p), saved);
     assert.deepEqual(protocolOf(s.p).sessionDelegation, { payload: renewal.delegation.payload, signature });
     assert.equal(s.signed.length, signsBefore);
   }
+});
+
+test('agreementDelegation after a restart whose saved delegation names a gone key answers session_gone_reapprove before the delegation is accepted, a seller request or a session signature', async (t) => {
+  for (const challenge of [false, true]) {
+    const s = await openPurchase(t, { challenge }), before = eventCount(s.p), saved = protocolOf(s.p), signsBefore = s.signed.length;
+    s.restart();
+    await assert.rejects(s.p.service.agreementDelegation(s.p.get(), s.old.signature), code('session_gone_reapprove'));
+    assert.equal(eventCount(s.p), before);
+    assert.deepEqual(protocolOf(s.p), saved);
+    assert.equal(s.signed.length, signsBefore);
+  }
+});
+
+test('a renewal before the delegation was accepted: identityRequest returns the renewed payload with its own message, and agreementDelegation without a signature accepts the renewed delegation only after the wire verifies it again', async (t) => {
+  const s = await openPurchase(t);
+  await assert.rejects(s.p.service.agreementDelegation(s.p.get()), code('bad_signature'));
+  s.restart();
+  const { renewal, signature } = await renewed(s);
+  await s.p.service.sessionRenewalAccept(s.p.get(), signature);
+  const again = await identity(s.p);
+  assert.deepEqual(again.delegation.payload, renewal.delegation.payload);
+  assert.deepEqual(Buffer.from(again.delegation.message), delegationBytes(renewal.delegation.payload));
+  // A saved signature that does not verify is never used: the wire's check runs again before the seller is asked.
+  const row = s.p.get(), forged = s.w.other.sign(delegationBytes(renewal.delegation.payload)).toString('base64url');
+  s.p.ops.transition(row.id, row.status, row.status, { state: { protocol: { ...row.state.protocol, sessionDelegation: { payload: renewal.delegation.payload, signature: forged }, revision: (row.state.protocol.revision ?? 0) + 1 } }, event: 'test_signature_changed', data: {} });
+  const signsBefore = s.signed.length, before = eventCount(s.p);
+  await assert.rejects(s.p.service.agreementDelegation(s.p.get()), code('peer_delegation_signature_invalid'));
+  assert.equal(s.signed.length, signsBefore);
+  assert.equal(eventCount(s.p), before);
+  assert.equal(protocolOf(s.p).challengeScope, undefined);
+  const restored = s.p.get();
+  s.p.ops.transition(restored.id, restored.status, restored.status, { state: { protocol: { ...restored.state.protocol, sessionDelegation: { payload: renewal.delegation.payload, signature }, revision: (restored.state.protocol.revision ?? 0) + 1 } }, event: 'test_signature_restored', data: {} });
+  const { message } = await s.p.service.agreementDelegation(s.p.get());
+  assert.deepEqual(protocolOf(s.p).sessionDelegation, { payload: renewal.delegation.payload, signature });
+  assert.equal(message, protocolOf(s.p).identity.message);
+  assert.deepEqual([...new Set(s.signed.map((entry) => entry.claim))], [`${CLAIM_PREFIX}${renewal.delegation.payload.sessionPublicKey}`]);
+  await s.p.service.planRequest(s.p.get(), s.w.buyer.sign(Buffer.from(message)).toString('base64url'));
+  assert.notEqual(protocolOf(s.p).planned, undefined);
 });

@@ -195,6 +195,8 @@ async function generatedSetup(options: {
     const filename = join(target, "src", name + ".ts");
     const source = (await readFile(filename, "utf8"))
       .replaceAll("import.meta.url", JSON.stringify(pathToFileURL(filename).href))
+      // CommonJS has no import.meta; the authority command that resolves a package path never runs here.
+      .replaceAll("import.meta.resolve(", "require.resolve(")
       .replace("main().catch(", "return main().catch(");
     const compiled = ts.transpileModule(source, {
       compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },

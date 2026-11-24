@@ -938,7 +938,11 @@ and helpers outside these boundaries must be called with their documented input 
   than its limit (64 KiB for a request, 512 KiB for an answer, by the view's
   own length) is refused as its admission refuses it (`bad_json` or
   `response_json_rejected`, detail `BYTE-LIMIT-EXCEEDED`) before it is
-  copied, and so before any other check of that call.
+  copied. `checkWireRequest`, `authorizeWireRequest` and
+  `admitPreAgreementRequest` refuse it after reading the check and copying
+  its records, and before the TP-1 binding or any check of the request;
+  `verifyWireResponse` refuses it after reading the received options and
+  checking the request it sent, and before the binding or the answer's header.
 - **What is not copied:** a binding and an opened envelope are proved by
   membership in a set the SDK holds, and are frozen. A signer is a callback:
   its `claim` is read once and `sign` called once.

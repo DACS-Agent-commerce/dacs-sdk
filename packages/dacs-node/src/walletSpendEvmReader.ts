@@ -10,6 +10,9 @@ type Hex = `0x${string}`;
 /** One block as the chain reported it. */
 export interface DacsWalletSpendEvmBlockV1 { number: number; hash: Hex; timestamp: number }
 
+/** One block read by its hash, with the parent hash that links it to the block below. */
+export interface DacsWalletSpendEvmBlockLinkV1 extends DacsWalletSpendEvmBlockV1 { parentHash: Hex }
+
 /** One event log, with every hex field in lowercase. */
 export interface DacsWalletSpendEvmLogV1 {
   address: Hex;
@@ -35,6 +38,8 @@ export interface DacsWalletSpendEvmReaderV1 {
   assertChain(): Promise<void>;
   readBalance: WalletSpendAuthorityDependenciesV1["readBalance"];
   readBlock(at: "latest" | number): Promise<Readonly<DacsWalletSpendEvmBlockV1>>;
+  /** Rejects `wallet-spend-evm-rpc-response-invalid` unless the answer carries the hash asked for. */
+  readBlockByHash(hash: Hex): Promise<Readonly<DacsWalletSpendEvmBlockLinkV1>>;
   readAuthorizationState(input: Readonly<{ nonce: Hex; blockHash: Hex }>): Promise<boolean>;
   readAuthorizationLogs(input: Readonly<{ nonce: Hex; toBlock: number }>):
     Promise<readonly Readonly<DacsWalletSpendEvmLogV1>[]>;
@@ -265,6 +270,21 @@ export function createDacsWalletSpendEvmReaderV1(input: Readonly<{
     return Object.freeze({ number, hash: hash32(block.hash), timestamp: quantity(block.timestamp) });
   }
 
+  async function readBlockByHash(hash: Hex): Promise<Readonly<DacsWalletSpendEvmBlockLinkV1>> {
+    if (!HASH32_RE.test(hash)) throw new Error(REQUEST_INVALID);
+    const asked = hash.toLowerCase() as Hex;
+    const [, raw] = await Promise.all([
+      assertChain(),
+      rpc("eth_getBlockByHash", [asked, false], LARGE_ANSWER_BYTES),
+    ]);
+    const block = answerObject(raw);
+    const number = quantity(block.number);
+    if (hash32(block.hash) !== asked) invalid();
+    return Object.freeze({
+      number, hash: asked, parentHash: hash32(block.parentHash), timestamp: quantity(block.timestamp),
+    });
+  }
+
   async function readAuthorizationState(
     query: Readonly<{ nonce: Hex; blockHash: Hex }>,
   ): Promise<boolean> {
@@ -342,6 +362,7 @@ export function createDacsWalletSpendEvmReaderV1(input: Readonly<{
     assertChain,
     readBalance,
     readBlock,
+    readBlockByHash,
     readAuthorizationState,
     readAuthorizationLogs,
     readReceipt,

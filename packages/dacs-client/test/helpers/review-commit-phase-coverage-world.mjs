@@ -110,7 +110,7 @@ export async function phaseWorld(t, { create = createSellerAgent, nativeEvidence
   let agent = await build();
   t.after(() => agent?.close());
   const jobId = generateCanonicalJobId();
-  const unsigned = buildUnsignedIdentityBundle({ address: buyer.address, presentedAt: clock, sessionSeed: 'review-commit-phase-buyer' });
+  const unsigned = buildUnsignedIdentityBundle({ address: buyer.address, presentedAt: clock, sessionNonce: sha256Hex('TEST review-commit-phase seller nonce') });
   const buyerBundle = attachIdentityPresentation(unsigned, buyer.signHex(unsigned.message));
   const planned = planAgreement({ jobId, listing, buyerBundle, generatedAt: clock });
   let client = null, store = null;

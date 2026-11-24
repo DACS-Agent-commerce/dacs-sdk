@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
+import { purchaseActionsAdmitted } from '../public-admission.mjs';
 import { bindHostStop, createHostStop, isHostStopRefusal } from '../host-stop.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
@@ -28,7 +29,7 @@ import { isDevnetAgreementTransport, DEVNET_AGREEMENT_KIND } from '../wallet/dev
 import { NotWiredError, OperationError } from '../client-errors.mjs';
 import { verifyDemosSignature, claimForAddress, decodeSignature } from '../signatures.mjs';
 import { attachIdentityPresentation, buildUnsignedIdentityBundle, verifyComponent } from './listing.mjs';
-import { createSellerHttpsClient, sellerEndpointOrigin, SELLER_REQUEST_POLICY, SellerRefusedError, SellerTlsUnusableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
+import { createSellerHttpsClient, sellerEndpointOrigin, SELLER_REQUEST_POLICY, SellerRefusedError, SellerTlsUnusableError, SellerUnavailableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
 import { createSellerHttpsConnector } from './seller-https-connector.mjs';
 import { createDemosSr2WalletBridge, SR2_WALLET_KIND } from './demos-sr2-wallet-bridge.mjs';
 import { DemosSr2Error } from './demos-sr2-adapter.mjs';
@@ -48,7 +49,8 @@ import {
   PROTOCOL_LIMITS,
   protocolSupport,
 } from './purchase-protocol.mjs';
-import { AGREEMENT_CONTEXT_SOURCE, agreementContextConfig, resolveAgreementContext } from './agreement-context-consumer.mjs';
+import { AGREEMENT_CONTEXT_SOURCE, agreementChallengeScope, agreementContextConfig, resolveAgreementContext } from './agreement-context-consumer.mjs';
+import { bootstrapEndPatch, bootstrapOutcomeOf } from './bootstrap-outcome.mjs';
 import { DEM_DELIVERY_CONTEXT_SOURCE, demDeliveryContextConfig, readBackDemDeliveryContext, releaseDemDeliveryContext, resolveDemDeliveryBuyerContext } from './dem-delivery-context-consumer.mjs';
 import { SELLER_SR2_PUBLIC_PROJECTION } from './seller-sr2-agreement-consumer.mjs';
 import { NATIVE_AGREEMENT_PAYMENT, usesNativeAgreementPayment, nativeAgreementPaymentConfig } from './native-agreement-payment-consumer.mjs';
@@ -112,6 +114,8 @@ const AUTHENTICATED_SELLER_TIMEOUT_MS = 240000;
 // composition may set dacsProtocol.planWaitMs (1-90s).
 const PLAN_WAIT_MS = 60000;
 const SESSION_CLAIM_PREFIX = 'did:demos:agent:';
+// The seller's challenge nonce: 32 random bytes as lowercase hex.
+const SESSION_NONCE = /^[0-9a-f]{64}$/;
 const SESSION_GONE_CODE = 'session_gone_reapprove';
 // The plugin's own refusal, never a code the seller chose: a refused seller answer is not this.
 const isSessionGone = (error) => error instanceof OperationError && error.code === SESSION_GONE_CODE;
@@ -143,7 +147,7 @@ export function assertAgreementPaymentHeld(operation) {
 // delivery, completed copies and human acceptance apart.
 export const STAGE_HELP = {
   suspended: 'The seller or this host stopped work on this purchase, so retries are suspended and the outcome stays unknown. Readback still works. To resume, call protocolRecheck with resumeSuspensionId set to the suspension id shown here; admission is checked again first. Do not pay again.',
-  identity: 'Open the approval link and present your wallet identity to start the DACS Agreement. Nothing is signed for payment and nothing is paid at this step.',
+  identity: 'Open the approval link: approve the seller session delegation, then present your wallet identity over the seller\'s challenge to start the DACS Agreement. Nothing is signed for payment and nothing is paid at this step.',
   'agreement-signing': 'Sign the Agreement and its anchor authorization in your wallet (approval link). Nothing is paid at this step.',
   'agreement-anchored': 'Both parties signed the Agreement and it is anchored, but the seller\'s finalized commitment has not been read back yet. Payment is not possible before that; re-open the approval link or call verify_deal to re-check.',
   committed: 'The seller\'s finalized commitment was read back independently of the seller. Approve the payment to the committed payee and amount in the approval link.',
@@ -153,6 +157,7 @@ export const STAGE_HELP = {
   delivered: 'Payment evidence and the delivered test report verify. The completed bundle is not signed yet; call verify_deal to request it.',
   'awaiting-countersignature': 'Payment evidence and delivery verify. Review and counter-sign the completed DACS-5 bundle in your wallet (approval link). Your signature records protocol completion, not satisfaction with the service.',
   completed: 'DACS purchase evidenced, test report delivered, and both completed DACS-5 copies verified. Explicit source-pinned observations only; Vet not performed, finality not independently established, and no human acceptance is recorded.',
+  'bootstrap-failed': 'The purchase bootstrap ended. Start a new purchase to try again, with a new job, seller challenge and wallet delegation. The earlier attempt may have done seller work.',
   'agreement-rejected': 'The DACS Agreement was refused or could not be bound to these terms. Nothing was paid.',
   'claim-rejected': 'Your transfer was observed, but the seller refused the payment claim. Do not pay again; keep the transaction hash.',
   'evidence-rejected': 'The seller\'s DACS-4 payment evidence does not verify for your transaction. Do not pay again; this is recorded as a failed DACS purchase step.',
@@ -332,13 +337,16 @@ function storedRequestBody(record, path) {
  * Creates the request records of one flow, bound to its `{get(), set(next)}` holder over the purchase row (DC-CW5).
  * `start(path, body)` runs in one transaction: it reloads the row, refuses a purchase that no longer authorizes the
  * request, stores the exact bytes (or finds the stored ones) and counts the attempt by revision compare-and-set, then
- * returns the attempt `{text, stored, continuation, newPurchase, check(), finish(answerClass, cause)}` (`stored` is false for reads;
+ * returns the attempt `{text, stored, continuation, newPurchase, check(), refused(error), finish(answerClass, cause)}` (`stored` is false for reads;
+ * `refused(error)` records the suspension for a re-hold or host stop raised before dispatch, while signing or before the first byte;
  * `finish('suspended', cause)` records the suspension with the outcome in one write). Throws StaleProtocolCheck when
  * the row moved on, stored_request_mismatch when the body differs from the stored one, stored_request_corrupt when the
  * stored bytes fail their hash, and invalid_state when the purchase is ended, expired or suspended. A profile_not_admitted
- * refusal, or a host stop refusal (writes_stopped, stop_check_failed, stop_check_invalid, stop_check_timeout), with queued work also records a suspension (K8).
+ * refusal while purchases are held, or a host stop refusal (writes_stopped, stop_check_failed, stop_check_invalid, stop_check_timeout), also records a
+ * suspension: on a route that stores its request whether or not work is queued, on a read route only with queued work.
+ * A purchase keeps its first suspension and its id.
  * `hostStop` is the factory's stop gate: `start` and the pre-send `check()` read it after the hold, and `assertNotStopped(path)` reads it for the wire signer.
- * `suspendQueued(cause)` records one for a caller that saw the re-hold, `resume(id)` clears it.
+ * `suspend(cause)` records one for a caller that saw the stop or re-hold, `resume(id)` clears it.
  * `failure(error)` records a swallowed failure for the operator, retaining its bounded class and cause.
  */
 export function createSellerRequestRecords({ db, ops, transaction, holder, now, hostStop = createHostStop() }) {
@@ -367,29 +375,32 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now, 
   const hasQueuedWork = (protocol) => Boolean(protocol.signatures) || Object.values(protocol.sellerRequests ?? {}).some((record) => UNRESOLVED_CLASSES.has(record.lastClass));
   // One transaction on the latest stored row: a newer save, even one that moved the status or stage, does not drop the suspension.
   // An ended purchase takes no further requests, so nothing is recorded for it.
-  // With an attempt id the route's unknown outcome becomes `suspended`; the attempt counts are untouched, so it stays possibly dispatched.
+  // A purchase keeps its first suspension and its id: a later stop or re-hold writes nothing, and only `resume(id)` clears it.
+  // With an attempt id the route's unknown outcome becomes `suspended`, under the kept suspension when there is one; the attempt
+  // counts are untouched, so it stays possibly dispatched.
   // A stop for an attempt that is no longer the route's unresolved one (a newer attempt replaced or answered it) records nothing.
   function recordSuspension(cause, path, { attemptId, queuedOnly = false } = {}) {
     const saved = transaction(db, () => {
       const seen = holder.get(), row = ops.get(seen.accountId, seen.id), protocol = row?.state.protocol;
       if (!row) throw new StaleProtocolCheck(seen);
-      const prior = protocol.sellerRequests?.[path];
+      const prior = protocol.sellerRequests?.[path], kept = protocol.sellerSuspension;
       const current = prior?.attemptId === attemptId && prior?.lastClass === SELLER_ANSWER_CLASS.UNKNOWN;
-      if ((ENDED_STATUSES.has(row.status) && row.status !== 'settled_verified') || (queuedOnly && !hasQueuedWork(protocol)) || (attemptId && !current)) return row;
+      if ((ENDED_STATUSES.has(row.status) && row.status !== 'settled_verified') || (queuedOnly && !hasQueuedWork(protocol)) || (attemptId ? !current : kept)) return row;
       const outcome = attemptId ? { sellerRequests: { ...protocol.sellerRequests, [path]: { ...prior, lastClass: SELLER_ANSWER_CLASS.SUSPENDED } } } : {};
-      return writeProtocol(row, { ...outcome, sellerSuspension: { id: randomUUID(), cause, path, at: new Date(now()).toISOString() } }, 'seller_suspended', { cause, path });
+      return writeProtocol(row, { ...outcome, sellerSuspension: kept ?? { id: randomUUID(), cause, path, at: new Date(now()).toISOString() } }, 'seller_suspended', { cause, path });
     });
     if (sameProgress(holder.get(), saved)) holder.set(saved);
   }
-  // An observed re-hold or host stop suspends queued work. The refusal keeps its own cause; a failed suspension write
-  // is kept as `error.details.suspensionWriteError`.
+  // An observed re-hold or host stop suspends the purchase on a route that stores its request, whether or not work is
+  // queued; a read route queues no effect, so there only queued work is suspended. `profile_not_admitted` is a re-hold
+  // only while purchases are held: a binding refusal while admitted is not. The refusal keeps its own cause; a failed
+  // suspension write is kept as `error.details.suspensionWriteError`.
+  function noteRefusal(path, error) {
+    if (!((error?.code === 'profile_not_admitted' && !purchaseActionsAdmitted()) || isHostStopRefusal(error))) return;
+    try { recordSuspension(error.code, path, { queuedOnly: !SELLER_REQUEST_POLICY[path]?.durable }); } catch (cause) { error.details = { ...error.details, suspensionWriteError: cause }; }
+  }
   function suspendOnHold(path, work) {
-    try { return work(); } catch (error) {
-      if (error?.code === 'profile_not_admitted' || isHostStopRefusal(error)) {
-        try { recordSuspension(error.code, path, { queuedOnly: true }); } catch (cause) { error.details = { ...error.details, suspensionWriteError: cause }; }
-      }
-      throw error;
-    }
+    try { return work(); } catch (error) { noteRefusal(path, error); throw error; }
   }
   function finishAttempt(path, attemptId, lastClass) {
     const saved = transaction(db, () => {
@@ -409,7 +420,8 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now, 
     if (prior.stage !== stage && !(SELLER_REQUEST_POLICY[path].retained && REPLAY_STAGES.has(stage))) throw new StaleProtocolCheck(row);
     return stored.text;
   }
-  const attemptFor = (path, text, newPurchase, finish) => ({ text, stored: SELLER_REQUEST_POLICY[path].durable, continuation: false, newPurchase, check: () => suspendOnHold(path, () => { const row = reload(); assertAuthorizes(row, path); holder.set(row); }), finish });
+  const attemptFor = (path, text, newPurchase, finish) => ({ text, stored: SELLER_REQUEST_POLICY[path].durable, continuation: false, newPurchase,
+    check: () => suspendOnHold(path, () => { const row = reload(); assertAuthorizes(row, path); holder.set(row); }), refused: (error) => noteRefusal(path, error), finish });
   return {
     /** Clears the suspension named `id` and nothing newer; throws StaleProtocolCheck when the row moved on or holds another id. */
     resume(id) {
@@ -420,8 +432,8 @@ export function createSellerRequestRecords({ db, ops, transaction, holder, now, 
       });
       holder.set(saved);
     },
-    /** Records a re-hold's suspension on the latest row, only when the purchase has queued work; throws StaleProtocolCheck when the row is gone. */
-    suspendQueued: (cause) => recordSuspension(cause, null, { queuedOnly: true }),
+    /** Records the purchase's suspension with `cause` on the latest row, whether or not work is queued, and keeps one already there; throws StaleProtocolCheck when the row is gone. */
+    suspend: (cause) => recordSuspension(cause, null),
     /** Reads the host stop for the wire signer and records a suspension when it refuses; throws the stop's OperationError. */
     assertNotStopped: (path) => suspendOnHold(path, () => hostStop.assert()),
     start(path, body) {
@@ -546,15 +558,15 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     const url = dacsProtocol.sellerEndpoint(operation.terms.seller.claim);
     if (!url) throw new OperationError('seller_agent_unavailable', 'no seller agent endpoint is known for this seller; nothing was signed or paid');
     const requestRecords = createSellerRequestRecords({ db, ops, transaction, holder, now, hostStop });
+    // Before a plan exists only the challenge and context routes can be signed: their Agreement hash is their scope's.
     const p = operation.state.protocol, agreement = p.agreement?.artifact ?? p.planned?.draft;
-    if (!agreement) throw new OperationError('seller_plan_required', 'a retained Agreement plan is required');
     const sessionSigner = sellerTransport.sessionSignerFor(operation);
     assertDelegationNamesKey(p.sessionDelegation, sessionSigner);
-    const authentication = createSellerWireAuthentication({ admission, sessionSigner, delegation: p.sessionDelegation,
+    const authentication = createSellerWireAuthentication({ admission, effectBoundary: sellerTransport.effectBoundary, sessionSigner, delegation: p.sessionDelegation,
       seller: operation.terms.seller.claim, publicEndpoint: url, endpointProof: sellerTransport.endpointProofFor(operation), now, evidence: () => continuationEvidence(holder.get()),
       assertNotStopped: requestRecords.assertNotStopped,
-      job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash,
-        deadline: agreement.terms.deadline, profile: operation.terms.protocol.wireProfile } });
+      job: { jobId: operation.terms.protocol.jobId, listingPin: listingPinFor(operation), profile: operation.terms.protocol.wireProfile,
+        ...(agreement ? { agreementHash: p.agreement?.hash ?? p.planned.plan.agreementHash, deadline: agreement.terms.deadline } : {}) } });
     const client = createSellerHttpsClient({ publicEndpoint: url, connector: sellerConnector, commitOnSignature, requestRecords, authentication, timeoutMs: sellerRequestTimeoutMs, explicitResume: explicitResumeTaker() });
     if (client.origin !== operation.terms.protocol.sellerAgent) throw new OperationError('seller_agent_changed', 'the seller agent endpoint changed since this purchase was prepared; nothing was signed or paid');
     return client;
@@ -713,14 +725,33 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       throw error;
     }
   };
-  // Signing requests: a stale save means another request saved first, so
-  // answer once more from the stored operation (its saved identity or plan),
-  // never with this unsaved one.
+  // Session renewal requests: a stale save means another request saved first,
+  // so answer once more from the stored operation (its saved renewal), never
+  // with this unsaved one.
   const fromStoredIfStale = (operation, error, retry) => {
     if (!(error instanceof StaleProtocolCheck)) throw error;
     return retry(ops.get(operation.accountId, operation.id));
   };
+  // Signing requests: a stale save means another request saved first, so the
+  // step answers again from the stored operation (its saved signing bytes or
+  // plan), never with its unsaved one. A step makes at most this many saves, so
+  // a concurrent request can make it lose at most as many times.
+  const SIGNING_STEP_RETRIES = 3;
+  async function fromStoredOnStale(operation, step) {
+    for (let retries = 0; ; retries++) {
+      try { requireBootstrapOpen(ops.get(operation.accountId, operation.id)); return await step(operation); }
+      catch (error) {
+        if (error instanceof OperationError && error.code === 'invalid_state') requireBootstrapOpen(ops.get(operation.accountId, operation.id));
+        if (!(error instanceof StaleProtocolCheck) || retries === SIGNING_STEP_RETRIES) throw error;
+        operation = ops.get(operation.accountId, operation.id);
+      }
+    }
+  }
 
+  const requireBootstrapOpen = (operation) => {
+    const end = operation?.state?.protocol?.bootstrapEnd;
+    if (end) throw new OperationError(end.code, STAGE_HELP[operation.state.protocol.stage]);
+  };
   const requireStage = (operation, ...stages) => {
     const stage = operation.state?.protocol?.stage;
     if (!stages.includes(stage)) throw new OperationError('invalid_state', `DACS purchase step is ${stage ?? 'unset'}`);
@@ -742,36 +773,110 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // A paid purchase whose seller session delegation has expired: the seller takes no renewed key under it, and the buyer must not pay again.
   const paidDelegationExpired = (expiresAt, options) => new OperationError('seller_delegation_expired', `the seller session delegation of this paid purchase has expired (its expiry is ${Number.isSafeInteger(expiresAt) ? new Date(expiresAt).toISOString() : 'unknown'}), so the seller will not take a renewed key under it; nothing was signed or sent. Do not pay again; keep the transaction hash.`, undefined, options);
 
-  // ---- DACS-1 identity presentation (wallet signature) ----
+  // ---- DACS-1 bootstrap: the wallet delegation, the seller's challenge, then the identity presentation ----
+  // Each wallet message is saved before it is returned, and a repeat or restart returns the saved bytes.
+  // Step 1 returns only the delegation message.
   async function identityRequest(operation, address) {
     assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
-    try {
-      return await identityRequestOnce(operation, address);
-    } catch (error) {
-      return fromStoredIfStale(operation, error, (stored) => identityRequestOnce(stored, address));
-    }
+    return fromStoredOnStale(operation, (current) => identityRequestOnce(current, address));
   }
 
   async function identityRequestOnce(operation, address) {
+    requireBootstrapOpen(operation);
     assertSellerDeclaration(operation);
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     if (address !== operation.terms.buyer.wallet) throw new OperationError('wrong_wallet', 'connect the wallet bound to this purchase');
     requireStage(operation, 'identity', 'agreement-signing');
+    requireSellerChallenge(operation);
     let current = operation;
-    if (!current.state.protocol.identity) {
-      const unsigned = buildUnsignedIdentityBundle({ address, presentedAt: now(), sessionSeed: `${operation.id}:${operation.terms.protocol.jobId}` });
-      current = save(current, { identity: unsigned }, { event: 'protocol_identity_requested' });
-    }
-    if (operation.terms.protocol.sellerTransport?.delegation && !current.state.protocol.sessionDelegation) {
+    if (!current.state.protocol.sessionDelegation) {
+      // A payload another request saved meanwhile is adopted: the host's expiry policy is asked only for one this request can save.
+      if (ops.get(current.accountId, current.id)?.state.protocol.sessionDelegation) throw new StaleProtocolCheck(current);
       current = save(current, { sessionDelegation: { payload: sessionDelegationPayload(current) } }, { event: 'protocol_seller_session_requested' });
     }
     const delegation = current.state.protocol.sessionDelegation;
     if (delegation) assertDelegationNamesKey(delegation, sellerTransport.sessionSignerFor(current));
     requireDelegationMargin(current, 'the wallet delegation');
-    const message = delegation ? await delegationWalletMessage(delegation.payload) : null;
-    requireDelegationMargin(current, 'the wallet delegation');
-    return { operation: current, message: current.state.protocol.identity.message, ...(delegation ? { delegation: { payload: delegation.payload, message } } : {}) };
+    if (current.state.protocol.delegationMessage === undefined) {
+      const delegationMessage = await delegationWalletMessage(current.state.protocol.sessionDelegation.payload);
+      current = save(current, { delegationMessage }, { event: 'protocol_seller_session_message_saved' });
+      requireDelegationMargin(current, 'the wallet delegation');
+    }
+    const { sessionDelegation, delegationMessage } = current.state.protocol;
+    return { operation: current, delegation: { payload: sessionDelegation.payload, message: delegationMessage } };
+  }
+
+  // The presentation carries the nonce of the seller's challenge, which only a declared seller transport can ask for.
+  function requireSellerChallenge(operation) {
+    if (operation.terms.protocol.sellerTransport?.delegation) return;
+    throw new OperationError('seller_challenge_unavailable', 'this purchase declares no seller transport, so it cannot ask the seller for the challenge its identity presentation needs; nothing was signed or sent');
+  }
+
+  // Step 2: the wallet's delegation is accepted, the session key asks for the seller's challenge, and the presentation message
+  // over the seller's nonce is returned. A repeat returns the saved message; only a session renewal replaces the accepted delegation.
+  async function agreementDelegation(operation, delegationSignature) {
+    assertPurchaseOpen();
+    assertBuyerAccess(operation.terms.buyer.wallet, operation);
+    return fromStoredOnStale(operation, (current) => agreementDelegationOnce(current, delegationSignature));
+  }
+
+  async function agreementDelegationOnce(operation, delegationSignature) {
+    requireBootstrapOpen(operation);
+    assertSellerDeclaration(operation);
+    if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
+    requireStage(operation, 'identity');
+    requireSellerChallenge(operation);
+    const p = operation.state.protocol;
+    assertDelegationNamesKey(p.sessionDelegation, sellerTransport.sessionSignerFor(operation));
+    if (p.identity) {
+      requireLiveChallenge(operation);
+      return { operation, message: p.identity.message };
+    }
+    if (p.delegationMessage === undefined) throw new OperationError('invalid_state', 'request the wallet delegation first');
+    requireDelegationMargin(operation, 'the seller challenge');
+    let current = p.challengeScope ? operation : await acceptDelegation(operation, delegationSignature);
+    requireDelegationMargin(current, 'the seller challenge');
+    let answer;
+    try { answer = await sellerFor({ get: () => current, set: (next) => { current = next; } }).contextChallenge({ scope: current.state.protocol.challengeScope }); }
+    catch (error) {
+      if (error instanceof SellerUnavailableError || error instanceof SellerRefusedError) note(current, 'context-challenge', error instanceof SellerRefusedError ? 'refused' : 'unavailable', error.message, {}, sellerFailureAttempt(error));
+      throw error;
+    }
+    const challenge = checkedChallenge(answer);
+    const identity = buildUnsignedIdentityBundle({ address: current.terms.buyer.wallet, presentedAt: now(), sessionNonce: challenge.sessionNonce });
+    current = save(current, { challenge, identity }, { event: 'protocol_identity_requested' });
+    return { operation: current, message: identity.message };
+  }
+
+  // The wire verifies the wallet's delegation over the saved payload; it is saved with the challenge scope it authorizes, in one save.
+  // Without a signature, the one a session renewal saved is used; the wire verifies it again before anything is sent.
+  async function acceptDelegation(operation, delegationSignature) {
+    const saved = operation.state.protocol.sessionDelegation;
+    let signature;
+    try { signature = decodeSignature(delegationSignature ?? saved.signature).toString('base64url'); }
+    catch (cause) { throw new OperationError('bad_signature', 'the wallet delegation signature encoding is invalid', undefined, { cause }); }
+    const delegation = { payload: saved.payload, signature };
+    await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), delegationScope(operation)));
+    const challengeScope = agreementChallengeScope({ operation, buyer: buyerClaim(operation), generatedAt: now() });
+    return save(operation, { sessionDelegation: delegation, challengeScope }, { event: 'protocol_seller_session_delegated' });
+  }
+
+  // The seller's challenge answer, which the wire already verified as the seller's answer to this request: exactly a
+  // 64-hex nonce and an expiry still ahead. Anything else is refused before a wallet message exists.
+  function checkedChallenge(answer) {
+    const { sessionNonce, expiresAt } = answer;
+    if (Object.keys(answer).sort().join() !== 'expiresAt,sessionNonce' || typeof sessionNonce !== 'string' || !SESSION_NONCE.test(sessionNonce) || !Number.isSafeInteger(expiresAt) || expiresAt <= now()) {
+      throw new OperationError('seller_challenge_invalid', 'the seller challenge answer is not a 64-hex nonce with an expiry ahead; nothing was signed');
+    }
+    return { sessionNonce, expiresAt };
+  }
+
+  // An unused challenge is never rebuilt or asked again: past its expiry, before the presentation is accepted, the bootstrap stops.
+  function requireLiveChallenge(operation) {
+    const p = operation.state.protocol;
+    if (p.buyerBundle || !p.challenge || now() < p.challenge.expiresAt) return;
+    rejectBootstrap(operation, { kind: 'failed-bootstrap', code: 'context_challenge_expired', local: true }, 'the seller challenge expired before the identity presentation was accepted');
   }
 
   // The delegation payload the wallet will be asked to sign. The expiry comes from the host's policy and is
@@ -862,7 +967,9 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       if (operation.status === 'settled_verified' && error?.code === 'peer_delegation_expired' && !(pending.payload.expiresAt > now())) throw paidDelegationExpired(pending.payload.expiresAt, { cause: error });
       throw error;
     }
-    const next = save(operation, { sessionDelegation: delegation, pendingSessionDelegation: undefined },
+    // The saved wallet message is replaced with the payload, so identityRequest never returns one payload with another's message.
+    const delegationMessage = await delegationWalletMessage(pending.payload);
+    const next = save(operation, { sessionDelegation: delegation, pendingSessionDelegation: undefined, delegationMessage },
       { event: 'protocol_seller_session_renewed', data: { previousSessionPublicKey: p.sessionDelegation.payload.sessionPublicKey, sessionPublicKey: pending.payload.sessionPublicKey } });
     return { operation: next };
   }
@@ -877,7 +984,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // purchase no longer pending is refused before any running step is joined.
   const planFlights = new Map();
   const flightKey = (operation) => canonicalize([operation.accountId, operation.id]);
-  const flightArgs = (presentationSignature, delegationSignature, intentGeneratedAt) => canonicalize([presentationSignature ?? null, delegationSignature ?? null, intentGeneratedAt ?? null]);
+  const flightArgs = (presentationSignature, intentGeneratedAt) => canonicalize([presentationSignature ?? null, intentGeneratedAt ?? null]);
   // A waiter gives up after planWaitMs with 202 plan_in_progress. The step
   // keeps running and saves its plan or its attempt note, which the page reads
   // from the purchase status; no other step is started for the waiter.
@@ -891,12 +998,12 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // The authenticated check the portal route makes before its domain, balance
   // and fee reads: the running step's own signatures wait for it, others are
   // told at once. Null when no step runs (or none may be joined).
-  function runningPlan(operation, presentationSignature, delegationSignature, intentGeneratedAt) {
+  function runningPlan(operation, presentationSignature, intentGeneratedAt) {
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     if (operation.status !== 'agreement_pending' || operation.state?.protocol?.planned) return null;
     const running = planFlights.get(flightKey(operation));
     if (!running) return null;
-    if (running.args !== flightArgs(presentationSignature, delegationSignature, intentGeneratedAt)) throw new OperationError('plan_in_progress', 'the Agreement plan step for this purchase is already running; nothing was signed for this request. Check the purchase status: once the plan is saved, continue from it');
+    if (running.args !== flightArgs(presentationSignature, intentGeneratedAt)) throw new OperationError('plan_in_progress', 'the Agreement plan step for this purchase is already running; nothing was signed for this request. Check the purchase status: once the plan is saved, continue from it');
     return waitForPlan(running.flight);
   }
   // Whether this process runs the purchase's plan step now. In memory only:
@@ -906,28 +1013,24 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   // Every plan step this process runs now, so an owner's shutdown can drain
   // them like its admitted requests. Each settles when its step ends.
   const planFlightsRunning = () => [...planFlights.values()].map((running) => running.flight);
-  async function planRequest(operation, presentationSignature, delegationSignature, intentGeneratedAt) {
+  async function planRequest(operation, presentationSignature, intentGeneratedAt) {
     assertPurchaseOpen();
     assertBuyerAccess(operation.terms.buyer.wallet, operation);
     assertSellerDeclaration(operation);
+    requireBootstrapOpen(operation);
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
-    if (operation.state?.protocol?.planned) return planRequestStep(operation, presentationSignature, delegationSignature, intentGeneratedAt);
-    const joined = runningPlan(operation, presentationSignature, delegationSignature, intentGeneratedAt);
+    if (operation.state?.protocol?.planned) return planRequestStep(operation, presentationSignature, intentGeneratedAt);
+    const joined = runningPlan(operation, presentationSignature, intentGeneratedAt);
     if (joined) return joined;
     const key = flightKey(operation);
-    const flight = planRequestStep(operation, presentationSignature, delegationSignature, intentGeneratedAt).finally(() => planFlights.delete(key));
+    const flight = planRequestStep(operation, presentationSignature, intentGeneratedAt).finally(() => planFlights.delete(key));
     flight.catch(() => {});
-    planFlights.set(key, { args: flightArgs(presentationSignature, delegationSignature, intentGeneratedAt), flight });
+    planFlights.set(key, { args: flightArgs(presentationSignature, intentGeneratedAt), flight });
     return waitForPlan(flight);
   }
 
-  async function planRequestStep(operation, presentationSignature, delegationSignature, intentGeneratedAt) {
-    let planned;
-    try {
-      planned = await planRequestOnce(operation, presentationSignature, delegationSignature, intentGeneratedAt);
-    } catch (error) {
-      planned = await fromStoredIfStale(operation, error, (stored) => planRequestOnce(stored, presentationSignature, delegationSignature, intentGeneratedAt));
-    }
+  async function planRequestStep(operation, presentationSignature, intentGeneratedAt) {
+    const planned = await fromStoredOnStale(operation, (current) => planRequestOnce(current, presentationSignature, intentGeneratedAt));
     // The provider keeps only the saved request's context, for the seller.
     if (usesDemDeliveryContext(planned.operation) && planned.operation.state.protocol.planned) releaseDemDeliveryContext(demDeliveryContext, { jobId: planned.operation.terms.protocol.jobId, generatedAt: planned.operation.state.protocol.planned.draft.generatedAt });
     return planned;
@@ -957,31 +1060,42 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     if (ENDED_STATUSES.has(ops.get(changed.accountId, changed.id)?.status)) releaseDemDeliveryContext(demDeliveryContext, { jobId: changed.terms.protocol.jobId });
   });
 
-  async function planRequestOnce(operation, presentationSignature, delegationSignature, intentGeneratedAt) {
+  function rejectBootstrap(operation, outcome, reason) {
+    const end = bootstrapEndPatch(outcome);
+    if (!end) return;
+    note(operation, 'agreement-context', 'rejected', reason, end, { toStatus: 'agreement_rejected' });
+    throw new OperationError(end.bootstrapEnd.code, reason);
+  }
+
+  // Step 3: the wallet's presentation is accepted and saved before the context read, then the Agreement is planned.
+  async function planRequestOnce(operation, presentationSignature, intentGeneratedAt) {
+    requireBootstrapOpen(operation);
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     requireStage(operation, 'identity', 'agreement-signing');
     const p = operation.state.protocol;
     if (p.planned) return { operation, request: signRequest(operation) };
     if (!p.identity) throw new OperationError('invalid_state', 'present your wallet identity first');
-    let buyerBundle;
+    const delegated = Boolean(operation.terms.protocol.sellerTransport?.delegation);
+    if (delegated && !p.sessionDelegation?.signature) throw new OperationError('invalid_state', 'accept the wallet delegation first');
+    let presented;
     try {
-      buyerBundle = attachIdentityPresentation(p.identity, presentationSignature);
+      presented = attachIdentityPresentation(p.identity, presentationSignature);
     } catch {
       throw new OperationError('bad_signature', 'the identity presentation signature does not verify for the purchase wallet');
     }
-    if (operation.terms.protocol.sellerTransport?.delegation) {
+    if (p.buyerBundle && canonicalize(p.buyerBundle) !== canonicalize(presented)) throw new OperationError('bad_signature', 'the identity presentation differs from the one already accepted');
+    if (!p.buyerBundle) {
+      requireLiveChallenge(operation);
+      operation = save(operation, { buyerBundle: presented }, { event: 'protocol_identity_presented' });
+    }
+    const buyerBundle = operation.state.protocol.buyerBundle;
+    if (delegated) {
       assertSellerDeclaration(operation);
-      let signature;
-      try { signature = decodeSignature(delegationSignature ?? p.sessionDelegation?.signature).toString('base64url'); }
-      catch (cause) { throw new OperationError('bad_signature', 'the wallet delegation signature encoding is invalid', undefined, { cause }); }
-      const delegation = { payload: p.sessionDelegation?.payload, signature };
-      await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(delegation)), delegationScope(operation)));
-      operation = save(operation, { sessionDelegation: delegation }, { event: 'protocol_seller_session_delegated' });
       // Before the context read: it can already make seller Vet writes.
+      await withinSellerDeadline(verifySellerSessionDelegation(Buffer.from(JSON.stringify(operation.state.protocol.sessionDelegation)), delegationScope(operation)));
       requireDelegationMargin(operation, 'the Agreement plan');
     }
-    // Only the intent route supplies an already approved exact generation time.
-    const generatedAt = intentGeneratedAt ?? now();
+    const generatedAt = planGeneratedAt(operation, intentGeneratedAt);
     // Read again right before each Vet signature or anchor intent: a purchase
     // no longer pending starts no new write.
     const writable = () => {
@@ -1009,6 +1123,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     // The context read may have signed and sent Vet records; only the
     // Agreement is known to be neither planned nor signed here.
     if (resolved.disposition !== 'present') {
+      rejectBootstrap(current, bootstrapOutcomeOf(resolved), resolved.reason);
       note(current, 'agreement-context', resolved.disposition, resolved.reason, {}, { written: resolved.written });
       if (resolved.code === 'legacy_party_vet_state_missing') throw new OperationError(resolved.code, 'this purchase was started by an earlier server version; nothing was signed or sent; start a new purchase');
       throw new OperationError('agreement_context_held', `the operator Agreement context is ${resolved.disposition} (${resolved.reason}); no Agreement was planned or signed`);
@@ -1025,6 +1140,17 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     }
     return savePlan(current, buyerBundle, planned, { source: usesDemDeliveryContext(current) ? DEM_DELIVERY_CONTEXT_SOURCE : AGREEMENT_CONTEXT_SOURCE,
       authority: resolved.authority, scopeHash: contentHash(resolved.scope), resolvedAt: new Date(now()).toISOString() });
+  }
+
+  // The Agreement's generation time. The seller's context route requires the context scope to carry the time the saved
+  // challenge scope bound, so a context purchase uses that time on every plan step and retry, and refuses an approved
+  // time from the intent route that differs. Any other purchase uses the intent route's approved time, or now.
+  function planGeneratedAt(operation, intentGeneratedAt) {
+    if (!usesAgreementContext(operation)) return intentGeneratedAt ?? now();
+    const bound = operation.state.protocol.challengeScope?.generatedAt;
+    if (bound === undefined) throw new OperationError('invalid_state', 'accept the wallet delegation first: no seller challenge scope is saved; no Agreement was planned or signed');
+    if ((intentGeneratedAt ?? bound) !== bound) throw new OperationError('agreement_time_mismatch', 'the approved Agreement generation time differs from the one the seller challenge binds; no context was read and no Agreement was planned or signed');
+    return bound;
   }
 
   async function savePlan(operation, buyerBundle, planned, context) {
@@ -1573,6 +1699,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     prepareTerms,
     assertSellerAdmission,
     identityRequest,
+    agreementDelegation,
     sessionRenewal,
     sessionRenewalAccept,
     planRequest,

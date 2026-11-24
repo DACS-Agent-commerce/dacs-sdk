@@ -1232,12 +1232,13 @@ export function createDevnetDemoAgreementContextProvider({anchor,wallet,listing,
     void completion.then(settled,error=>{settled();logged('release',jobId)(error);});return completion;
   }
   async function sweep(ended){let deleted=0;for(const jobId of await state.jobs())if(ended(jobId)===true&&await drop(jobId))deleted++;return{deleted,usage:store.usage?.()??null};}
-  // Sets the reader resolveSeller consults for a completed route: once, before any request, and only when none was given at
-  // construction. Returns the seller presenter this provider was built for. Any other call throws a TypeError and changes nothing.
+  // Sets the reader resolveSeller consults for a completed route: once, before the first context resolution call (resolveBuyer,
+  // recoverBuyer, resolveSeller or resumableBuyer; readBackRecords does not count), and only when none was given at construction.
+  // Returns the seller presenter this provider was built for. Any other call throws a TypeError and changes nothing.
   function bindRetainedScope(reader){
     if(typeof reader!=='function')throw new TypeError('the retained scope reader must be a function');
     if(readRetainedScope)throw new TypeError('the retained scope reader is already set');
-    if(requested)throw new TypeError('the retained scope reader cannot be set after the first request');
+    if(requested)throw new TypeError('the retained scope reader cannot be set after the first context resolution call');
     readRetainedScope=reader;
     return Object.freeze({sellerBundlePresentedBy:sellerPresentedBy});
   }

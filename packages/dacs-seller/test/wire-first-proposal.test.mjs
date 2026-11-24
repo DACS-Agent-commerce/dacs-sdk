@@ -10,7 +10,7 @@ import { testWallet } from './helpers/protocol-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
 import { createSellerHttpsClient } from '../../dacs-client/src/dacs/seller-http.mjs';
-import { fetchClient } from '../../dacs-client/test/helpers/seller-https-rig.mjs';
+import { fetchClient, NO_TRANSMIT_GUARDS } from '../../dacs-client/test/helpers/seller-https-rig.mjs';
 import { createReservationCoordinator } from '../src/dacs/seller-reservation-accounting.mjs';
 import { boundPurchaseOf, createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { installPurchaseAdmissionHook, loadAdmissionDouble } from '../../dacs-client/test/helpers/purchase-admission-hook.mjs';
@@ -74,7 +74,8 @@ async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) 
     readCommitmentReceipt: () => { throw new Error('TEST commitment read must not run'); } });
   const handler = createSellerHttpHandler(agent, { wire: hostWire });
   const client = (clientPackage ? fetchClient(createSellerHttpsClient) : signedBuyerClient)({ url: clientPackage ? FIXTURE_ENDPOINT : 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {
-    request: async (...args) => { const signed = await authentication.request(...args); request = signed.payload; return signed; },
+    // The buyer client takes each signed request with its transmit guards; this stand-in signs outside an effect boundary, so none refuse.
+    request: async (...args) => { const signed = await authentication.request(...args); request = signed.payload; return clientPackage ? { ...signed, transmitGuards: NO_TRANSMIT_GUARDS } : signed; },
     // The buyer client hands over `{header, status, body}`; the signed buyer's adapter reads the same bytes as `responseBytes`.
     verifyResponse: (request, received) => faults.verify(authentication, request, clientPackage ? { header: received.header, status: received.status, responseBytes: received.body } : received),
   }, fetchImpl: async (url, options) => {
