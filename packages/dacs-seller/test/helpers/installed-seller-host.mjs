@@ -16,6 +16,8 @@ import * as core from '@kynesyslabs/dacs';
 import * as wire from '@kynesyslabs/dacs/wire';
 import * as seller from '@kynesyslabs/dacs-seller';
 import { createSellerAgent } from '@kynesyslabs/dacs-seller/src/dacs/seller-agent.mjs';
+import { createEffectBoundary } from '@kynesyslabs/dacs-seller/src/dacs/effect-boundary.mjs';
+import { createEffectHistory } from '@kynesyslabs/dacs-seller/src/dacs/effect-history.mjs';
 import { createSellerTransportStore } from '@kynesyslabs/dacs-seller/src/dacs/seller-transport-auth.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from '@kynesyslabs/dacs-seller/src/dacs/agreement-context-consumer.mjs';
 import { purchaseSupport } from '@kynesyslabs/dacs-seller/src/dacs/listing.mjs';
@@ -23,6 +25,8 @@ import { createDemDeliveryContext } from '@kynesyslabs/dacs-seller/src/dacs/dem-
 import { KIT_TP1_VET_MODE } from '@kynesyslabs/dacs-seller/src/host.mjs';
 import { createNativeDemDeliveryCapability } from '@kynesyslabs/dacs-seller/src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer } from '@kynesyslabs/dacs-seller/src/dacs/native-payment-evidence-consumer.mjs';
+// Copied next to this file by the test; it imports only through package names.
+import { signedBuyerClient } from './signed-buyer-driver.mjs';
 
 const require = createRequire(import.meta.url);
 const packageRoot = dirname(require.resolve('@kynesyslabs/dacs-seller/package.json'));
@@ -205,9 +209,13 @@ const capabilities = () => ({
   observeDemosTransfer: refuse('observeDemosTransfer'),
   railAuthority,
   sessionAdmission,
+  receiptFeeCeilings: { payFeeCeilingOs: '7000013', anchorFeeCeilingOs: '300007' },
 });
 const dataDirectory = second ?? realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-host-')));
-const signer = { claim: sellerKey.claim, sign: sellerKey.sign };
+// The key's roles as the host takes them: the effect signer, the journal integrity role and a single-use read-only answer role.
+const rolesOf = (key) => ({ claim: key.claim, sign: key.sign, integritySigner: { claim: key.claim, sign: key.sign },
+  readOnlyAnswerSigner: async () => { let used = false; return { claim: key.claim, sign: async (bytes) => { assert.equal(used, false, 'one read-only signature'); used = true; return key.sign(bytes); } }; } });
+const signer = rolesOf(sellerKey);
 let activeHost=null;const start=async(extra={})=>activeHost=await seller.startSellerHost({signer,listing,dataDirectory,...capabilities(),...extra});
 
 // Refused configurations: each names its cause and starts nothing.
@@ -216,7 +224,11 @@ const refusal = async (options) => { try { const host = await seller.startSeller
 // The agent composes sessionAdmission only with the one challenge ledger, so the fixture opens the packed store the host would.
 const agentRefusal = async (options) => {
   const store = createSellerTransportStore({ path: join(journalDirectory, 'agent-transport.sqlite'), now: Date.now, generation: 'TEST-installed-agent' });
-  try { const agent = await createSellerAgent({ challengeLedger: store.challenges, ...options }); agent.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } finally { store.close(); }
+  // The agent signs only inside an effect boundary, built here over the approved record as the host's stages build it.
+  const binding = await wire.bindTp1Profile({ record: approvedRecord, local: buyerNetwork.connection(), readAuthority: buyerNetwork.readAuthority });
+  const effectBoundary = createEffectBoundary({ stopped: () => false, binding, currentLocal: () => buyerNetwork.connection(), history: createEffectHistory({ dataDirectory: journalDirectory }),
+    clock: { now: () => performance.now(), after: (ms, callback) => { const timer = setTimeout(callback, ms); return () => clearTimeout(timer); } } });
+  try { const agent = await createSellerAgent({ challengeLedger: store.challenges, effectSigner: signer, integritySigner: signer.integritySigner, readOnlyAnswerSigner: signer.readOnlyAnswerSigner, effectBoundary, ...options }); agent.close(); return null; } catch (error) { return `${error.name}: ${error.message}`; } finally { store.close(); }
 };
 if (second !== null) {
   process.stdout.write(`${JSON.stringify({ secondProcess: await refusal({ signer, listing, dataDirectory, ...capabilities() }) })}\n`);
@@ -249,9 +261,9 @@ out.refusedConfigurations = {
   publicInterface: await refusal({ signer, listing, dataDirectory, ...capabilities(), listener: { ...listener, host: '0.0.0.0' } }),
   unknownOption: await refusal({ signer, listing, dataDirectory, ...capabilities(), anchors: { read: async () => null, write: async () => null } }),
   relativeDirectory: await refusal({ signer, listing, dataDirectory: 'seller-data', ...capabilities() }),
-  otherSigner: await refusal({ signer: { claim: buyerKey.claim, sign: buyerKey.sign }, listing, dataDirectory, ...capabilities() }),
+  otherSigner: await refusal({ signer: rolesOf(buyerKey), listing, dataDirectory, ...capabilities() }),
   scriptedJournal: await refusal({ signer, listing, dataDirectory, ...capabilities(), reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
-  scriptedAgent: await agentRefusal({ signer, listing, vetMode: KIT_TP1_VET_MODE, ...withoutAdmission, nativeArtifactAnchor: capabilities().artifactAnchor, durableDirectory: join(journalDirectory, 'agent'),
+  scriptedAgent: await agentRefusal({ listing, vetMode: KIT_TP1_VET_MODE, ...withoutAdmission, nativeArtifactAnchor: capabilities().artifactAnchor, durableDirectory: join(journalDirectory, 'agent'),
     reconcilePaymentEvidence: async () => ({ status: 'unsigned' }) }),
 };
 
@@ -294,7 +306,7 @@ const hostFetch = (input, init = {}) => new Promise((resolve, reject) => {
   request.on('error', reject);
   request.end(init.body);
 });
-const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => seller.createSellerAgentClient({ url, fetchImpl: hostFetch, authentication: {
+const clientFor = (url, listingPin = pin, agreementHash = plan.agreementHash) => signedBuyerClient({ url, fetchImpl: hostFetch, authentication: {
   request: async (path, body, text) => {
     const { binding, endpointProof } = await (wireBuyerReady ??= wireBuyerSession());
     const jobId = body.transportIdentity?.jobId ?? body.jobId;

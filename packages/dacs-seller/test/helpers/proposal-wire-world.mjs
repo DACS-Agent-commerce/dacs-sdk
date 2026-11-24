@@ -53,6 +53,7 @@ export async function proposalWireWorld(t, { configure = () => {}, leaseMs = SHO
   w = await world(t, { fixture: { listing: f.listing, agent: () => agent }, leaseMs, ...options });
   Object.assign(w.agent, {
     receiveProposal: (input, settings) => agent.receiveProposal(input, settings),
+    agreementState: (identity) => agent.agreementState(identity),
     reconcileTransport: (input) => agent.reconcileTransport(input),
     retainsProposalWork: (id) => agent.retainsProposalWork(id),
     retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target),

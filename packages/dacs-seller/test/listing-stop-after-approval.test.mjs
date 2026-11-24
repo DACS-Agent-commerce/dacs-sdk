@@ -5,6 +5,7 @@ import { fixtureListing } from './fixtures/listings.mjs';
 import { anchorFixture } from './helpers/anchor-isolated-fixture.mjs';
 import { createDevnetDemoListingPublisher } from '../src/devnet-demo/listing.mjs';
 import { requestStop, stopRequested } from '../src/devnet-demo/stop-request.mjs';
+import { testRunCreate } from './helpers/agent-signing.mjs';
 
 // Its own file: the stop flag is process-wide and cannot be cleared.
 const NOW = 1_780_000_000_000, seed = new Uint8Array(32).fill(17), privateKey = privateKeyFromSeed(seed);
@@ -20,7 +21,7 @@ test('a stop that arrives after the wallet approved the Listing CREATE signs not
   w.controls.approval = async () => { requestStop(); };
   w.controls.request = async () => { signed++; return { success: false, error: { code: 'capture-without-signing' } }; };
   const publish = createDevnetDemoListingPublisher({ anchor: w.open(), sign: (bytes) => wallet.signBytes(bytes),
-    scanOwnListings: async () => ({ status: 'ok', anchors: [] }), loadRailResolution: railAuthority });
+    scanOwnListings: async () => ({ status: 'ok', anchors: [] }), loadRailResolution: railAuthority, runCreate: testRunCreate().runCreate });
   const draft = fixtureListing(wallet, { now: NOW });
   delete draft.signature;
   await assert.rejects(publish(draft));

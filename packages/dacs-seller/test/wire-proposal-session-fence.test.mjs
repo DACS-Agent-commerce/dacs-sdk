@@ -26,7 +26,7 @@ test('a proposal over the wire whose session ended after the signature keeps the
   const agent = w.realAgent(), kept = agent.durableSessionOf(w.jobId);
   assert.equal(kept?.sellerContribution, undefined, 'the contribution is not published');
   agent.close();
-  const state = await createSellerDurableState({ dir: w.f.dir, signer: w.f.config.signer, listingPin: agent.listingPin });
+  const state = await createSellerDurableState({ dir: w.f.dir, integritySigner: w.f.config.signer, listingPin: agent.listingPin });
   try { assert.equal(state.signature(kept.agreementSignatureKey).disposition, 'present', 'the signature is retained'); } finally { state.close(); }
 });
 

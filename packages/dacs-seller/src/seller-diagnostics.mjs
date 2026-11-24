@@ -11,6 +11,9 @@ const DIAGNOSTIC_CODES = new Set([
   'not-pending', 'not-authorized', 'journal-capacity', 'journal-busy',
   'seller_vet_receipt_invalid', 'seller_presentation_indeterminate',
   'data_directory_unsafe', 'data_directory_parent_missing', 'seller_identity_unavailable',
+  // The refusals of the effect pass a Vet signature runs in, which a failed Vet step keeps.
+  'kit_operation_guard_off', 'seller_stopped', 'stop_check_failed', 'stop_check_invalid', 'stop_check_timeout', 'tp1_participant_refused', 'tp1_authority_timeout',
+  'tp1_local_binding_changed', 'tp1_fence_timeout', 'context_admission_closed', 'effect_pass_invalid', 'eb_sign_timeout',
 ]);
 const CONTEXT_VALUES = Object.freeze({
   role: ['buyer', 'seller'],

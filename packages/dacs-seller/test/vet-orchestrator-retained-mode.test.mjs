@@ -26,7 +26,7 @@ const STAGES = {
 const DIRECTIONS = [['counterparty to W', COUNTERPARTY, W], ['W to counterparty', W, COUNTERPARTY], ['unstamped to W', COUNTERPARTY, W, session => { delete session.demDeliveryContext.vetMode; }]];
 
 async function rewriteRetained(f, change) {
-  const durable = await createSellerDurableState({ dir: f.dir, signer: f.config.signer, listingPin: listingPin(f.listing) });
+  const durable = await createSellerDurableState({ dir: f.dir, integritySigner: f.config.signer, listingPin: listingPin(f.listing) });
   try { await durable.withJob(JOB, async session => { change(session); durable.saveSession(session); }); } finally { durable.close(); }
 }
 // A session made under `from` through the normal APIs, closed, with `stage`'s marker and `legacy`'s edit applied.

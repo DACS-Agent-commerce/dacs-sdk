@@ -6,6 +6,7 @@
 // registered capability (helpers/context-wire-world.mjs).
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { causeOf } from './helpers/refusal-body.mjs';
 import { canonicalize, identityBundleHash, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { AGREEMENT_CONTEXT_SOURCE } from '../src/dacs/agreement-context-consumer.mjs';
@@ -314,6 +315,17 @@ test('the retained scope reader is refused when set twice, after a request, or b
   f.store.close();
 });
 
+test('the retained scope reader refusal after a resolution call names that call, and a readback alone does not close binding', async () => {
+  const world = contextWorld(), { f, records } = world;
+  const readBack = world.compose();
+  await readBack.provider.readBackRecords({ jobId: JOB, buyer: world.bundle.presentedBy });
+  readBack.provider.bindRetainedScope(records.completedScope);
+  const resolved = world.compose();
+  await resolved.provider.resolveSeller({ jobId: JOB, listingPin: f.pin, buyerIdentityBundle: world.bundle, generatedAt: NOW });
+  assert.throws(() => resolved.provider.bindRetainedScope(records.completedScope), { name: 'TypeError', message: /after the first context resolution call/ });
+  f.store.close();
+});
+
 test('the resolve wrapper forwards the attempt\'s writable predicate: a fenced admission revision stops the next Vet signature and transmission', async (t) => {
   const world = contextWorld(), { f } = world, gate = deferred(), reached = deferred();
   const issueChallenge = async (input) => { reached.resolve(); await gate.promise; return f.counterparty.issueChallenge(input); };
@@ -429,7 +441,7 @@ test('a bundle that names another presenter under an issued nonce fails the chal
   assert.equal(w.counts.validations, 0, 'the presenter is checked before the profile admission');
   assertNothingStarted(w);
   const again = await w.post(request);
-  assert.deepEqual([...summary(again), again.body.cause], [409, 'context_challenge_failed', 'peer_context_mismatch']);
+  assert.deepEqual([...summary(again), causeOf(again.body)], [409, 'context_challenge_failed', 'peer_context_mismatch']);
   const corrected = await w.startContext({ nonce: request.nonce });
   assert.deepEqual(summary(await w.post(corrected)), [409, 'context_challenge_consumed']);
   assertNothingStarted(w);
@@ -472,7 +484,7 @@ test('a context request while stopped is refused seller_stopped 503 before the a
     const w = await contextWireWorld(t), request = await w.startContext();
     w.state.stop = stop;
     const answer = await w.post(request);
-    assert.deepEqual([...summary(answer), answer.body.cause], [503, 'seller_stopped', cause]);
+    assert.deepEqual([...summary(answer), causeOf(answer.body)], [503, 'seller_stopped', cause]);
     assertConsumedNothing(w, request.nonce);
   }
 });
@@ -596,7 +608,7 @@ test('a provider error after the reservation answers 503 operation_uncertain, wr
   w.behaviour.provider = async () => { throw Object.assign(new Error('TEST provider failed'), { code: 'provider_failed' }); };
   const answer = await w.post(request);
   await w.settleJob();
-  assert.deepEqual([...summary(answer), answer.body.cause], [503, 'operation_uncertain', 'provider_failed']);
+  assert.deepEqual([...summary(answer), causeOf(answer.body)], [503, 'operation_uncertain', 'provider_failed']);
   await request.verify(answer);
   assert.equal(w.operationOf(WIRE_JOB).state, 'pending', 'no end record');
   assert.equal(w.completions.length, 0);
@@ -909,7 +921,7 @@ async function passDeadline(t, { w, request, pending }, atMs = DEADLINE_MS) {
   w.tick(atMs);
   t.mock.timers.tick(atMs);
   const answer = await pending;
-  assert.deepEqual([...summary(answer), answer.body.cause], [503, 'operation_uncertain', 'context_deadline']);
+  assert.deepEqual([...summary(answer), causeOf(answer.body)], [503, 'operation_uncertain', 'context_deadline']);
   await request.verify(answer);
   assert.equal(w.openHolds().length, 1, 'the hold is kept');
   assert.equal(w.operationOf(WIRE_JOB).state, 'pending', 'the attempt stays open');
@@ -1061,7 +1073,7 @@ test('context first-validation gate × one failing check under an issued nonce',
       assert.equal(w.challengeOf(request.nonce).state, 'failed');
       assert.equal(w.challengeOf(request.nonce).failure.code, expected[1]);
       const again = await w.post(request);
-      assert.deepEqual([...summary(again), again.body.cause], [409, 'context_challenge_failed', expected[1]]);
+      assert.deepEqual([...summary(again), causeOf(again.body)], [409, 'context_challenge_failed', expected[1]]);
       await w.settleJob();
       assertNothingStarted(w);
     });
@@ -1236,7 +1248,7 @@ test('a first admission keeps the purchase tuple with its acceptance, a failed a
     const before = { holds: w.counts.holds.length, files: w.journalFiles(), reserves: w.reserved.calls, challenge: w.challengeOf(request.nonce) };
     const sql = watchSql(t);
     const answer = await w.post(request);
-    assert.deepEqual([...summary(answer), answer.body.cause], [500, 'tp1_purchase_profile_mismatch', 'missing']);
+    assert.deepEqual([...summary(answer), causeOf(answer.body)], [500, 'tp1_purchase_profile_mismatch', 'missing']);
     assert.equal(sql.writes(), 0);
     assert.deepEqual({ holds: w.counts.holds.length, files: w.journalFiles(), reserves: w.reserved.calls, challenge: w.challengeOf(request.nonce) }, before);
   });
@@ -1422,7 +1434,7 @@ const AGENT_EFFECT_ENTRIES = ['receiveProposal', 'commit', 'commitOnSignature', 
 
 test('an agent refuses every direct effect entry without a closed-bootstrap gate, and asks its gate before any work', async (t) => {
   const f = await proposalAdmissionFixture(t), request = { jobId: AGENT_JOB, transportIdentity: { jobId: AGENT_JOB } };
-  const ungated = await createSellerAgent({ ...f.config });
+  const ungated = await createSellerAgent({ ...f.config, ...f.signing });
   t.after(() => ungated.close());
   for (const entry of AGENT_EFFECT_ENTRIES) {
     await assert.rejects(ungated[entry](request), (error) => error.code === 'session_admission_unavailable' && error.status === 503, `${entry} without a gate`);

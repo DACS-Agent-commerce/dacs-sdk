@@ -8,13 +8,12 @@
 // attempt (by the rule of the route's row in seller-effect-routes.mjs, where it has one), and read routes reserve nowhere.
 // With `context`, the challenge (`context.challengeOnWire`) is on the wire too, before any Agreement and with no journal; so is the
 // context step when `context.handleContext` (from `createWireSellerContextRoute`) is given, and without it that path is not found.
-// On the client, supplying an authentication adapter enables signed peer requests and independently signed seller responses.
-// Only an authenticated definite refusal becomes SellerRefusedError in that mode; unsigned, malformed, interrupted or
-// ambiguous answers are unavailable.
+// The client never signs: it refuses an `authentication` adapter, and a buyer that signs its requests uses the client package.
 import { completeWireEffect, DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, inspectWireOperation, isReadRoute, WireError } from '@kynesyslabs/dacs/wire';
 import { transportOutcome, UNCERTAIN } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
+import { OperationError } from '../operations.mjs';
 import { admitRawJson, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { SellerTransportError } from './seller-transport-auth.mjs';
 import { signedDiscovery } from './seller-wire-discovery.mjs';
@@ -22,14 +21,17 @@ import { wireAuthenticator } from './seller-wire-requests.mjs';
 import { createCompletionRecords } from './seller-completion-records.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 import { createSellerEffectRoutes } from './seller-effect-routes.mjs';
+import { COSIGNATURE_ANSWER } from './cosignature-answer.mjs';
 
 const MAX_BODY = 64 * 1024;
 /** How many requests one handler serves at once unless its `maxConcurrent` says otherwise; the host bounds its live bootstrap scopes by it too. */
 export const SELLER_HTTP_MAX_CONCURRENT = 8;
 const MAX_RESPONSE_LIST = 256;
-// A refusal whose string `cause` names what the buyer can act on carries it in its answer.
+// A refusal whose string `cause` names what the buyer can act on carries it in its answer's message.
 const CAUSE_ANSWERED_REFUSALS = new Set(['context_challenge_failed', 'seller_stopped', 'seller_source_unavailable']);
-// The longest client deadline `boundedCall` accepts (Node's timers hold at most 2^31 - 1 ms).
+/** A refusal answer's `message`: `message`, then ` (cause: <cause>)` when there is a cause. The read-only role signs a refusal body of exactly `{ error, message }`. */
+export const refusalMessage = (message, cause) => (cause === undefined ? message : `${message} (cause: ${cause})`);
+// The longest client deadline a Node timer holds (2^31 - 1 ms).
 const MAX_CLIENT_TIMEOUT_MS = 2 ** 31 - 1;
 // How long a wire route waits for the agent's settlement-credit check before it withholds a signed 200.
 const SETTLEMENT_CREDIT_TIMEOUT_MS = 10000;
@@ -65,6 +67,14 @@ const retainsPayment = (agent, jobId) => { try { return agent.retainsPaymentWork
 // A proposal effect is released only on the agent's proof that it signed and kept nothing.
 const retainsProposal = (agent, jobId) => { try { return agent.retainsProposalWork?.(jobId) !== false; } catch { return true; } };
 const retainedBy = (agent, path, jobId) => path === PAYMENT_PATH ? retainsPayment(agent, jobId) : path === PROPOSAL_PATH && retainsProposal(agent, jobId);
+// The answer pass of a completed proposal answer served from the cache, when that answer carries the Agreement
+// co-signature: the one the agent names for the same proposal. A co-signature the agent no longer names is refused.
+function cachedCosignature(agent, path, { status, text }, body) {
+  if (path !== PROPOSAL_PATH || status !== 200 || typeof JSON.parse(text)?.contribution?.signature?.value !== 'string') return undefined;
+  const cosignature = agent.agreementState(body.transportIdentity)?.[COSIGNATURE_ANSWER];
+  if (cosignature === undefined) throw new SellerTransportError('cosignature_answer_unavailable', 409);
+  return cosignature;
+}
 
 // What the agent holds for a table route's job, for the row's end rule. The agent settles inside its job lock, so a route
 // that retains nothing has no worker either. A route the agent cannot answer for is `unknown`, never `none`.
@@ -281,14 +291,24 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
     res.writeHead(status, headers);
     res.end(text);
   };
+  // An answer that carries the Agreement co-signature is written only inside its answer pass, by the pass's last synchronous
+  // check: the response must still be open and, unless the signature's earlier transmission was already acknowledged (this
+  // send is then a readback of it), the request's context session must not have ended. The answer may already be stored
+  // then; a refusal leaves it stored, unacknowledged and unwritten, and only the refusal is sent.
+  const assertAnswerable = (res, request) => ({ readback = false } = {}) => {
+    if (res.destroyed || res.writableEnded) throw new SellerTransportError('response_closed', 503);
+    if (!readback) auth.store.assertSession(request);
+  };
   // A route sends a signed 200 only once the agent's credit check has settled within its deadline. A failure, a rejection or
   // a missed deadline throws, and a result that comes later releases nothing.
   const creditHeld = (jobId) => boundedCall(() => agent.assertSettlementCredit(jobId), { timeoutMs: SETTLEMENT_CREDIT_TIMEOUT_MS });
-  // Sends one answer: signed, then for a 200 the credit check, then written.
-  const send = async (res, status, body, request, { close = false, text = JSON.stringify(body) } = {}) => {
+  // Sends one answer: signed, then for a 200 the credit check, then written. An answer that carries the Agreement
+  // co-signature is written inside its answer pass (`cosignature`), right after the pass's checks; a refusal writes nothing.
+  const send = async (res, status, body, request, { close = false, text = JSON.stringify(body), cosignature } = {}) => {
     const headers = await signedHeaders(status, text, request, close);
     if (status === 200 && request) await creditHeld(request.jobId);
-    write(res, status, headers, text);
+    if (cosignature === undefined) write(res, status, headers, text);
+    else await cosignature.send({ recheck: assertAnswerable(res, request), write: () => write(res, status, headers, text) });
   };
   // The discovery document is public, so it is signed as a document and carries no response envelope; a GET with a body is refused.
   const serveDiscovery = async (req, res) => {
@@ -319,7 +339,23 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         await row.revalidate({ agent, jobId: request.jobId, outcome: { status: outcome.status, text } });
       }
     };
-    const conclude = async (outcome, end) => {
+    // The answer pass of a stored answer that carries the Agreement co-signature, set by `conclude` and run by `transmitted`
+    // once the agent's job lock is released, so the buyer's next request does not meet a job the pass still holds.
+    let transmit = null, written = false;
+    // A refusal that withheld an answer carrying the Agreement co-signature (the reservation check's before it is stored, or
+    // the answer pass's): the refusal is answered, with its own code and status.
+    const answerWithheld = (error) => send(res, Number.isSafeInteger(error.status) ? error.status : 503, { error: String(error.code ?? 'answer_withheld'), message: String(error.message) }, request);
+    let withheld = null;
+    // Runs that pass, whose own checks decide whether the answer goes out: it is written to the response inside the pass,
+    // after the pass's checks and before its acknowledgement. A refusal withholds it: the stored answer is sent only through
+    // a later pass. Once written, a lost acknowledgement record leaves the history at `dispatch-started`, which reads as unknown.
+    const transmitted = async () => {
+      const pass = transmit;
+      if (pass === null) return;
+      transmit = null;
+      try { await pass(); } catch (error) { if (!written) await answerWithheld(error); }
+    };
+    const conclude = async (outcome, end, recheck = () => {}) => {
       if (concluded) throw new SellerTransportError('peer_reconciliation_conflict', 503);
       await revalidateFinalPayment(outcome);
       if (concluded) throw new SellerTransportError('peer_reconciliation_conflict', 503);
@@ -327,16 +363,21 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const text = auth.encode(JSON.stringify(outcome.value)), sent = await pointed(outcome.status, text, request.jobId, req.url);
       const headers = await signedHeaders(outcome.status, sent, request);
       if (outcome.status === 200) await creditHeld(request.jobId);
+      // An answer that carries the co-signature is that signature's transmission: it is stored here, after its reservation check,
+      // and written only by its answer pass (`transmitted`), as a repeat served from the cache and a state read are.
+      const cosignature = outcome.status === 200 ? outcome.value?.[COSIGNATURE_ANSWER] : undefined;
+      if (cosignature === undefined) { end(text); delivered = true; write(res, outcome.status, headers, sent); return; }
+      try { recheck(); } catch (error) { withheld = error; throw error; }
       end(text);
       delivered = true;
-      write(res, outcome.status, headers, sent);
+      transmit = () => cosignature.send({ recheck: assertAnswerable(res, request), write: () => { write(res, outcome.status, headers, sent); written = true; } });
     };
     // The options an answer is stored with: its classification and, for a route with a row, the row's end decision for the exact text.
     const endOptions = (outcome, text) => {
       const row = rowOfRoute();
       return { noEffect: outcome.noEffect, retry: outcome.retry, ...(row === undefined ? {} : { decision: row.endAfter({ ...outcome, text }, routeEvidence(agent, req.url, request.jobId, outcome)) }) };
     };
-    const finishWith = (outcome) => conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, endOptions(outcome, text)));
+    const finishWith = (outcome) => conclude(outcome, (text) => auth.store.finish(reservation, outcome.status, text, endOptions(outcome, text)), () => auth.store.assertPending(reservation));
     try {
       if (listener?.mode !== 'tls' && (!loopbackSocket(req.socket.remoteAddress) || !loopbackSocket(req.socket.localAddress))) return await send(res, 403, { error: 'loopback_only' }, null, { close: true });
       if (now() - windowStart >= rateWindowMs) { windowStart = now(); requests = 0; }
@@ -374,7 +415,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       // A signed read reserves and completes nowhere: it answers from the agent's current state.
       if (opened.read) {
         const outcome = transportOutcome(req.url, { answer: await route(agent, body, {}) }, { retained: false });
-        return await send(res, outcome.status, outcome.value, request);
+        // A read that carries the Agreement co-signature transmits it too, inside its answer pass.
+        return await send(res, outcome.status, outcome.value, request, { cosignature: outcome.value?.[COSIGNATURE_ANSWER] });
       }
       // Payment evidence is taken only on an assembled settlement profile.
       if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
@@ -389,7 +431,8 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           if (agent.retainsPaymentWork(request.jobId) && !agent.retainsPaymentClaim(request.jobId, body)) throw new SellerTransportError('payment_already_recorded', 409);
         }
         await rowOfRoute()?.revalidate({ agent, jobId: request.jobId, outcome: { status: reservation.status, text: reservation.text } });
-        return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url) });
+        return await send(res, reservation.status, null, request, { text: await pointed(reservation.status, reservation.text, request.jobId, req.url),
+          cosignature: cachedCosignature(agent, req.url, reservation, body) });
       }
       if (reservation.disposition === 'uncertain') {
         // A request its expired delegation admits only for readback reconciles read only.
@@ -404,14 +447,14 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
           claim: () => (claimed = auth.store.claim(reservation, request, { live: !readOnly })),
           settle: (outcome) => {
             if (!claimed) throw new SellerTransportError('peer_reconciliation_conflict', 503);
-            return conclude(outcome, reconcile(outcome));
+            return conclude(outcome, reconcile(outcome), () => claimed.check());
           },
         });
         if (typeof agent.reconcileTransport === 'function') {
           const row = rowOfRoute();
           await (row === undefined ? agent.reconcileTransport({ request, body, rawBody, readOnly, transport }) : row.recover({ agent, request, body, rawBody, transport }));
         }
-        if (delivered) return;
+        if (delivered) return await transmitted();
         return await send(res, 503, { error: 'operation_uncertain', message: 'A retained operation needs authenticated reconciliation; its outcome is not established.' }, request);
       }
       // One classification (seller-agent.mjs transportOutcome). An agent run checks its reservation inside its job fence before
@@ -420,15 +463,17 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const transport = Object.freeze({ path: req.url, check: () => auth.store.assertPending(reservation), settle: finishWith });
       const answer = await route(agent, body, { transport });
       if (!delivered) await finishWith(classified({ answer }));
+      await transmitted();
     } catch (error) {
-      if (delivered) return;
+      if (delivered) return await transmitted();
+      if (withheld !== null) return await answerWithheld(withheld);
       const beforeEffect = !reservation || reservation.disposition !== 'perform';
       // A refusal keeps its code, status and cause, never `operation_uncertain`. After the effect started, only the
       // refusal to store an unsignable answer and a source that cannot confirm a final answer do; any other error leaves the effect uncertain.
       const refusal = !concluded && (error instanceof SellerTransportError || error instanceof WireError) && (beforeEffect || ['outgoing_body_rejected', 'seller_source_unavailable'].includes(error.code));
       // An attempt whose answer failed before it was written (a superseded attempt, a failed signer or credit check) never sends that
       // answer: its outcome is uncertain.
-      const outcome = concluded ? { status: 503, value: UNCERTAIN } : (refusal ? { status: error.status, value: { error: error.code, message: error.message, ...(CAUSE_ANSWERED_REFUSALS.has(error.code) && typeof error.cause === 'string' ? { cause: error.cause } : {}) } }
+      const outcome = concluded ? { status: 503, value: UNCERTAIN } : (refusal ? { status: error.status, value: { error: error.code, message: refusalMessage(error.message, CAUSE_ANSWERED_REFUSALS.has(error.code) && typeof error.cause === 'string' ? error.cause : undefined) } }
         : transportOutcome(req.url, { error }, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId) }));
       let { status, value: answer } = outcome;
       if (reservation?.disposition === 'perform' && !concluded) {
@@ -479,7 +524,6 @@ const TLS_CODES = new Set(['CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO
 const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_SOCKET']);
 const TIMEOUT_CODES = new Set(['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
 function failureCause(error, phase, signal) {
-  if (phase === 'client-sign') return 'client-sign';
   if (signal?.aborted) return 'timeout';
   // Node fetch wraps TLS/socket errors in `cause`. Inspect only bounded
   // machine codes, never error messages, peer metadata or certificate bytes.
@@ -501,45 +545,27 @@ export class SellerRefusedError extends Error {
   }
 }
 
-/**
- * Waits for a response verification (an adapter's value or Promise) for at most `timeLeftMs` milliseconds (rounded up to a whole one), and returns its
- * result. Throws its rejection unchanged, or a `TimeoutError` at the deadline: a result that comes later releases nothing and is
- * never an unhandled rejection. With no time left (a response that arrived at or after the deadline) it throws that
- * `TimeoutError` without starting the verification. A synchronous adapter that throws is the same refusal as an asynchronous one.
- */
-function verifiedWithin(verify, timeLeftMs) {
-  if (timeLeftMs <= 0) return Promise.reject(new DOMException('the response arrived after the client deadline', 'TimeoutError'));
-  return boundedCall(verify, { timeoutMs: Math.ceil(timeLeftMs) });
-}
-
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false }) {
   assertKitOperationAdmitted('createSellerAgentClient');
+  if (authentication !== undefined) throw new OperationError('seller_client_signing_unsupported', 'the kit client sends unsigned requests only; a buyer that signs uses the client package');
   const base = new URL(String(url).replace(/\/$/, ''));
   if (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
     throw new Error('seller agent endpoint must be loopback without credentials, query or fragment');
   }
-  // The deadline sizes the bounded verification wait, so it must be a duration that wait accepts.
+  // The deadline is a Node timer, so it must be a duration a timer holds.
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_CLIENT_TIMEOUT_MS) throw new TypeError('timeoutMs must be an integer from 1 to 2^31 - 1');
   const origin = base.origin;
   const prefix = base.pathname.replace(/\/$/, '');
-
-  if (authentication && prefix) throw new Error('authenticated seller transport uses the exact /dacs/v1 paths');
-  let lastFailureCause, lastFailureDispatched, hasDispatched = false;
+  let lastFailureCause;
 
   async function post(path, body) {
     lastFailureCause = undefined;
-    lastFailureDispatched = undefined;
     let phase = 'other', signal;
     try {
       const text = JSON.stringify(body);
       if (Buffer.byteLength(text) > MAX_BODY) throw new Error('request exceeds byte limit');
-      phase = 'client-sign';
-      const signed = authentication ? await authentication.request(path, body, text) : null;
-      phase = 'other';
       signal = AbortSignal.timeout(timeoutMs);
-      const deadline = performance.now() + timeoutMs;
-      hasDispatched = true;
-      const response = await fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal });
+      const response = await fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal });
       phase = 'response-auth';
       const declared = response.headers.get('content-length');
       if (declared !== null && Number(declared) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) { await response.body?.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
@@ -563,19 +589,13 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
         if(Array.isArray(member)&&member.length>MAX_RESPONSE_LIST)throw new Error('response collection exceeds item limit');
         if(member&&typeof member==='object')for(const value of Object.values(member))pending.push(value);
       }
-      const answerText = new TextDecoder('utf-8', { fatal: true }).decode(responseBytes);
-      // Unsigned 429/404/415/503 answers cannot authenticate their status.
-      // Verify first: these failures stay response-auth, including signer fallback 503.
-      // The verification is awaited, over the exact received bytes, within what is left of the client's deadline.
-      if (authentication) await verifiedWithin(() => authentication.verifyResponse(signed.payload, { header: response.headers.get(DACS_SELLER_HTTP_HEADER), status: response.status, text: answerText, responseBytes }), deadline - performance.now());
       if (response.status >= 500 && response.status <= 599) phase = 'status-5xx';
       if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '')) throw new Error('response did not return JSON');
       if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('response JSON is not an object');
-      if (((response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status)) || (authentication && response.status === 503 && answer.error === 'peer_job_capacity')) && typeof answer.error === 'string') throw new SellerRefusedError(answer.error, typeof answer.message === 'string' ? answer.message.slice(0, 200) : answer.error, response.status);
+      if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status) && typeof answer.error === 'string') throw new SellerRefusedError(answer.error, typeof answer.message === 'string' ? answer.message.slice(0, 200) : answer.error, response.status);
       if (!response.ok) throw new Error('seller did not return success');
       return answer;
     } catch (error) {
-      if (phase === 'client-sign' && preDispatchFailures.has(error)) { lastFailureCause = 'tls'; lastFailureDispatched = false; throw error; }
       if (error instanceof SellerRefusedError) throw error;
       lastFailureCause = failureCause(error, phase, signal);
       throw new SellerUnavailableError('seller agent response is unavailable or unauthenticated; the operation outcome may be unknown', lastFailureCause);
@@ -587,21 +607,17 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
     // The durable Agreement coordinator retains only disposition/reason.
     // Its caller records the last failed HTTP call's bounded cause separately.
     get failureCause() { return lastFailureCause; },
-    // An Agreement coordinator can make several calls with this client. A
-    // refusal of its last call cannot hide an earlier dispatched proposal.
-    get failureDispatched() { return lastFailureDispatched === false && !hasDispatched ? false : undefined; },
-    propose: (body) => post('/dacs/v1/agreements/proposals', body),
-    agreementState: (transportIdentity) => post('/dacs/v1/agreements/state', { transportIdentity }),
-    // The existing authentication signs the complete serialized body, including
-    // this optional public CREATE. Omission preserves legacy fixture requests.
-    commit: (jobId, { signedProjection } = {}) => post('/dacs/v1/commitments', { jobId, ...(signedProjection === undefined ? {} : { signedProjection }) }),
-    ...(commitOnSignature ? { commitOnSignature: (jobId, agreement, signedProjection) => post('/dacs/v1/commitments/signature', { jobId, agreement, signedProjection }) } : {}),
-    submitPayment: (body) => post('/dacs/v1/payments', body),
-    bundleRequest: (jobId) => post('/dacs/v1/bundles/request', { jobId }),
-    countersign: (jobId, buyerSignature) => post('/dacs/v1/bundles/countersignature', { jobId, buyerSignature }),
-    confirmBuyerCopy: (jobId) => post('/dacs/v1/bundles/buyer-copy', { jobId }),
+    // Each method checks the kit operation guard when it is called, so a client built while admitted sends nothing after a re-hold.
+    propose: (body) => { assertKitOperationAdmitted('sellerAgentClient.propose'); return post('/dacs/v1/agreements/proposals', body); },
+    agreementState: (transportIdentity) => { assertKitOperationAdmitted('sellerAgentClient.agreementState'); return post('/dacs/v1/agreements/state', { transportIdentity }); },
+    commit: (jobId, { signedProjection } = {}) => { assertKitOperationAdmitted('sellerAgentClient.commit'); return post('/dacs/v1/commitments', { jobId, ...(signedProjection === undefined ? {} : { signedProjection }) }); },
+    ...(commitOnSignature ? { commitOnSignature: (jobId, agreement, signedProjection) => { assertKitOperationAdmitted('sellerAgentClient.commitOnSignature'); return post('/dacs/v1/commitments/signature', { jobId, agreement, signedProjection }); } } : {}),
+    submitPayment: (body) => { assertKitOperationAdmitted('sellerAgentClient.submitPayment'); return post('/dacs/v1/payments', body); },
+    bundleRequest: (jobId) => { assertKitOperationAdmitted('sellerAgentClient.bundleRequest'); return post('/dacs/v1/bundles/request', { jobId }); },
+    countersign: (jobId, buyerSignature) => { assertKitOperationAdmitted('sellerAgentClient.countersign'); return post('/dacs/v1/bundles/countersignature', { jobId, buyerSignature }); },
+    confirmBuyerCopy: (jobId) => { assertKitOperationAdmitted('sellerAgentClient.confirmBuyerCopy'); return post('/dacs/v1/bundles/buyer-copy', { jobId }); },
     // Only a seller that mounts the context route answers this (seller-context-route.mjs).
-    agreementContext: (body) => post(DACS_SELLER_HTTP_PATHS.context, body),
-    contextChallenge: (body) => post(DACS_SELLER_HTTP_PATHS.contextChallenge, body),
+    agreementContext: (body) => { assertKitOperationAdmitted('sellerAgentClient.agreementContext'); return post(DACS_SELLER_HTTP_PATHS.context, body); },
+    contextChallenge: (body) => { assertKitOperationAdmitted('sellerAgentClient.contextChallenge'); return post(DACS_SELLER_HTTP_PATHS.contextChallenge, body); },
   };
 }

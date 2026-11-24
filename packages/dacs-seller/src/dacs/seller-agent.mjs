@@ -35,8 +35,11 @@ import { verifyComponent, DEM_RAIL } from './listing.mjs';
 import { railAuthorityConfig, intakeRailDefinition, validateSellerListing } from './rail-authority.mjs';
 import { readRetainedBounded, readFailureCode } from './bounded-reads.mjs';
 import { listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem, readAdmissionCapability, vetAnchorReceiptProblem, vetRecordProblem, SELLER_PROFILE } from './session-admission.mjs';
-import { fixtureRef, signAnchorWrite, verifyFixtureRecord, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
+import { anchorWriteMessage, fixtureRef, signAnchorWrite, verifyFixtureRecord, fixtureTxRef, canonicalSignature } from './fixture-anchors.mjs';
 import { createSellerDurableState } from './seller-durable-state.mjs';
+import { agentEffectOperation, createAgentEffectSigner } from './agent-effect-signer.mjs';
+import { COSIGNATURE_ANSWER, createCosignatureAnswer } from './cosignature-answer.mjs';
+import { effectBoundaryBinding } from './effect-boundary.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './seller-capacity-defaults.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, checkNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
 import { isPaymentEvidenceWalletJournalPair, paymentEvidenceWalletJournalOf } from './payment-evidence-wallet-journal.mjs';
@@ -46,6 +49,7 @@ import { nativeDemDeliveryConfig, hasGuardedNativeDemDelivery, submitNativeDemDe
 import { deliverableJournalFor } from './deliverable-wallet-journal.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { agreementInput, agreementTerms, commitmentReader, commitmentSession, commitmentVerifier, contributionVerifier, deliverableAddress, deliveryEvidenceAddress, ed25519Deps, listingPin, protocolSupport, RAIL_REGISTRY_VERSION, verifyDelivery, verifyPaymentEvidence } from './purchase-protocol.mjs';
+import { OS_INTEGER } from './chain.mjs';
 
 /** A seller refusal with its stable code and HTTP status (422 by default). */
 export class SellerAgentError extends Error {
@@ -134,6 +138,30 @@ const walletAnswer = (answer) => ({ status: typeof answer?.status === 'string' ?
 const SELLER_REQUIREMENT = Object.freeze({ requirementVersion: '1', required: Object.freeze([]), preferredPresentation: 'any' });
 const vetUnverified = (reason, cause) => new SellerAgentError('seller_state_unverified', reason, 503, { cause });
 
+// The largest price this profile sells at (protocolSupport refuses a Listing above it). Ceilings whose sum with it is canonical OS
+// text keep every receipt within OS_INTEGER.
+const RECEIPT_PRICE_MAX_OS = BigInt(Number.MAX_SAFE_INTEGER);
+const RECEIPT_FEE_CEILING_NAMES = Object.freeze(['anchorFeeCeilingOs', 'payFeeCeilingOs']);
+/**
+ * Checks the seller's explicit receipt fee ceilings, `{ payFeeCeilingOs, anchorFeeCeilingOs }`: each canonical decimal OS text (zero
+ * allowed), and their sum with the largest supported price at most 78 digits. Returns a frozen copy, or null for null.
+ * Throws a TypeError for anything else; nothing is defaulted or inferred.
+ */
+export function receiptFeeCeilingsConfig(value) {
+  if (value === null) return null;
+  const names = typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).sort() : [];
+  if (names.join() !== RECEIPT_FEE_CEILING_NAMES.join() || !names.every((name) => typeof value[name] === 'string' && OS_INTEGER.test(value[name])) ||
+      !OS_INTEGER.test((RECEIPT_PRICE_MAX_OS + BigInt(value.payFeeCeilingOs) + BigInt(value.anchorFeeCeilingOs)).toString(10))) {
+    throw new TypeError('receiptFeeCeilings must be exactly { payFeeCeilingOs, anchorFeeCeilingOs }, each canonical decimal OS text, whose sum with the largest supported price has at most 78 digits');
+  }
+  return Object.freeze({ payFeeCeilingOs: value.payFeeCeilingOs, anchorFeeCeilingOs: value.anchorFeeCeilingOs });
+}
+// The seller receipt of an ordinary committed answer: the exact Agreement's hash, and the most the buyer reserves for it (its price plus
+// the Pay and anchor fee ceilings) as canonical decimal OS text. The wire response signature covers it; the Agreement, the commitment
+// record and every transaction stay as they are.
+const sellerReceiptOf = (agreement, ceilings) => ({ agreementHash: contentHash(agreement),
+  reservedMaximumOs: (BigInt(agreementTerms(agreement).price.amountOs) + BigInt(ceilings.payFeeCeilingOs) + BigInt(ceilings.anchorFeeCeilingOs)).toString(10) });
+
 /** Build a deterministic report from the Agreement, its exact Listing and settlement ID.
  * Throws SellerAgentError for a malformed job or mismatched Listing. */
 export function buildReport({ agreement, listing, settlementId }) {
@@ -197,7 +225,7 @@ export function buildReport({ agreement, listing, settlementId }) {
 // when the seller durably admitted exactly that context request for the job.
 // What the agent needs of the kit's one challenge ledger (the transport store's `challenges`).
 const CHALLENGE_LEDGER_METHODS = Object.freeze(['retained', 'jobBinding']);
-export async function createSellerAgent({ signer, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, jobSlotReleased, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, vetMode: vetModeOption, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, closedBootstrapGate = null, railAuthority = null, sessionAdmission = null, challengeLedger = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false }) {
+export async function createSellerAgent({ effectSigner, integritySigner, readOnlyAnswerSigner, effectBoundary, listing, anchors, observeDemosTransfer, now = () => Date.now(), durableDirectory, agreementAnchor = null, nativePaymentEvidence = null, demDeliveryContext = null, nativeDemDelivery = null, nativeArtifactAnchor = null, deliverableProducer = null, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, jobSlotReleased, deliveryEvidenceEnabled = false, buyerAccess = null, readIssued = null, vetMode: vetModeOption, commitOnSignature = false, signatureBuyer = null, signatureCommitmentReady = null, contextRequest = null, closedBootstrapGate = null, railAuthority = null, sessionAdmission = null, challengeLedger = null, reconcilePaymentEvidence = null, resumeDeliverableCreate = null, simulatedFixture = false, receiptFeeCeilings = null }) {
   assertKitOperationAdmitted('createSellerAgent');
   if (!Number.isSafeInteger(maxJobs) || maxJobs < 1) throw new TypeError('maxJobs must be a positive safe integer');
   commitOnSignature = commitOnSignatureConfig(commitOnSignature);
@@ -205,9 +233,15 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (signatureBuyer !== null && !/^did:demos:agent:[0-9a-f]{64}$/.test(signatureBuyer)) throw new TypeError('signatureBuyer must be an admitted buyer claim or null');
   if (signatureCommitmentReady !== null && typeof signatureCommitmentReady !== 'function') throw new TypeError('signatureCommitmentReady must be a function or null');
   if (commitOnSignature && !durableDirectory) throw new TypeError('commitment on signature requires durable seller state');
-  if (!signer?.claim || typeof signer.sign !== 'function') throw new Error('a seller signer (claim + sign) is required');
+  // Every effect signature is made inside a pass of the host's effect boundary; the durable state gets only the integrity role.
+  if (!effectSigner?.claim || typeof effectSigner.sign !== 'function') throw new TypeError('effectSigner must be the seller key\'s effect role (claim + sign)');
+  if (integritySigner?.claim !== effectSigner.claim || typeof integritySigner.sign !== 'function') throw new TypeError('integritySigner must be the same seller key\'s integrity role');
+  // Each direct composition names all three of the key's roles, so none can fall back on another.
+  if (typeof readOnlyAnswerSigner !== 'function') throw new TypeError('readOnlyAnswerSigner must be the same seller key\'s read-only answer role');
+  const boundaryBinding = effectBoundaryBinding(effectBoundary);
+  if (boundaryBinding === undefined) throw new TypeError('effectBoundary must be the host\'s effect boundary (createEffectBoundary)');
   if (agreementAnchor !== null && (typeof agreementAnchor?.readAgreement !== 'function' || typeof agreementAnchor.source !== 'string')) throw new Error('agreementAnchor must expose source and readAgreement');
-  if (!sameCanonicalClaimIdentity(listing?.seller?.identity?.presentedBy,signer.claim)) throw new Error('the seller signer does not control this Listing');
+  if (!sameCanonicalClaimIdentity(listing?.seller?.identity?.presentedBy,effectSigner.claim)) throw new Error('the seller signer does not control this Listing');
   if ((listing?.offering?.deliverable?.accessModel ?? 'public') !== 'public') throw new Error('unsupported Listing: seller delivery requires public access');
   // DACS-4 §9.6.1: larger payloads require an extended pointer. This
   // profile prepares inline storage only, so refuse before any Agreement.
@@ -232,7 +266,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     try{assertBuyer(session.buyerBundle.presentedBy,jobId);return false;}
     catch(error){if(error.code==='buyer_access_closed')return true;throw error;}
   };
-  const claim = signer.claim;
+  const claim = effectSigner.claim;
   const nativeEvidence = nativePaymentEvidenceConfig(nativePaymentEvidence);
   const deliveryContext = demDeliveryContextConfig(demDeliveryContext);
   // The agent's one Vet mode (default counterparty): the host composes it, and it
@@ -244,7 +278,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   }
   const nativeDelivery = nativeDemDeliveryConfig(nativeDemDelivery);
   if ((nativeArtifactAnchor === null) !== (deliverableProducer === null)) throw new TypeError('native demo artifacts and the genuine deliverable producer must be configured together');
-  if (nativeArtifactAnchor && (nativeArtifactAnchor.writer !== signer.claim || typeof nativeArtifactAnchor.publish !== 'function' || typeof nativeArtifactAnchor.readRetained !== 'function' || typeof nativeArtifactAnchor.verifyReceipt !== 'function' || typeof deliverableProducer !== 'function')) throw new TypeError('native demo artifact capability is incomplete or belongs to another seller');
+  if (nativeArtifactAnchor && (nativeArtifactAnchor.writer !== claim || typeof nativeArtifactAnchor.publish !== 'function' || typeof nativeArtifactAnchor.readRetained !== 'function' || typeof nativeArtifactAnchor.verifyReceipt !== 'function' || typeof deliverableProducer !== 'function')) throw new TypeError('native demo artifact capability is incomplete or belongs to another seller');
   if (nativeEvidence && (!durableDirectory || !agreementAnchor || typeof nativeEvidence.anchorEvidence !== 'function')) throw new TypeError('native evidence requires durable seller state, native Agreement readback and an explicit seller wallet anchor capability');
   if (reconcilePaymentEvidence !== null && (typeof reconcilePaymentEvidence !== 'function' || !nativeEvidence)) throw new TypeError('reconcilePaymentEvidence must be the seller wallet\'s journal question for the native evidence anchor, or null');
   if (deliveryContext && (!nativeEvidence || !durableDirectory)) throw new TypeError('DEM delivery context requires the durable native evidence profile');
@@ -262,6 +296,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
   if (!nativeProfile && (typeof anchors?.read !== 'function' || typeof anchors.write !== 'function')) throw new TypeError('a seller agent needs agreementAnchor and nativeArtifactAnchor, or an explicit fixture substrate (anchors)');
   if (nativeProfile && simulatedFixture) throw new TypeError('the native seller profile is not the simulated fixture profile');
   if (!nativeProfile && !simulatedFixture) throw new TypeError('the fixture substrate (anchors) is the simulated fixture profile: it signs over not-performed Vet references and an unsigned rail, and needs simulatedFixture: true');
+  // The native profile declares a seller receipt on every ordinary committed answer, so it needs both ceilings; the fixture profile
+  // declares one only when it is given them.
+  const receiptCeilings = receiptFeeCeilingsConfig(receiptFeeCeilings);
+  if (nativeProfile && receiptCeilings === null) throw new TypeError('the native seller profile needs receiptFeeCeilings: { payFeeCeilingOs, anchorFeeCeilingOs } as canonical decimal OS text');
+  const committedReceipt = (agreement) => (receiptCeilings ? { sellerReceipt: sellerReceiptOf(agreement, receiptCeilings) } : {});
   // This native profile has no extended-pointer publisher. A signed exact
   // size is its pre-payment capacity bound, including for default Listings.
   // General DACS Listings may omit it; this inline-only profile cannot.
@@ -337,11 +376,13 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     finally { clearTimeout(timer); }
   };
   const pin = listingPin(listing);
-  const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, signer, listingPin: pin, maxJobs, jobSlotReleased }) : null;
+  const durable = durableDirectory ? await createSellerDurableState({ dir: durableDirectory, integritySigner, listingPin: pin, maxJobs, jobSlotReleased }) : null;
   let closed=false;
   const requireOpen=()=>{if(closed)throw new SellerAgentError('seller_closed','the seller agent is closed',503);};
   try {
-  const sign = (bytes) => new Uint8Array(durable ? durable.signOnce(`signature:${sha256Hex(bytes)}`, Buffer.from(bytes)) : signer.sign(Buffer.from(bytes)));
+  const pinVersion = boundaryBinding.profile.pinVersion;
+  const sign = createAgentEffectSigner({ effectBoundary, effectSigner, durable, pinVersion });
+  const cosignatureAnswer = createCosignatureAnswer({ effectBoundary });
   const rawReceiptStore = durable?.receiptStore ?? createInMemorySellerReceiptStore();
   const retainedAdmission = durable?.context();
   if(retainedAdmission&&!isVerifiedListingAdmission(listing,retainedAdmission.validation))throw new Error('retained Listing admission differs from the current signed Listing');
@@ -743,30 +784,34 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     else if (railPin && !inFlight) existing.railPin = railPin;
     const session = sessions.get(jobId);
     verifiedSessions.set(jobId, sessionFingerprint(session));
-    const signUnderPin = (bytes) => {
-      transport?.check();
-      if (inlineSizeProblem) throw new SellerAgentError('unsupported_inline_delivery', inlineSizeProblem, 503);
-      if (!inFlight) assertListingCurrent();
-      // The first completed signature is made now, not when the context was
-      // resolved: the responder's own checkpoints can outlast the plain clock
-      // window or the admitted route's absolute deadline. Recheck the retained
-      // decision on the current clock here; signOnce's completed record alone
-      // replays a signature already made. A session retained by an earlier
-      // build carries no generatedAt and keeps the context-time decision.
-      const retainedDecision = session.proposalAdmission?.proposalHash === proposal.proposalHash ? session.proposalAdmission : null;
-      if (retainedDecision && Number.isSafeInteger(retainedDecision.generatedAt) &&
-          durable?.signature(`signature:${sha256Hex(bytes)}`).disposition !== 'present') {
-        const lateProblem = proposalTimeProblem({ generatedAt: retainedDecision.generatedAt, observedAt: now(),
-          deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit, admitted: retainedDecision.admitted });
-        if (lateProblem) throw new SellerAgentError('proposal_expired', lateProblem, 409);
-      }
-      // The key is only a pointer. An intent or a thrown signer never makes
-      // this pin in flight; signOnce's completed record is the authority.
-      session.agreementSignatureKey = `signature:${sha256Hex(bytes)}`;
+    const signUnderPin = async (bytes) => {
+      const bytesHash = sha256Hex(bytes);
+      // Run before the pass and again directly before the signer, with nothing awaited in between.
+      const recheck = () => {
+        transport?.check();
+        if (inlineSizeProblem) throw new SellerAgentError('unsupported_inline_delivery', inlineSizeProblem, 503);
+        if (!inFlight) assertListingCurrent();
+        // The first completed signature is made now, not when the context was
+        // resolved: the responder's own checkpoints can outlast the plain clock
+        // window or the admitted route's absolute deadline. Recheck the retained
+        // decision on the current clock here; signOnce's completed record alone
+        // replays a signature already made. A session retained by an earlier
+        // build carries no generatedAt and keeps the context-time decision.
+        const retainedDecision = session.proposalAdmission?.proposalHash === proposal.proposalHash ? session.proposalAdmission : null;
+        if (retainedDecision && Number.isSafeInteger(retainedDecision.generatedAt) &&
+            durable?.signature(`signature:${bytesHash}`).disposition !== 'present') {
+          const lateProblem = proposalTimeProblem({ generatedAt: retainedDecision.generatedAt, observedAt: now(),
+            deadlineSecAfterCommit: listing.terms.deadlineSecAfterCommit, admitted: retainedDecision.admitted });
+          if (lateProblem) throw new SellerAgentError('proposal_expired', lateProblem, 409);
+        }
+      };
+      const signature = await sign(bytes, { jobId, recheck });
+      // The key is only a pointer, written once the pass returned the
+      // signature; signOnce's completed record is the authority.
+      session.agreementSignatureKey = `signature:${bytesHash}`;
       session.agreementSignatureProposalHash = proposal.proposalHash;
+      if (session.railPin) session.railPinSigned = true;
       persist(session);
-      const signature = sign(bytes);
-      if (session.railPin) { session.railPinSigned = true; persist(session); }
       return signature;
     };
     let contextFailure=null;
@@ -931,7 +976,17 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     persist(session);
     contributions.set(transportIdentity.proposalHash, structuredClone(session.sellerContribution));
     signatures.set(session.sellerContribution.planHash, session.sellerContribution.signature.value);
-    return { disposition: 'complete', contribution: progress.result.sellerContribution };
+    return withCosignatureAnswer({ disposition: 'complete', contribution: progress.result.sellerContribution }, session);
+  }
+
+  // Every answer that carries the job's Agreement co-signature (the call that made it, a later attempt that replays it,
+  // or a read) names the answer pass the HTTP handler writes it in: the transmission's checks run each time it is sent.
+  function withCosignatureAnswer(answer, session) {
+    const key = session?.agreementSignatureKey;
+    if (!answer.contribution || typeof key !== 'string') return answer;
+    const op = agentEffectOperation({ jobId: session.jobId, operationId: `signature-${key.slice('signature:'.length)}`, pinVersion });
+    const send = ({ recheck, write }) => cosignatureAnswer.send({ op, recheck, write });
+    return Object.defineProperty(answer, COSIGNATURE_ANSWER, { value: Object.freeze({ jobId: session.jobId, operationId: op.operationId, send }) });
   }
 
   function agreementState(identity) {
@@ -940,7 +995,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     const session = sessionView(durable ? durable.loadSession(identity?.jobId) : sessions.get(identity?.jobId));
     if (!session?.proposal || session.transportIdentity?.proposalHash !== identity.proposalHash) return { proposal: null, contribution: null };
     assertRetainedVetMode(session);
-    return structuredClone({ proposal: session.proposal, contribution: session.sellerContribution ?? null });
+    return withCosignatureAnswer(structuredClone({ proposal: session.proposal, contribution: session.sellerContribution ?? null }), session);
   }
 
   // The buyer-anchored Agreement and the reference that names it: the
@@ -1105,7 +1160,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           verifiedListing: { disposition: 'verified', listing, pin },
           session: commitmentSession(agreement),
           createdAt: session.commitCreatedAt,
-          commitmentSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => { if (readbackOnly) readbackRequired(); return sign(bytes); } },
+          commitmentSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes, { jobId, recheck: () => { if (readbackOnly) readbackRequired(); } }) },
         },
         nativeArtifactAnchor ? {
           resolve: async (logicalAddress) => {
@@ -1171,7 +1226,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       retainCommitmentPhase(adopted,retained,false);
       if(!noLocalWrites){releaseFinalizedSignatureCommitment(adopted, jobId);persist(adopted);}
       Object.assign(session,adopted);
-      return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{})};
+      return {status:'committed',address:retained.logicalAddress,resumed:true,...(native?{agreementAnchor:nativeAgreementView(native)}:{}),...committedReceipt(agreement)};
     }
     // Adopting an anchored commitment is a save, which a read-only replay never makes.
     if (noLocalWrites) readbackRequired();
@@ -1190,20 +1245,23 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     releaseFinalizedSignatureCommitment(adopted, jobId);
     persist(adopted);
     Object.assign(session, adopted);
-    return { status: 'committed', address: finalized.logicalAddress, resumed: finalized.resumed, ...(native ? { agreementAnchor: nativeAgreementView(native) } : {}) };
+    return { status: 'committed', address: finalized.logicalAddress, resumed: finalized.resumed, ...(native ? { agreementAnchor: nativeAgreementView(native) } : {}), ...committedReceipt(agreement) };
   }
 
   // ---- DACS-4: payment claim -> SDK intake -> payment evidence ----
   // The native rail is the job's own pinned signed definition (RAV-R5), never
   // the current configuration; the fixture profile uses its simulated rail.
+  // The write authorization is signed in its own pass before the synchronous anchor transaction, whose closure
+  // rechecks the settlement credit and returns those retained bytes.
   async function anchorOnce(logicalAddress, artifact) {
-    if(artifact.jobId)assertSettlementCredit(artifact.jobId);
-    const authorize = () => { if(artifact.jobId)assertSettlementCredit(artifact.jobId);return signAnchorWrite(sign, logicalAddress, contentHash(artifact)); };
+    const creditHeld = () => { if(artifact.jobId)assertSettlementCredit(artifact.jobId); };
+    const writeSignature = await sign(Buffer.from(anchorWriteMessage(logicalAddress, contentHash(artifact)), 'utf8'), { jobId: artifact.jobId, recheck: creditHeld });
+    const authorize = () => { creditHeld(); return signAnchorWrite(() => writeSignature, logicalAddress, contentHash(artifact)); };
     const receipt = durable ? await durable.anchor({ jobId: artifact.jobId, logicalAddress, artifact, anchors, authorize }) : await anchors.write({ logicalAddress, artifact, writer: claim, writerSignature: authorize() });
     return { ref: fixtureRef(logicalAddress, contentHash(artifact)), receipt };
   }
 
-  const signEvidence = (unsigned) => signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes) });
+  const signEvidence = (jobId, unsigned) => signComponentArtifact(unsigned, ARTIFACT_SEPARATORS.SettlementEvidence, { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes, { jobId }) });
 
   function sameNativeDeliveryReceipt(left, right) {
     if (!left || !right) return false;
@@ -1298,8 +1356,11 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
     try { assertBuyer(session.buyerBundle.presentedBy, jobId); }
     catch (error) { throw error?.code === 'buyer_access_closed' ? new SellerTransportError(error.code, error.status) : error; }
     let stored; try { stored = JSON.parse(outcome.text); } catch { /* not the retained answer */ }
+    // An ordinary answer is replayed only with the receipt this seller declares for the retained Agreement now; an early one has none.
+    const receipt = COMMITMENT_ANSWER_STATUS[path] === 'committed' ? committedReceipt(session.agreement) : {};
     if (stored?.status !== COMMITMENT_ANSWER_STATUS[path] || stored.address !== logicalAddress ||
-        (retained && (retained.logicalAddress !== logicalAddress || retained.agreementHash !== session.agreementHash))) throw sourceUnavailable('changed');
+        (retained && (retained.logicalAddress !== logicalAddress || retained.agreementHash !== session.agreementHash)) ||
+        canonicalize(Object.hasOwn(stored, 'sellerReceipt') ? { sellerReceipt: stored.sellerReceipt } : {}) !== canonicalize(receipt)) throw sourceUnavailable('changed');
     await authenticateCommitmentSource(session, retained);
   }
   // Reads the job's commitment from its source and checks it against the retained one (`retained`, when the job has an ordinary commitment) and
@@ -1750,8 +1811,8 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
         // retryable classification; only an explicit invalid verdict fails.
         return verdict;
       },
-      evidenceSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes) },
-      auditSourceCommitmentSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes) },
+      evidenceSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes, { jobId: session.jobId }) },
+      auditSourceCommitmentSigner: { algorithm: 'ed25519', signer: claim, sign: (bytes) => sign(bytes, { jobId: session.jobId }) },
       verifyEvidenceSignature: verifySellerComponent,
       verifyAuditSourceCommitmentSignature: verifySellerComponent,
       // DeliveryEvidence publication is deferred (delivery-ready stops before it); these SDK callbacks hold.
@@ -2060,7 +2121,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
       step = 'settlement-binding';
       if (!await bindWhenNoSigningGate(signingGates, intake.settlementId, () => bindSettlement(intake.settlementId, jobId))) return { answer: { status: 'indeterminate', reason: 'settlement-collision' } };
       step = 'evidence-signing';
-      const evidence = await signEvidence(structuredClone(intake.evidenceInput));
+      const evidence = await signEvidence(jobId, structuredClone(intake.evidenceInput));
       if (contentHash(evidence) !== intake.evidenceHash) throw new SellerAgentError('evidence_hash_mismatch', 'SDK signed evidence hash differs', 500);
       step = 'evidence-check';
       const check = await checkNativePaymentEvidence({ artifact: evidence, agreement: session.agreement, writer: claim, txHash: hash, blockNumber: intake.settlementIdentity.blockNumber });
@@ -2223,7 +2284,7 @@ export async function createSellerAgent({ signer, listing, anchors, observeDemos
           assertVetContext(); assertSessionAdmission(); assertRailPin(session.railPin, 'in-flight');
           assertBuyer(request.buyer, request.jobId, { proposal: true });
           const agreement = await finalizeFixedPriceAgreementContributions(session.proposal.plan, [session.proposal.buyerContribution, session.sellerContribution], contributionVerifier);
-          return contentHash(agreement) === request.agreementHash ? { answer: { disposition: 'complete', contribution: structuredClone(session.sellerContribution) } } : { held: 'seller_proposal_state_incomplete' };
+          return contentHash(agreement) === request.agreementHash ? { answer: withCosignatureAnswer({ disposition: 'complete', contribution: structuredClone(session.sellerContribution) }, session) } : { held: 'seller_proposal_state_incomplete' };
         }
         case '/dacs/v1/agreements/state': return { answer: agreementState(body.transportIdentity) };
         case '/dacs/v1/commitments': case '/dacs/v1/commitments/signature': {

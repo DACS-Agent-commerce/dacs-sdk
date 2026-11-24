@@ -102,14 +102,17 @@ const ANCHOR_RECEIPT_RESERVE_BYTES = 16 * 1024;
 export const SELLER_ANCHOR_ARTIFACT_BYTES = ANCHOR_REPLY_BYTES - ANCHOR_RECEIPT_RESERVE_BYTES;
 const MAX_ANCHOR_ADDRESS_LENGTH = 512, MAX_BUYER_LENGTH = 512;
 
-export async function createSellerDurableState({ dir, signer, listingPin, maxJobs = DEFAULT_SELLER_MAX_JOBS, jobSlotReleased = () => false }) {
-  if (typeof dir !== 'string' || !isAbsolute(dir) || !/^did:demos:agent:[0-9a-f]{64}$/.test(signer?.claim) || typeof signer.sign !== 'function' || !Number.isSafeInteger(maxJobs) || maxJobs < 1) fail('seller_state_configuration_invalid');
+// The store signs only its own journal records, with `integritySigner` (the key's integrity role). It holds no
+// signer that can sign an effect: signOnce's fresh signature comes from the effect boundary pass's signer.
+export async function createSellerDurableState({ dir, integritySigner, listingPin, maxJobs = DEFAULT_SELLER_MAX_JOBS, jobSlotReleased = () => false }) {
+  if (typeof dir !== 'string' || !isAbsolute(dir) || !/^did:demos:agent:[0-9a-f]{64}$/.test(integritySigner?.claim) || typeof integritySigner.sign !== 'function' || !Number.isSafeInteger(maxJobs) || maxJobs < 1) fail('seller_state_configuration_invalid');
+  const sellerClaim = integritySigner.claim;
   // A worker shares the process's leases but not its realm: keep seller state on the main thread.
   if (!isMainThread) fail('seller_state_main_thread_required');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const stat = lstatSync(dir);
   if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077) || realpathSync(dir) !== dir) fail('seller_state_directory_unsafe');
-  const key = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(signer.claim.slice(16), 'hex')]), format: 'der', type: 'spki' });
+  const key = createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), Buffer.from(sellerClaim.slice(16), 'hex')]), format: 'der', type: 'spki' });
   const pin = clone(listingPin);
   // A store with only the session tables is upgraded once on open (below). The
   // upgrade is one way: an earlier build refuses the upgraded store as corrupt.
@@ -176,9 +179,9 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
     try { const result = fn(); db.exec('COMMIT'); return result; } catch (error) { db.exec('ROLLBACK'); throw error; }
   }
   function authenticated(kind, id, body) {
-    const payload = { version: '1', kind, id, seller: signer.claim, listingPin: pin, body: clone(body) };
+    const payload = { version: '1', kind, id, seller: sellerClaim, listingPin: pin, body: clone(body) };
     const bytes = Buffer.from(`${SELLER_STATE_SIGNING_DOMAIN}${canonicalize(payload)}`);
-    const signature = Buffer.from(signer.sign(bytes));
+    const signature = Buffer.from(integritySigner.sign(bytes));
     if (signature.length !== 64 || !verify(null, bytes, key, signature)) fail('seller_state_signer_invalid');
     return JSON.stringify({ payload, signature: signature.toString('base64url') });
   }
@@ -186,7 +189,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
     try {
       const envelope = JSON.parse(value);
       const { payload: p, signature } = envelope;
-      if (Object.keys(envelope).sort().join(',') !== 'payload,signature' || Object.keys(p).sort().join(',') !== 'body,id,kind,listingPin,seller,version' || p.version !== '1' || p.kind !== kind || p.id !== id || p.seller !== signer.claim || !same(p.listingPin, pin) || typeof signature !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(signature)) fail('seller_state_corrupt');
+      if (Object.keys(envelope).sort().join(',') !== 'payload,signature' || Object.keys(p).sort().join(',') !== 'body,id,kind,listingPin,seller,version' || p.version !== '1' || p.kind !== kind || p.id !== id || p.seller !== sellerClaim || !same(p.listingPin, pin) || typeof signature !== 'string' || !/^[A-Za-z0-9_-]{86}$/.test(signature)) fail('seller_state_corrupt');
       const sig = Buffer.from(signature, 'base64url');
       if (sig.toString('base64url') !== signature || !verify(null, Buffer.from(`${SELLER_STATE_SIGNING_DOMAIN}${canonicalize(p)}`), key, sig)) fail('seller_state_corrupt');
       return clone(p.body);
@@ -331,7 +334,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       if (record.status !== 'present') fail('seller_anchor_reconciliation_required', new Error(`anchor readback is ${record.status.slice(0, 64)}`));
       try {
         if (!Object.hasOwn(record, 'artifact') || !same(record.artifact, intent.artifact)) throw new Error('anchor readback differs from the retained artifact');
-        if (verifyFixtureRecord(record, { logicalAddress: intent.logicalAddress, expectedWriter: signer.claim }) !== 'valid') throw new Error('anchor receipt does not authenticate the retained artifact');
+        if (verifyFixtureRecord(record, { logicalAddress: intent.logicalAddress, expectedWriter: sellerClaim }) !== 'valid') throw new Error('anchor receipt does not authenticate the retained artifact');
       } catch (error) { fail('seller_anchor_reconciliation_invalid', error); }
       return record.receipt;
     }
@@ -558,8 +561,11 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
       // lost the job before the record): the current holder signs it again,
       // under the same fence. Without that, one signer failure would refuse
       // these bytes for good, a paid order's evidence included.
-      signOnce(id, bytes) {
+      // A fresh signature comes only from `passSigner`, the synchronous inner
+      // signer of the current effect boundary pass; without one nothing is kept.
+      signOnce(id, bytes, passSigner) {
         assertKitOperationAdmitted('signOnce');
+        if (typeof passSigner !== 'function') fail('seller_effect_signer_required');
         const bytesHash = sha256Hex(bytes), jobId = scopedJob();
         return transaction(() => {
           fence(jobId);
@@ -581,7 +587,7 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
             if (prior && !(prior.kind === 'signature' && prior.bytesHash === bytesHash && prior.state === 'intent')) fail('seller_state_busy');
             if (!prior) putEffect(id, { kind: 'signature', bytesHash, state: 'intent' });
           });
-          const signature = Buffer.from(signer.sign(Buffer.from(bytes)));
+          const signature = Buffer.from(passSigner(Buffer.from(bytes)));
           if (signature.length !== 64 || !verify(null, Buffer.from(bytes), key, signature)) fail('seller_state_signer_invalid');
           // Fenced like the intent: a holder that lost its row while the
           // signer ran keeps neither the signature nor a completion record, and
@@ -618,11 +624,11 @@ export async function createSellerDurableState({ dir, signer, listingPin, maxJob
         transaction(() => {
           fence(jobId);
           if (anchorRow(logicalAddress)) fail('seller_state_busy');
-          putAnchor({ jobId, logicalAddress, artifact: snapshot, hash, writer: signer.claim, writerSignature, state: 'intent' });
+          putAnchor({ jobId, logicalAddress, artifact: snapshot, hash, writer: sellerClaim, writerSignature, state: 'intent' });
         });
         try { await anchorRequest('write', options => {
           fence(jobId);
-          return anchors.write({ logicalAddress, artifact: clone(snapshot), writer: signer.claim, writerSignature, ...options });
+          return anchors.write({ logicalAddress, artifact: clone(snapshot), writer: sellerClaim, writerSignature, ...options });
         }); }
         catch (error) { fail('seller_anchor_reconciliation_required', error); }
         // A write answer is not anchor proof: the anchor is read back and authenticated.

@@ -24,6 +24,9 @@ import { createSellerTransportStore } from './helpers/bound-transport-store.mjs'
 import { hostAuthority } from './helpers/kit-wallet-session.mjs';
 import { proxyListener, distinctHeaders } from './helpers/listener-host.mjs';
 import { FIRST_ADMISSION_SCOPE, withFirstAdmission } from './helpers/first-admission.mjs';
+import { RECEIPT_FEE_CEILINGS } from './helpers/protocol-fixture.mjs';
+import { agentSigning } from './helpers/agent-signing.mjs';
+import { signedBuyerClient } from './helpers/signed-buyer-driver.mjs';
 
 let nextWallet=90;
 function key(){const tag=nextWallet++,privateKey=core.privateKeyFromSeed(new Uint8Array(32).fill(tag)),raw=Buffer.from(core.rawPublicKey(core.publicKeyFromSeed(new Uint8Array(32).fill(tag))));return{privateKey,address:'0x'+raw.toString('hex'),claim:'did:demos:agent:'+raw.toString('hex'),sign:bytes=>Buffer.from(core.ed25519Sign(bytes,privateKey)),signWallet:message=>'0x'+Buffer.from(core.ed25519Sign(Buffer.from(message),privateKey)).toString('hex')};}
@@ -82,7 +85,7 @@ async function world(t, { listingChanges = () => {}, sellerRequirement = null } 
     return entry;
   };
   const withLedger = (options) => options.sessionAdmission ? { ...options, challengeLedger: ledgerFor(options.durableDirectory, options.now ?? (() => now)).store.challenges } : options;
-  const capabilities = { readCommitmentReceipt: receiptReader(),
+  const capabilities = { readCommitmentReceipt: receiptReader(), receiptFeeCeilings: RECEIPT_FEE_CEILINGS,
     signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing, now: () => now,
     buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true, buyerForJob: candidate => candidate === jobId ? buyerKey.address : null }),
     agreementAnchor: { source: 'settlement-profile/agreement-readback', readAgreement: refuse('readAgreement') },
@@ -142,7 +145,7 @@ async function world(t, { listingChanges = () => {}, sellerRequirement = null } 
   const payment = { jobId, txHash: 'a'.repeat(64), payerPayingKey: buyerKey.claim };
   // The job's first admission is made for the agent before its first proposal, as the context route makes it.
   const agent = async (options) => {
-    const opened = withLedger({ closedBootstrapGate: () => null, ...options }), created = await seller.createSellerAgent(opened);
+    const opened = withLedger({ closedBootstrapGate: () => null, ...options }), created = await seller.createSellerAgent({ ...agentSigning(opened.signer), ...opened });
     return opened.challengeLedger ? withFirstAdmission(created, opened.challengeLedger, opened.now ?? (() => now), seller.SellerAgentError) : created;
   };
   return { capabilities, chain, dir, ledgerFor, reached, jobId, synthetic, signedSynthetic, vetted, proposalFor, payment, listing, signer: capabilities.signer, steward, buyerKey, sellerKey, buyerBundle, admission, now, agent };
@@ -270,7 +273,7 @@ test('a rail authority that is not the steward-signed demos-native:DEM PA-1 defi
     [{ ...w.steward.railAuthority(), production: 'yes' }, /local operator policy/],
     [{ ...w.steward.railAuthority(), extra: 1 }, /railAuthority must be exactly/],
   ]) await assert.rejects(w.agent(complete(w, { durableDirectory: w.dir(), railAuthority })), { name: 'TypeError', message });
-  await assert.rejects(seller.createSellerAgent({ signer: w.signer, listing: w.listing, observeDemosTransfer: async () => null, anchors: { read: async () => null, write: async () => null }, simulatedFixture: true, railAuthority: w.steward.railAuthority() }),
+  await assert.rejects(seller.createSellerAgent({ ...agentSigning(w.signer), listing: w.listing, observeDemosTransfer: async () => null, anchors: { read: async () => null, write: async () => null }, simulatedFixture: true, railAuthority: w.steward.railAuthority() }),
     { name: 'TypeError', message: /simulated fixture profile takes no railAuthority/ });
   assert.deepEqual(w.reached, []);
 });
@@ -435,7 +438,7 @@ async function httpSeller(t, w, { gate = {} } = {}) {
   const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing: w.listing, buyer: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.signer, store, now: () => w.now });
   const handle = seller.createSellerHttpHandler(facade, { wire });
   const proposal = await w.proposalFor(w.vetted);
-  const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: inProcessFetch(handle, last),
+  const client = signedBuyerClient({ url: 'http://127.0.0.1:1', fetchImpl: inProcessFetch(handle, last),
     authentication: buyerWire.authentication(() => proposal.proposal.plan.agreementHash) });
   const restart = async (railAuthority) => { agent.close(); agent = await build(railAuthority); };
   return { chain, client, proposal, last, restart, get agent() { return agent; } };
@@ -1022,7 +1025,7 @@ test('failed Agreement signing leaves no in-flight rail; live recovery signs onc
   } };
   let agent = await w.agent(complete(w, { durableDirectory, signer }));
   assert.equal((await agent.receiveProposal(request)).disposition, 'indeterminate');
-  assert.notEqual(agent.durableSessionOf(w.jobId).railPinSigned, true);
+  assert.notEqual(agent.durableSessionOf(w.jobId)?.railPinSigned, true);
   agent.close(); fail = false;
   agent = await w.agent(complete(w, { durableDirectory, signer, railAuthority: w.steward.railAuthority({ changes: { availability: 'disabled' } }) }));
   assert.deepEqual(await refused(() => agent.receiveProposal(request)), { code: 'rail_unavailable', status: 503 });
@@ -1214,7 +1217,7 @@ test('steward history rejects malformed identities at configuration and retains 
 test('the default store admits job 1001 and atomically reserves the last configured slot', async (t) => {
   const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
   const w = await world(t);
-  const store = await createSellerDurableState({ dir: w.dir(), signer: w.signer, listingPin: seller.listingPin(w.listing) });
+  const store = await createSellerDurableState({ dir: w.dir(), integritySigner: w.signer, listingPin: seller.listingPin(w.listing) });
   try {
     for (let i = 0; i < 1001; i++) {
       const jobId = core.generateCanonicalJobId();
@@ -1222,7 +1225,7 @@ test('the default store admits job 1001 and atomically reserves the last configu
     }
     assert.equal(store.sessions().length, 1001);
   } finally { store.close(); }
-  const limited = await createSellerDurableState({ dir: w.dir(), signer: w.signer, listingPin: seller.listingPin(w.listing), maxJobs: 1 });
+  const limited = await createSellerDurableState({ dir: w.dir(), integritySigner: w.signer, listingPin: seller.listingPin(w.listing), maxJobs: 1 });
   try {
     let release, entered;
     const gate = new Promise(resolve => { release = resolve; });
@@ -1343,7 +1346,7 @@ test('capacity reclaims only proven-exited unsaved reservations; live holders an
   for (const saved of [false, true]) {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-reservation-')));
     const jobA = core.generateCanonicalJobId(), jobB = core.generateCanonicalJobId();
-    const initial = await createSellerDurableState({ dir, signer, listingPin, maxJobs: 1 });
+    const initial = await createSellerDurableState({ dir, integritySigner: signer, listingPin, maxJobs: 1 });
     initial.retainContext({ admittedAt: 1, validation: { disposition: 'verified' } });
     initial.close();
     const child = fork(new URL('./helpers/seller-durable-state-lock-holder.mjs', import.meta.url), [], { stdio: ['ignore', 'ignore', 'inherit', 'ipc'] });
@@ -1353,12 +1356,12 @@ test('capacity reclaims only proven-exited unsaved reservations; live holders an
     const held = await message({ type: 'hold', dir, listingPin, jobId: jobA, claim: signer.claim, pkcs8: signer.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64') });
     assert.equal(held.code, null, JSON.stringify(held));
     if (saved) assert.equal((await message({ type: 'call', op: 'save' })).code, null);
-    let store = await createSellerDurableState({ dir, signer, listingPin, maxJobs: 1 });
+    let store = await createSellerDurableState({ dir, integritySigner: signer, listingPin, maxJobs: 1 });
     try {
       assert.equal(store.inspectLocks()[0].holderExited, false);
       await assert.rejects(store.withJob(jobB, () => assert.fail('live reservation must count')), { code: 'seller_state_capacity' });
       const exited = once(child, 'exit'); child.kill('SIGKILL'); await exited;
-      store.close(); store = await createSellerDurableState({ dir, signer, listingPin, maxJobs: 1 });
+      store.close(); store = await createSellerDurableState({ dir, integritySigner: signer, listingPin, maxJobs: 1 });
       assert.equal(store.inspectLocks()[0].holderExited, true);
       assert.equal(store.sessions().length, saved ? 1 : 0);
       if (saved) await assert.rejects(store.withJob(jobB, () => assert.fail('a saved session must count')), { code: 'seller_state_capacity' });
@@ -1376,7 +1379,7 @@ test('capacity never reclaims an unproven reservation', async (t) => {
   const { createSellerDurableState } = await import('../src/dacs/seller-durable-state.mjs');
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'seller-unproven-reservation-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const store = await createSellerDurableState({ dir, signer: key(), listingPin: { listingId: 'unproven', version: 1, contentHash: 'a'.repeat(64) }, maxJobs: 1 });
+  const store = await createSellerDurableState({ dir, integritySigner: key(), listingPin: { listingId: 'unproven', version: 1, contentHash: 'a'.repeat(64) }, maxJobs: 1 });
   try {
     const db = new DatabaseSync(join(dir, 'seller-state.sqlite'));
     try { db.prepare('INSERT INTO seller_locks VALUES (?,?,?)').run(core.generateCanonicalJobId(), '1:TEST-legacy-holder', 1); } finally { db.close(); }

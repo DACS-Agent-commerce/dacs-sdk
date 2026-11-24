@@ -12,9 +12,9 @@ for(const vector of corpus.vectors)test(`HTTP exact bytes: ${vector.name}`,async
  if(vector.expected==='reject'){assert.equal(res.status,400);assert.equal(JSON.parse(res.text).error,'bad_json');assert.equal(w.effects(),0);}
  else assert.notEqual(JSON.parse(res.text).error,'bad_json');
 });
-for(const raw of ['{"x":0,"x":1}','{"n":9007199254740991.1}','{"x":1e-400}','\ufeff{}','{"a":1,"\\u0061":2}'])test(`received response is admitted before authentication: ${raw}`,async()=>{
- let auth=0;const client=createSellerAgentClient({url:'http://127.0.0.1',fetchImpl:async()=>new Response(raw,{status:200,headers:{'content-type':'application/json'}}),authentication:{request:async()=>({header:'fixture',payload:{}}),verifyResponse:()=>{auth++;}}});
- await assert.rejects(client.propose({}),{code:'seller_unavailable'});assert.equal(auth,0);
+for(const raw of ['{"x":0,"x":1}','{"n":9007199254740991.1}','{"x":1e-400}','\ufeff{}','{"a":1,"\\u0061":2}'])test(`a received response that is not exact JSON is unavailable: ${raw}`,async()=>{
+ const client=createSellerAgentClient({url:'http://127.0.0.1',fetchImpl:async()=>new Response(raw,{status:200,headers:{'content-type':'application/json'}})});
+ await assert.rejects(client.propose({}),{code:'seller_unavailable'});
 });
 test('RPC responses admit exact bytes before discarding duplicate members or numeric identity', async () => {
   const { fetchBoundedJson } = await import('../src/util/http.mjs');

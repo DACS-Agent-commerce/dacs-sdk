@@ -2,6 +2,7 @@ import test from'node:test';
 import assert from'node:assert/strict';
 import * as core from'@kynesyslabs/dacs';
 import {commitmentFixture}from'./helpers/commitment-fixture.mjs';
+import {agentSigning}from'./helpers/agent-signing.mjs';
 import {finalizedCommitmentReader} from './helpers/finalized-commitment-reader.mjs';
 import {anchorFixture}from'./helpers/anchor-isolated-fixture.mjs';
 import {readbackFixture}from'./helpers/sr2-readback-fixture.mjs';
@@ -48,7 +49,7 @@ for(const retained of [false,'commit','readCommitment'])test(`authenticated ${re
  let current=agent;
  if(retained){
   agent.close();const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs'),{listingPin}=await import('../src/dacs/purchase-protocol.mjs');
-  const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+  const state=await createSellerDurableState({dir:f.dir,integritySigner:f.config.signer,listingPin:listingPin(f.listing)});
   try{await state.withJob(JOB,()=>state.reserveSignatureCommitment(buyer.claim,JOB));}finally{state.close();}
   current=await f.open();assert.equal((await current[retained]({jobId:JOB})).status,'committed');
  }
@@ -62,7 +63,7 @@ test('successful native commitment replays exact state after restart and rejects
  for(const stage of ['delivered','copies-exchanged'])for(const failing of [false,true])await t.test(`native commitment readback preserves ${stage} on ${failing?'failure':'success'}`,async child=>{
  const f=await commitmentFixture(child),{agent}=await f.prepare();await agent.commit({jobId:JOB});agent.close();
  const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');
- const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ const state=await createSellerDurableState({dir:f.dir,integritySigner:f.config.signer,listingPin:listingPin(f.listing)});
  try{await state.withJob(JOB,session=>{session.stage=stage;state.saveSession(session);});}finally{state.close();}
  const fresh=await f.open();if(failing){f.controls.read=async()=>({disposition:'indeterminate',reason:'TEST read unavailable'});await assert.rejects(fresh.commit({jobId:JOB}),e=>e.code==='substrate_unavailable');}else assert.equal((await fresh.commit({jobId:JOB})).status,'committed');
  assert.equal(fresh.stageOf(JOB),stage);assert.equal(f.local.writes.length,1);
@@ -181,7 +182,7 @@ test('an advancing-clock retry replaces a proven-unsigned commitment intent',asy
 async function fixtureProfile(t,inspect=false){
  const create=inspect?(await (await import('./helpers/private-module.mjs')).privateModule(new URL('../src/dacs/seller-agent.mjs',import.meta.url),[],source=>source.replace('  return api;','  return {...api,TESTsessions:sessions};'))).createSellerAgent:createSellerAgent;
  const listing=fixtureListing(seller,{now:NOW}),bundle=fixtureIdentityBundle(buyer,NOW),input=agreementInput({jobId:JOB,listing,buyerBundle:bundle,generatedAt:NOW}),plan=core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(input)),contribution=await core.createFixedPriceAgreementSignatureContribution(plan,'buyer',{party:buyer.claim,algorithm:'ed25519',sign:buyer.signBytes});const material={proposalVersion:'1',plan,buyerContribution:contribution},proposal={...material,proposalHash:core.sha256Hex(core.canonicalize(material))},transportIdentity={jobId:JOB,planHash:plan.planHash,agreementHash:plan.agreementHash,buyer:buyer.claim,seller:seller.claim,proposalHash:proposal.proposalHash};
- const anchors=localAnchor({now:()=>NOW}),agent=await create({signer:{claim:seller.claim,sign:seller.signBytes},listing,anchors,simulatedFixture:true,now:()=>NOW});t.after(()=>agent.close());const response=await agent.receiveProposal({proposal,transportIdentity,buyerIdentityBundle:bundle});assert.equal(response.disposition,'complete');const agreement=await core.finalizeFixedPriceAgreementContributions(plan,[contribution,response.contribution],contributionVerifier),address=core.fixedPriceAgreementLogicalAddress(JOB);await anchors.write({logicalAddress:address,artifact:agreement,writer:buyer.claim,writerSignature:signAnchorWrite(buyer.signBytes,address,core.contentHash(agreement))});return{agent,anchors};
+ const anchors=localAnchor({now:()=>NOW}),agent=await create({...agentSigning({claim:seller.claim,sign:seller.signBytes}),listing,anchors,simulatedFixture:true,now:()=>NOW});t.after(()=>agent.close());const response=await agent.receiveProposal({proposal,transportIdentity,buyerIdentityBundle:bundle});assert.equal(response.disposition,'complete');const agreement=await core.finalizeFixedPriceAgreementContributions(plan,[contribution,response.contribution],contributionVerifier),address=core.fixedPriceAgreementLogicalAddress(JOB);await anchors.write({logicalAddress:address,artifact:agreement,writer:buyer.claim,writerSignature:signAnchorWrite(buyer.signBytes,address,core.contentHash(agreement))});return{agent,anchors};
 }
 test('memory fixture commitment rechecks its authoritative anchor on every repeat',async t=>{
  const f=await fixtureProfile(t);assert.equal((await f.agent.commit({jobId:JOB})).status,'committed');const writes=f.anchors.writes.length;f.anchors.controls.read=(row,address)=>address===core.finalityCommitmentAddress(JOB)?{status:'absent'}:row;await assert.rejects(f.agent.commit({jobId:JOB}));assert.equal(f.anchors.writes.length,writes);
@@ -198,7 +199,7 @@ test('valid native receipts may omit the optional nonce and still replay',async 
  const f=await commitmentFixture(t),read=f.native.readRetained;f.native.readRetained=async input=>{const out=await read(input);if(out.receipt)delete out.receipt.nonce;return out;};const {agent}=await f.prepare();await agent.commit({jobId:JOB});assert.equal((await agent.commit({jobId:JOB})).status,'committed');
 });
 for(const changed of['proof','time','phase'])test(`retained native checkpoint ${changed} is reauthenticated before cached success`,async t=>{
- const f=await commitmentFixture(t),{agent}=await f.prepare();await agent.commit({jobId:JOB});agent.close();const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');const state=await createSellerDurableState({dir:f.dir,signer:f.config.signer,listingPin:listingPin(f.listing)});
+ const f=await commitmentFixture(t),{agent}=await f.prepare();await agent.commit({jobId:JOB});agent.close();const {createSellerDurableState}=await import('../src/dacs/seller-durable-state.mjs');const {listingPin}=await import('../src/dacs/purchase-protocol.mjs');const state=await createSellerDurableState({dir:f.dir,integritySigner:f.config.signer,listingPin:listingPin(f.listing)});
  try{await state.withJob(JOB,session=>{if(changed==='proof')session.commitment.anchorReceipt.evidence.value='TEST-broken-proof';else if(changed==='time')session.commitment.committedAt++;else session.phaseResults[1].invokedAt++;state.saveSession(session);});}finally{state.close();}
  const fresh=await f.open();await assert.rejects(fresh.commit({jobId:JOB}),e=>['commitment_changed','seller_phase_conflict'].includes(e.code));assert.equal(f.local.writes.length,1);
 });
