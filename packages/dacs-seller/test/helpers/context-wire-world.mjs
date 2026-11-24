@@ -33,8 +33,8 @@ export function presentationFor(presenter, nonce, at) {
   return { ...bundle, presentation: { kind: 'per-claim', signatures: [{ ref: presenter.claim, signature: presenter.signBytes(Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`)).toString('base64url') }] } };
 }
 
-export async function contextWireWorld(t, { requireDelegation = false, storeOptions = {}, resume = null } = {}) {
-  const w = await challengeWorld(t, { requireDelegation, store: storeOptions, resume });
+export async function contextWireWorld(t, { requireDelegation = false, storeOptions = {}, resume = null, sellerRoles = null } = {}) {
+  const w = await challengeWorld(t, { requireDelegation, store: storeOptions, resume, sellerRoles });
   const { state, calls, agent, buyer, seller, other } = w;
   const now = () => state.time;
   state.mono = 0;

@@ -42,11 +42,6 @@ test('the package root exports the context routes a host mounts', async () => {
   for (const name of ['createSellerContextRoute', 'createWireSellerContextRoute']) assert.equal(typeof exported[name], 'function', `the root exports ${name}`);
 });
 
-test('the package root exports the buyer-side wire signer', async () => {
-  const exported = await import(new URL('src/index.mjs', packageUrl));
-  assert.equal(typeof exported.createSellerWireClientAuth, 'function', 'the root exports createSellerWireClientAuth');
-});
-
 test('the README names the module the handler agent comes from; it exports createSellerAgent and the root does not', async () => {
   assert.ok(readme.includes(`\`${PACKAGE}/src/dacs/seller-agent.mjs\``), 'the README names the seller agent module path');
   assert.equal(typeof (await import(moduleFor(`${PACKAGE}/src/dacs/seller-agent.mjs`))).createSellerAgent, 'function');

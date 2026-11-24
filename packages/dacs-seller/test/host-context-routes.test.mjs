@@ -3,6 +3,7 @@
 // real signed HTTP exchanges over loopback, on fake timers where a deadline matters.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { causeOf } from './helpers/refusal-body.mjs';
 import { existsSync, readdirSync } from 'node:fs';
 import { Server } from 'node:http';
 import { join } from 'node:path';
@@ -435,7 +436,7 @@ async function pendingAfterDeadline(t) {
   t.mock.timers.tick(CONTEXT_DEADLINE_MS);
   const answer = await pending;
   t.mock.timers.reset();
-  assert.deepEqual([answer.status, answer.body.error, answer.body.cause], [503, 'operation_uncertain', 'context_deadline'], answer.text);
+  assert.deepEqual([answer.status, answer.body.error, causeOf(answer.body)], [503, 'operation_uncertain', 'context_deadline'], answer.text);
   provider.gate.resolve();
   await flush();
   const before = charged(f.dataDirectory);
@@ -478,7 +479,7 @@ test('once the attempt\'s lease has run out, the same body under a new envelope 
   const w = await pendingAfterDeadline(t);
   w.f.advance(JOURNAL_LEASE_MS);
   const recovered = await w.resend(NOW + JOURNAL_LEASE_MS);
-  assert.deepEqual([recovered.status, recovered.body.error, recovered.body.cause], [503, 'operation_uncertain', 'context_recovery_held'], recovered.text);
+  assert.deepEqual([recovered.status, recovered.body.error, causeOf(recovered.body)], [503, 'operation_uncertain', 'context_recovery_held'], recovered.text);
   const after = charged(w.f.dataDirectory);
   assert.deepEqual(after.reservations.map(({ state }) => state), ['new', 'recover']);
   assert.deepEqual(after.journal.filter((name) => name.startsWith('o-')).map((name) => name.slice(name.lastIndexOf('-'))), ['-0', '-0.end', '-1'],

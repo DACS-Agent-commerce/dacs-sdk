@@ -5,7 +5,9 @@
 import { types } from 'node:util';
 import { contentHash, createFixedPriceAgreementSigningPlan } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS, WireError, admitWireArtifact, admitWireResponseBody, authorizeWireRequest, checkWireRequest, inspectWireOperation, isReadRoute, openWireEnvelope, signWireResponse, wireOperationBinding, wireOperationId, wireRequestHash } from '@kynesyslabs/dacs/wire';
+import { createAnswerSigners } from './answer-signers.mjs';
 import { boundedCall } from './bounded-call.mjs';
+import { effectBoundaryBinding } from './effect-boundary.mjs';
 import { isSmallOrderPublicKey } from './demos-claims.mjs';
 import { paymentTxHash } from './seller-agent.mjs';
 import { endWireAttempt } from './seller-http.mjs';
@@ -130,15 +132,18 @@ function admitAnswerText(text) {
  * `plannedAgreementOf(jobId)` calls it, or answers null while none is bound. `publicEndpoint` is the origin
  * the handler's discovery document names; it is `null` when none is given, and then no discovery document is served. `bootstrap` is the
  * host's request-local bootstrap scopes (`createBootstrapScopes`), which the handler enters for each request before the wire opens it;
- * it is `null` when none is given, and then no scope is entered. A `signer`
- * with `readOnlyAnswerSigner` signs read answers and discovery through that role; one without it signs them as itself. Returns the
+ * it is `null` when none is given, and then no scope is entered. `signer` is the seller key's roles (`claim`, `sign` and
+ * `readOnlyAnswerSigner`) and `effectBoundary` the host's, built over `binding`: discovery, read answers and refusals are signed
+ * by the read-only role, and every other answer by the effect role inside a pass of the boundary (createAnswerSigners). Returns the
  * frozen context, the only `wire` option `createSellerHttpHandler` takes. Binds `store` to the signer's seller and the agent's Listing pin. Throws a TypeError
- * for a member of the wrong kind, and an Error when `store` already belongs to another seller or Listing.
+ * for a member of the wrong kind (a signer without the read-only role, or a boundary not built over `binding`, included), and an
+ * Error when `store` already belongs to another seller or Listing.
  */
-export function createWireContext({ binding, tp1Network, signer, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, reservations, completion, stopped = null, publicEndpoint = null, bootstrap = null }) {
-  const callables = [tp1Network?.connection, signer?.sign, store?.bind, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
+export function createWireContext({ binding, tp1Network, signer, effectBoundary, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, reservations, completion, stopped = null, publicEndpoint = null, bootstrap = null }) {
+  const callables = [tp1Network?.connection, signer?.sign, signer?.readOnlyAnswerSigner, store?.bind, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
-      [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
+      [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer roles, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
+  if (effectBoundaryBinding(effectBoundary) !== binding) throw new TypeError('the wire context\'s effectBoundary must be the host\'s, built over its binding');
   if (stopped !== null && typeof stopped !== 'function') throw new TypeError('the wire context\'s stop check must be a function');
   if (publicEndpoint !== null && typeof publicEndpoint !== 'string') throw new TypeError('the wire context\'s public endpoint must be a string');
   if (bootstrap !== null && typeof bootstrap?.enter !== 'function') throw new TypeError('the wire context\'s bootstrap scopes need enter()');
@@ -146,8 +151,9 @@ export function createWireContext({ binding, tp1Network, signer, store, journal,
   store.bind({ seller: signer.claim, listingPin: agent.listingPin });
   // Set once by the context route; a state read before any session asks it for the draft the job's completed context plans.
   let readPlannedAgreement = null;
-  const readSigner = (purpose, body) => (typeof signer.readOnlyAnswerSigner === 'function' ? signer.readOnlyAnswerSigner({ purpose, binding, local: tp1Network.connection(), body }) : signer);
-  const context = Object.freeze({ binding, signer, journal, store, reservations, completion, requireDelegation, readCommitmentReceipt, publicEndpoint, readSigner, bootstrap,
+  const readSigner = (purpose, body) => signer.readOnlyAnswerSigner({ purpose, binding, local: tp1Network.connection(), body });
+  const answers = createAnswerSigners({ roles: signer, effectBoundary, binding, local: () => tp1Network.connection() });
+  const context = Object.freeze({ binding, signer, journal, store, reservations, completion, requireDelegation, readCommitmentReceipt, publicEndpoint, readSigner, answers, bootstrap,
     local: () => tp1Network.connection(), tuple: (jobId) => store.purchaseProfile(jobId), now: () => now(), ready: () => ready(),
     admitPresentation: typeof agent.admitSessionPresentation === 'function' ? (input) => agent.admitSessionPresentation(input) : null,
     stopped: stopped === null ? null : () => stopped(),
@@ -356,9 +362,8 @@ export function wireAuthenticator(wire, agent) {
     },
     sign: async (request, status, text) => {
       if (request.seller !== wire.signer.claim) return undefined;
-      // A read answer is signed by the key's read-only role; every other answer, refusals included, by the effect signer.
-      const signer = status === 200 && isReadRoute(request.path) ? await wire.readSigner('read-answer', text) : wire.signer;
-      return signWireResponse(request, status, text, { signer, binding: wire.binding, local: wire.local(), purchaseProfile: wire.tuple(request.jobId), now: wire.now() });
+      const signWith = (signer) => signWireResponse(request, status, text, { signer, binding: wire.binding, local: wire.local(), purchaseProfile: wire.tuple(request.jobId), now: wire.now() });
+      return wire.answers.signAnswer({ request, status, text }, signWith);
     },
   });
 }

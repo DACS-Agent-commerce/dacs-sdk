@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF pass the seller's effect boundary in the bootstrap challenge test host",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/helpers/bootstrap-challenge-host.mjs",
+      "before": "04a9c96363c13fcbde5aa1df84d64f528123ae4d",
+      "after": "4fc3da07f5a931be7073f6c6e2f3308e2325f316"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-f98f94faa3c9.json",
+    "packages/dacs-client/test/helpers/bootstrap-challenge-host.mjs"
+  ],
+  "note": "The bootstrap challenge test host builds the seller's wire context, which now requires the seller's effect boundary built over the same binding. The host now passes a test effect boundary over its binding from the seller's shared test signing helper. The wire request journal stays a stand-in that fails on any access, so the challenge route still touches no journal. No test changes."
+}

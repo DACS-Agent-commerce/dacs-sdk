@@ -19,15 +19,19 @@ import { contextWireWorld } from './helpers/context-wire-world.mjs';
 import { NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from './helpers/wire-authority-fixture.mjs';
 import { SellerAgentError } from '../src/dacs/seller-agent.mjs';
-import { createSellerAgentClient, createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
+import { createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
+import { signedBuyerClient } from './helpers/signed-buyer-driver.mjs';
 import { WIRE_ROUTE_PATHS, createWireContext, wireAuthenticator } from '../src/dacs/seller-wire-requests.mjs';
 import { sellerStoreInternals } from '../src/dacs/seller-transport-auth.mjs';
 import { createOldDomainRequestSigner, oldDomainHeader } from './helpers/old-domain-request.mjs';
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
+import { readOnlyRoleOf, testEffectBoundary } from './helpers/agent-signing.mjs';
 
 import { PATHS, CONTINUING, answeredStatus, continuingWorld, BUYER, session, SESSION, PIN, stubAgent, CLAIM_PREFIX, MAX_RESPONSE_BYTES, MAX_BODY_BYTES, MAX_HEADER_CHARS, MAX_REQUEST_LIFETIME_MS, MAX_SIGNED_LIFETIME_MS, SKEW_MS, DAY_MS, JOURNAL_LEASE_MS, derive, jobFor, MUTATING, identityBody, statementsDuring, world, proposeJob } from './helpers/wire-routes-world.mjs';
 
 const OLD_PIN_VERSION = 'dacs-demos-testnet-identity/2026-10-15';
+// The buyer's key as a wire signer with all of its roles: another seller than the agent's.
+const BUYER_ROLES = { ...BUYER, readOnlyAnswerSigner: readOnlyRoleOf(BUYER) };
 
 /** A transport store over its own file that belongs to no seller yet, closed when the test ends. */
 const freshTransportStore = async (t, w) => {
@@ -424,30 +428,32 @@ test('a fenced settlement whose answer the wire cannot sign is answered operatio
 test('the wire context is checked where it is made and where the handler takes it: a member of the wrong kind, an unbranded copy, no wire and another seller are each refused', async (t) => {
   const w = await world(t);
   const { binding, signer, journal, store, readCommitmentReceipt } = w.handle.wire;
-  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt };
+  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt };
   const wrongKinds = { connection: { tp1Network: { connection: 1 } }, ready: { ready: 'yes' }, now: { now: NOW }, signer: { signer: { claim: seller.claim } }, store: { store: {} },
     agent: { agent: {} }, continuationEvidence: { agent: { transportAgreementOf: () => null } }, readCommitmentReceipt: { readCommitmentReceipt: 'reader' },
-    requireDelegation: { requireDelegation: 'no' }, binding: { binding: null }, journal: { journal: undefined } };
+    requireDelegation: { requireDelegation: 'no' }, binding: { binding: null }, journal: { journal: undefined },
+    'a signer without the read-only role': { signer: { claim: seller.claim, sign: seller.signBytes } }, 'no effect boundary': { effectBoundary: undefined },
+    'an object that is not the kit\'s boundary': { effectBoundary: { withFence() {} } }, 'a boundary over another binding': { effectBoundary: testEffectBoundary().effectBoundary } };
   for (const [label, change] of Object.entries(wrongKinds)) assert.throws(() => createWireContext({ ...valid, ...change }), TypeError, label);
   const handlerWith = (wire) => createSellerHttpHandler(w.agent, { wire });
   assert.throws(() => handlerWith({ ...w.handle.wire }), /createWireContext/, 'an unbranded copy');
   assert.throws(() => createSellerHttpHandler(w.agent), /createWireContext/, 'no options');
   assert.throws(() => createSellerHttpHandler(w.agent, {}), /createWireContext/, 'no wire');
   const unbound = await freshTransportStore(t, w);
-  assert.throws(() => handlerWith(createWireContext({ ...valid, store: unbound, signer: BUYER })), /identity must match/, 'a signer other than the seller of the agent');
+  assert.throws(() => handlerWith(createWireContext({ ...valid, store: unbound, signer: BUYER_ROLES })), /identity must match/, 'a signer other than the seller of the agent');
   assert.doesNotThrow(() => handlerWith(createWireContext(valid)));
 });
 
 test('a wire context is refused over a transport store that belongs to another seller or another Listing', async (t) => {
   const w = await world(t);
   const { binding, signer, journal, store, readCommitmentReceipt } = w.handle.wire;
-  const contextWith = (overrides) => createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt, ...overrides });
+  const contextWith = (overrides) => createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt, ...overrides });
   const BELONGS_ELSEWHERE = /belongs to another seller, Listing or schema/;
   assert.doesNotThrow(() => contextWith({}), 'the store of the same seller and Listing');
-  assert.throws(() => contextWith({ signer: BUYER }), BELONGS_ELSEWHERE, 'another seller');
+  assert.throws(() => contextWith({ signer: BUYER_ROLES }), BELONGS_ELSEWHERE, 'another seller');
   assert.throws(() => contextWith({ agent: { ...w.agent, listingPin: { ...PIN, version: PIN.version + 1 } } }), BELONGS_ELSEWHERE, 'another Listing');
   const unbound = await freshTransportStore(t, w);
-  assert.doesNotThrow(() => contextWith({ store: unbound, signer: BUYER }), 'a store that belongs to no one yet takes its first seller');
+  assert.doesNotThrow(() => contextWith({ store: unbound, signer: BUYER_ROLES }), 'a store that belongs to no one yet takes its first seller');
 });
 
 test('the handler refuses the removed authentication option, with or without a wire', async (t) => {
@@ -461,7 +467,7 @@ test('a delegated wire needs the agent\'s retained Agreement scope when the hand
   const w = await world(t);
   const { binding, signer, journal, store, readCommitmentReceipt } = w.handle.wire;
   const agent = { ...w.agent };
-  const delegated = createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, journal, store, ready: () => true, now: w.clock, agent, requireDelegation: true, readCommitmentReceipt });
+  const delegated = createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, now: w.clock, agent, requireDelegation: true, readCommitmentReceipt });
   assert.doesNotThrow(() => createSellerHttpHandler(agent, { wire: delegated }));
   delete agent.transportAgreementOf;
   assert.throws(() => createSellerHttpHandler(agent, { wire: delegated }), /retained Agreement scope/);
@@ -470,7 +476,7 @@ test('a delegated wire needs the agent\'s retained Agreement scope when the hand
 test('the handler takes a wire context only for the agent it was made for', async (t) => {
   const w = await world(t);
   const { binding, signer, journal, store, readCommitmentReceipt } = w.handle.wire;
-  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt };
+  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt };
   const handlerWith = (wire, agent = w.agent) => createSellerHttpHandler(agent, { wire });
   const MADE_FOR = /made for the handler's agent/;
   assert.throws(() => handlerWith(createWireContext({ ...valid, agent: stubAgent() })), MADE_FOR, 'a context made for another agent');
@@ -532,7 +538,7 @@ test('with the shipped guard off, the host refuses before it creates its data di
   assert.equal(existsSync(dataDirectory), false, 'the refused host created nothing');
 });
 
-test('P11a1-T23: through the exported kit client, with response verification paused, no answer or downstream action is available; released, a valid response succeeds; a bad signature, another profile, a mismatched body or status and a refusing authority reader each fail as response authentication; verification past the client timeout fails timeout, and its late result releases nothing', async (t) => {
+test('through a signed buyer client, with response verification paused, no answer or downstream action is available; released, a valid response succeeds; a bad signature, another profile, a mismatched body or status and a refusing authority reader each fail as response authentication; verification past the client timeout fails timeout, and its late result releases nothing', async (t) => {
   const w = await world(t);
   const job = await proposeJob(w, 't23');
   const stateBody = identityBody(job.jobId, job.agreementHash);
@@ -547,7 +553,7 @@ test('P11a1-T23: through the exported kit client, with response verification pau
     return new Response(answer.text, { status: answer.status, headers: { 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: answer.header ?? '' } });
   };
   const authentication = (verify) => ({ ...w.buyerWire.authentication(() => job.agreementHash), ...(verify ? { verifyResponse: verify } : {}) });
-  const clientWith = ({ alter, verify, timeoutMs } = {}) => createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: fetchThrough(alter), authentication: authentication(verify), ...(timeoutMs ? { timeoutMs } : {}) });
+  const clientWith = ({ alter, verify, timeoutMs } = {}) => signedBuyerClient({ url: 'http://127.0.0.1:1', fetchImpl: fetchThrough(alter), authentication: authentication(verify), ...(timeoutMs ? { timeoutMs } : {}) });
   const flush = () => new Promise((resolve) => setImmediate(resolve));
 
   let release;
