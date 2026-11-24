@@ -147,7 +147,8 @@ test('a native seller agent refuses construction without both explicit receipt f
 test('a native seller host without either explicit receipt fee ceiling refuses before serving purchases', async (t) => {
   const f = await commitmentFixture(t, { vetMode: KIT_TP1_VET_MODE, publicEndpoint: FIXTURE_ENDPOINT });
   // The host builds its own challenge ledger and fixes the Vet mode and the agent's durable directory.
-  const { durableDirectory, commitOnSignature, nativeArtifactAnchor, vetMode, challengeLedger, ...config } = f.config;
+  const { nativeArtifactAnchor, ...config } = f.config;
+  for (const name of ['durableDirectory', 'commitOnSignature', 'vetMode', 'challengeLedger']) delete config[name];
   const dataDirectory = await mkdtemp(join(tmpdir(), 'TEST-receipt-ceilings-host-'));
   t.after(() => rm(dataDirectory, { recursive: true, force: true }));
   const options = { ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, ...hostAuthority(), listener: proxyListener() };
