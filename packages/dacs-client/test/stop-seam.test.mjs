@@ -35,7 +35,8 @@ function stoppedService(s, stopped, ops = s.p.ops) {
   const counters = { sellerLookups: 0 };
   const dacsProtocol = { ...s.p.config, sellerEndpoint: (...args) => { counters.sellerLookups++; return s.p.config.sellerEndpoint(...args); } };
   const protocol = createProtocolPurchases({ db: s.p.db, ops: s.p.ops, coordinates: { unresolvedForSender: () => [] }, dacsProtocol, admission: s.w.admission,
-    store: createSqlitePurchaseStore(), now: () => s.w.state.time, buyerAccess: { assertWallet() {} }, stopped });
+    store: createSqlitePurchaseStore(), now: () => s.w.state.time, buyerAccess: { assertWallet() {} }, stopped,
+    feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } });
   s.p.db.prepare('UPDATE operations SET handoff_expires_at = expires_at WHERE id = ?').run(s.p.op.id);
   const service = createPurchaseService({ db: s.p.db, ops, coordinates: { get: () => null }, protocol, chain: { broadcastTransaction() { throw new Error('TEST-unexpected-broadcast'); } },
     config: {}, store: createSqlitePurchaseStore(), now: () => s.w.state.time, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped });

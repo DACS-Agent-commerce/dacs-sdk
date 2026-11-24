@@ -69,6 +69,10 @@ The read-only option: `passiveOnly: true` on `createProtocolPurchases` and `crea
 - The service's readers return the diagnostic projection on every call, also after the hold lifts: `portalOperation` reports an elapsed approval as `expired` without saving it, `status` and `portalEvidence` give no approval link, and `verifyDeal` returns diagnostic readback without attaching a hash, settling or continuing the purchase.
 - `stopped` stays optional, and no reader calls it in this mode. The protocol's source readers and `chainReadback` change no journal record and send only read-only node calls. Each node read takes and releases the source journal's `devnet/source-read/<bindingId>` lock, which advances the journal's lock fence and leaves no lock row.
 
+The fee ceiling option: unless `passiveOnly` is set, `createProtocolPurchases` and `createPurchaseService` require `feeCeilingOs`, the host's per-write fee ceiling as a positive decimal OS amount string, and a `chain` with a `getTransactionFees()` function. There is no default. The root exports `PAID_WRITE_FEE_CEILING_OS`, the testnet value `"50000000000"` OS (50 DEM), for a host to pass explicitly.
+- Construction throws `TypeError('fee_ceiling_required')` for a missing or malformed ceiling (`"0"`, a sign, a point, a leading zero, a number) or a `chain` with no `getTransactionFees`, after the `passiveOnly` check and before the factory runs. Construction never calls the fee reader.
+- Each paid write is checked before anything is saved, moved, offered to a wallet or sent to a seller: the payment handoff and its re-offer (amount plus network fee), the cancel release transfer (1 DEM plus fee), and the buyer's Agreement CREATE (fee plus a 3 DEM storage reserve). A protocol start also refuses when the price plus fee, or the CREATE fee plus reserve, is over the ceiling. A debit equal to the ceiling passes. Over it, or with a fee that cannot be read, the action rejects `OperationError('write-fee-cap')` and the purchase stays as it was. Reading back an Agreement CREATE already issued, and a cancel whose nonce slot already holds another transaction of the wallet, are not checked: neither makes a new write.
+
 ### createProtocolPurchases
 
 Active: `holdChainReadback`, `prepareTerms`, `assertSellerAdmission`, `identityRequest`, `agreementDelegation`, `sessionRenewal`, `sessionRenewalAccept`, `planRequest`, `runningPlan`, `planRunning`, `planFlightsRunning`, `signRequest`, `submitAgreement`, `recheckCommitment`, `nativePaymentClaimed`, `nativePaymentTermsCancelled`, `nativePaymentRefused`, `cancelNativePayment`, `nativePaymentFailed`, `nativePaymentSuperseded`, `nativeIntentsSupersededBy`, `withNativePaymentLane`, `readNativePaymentLane`, `checkDelivery`, `recheck`, `countersignRequest`, `countersign`
@@ -121,7 +125,7 @@ Passive: `origin` (a string)
 
 `@kynesyslabs/dacs-client/substrate/demos` exports only `createDemosPublicChainReader({rpcUrl, network, pinnedIdentity, timeoutMs, fetchImpl})`. It accepts only `network: 'testnet'` with the 64-hex chain identity pinned for testnet, and otherwise throws `OperationError` `invalid_configuration`. It holds no key and cannot sign or send.
 
-The returned frozen object has nine reads: `readStorageProgram`, `getAddressBalance`, `getTransactionFees`, `networkIdentity`, `getAddressNonce`, `observePurchaseTransfer`, `observeTransfer`, `getTransaction` and `findTransferAtNonce`. It also carries `network`, `pinnedIdentity`, `rpcOrigin`, `observer` and `evidenceMode`. Pass it unchanged as `chain` to `createPurchaseService` and `createListingVerifier` when no native Agreement transport is composed; with one, pass that transport's own `chainReader()` instead.
+The returned frozen object has nine reads: `readStorageProgram`, `getAddressBalance`, `getTransactionFees`, `networkIdentity`, `getAddressNonce`, `observePurchaseTransfer`, `observeTransfer`, `getTransaction` and `findTransferAtNonce`. It also carries `network`, `pinnedIdentity`, `rpcOrigin`, `observer` and `evidenceMode`. Pass it unchanged as `chain` to `createPurchaseService`, `createProtocolPurchases` and `createListingVerifier` when no native Agreement transport is composed; with one, pass that transport's own `chainReader()` instead.
 
 The first read checks the RPC's chain identity before its own request, and refuses a simulated or different chain with `OperationError` `network_identity_mismatch`. Later reads rely on a successful check, but a read whose answer is marked simulated throws the same error instead of returning it and the next read checks again; a failed check is not reused. Each read otherwise returns and throws what the client's internal reader does, and honours the caller's `signal` where it takes one. `observePurchaseTransfer` reports an included transfer as `{status: 'unavailable', reason: 'native source evidence unavailable from public reader'}`, because this reader keeps no signed native source; a native purchase read through it stays unresolved.
 
@@ -286,6 +290,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   PURCHASE_STATE_SCHEMA, createSqlitePurchaseStore, createCoordinateStore,
   createProtocolPurchases, createPurchaseService, createDeliveryDeadlineWatch,
+  PAID_WRITE_FEE_CEILING_OS,
 } from '@kynesyslabs/dacs-client';
 
 const db = new DatabaseSync(':memory:');
@@ -296,11 +301,13 @@ const coordinates = createCoordinateStore({ db });
 const protocol = createProtocolPurchases({
   db, ops, coordinates, store, dacsProtocol: host.dacsProtocol,
   buyerAccess: host.buyerAccess, admission: host.admission,
+  chain: host.chain, feeCeilingOs: PAID_WRITE_FEE_CEILING_OS,
 });
 const purchases = createPurchaseService({
   db, ops, coordinates, store, protocol, config: host.config, admission: host.admission,
   accounts: host.accounts, verifier: host.verifier, chain: host.chain,
   challenges: host.challenges, purposes: { APPROVE_PURCHASE: 'purchase-approval' },
+  feeCeilingOs: PAID_WRITE_FEE_CEILING_OS,
 });
 const watch = createDeliveryDeadlineWatch({ db, ops, coordinates, store, enabled: true });
 

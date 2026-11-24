@@ -127,7 +127,7 @@ test('paired packed artifacts with dacs-node supply the schema needed by every b
         network: 'testnet', rail: 'demos-native:DEM' };
       let connection, diagnosed = false;
       globalThis.host = {
-        accountId, token, config: {}, accounts: {}, verifier: {}, chain: {}, challenges: {}, dacsProtocol: {},
+        accountId, token, config: {}, accounts: {}, verifier: {}, chain: { getTransactionFees: async () => 1n }, challenges: {}, dacsProtocol: {},
         admission: { binding, currentLocal: () => ({ ...local }) },
         coordinate: { operationId: id, kind: 'dem-transfer', network: 'testnet', from: 'TEST-buyer',
           nonceFence: 0, expectedNonce: 1, target: 'TEST-seller', amountOs: '1', payload: {} },
@@ -202,9 +202,10 @@ test('paired packed artifacts with dacs-node supply the schema needed by every b
       db.exec('PRAGMA foreign_keys=ON');
       db.exec(PURCHASE_STATE_SCHEMA);
       const store = createSqlitePurchaseStore(), coordinates = createCoordinateStore({ db });
-      assert.equal(typeof createPurchaseService({ db, coordinates, config: {}, ops: {}, accounts: {}, verifier: {}, chain: {},
+      const feeCeiling = { feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } };
+      assert.equal(typeof createPurchaseService({ db, coordinates, config: {}, ops: {}, accounts: {}, verifier: {}, ...feeCeiling,
         challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, admission }).verifyDeal, 'function');
-      assert.equal(createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store, admission }).actionsAdmitted, false);
+      assert.equal(createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store, admission, ...feeCeiling }).actionsAdmitted, false);
       assert.equal(typeof createDeliveryDeadlineWatch({ db, coordinates, ops: {}, store, enabled: true }).observe, 'function');
       db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('buyer','TEST','buyer','TEST');
       const operation = db.prepare('INSERT INTO operations (id,account_id,kind,idempotency_key,request_hash,status,terms,terms_hash,handoff_token_hash,expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
@@ -226,7 +227,7 @@ test('paired packed artifacts with dacs-node supply the schema needed by every b
       const chain = { network: 'testnet', pinnedIdentity: identity,
         networkIdentity: async () => ({ identity, mode: 'public-chain-read' }),
         observePassiveTransfer: async () => ({ status: 'included', txHash: hash, payer: wallet, payee, amountOs: '1', blockNumber: 10 }),
-        observeTransfer: forbidden, getTransaction: forbidden };
+        observeTransfer: forbidden, getTransaction: forbidden, getTransactionFees: forbidden };
       // Deliberately mis-scoped host seam: the installed client must check ownership.
       let secondaryReads = 0;
       const ops = { get: (_account, id) => id === 'first' ? saved : null,
@@ -234,7 +235,7 @@ test('paired packed artifacts with dacs-node supply the schema needed by every b
         history: () => { secondaryReads++; return []; }, handoffTokenFor: forbidden,
         transition: forbidden, record: forbidden };
       const service = createPurchaseService({ db, coordinates, config: {}, chain, ops, store, admission,
-        settlementAuthority: chain, purposes: { APPROVE_PURCHASE: 'purchase-approval' } });
+        settlementAuthority: chain, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, feeCeilingOs: '50000000000' });
       db.prepare('UPDATE operations SET handoff_token_hash=?, handoff_expires_at=? WHERE id=?')
         .run((await import('node:crypto')).createHash('sha256').update('dacs-handoff-hash:TEST-token').digest('hex'), '2099-01-01T00:00:00.000Z', 'first');
       await assert.rejects(service.verifyDeal({ accountId: 'buyer', operationId: 'first' }), { code: 'not_found' });
