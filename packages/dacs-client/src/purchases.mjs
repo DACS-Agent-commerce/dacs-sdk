@@ -47,7 +47,7 @@ import { usesNativeAgreementPayment } from './dacs/native-agreement-payment-cons
 import { PURCHASE_LIMITS } from './purchase-limits.mjs';
 import { buyerFundingError } from './buyer-funding.mjs';
 import { assertPurchaseActionsAdmitted } from './dacs/action-admission.mjs';
-import { purchaseActionsAdmitted } from './public-admission.mjs';
+import { purchaseActionsAdmitted, assertWithinFeeCeiling, assertWriteWithinFeeCeiling, CREATE_STORAGE_RESERVE_OS } from './public-admission.mjs';
 import { createHostStop, hostStopSourceOf, isHostStopRefusal } from './host-stop.mjs';
 
 // A wrapped protocol call that refuses admission never ran its original: it is no
@@ -250,7 +250,9 @@ function hasUniqueJobIdIndex(db) {
 // signs refuses first while purchase actions are held.
 // `stopped` is the host's synchronous stop check (host-stop.mjs): those actions also refuse while it answers stopped.
 // A service given a `protocol` must carry the function that protocol was built with; a service with none may carry its own.
-export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes, chainReadTimeoutMs = 8000, generateJobId = generateCanonicalJobId, stopped }, diagnostic = () => false) {
+// `feeCeilingOs` is the host's per-write fee ceiling: each payment handoff, re-offer and cancel release is checked against it
+// before it is saved or offered, and a missing or malformed ceiling refuses that write.
+export function createPurchaseService({ db, config, ops, coordinates, accounts, verifier, chain, challenges, protocol = null, now = () => Date.now(), logger = null, store, purposes, chainReadTimeoutMs = 8000, generateJobId = generateCanonicalJobId, stopped, feeCeilingOs }, diagnostic = () => false) {
   const hostStop = createHostStop(stopped);
   if (protocol !== null && hostStopSourceOf(protocol) !== hostStop.source) throw new TypeError('stop_seam_mismatch');
   const assertPurchaseOpen = () => { assertPurchaseActionsAdmitted(); hostStop.assert(); };
@@ -300,8 +302,9 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     }
   }
 
+  // Returns the network fee it read, or undefined when `mode` asks for no read.
   async function assertBuyerFunds(wallet, price, mode) {
-    if (!mode) return;
+    if (!mode) return undefined;
     let balance, fee;
     try {
       [balance, fee] = await Promise.all([chain.getAddressBalance(wallet, { encoding: config.demAmountEncoding }), chain.getTransactionFees()]);
@@ -314,9 +317,10 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     }
     // The native wallet bounds CREATE artifacts at 24 KiB, charged per 10 KiB.
     // Reserve all three chunks before Vet supplies the Agreement's exact bytes.
-    const buyerFees = mode === OFFLINE_AGREEMENT_MODE ? 2n * fee + 3_000_000_000n : fee;
+    const buyerFees = mode === OFFLINE_AGREEMENT_MODE ? 2n * fee + BigInt(CREATE_STORAGE_RESERVE_OS) : fee;
     const required = BigInt(price.amountOs) + buyerFees;
     if (balance < required) throw buyerFundingError(new OperationError('buyer_balance_insufficient', `The buyer balance does not cover the purchase price plus buyer fees. Required ${demAmount(required)} DEM (${price.amount} DEM price + ${demAmount(buyerFees)} DEM buyer fee reserve); available ${demAmount(balance)} DEM. Fund the buyer wallet before continuing; no seller write or wallet approval was requested.`, { balanceOs: balance.toString(), priceOs: price.amountOs, buyerFeesOs: buyerFees.toString(), requiredOs: required.toString() }), { wallet, price, config, network: chain.network });
+    return fee;
   }
 
   function portalUrl(operation, token) {
@@ -706,6 +710,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       }
       const nonce = await chain.getAddressNonce(t.buyer.wallet);
       if (nonce === coords.nonceFence) {
+        // The re-offered payload pays its stored amount; the host's ceiling is read again for it.
+        await assertWriteWithinFeeCeiling(feeCeilingOs, coords.amountOs, chain);
         if (t.protocol) {
           try {
             await protocolGate(operation, 'handoff-reissue');
@@ -722,6 +728,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       return { operation, payload: null };
     }
     if (operation.status !== 'approved') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
+    // The payment's debit is its price plus the network fee; over the host's ceiling nothing is saved, moved or offered.
+    await assertWriteWithinFeeCeiling(feeCeilingOs, t.price.amountOs, chain);
     // Authoritative: always a fresh chain readback, never the preflight's.
     const recheck = await verifier.verify({ listingId: t.listing.listingId, version: t.listing.version, seller: t.seller.claim, purchaseId: operation.id, fresh: true });
     if (!recheck.transactable || recheck.contentHash !== t.listing.contentHash || recheck.price?.amountOs !== t.price.amountOs || recheck.payee !== t.seller.payee) {
@@ -1523,7 +1531,10 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     if (operation.status === 'agreement_pending' && !operation.state.protocol.planned) {
       assertPurchaseLimits(operation.accountId, operation.terms.buyer.wallet, operation.id);
       await assertBoundDomain(operation);
-      await assertBuyerFunds(operation.terms.buyer.wallet, operation.terms.price, OFFLINE_AGREEMENT_MODE);
+      const fee = await assertBuyerFunds(operation.terms.buyer.wallet, operation.terms.price, OFFLINE_AGREEMENT_MODE);
+      // Both paid writes ahead, the Agreement CREATE and the payment, must fit the host's ceiling before the first is made.
+      assertWithinFeeCeiling(feeCeilingOs, CREATE_STORAGE_RESERVE_OS, fee);
+      assertWithinFeeCeiling(feeCeilingOs, operation.terms.price.amountOs, fee);
       const current = protocolOperation(operationId, token);
       if (current.status !== operation.status) throw new OperationError('invalid_state', `purchase is ${current.status}`);
       assertPurchaseLimits(current.accountId, current.terms.buyer.wallet, current.id);
@@ -1702,11 +1713,16 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         message: slotTx ? `Not cancelled: ${operation.id} stays open and blocks this wallet's next purchase. Wallet transaction number ${coords.expectedNonce} is already ${slotTx}, so no release can be sent. On this network that transaction does not end the purchase; if the payment landed, call verify_deal with the payment's hash.`
           : `Not cancelled: nothing proves the payment was never sent, so ${operation.id} stays open and blocks this wallet's next purchase. Send the release transfer (wallet transaction number ${coords.expectedNonce}). Report its hash only after it has landed: ${slotProofEnabled ? 'call cancel again, or call verify_deal with it if this wallet signs with its own key alone' : 'on this network the landed release does not end the purchase by itself'}. If the payment landed instead, call verify_deal with the payment's hash.`,
       });
-      if (await chain.getAddressNonce(wallet) < coords.expectedNonce) return open('cancel pending: the handed-off transfer may still land; waiting for its nonce slot to be used');
+      // The release transfer is a paid write: over the host's ceiling cancel refuses with the purchase left as it was.
+      const release = async (reason) => {
+        await assertWriteWithinFeeCeiling(feeCeilingOs, RELEASE_AMOUNT_OS, chain);
+        return open(reason);
+      };
+      if (await chain.getAddressNonce(wallet) < coords.expectedNonce) return release('cancel pending: the handed-off transfer may still land; waiting for its nonce slot to be used');
       const slot = typeof chain.findTransferAtNonce === 'function' ? await chain.findTransferAtNonce(wallet, coords.expectedNonce) : { status: 'unknown' };
       // Only the slot's own row, read back by hash, can end the purchase. No page of the history shows a skipped slot: the node orders
       // it by signed timestamp, the payment carries this service's clock, so a page can drop the slot's row and keep rows on both sides.
-      if (slot.status !== 'found') return open('cancel pending: the nonce slot is used but its transaction could not be found in the wallet history');
+      if (slot.status !== 'found') return release('cancel pending: the nonce slot is used but its transaction could not be found in the wallet history');
       // What took the slot is read as settlement reads it: observeTransfer decodes type, payer, payee, amount,
       // inclusion and failure; the canonical body's nonce is read with nodeProjectedNonce. Its status must read confirmed, as settlement
       // requires: inclusion can hold a failed execution, which proves nothing about the payload. The body must also be the slot's own
@@ -1718,7 +1734,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         const body = seen.status === 'included' ? await chain.getTransaction(slot.hash) : null;
         if (slotBodyAgrees(body, seen, { hash: slotHash, wallet, nonce: coords.expectedNonce })) taken = seen;
       } catch (error) { unreadable = String(error?.message ?? error); }
-      if (!taken) return open(`cancel pending: the transaction that used the nonce slot could not be read back: ${unreadable}`);
+      if (!taken) return release(`cancel pending: the transaction that used the nonce slot could not be read back: ${unreadable}`);
       if (same(taken.payee, operation.terms.seller.payee) && taken.amountOs === operation.terms.price.amountOs) {
         return continueProtocol({ ...await attachHashAndVerify(operation, slot.hash, 'nonce-slot-readback'), cancelled: false });
       }

@@ -15,9 +15,10 @@ const FLOW_PATHS = { agreement: PATHS.proposals, commit: PATHS.commitments, sign
 /**
  * Runs one of the five seller flows through the real protocol service: `sellerFor`, the request records, wire
  * verification, SQLite saves and the note reducers. The coordinator and the authenticated source readbacks are
- * supplied at their existing seams.
+ * supplied at their existing seams. `factoryOptions` adds to or replaces the protocol factory's options: `stopped`, and the
+ * per-write fee ceiling (50 DEM) and fee-reading chain (a 1 OS fee) it is given by default.
  */
-export async function sellerFlow(t, kind, beforeRun = () => {}, configOverrides = {}, { stopped } = {}) {
+export async function sellerFlow(t, kind, beforeRun = () => {}, configOverrides = {}, factoryOptions = {}) {
   const s = await storedWorld(t, { paid: true, configureTerms(terms, listing) {
     const unsigned = { ...listing };
     delete unsigned.signature;
@@ -26,10 +27,10 @@ export async function sellerFlow(t, kind, beforeRun = () => {}, configOverrides 
     terms.seller.payee = terms.seller.claim.slice('did:demos:agent:'.length);
     if (kind === 'commit') delete terms.protocol.sellerAgreementProjection;
   } });
-  return run(s, kind, beforeRun, configOverrides, stopped);
+  return run(s, kind, beforeRun, configOverrides, factoryOptions);
 }
 
-async function run(s, kind, beforeRun, configOverrides, stopped) {
+async function run(s, kind, beforeRun, configOverrides, factoryOptions) {
   const { p, w, made } = s, jobId = w.job.jobId, address = fixedPriceAgreementLogicalAddress(jobId);
   const agreement = { artifact: made.agreement, hash: made.agreementHash,
     ref: { anchor: { kind: 'storage-program', locator: address }, contentHash: made.agreementHash },
@@ -48,7 +49,7 @@ async function run(s, kind, beforeRun, configOverrides, stopped) {
     async fetch(_url, init) { s.fetches.push(init); return s.reply(init); },
     exchange: async ({ seller }) => { await seller.propose(bodyFor(PATHS.proposals)); return { disposition: 'indeterminate', stage: 'proposal', reason: 'TEST-retained' }; },
   };
-  const config = { ...p.config, ...configOverrides, walletAgreement: { ...p.config.walletAgreement } };
+  const config = { ...p.config, ...configOverrides, walletAgreement: { ...p.config.walletAgreement, ...configOverrides.walletAgreement } };
   if (kind === 'commit') {
     state.exchange = async () => ({ disposition: 'anchored', result: { agreement: made.agreement, agreementHash: made.agreementHash,
       agreementRef: agreement.ref, anchorReceipt: agreement.anchorReceipt } });
@@ -64,7 +65,8 @@ async function run(s, kind, beforeRun, configOverrides, stopped) {
     };
   }
   const service = createProtocolPurchases({ db: p.db, ops: p.ops, dacsProtocol: config, admission: w.admission,
-    coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, store: createSqlitePurchaseStore(), now: () => w.state.time, stopped });
+    coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, store: createSqlitePurchaseStore(), now: () => w.state.time,
+    feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n }, ...factoryOptions });
   await beforeRun(s, state, service);
   let result;
   if (kind === 'payment') {

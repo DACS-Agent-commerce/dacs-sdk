@@ -240,6 +240,7 @@ test('resumption validates retained buyer access before clearing the suspension'
   const { createProtocolPurchases } = await import('../src/index.mjs');
   const failure = Object.assign(new Error('TEST-buyer-access-closed'), { code: 'buyer_access_closed', details: { buyerAccessMissing: true } });
   const protocol = createProtocolPurchases({ db: s.p.db, ops: s.p.ops, coordinates: {}, dacsProtocol: s.p.config, admission: s.w.admission,
+    feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n },
     store: createSqlitePurchaseStore(), now: () => s.w.state.time, buyerAccess: { assertWallet() { throw failure; } } });
   await assert.rejects(protocol.recheck(s.p.get(), null, { resumeSuspensionId: held.id }), error => error === failure);
   assert.deepEqual(suspension(s), held);
@@ -256,11 +257,12 @@ async function stoppedReader(s, stopped, { publicService = false } = {}) {
   const createService = publicService ? options => createPublicService({ ...options, admission: s.w.admission }) : createPurchaseService;
   const counters = { sellerLookups: 0 };
   const dacsProtocol = { ...s.p.config, sellerEndpoint: (...args) => { counters.sellerLookups++; return s.p.config.sellerEndpoint(...args); } };
+  const feeCeilingOs = '50000000000', getTransactionFees = async () => 1n;
   const protocol = createProtocolPurchases({ db: s.p.db, ops: s.p.ops, coordinates: { unresolvedForSender: () => [] }, dacsProtocol, admission: s.w.admission,
-    store: createSqlitePurchaseStore(), now: () => s.w.state.time, buyerAccess: { assertWallet() {} }, stopped });
+    store: createSqlitePurchaseStore(), now: () => s.w.state.time, buyerAccess: { assertWallet() {} }, stopped, feeCeilingOs, chain: { getTransactionFees } });
   s.p.db.prepare('UPDATE operations SET handoff_expires_at = expires_at WHERE id = ?').run(s.p.op.id);
-  const service = createService({ db: s.p.db, ops: s.p.ops, coordinates: { get: () => null }, protocol, chain: { broadcastTransaction() { counters.broadcasts = (counters.broadcasts ?? 0) + 1; } },
-    config: {}, store: createSqlitePurchaseStore(), now: () => s.w.state.time, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped });
+  const service = createService({ db: s.p.db, ops: s.p.ops, coordinates: { get: () => null }, protocol, chain: { getTransactionFees, broadcastTransaction() { counters.broadcasts = (counters.broadcasts ?? 0) + 1; } },
+    config: {}, store: createSqlitePurchaseStore(), now: () => s.w.state.time, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, stopped, feeCeilingOs });
   const request = { accountId: s.p.op.accountId, operationId: s.p.op.id, token: s.p.ops.handoffTokenFor(s.p.op.id) };
   return { service, request, counters, protocol };
 }
