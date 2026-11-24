@@ -54,7 +54,9 @@ export const DEFAULT_HISTORY_IO = Object.freeze({
  * Creates the private directory `path` when missing, then syncs it and its parent, every time, so a
  * sync that failed on an earlier call is retried even though the directory exists. Every directory the
  * kit creates under dataDirectory goes through this helper; the parent must exist. Returns after both
- * syncs. Throws the filesystem's error, or the existing entry's EEXIST when it is not a real directory.
+ * syncs. A failed sync throws an error naming the directory, with the filesystem error as `cause` and
+ * its `code`. A failed mkdir throws the filesystem's error, or the existing entry's EEXIST when it is
+ * not a real directory.
  */
 export async function initHistory(path, io = DEFAULT_HISTORY_IO) {
   try { await io.mkdir(path); } catch (error) {

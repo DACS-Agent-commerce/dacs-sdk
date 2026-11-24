@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import type { IdentityBundle } from "../../src/artifacts/types.js";
+import { DacsError } from "../../src/errors.js";
 import {
   identityBundleHash,
   siwdBundleResource,
@@ -144,5 +145,21 @@ describe("SIWD bundle-resource binding — DACS-1 §6.3.2", () => {
       },
     });
     expect(siwdResourcesBindBundleHash(forged, hash)).toBe(false);
+  });
+
+  it("gives a refused bundle hash its catalog code", () => {
+    let thrown: unknown;
+    try {
+      siwdBundleResource("AB".repeat(32));
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(DacsError);
+    expect(thrown).toMatchObject({
+      code: "identity.siwd_bundle_hash_invalid",
+      category: "permanent",
+      message: "SIWD bundle resource requires a lowercase SHA-256 bundle hash",
+    });
+    expect(Object.keys(thrown as object).sort()).toEqual(["category", "code", "name"]);
   });
 });

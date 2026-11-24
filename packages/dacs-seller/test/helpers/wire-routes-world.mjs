@@ -20,6 +20,7 @@ import { createOrdinaryCompletionPort, createSellerHttpHandler } from '../../src
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
 import { createReservationCoordinator } from '../../src/dacs/seller-reservation-accounting.mjs';
 import { wireContinuationFixture, receiptReader } from './wire-continuation-fixture.mjs';
+import { readOnlyRoleOf, testEffectBoundary } from './agent-signing.mjs';
 import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
 import { createSellerTransportStore as createUnboundStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 
@@ -127,12 +128,18 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
   t.after(() => mock.restoreAll());
   const clock = () => state.time;
   const connection = () => ({ ...state.connection });
-  const signing = { calls: 0, failures: 0 };
+  // `signing.before`, when set, runs once before the next signature, with its bytes.
+  const signing = { calls: 0, failures: 0, before: null };
   const sellerSigner = { claim: seller.claim, sign: (bytes) => {
     signing.calls++;
+    const before = signing.before;
+    signing.before = null;
+    before?.(bytes);
     if (signing.failures > 0) { signing.failures--; throw new Error('TEST signer failure'); }
     return seller.signBytes(bytes);
   } };
+  // The seller key's roles over the counting signer: read answers and refusals reach it through the read-only role.
+  const sellerRoles = { ...sellerSigner, readOnlyAnswerSigner: readOnlyRoleOf(sellerSigner) };
   const reader = (scope) => {
     state.authorityReads++;
     if (state.withdrawAtRead === state.authorityReads) throw new WireError('tp1_participant_refused', 503, undefined, new Error('TEST authority withdrawn'));
@@ -145,6 +152,8 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
       commitment: Buffer.from(fixture.agent().continuationEvidenceOf(id).commitmentText),
       agreement: Buffer.from(fixture.agent().continuationEvidenceOf(id).agreementText), signedListing: Buffer.from(JSON.stringify(fixture.listing)),
     } : {} });
+  // The effect boundary the wire signs effect-route answers in, over the buyer's binding and the world's connection.
+  const { effectBoundary: answerBoundary } = testEffectBoundary({ binding: buyerWire.binding, currentLocal: connection });
   const agent = stubAgent();
   agent.listingPin = pin;
   // As the real agent does, a bundle route refuses by name: the seller signs no completed bundle.
@@ -173,7 +182,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
     const reserveCoordinated = reservations.reserveCoordinated.bind(reservations);
     reservations.reserveCoordinated = (...args) => { state.readsAtReserve = state.authorityReads + 1; return reserveCoordinated(...args); };
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
-    const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerSigner, journal, store, ready: () => state.ready, now: clock, agent, requireDelegation: false,
+    const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerRoles, effectBoundary: answerBoundary, journal, store, ready: () => state.ready, now: clock, agent, requireDelegation: false,
       publicEndpoint: fixture?.listing.seller.publicEndpoint ?? FIXTURE_ENDPOINT, signedListing: fixture?.admittedListing, readCommitmentReceipt: fixture?.readCommitmentReceipt ?? receiptReader(), reservations, completion, ...handle.wireOverrides });
     Object.assign(handle, { store, capacity, wire, handler: createSellerHttpHandler(agent, { wire, commitOnSignature }) });
   };
@@ -209,7 +218,8 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
       notBefore: NOW - SKEW_MS, expiresAt, profile: buyerWire.binding.profile, ...rest };
     return { payload, signature: BUYER.sign(Buffer.from(domain + canonicalize(payload))).toString('base64url') };
   };
-  return { directory, leaseMs, state, agent, signing, buyerWire, handle, mount, reopen, withWire, post, send, verified, rows, journalFiles, effects, payloadFor, headerFor, delegationFor, storePath, clock };
+  return { directory, leaseMs, state, agent, signing, buyerWire, handle, mount, reopen, withWire, post, send, verified, rows, journalFiles, effects, payloadFor, headerFor, delegationFor, storePath, clock,
+    effectBoundary: answerBoundary };
 }
 
 export const proposeJob = async (w, label) => {

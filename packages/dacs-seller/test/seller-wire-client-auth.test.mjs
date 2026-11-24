@@ -1,7 +1,7 @@
-// The kit's buyer-side wire signer, `createSellerWireClientAuth`: it signs the routes the host answers through `./wire`
-// (a TP-1 profile in every request) and verifies their answers. The unit cases sign against the fixture binding
-// (helpers/wire-buyer.mjs supplies the binding and the verified endpoint proof only); the running-host cases go through
-// `createSellerAgentClient`.
+// The test-only buyer-side wire signer, `createSellerWireClientAuth` (helpers/signed-buyer-driver.mjs): it signs the routes the
+// host answers through `./wire` (a TP-1 profile in every request) and verifies their answers. The unit cases sign against the
+// fixture binding (helpers/wire-buyer.mjs supplies the binding and the verified endpoint proof only); the running-host cases go
+// through the driver's `signedBuyerClient`.
 //
 // The running-host cases need a runner where `/` is root-owned (K5-J0).
 import test from 'node:test';
@@ -17,12 +17,12 @@ import { presentationFor } from './helpers/context-wire-world.mjs';
 import { contextHostFixture } from './helpers/host-context-client.mjs';
 import { ORCHESTRATOR_MODE } from './helpers/proposal-admission-fixture.mjs';
 import { NOW, buyer, seller, testWallet } from './helpers/protocol-fixture.mjs';
-import { authorityReader, testNetwork } from './helpers/wire-authority-fixture.mjs';
+import { hostAuthority } from './helpers/kit-wallet-session.mjs';
+import { authorityReader } from './helpers/wire-authority-fixture.mjs';
 import { FIXTURE_ENDPOINT, wireBuyer } from './helpers/wire-buyer.mjs';
 import { startSellerHost } from '../src/host.mjs';
 import { listingPin } from '../src/dacs/purchase-protocol.mjs';
-import { createSellerAgentClient } from '../src/dacs/seller-http.mjs';
-import { createSellerWireClientAuth } from '../src/dacs/seller-wire-client-auth.mjs';
+import { createSellerWireClientAuth, signedBuyerClient } from './helpers/signed-buyer-driver.mjs';
 import { fetchAsHost, proxyListener } from './helpers/listener-host.mjs';
 
 const PATHS = DACS_SELLER_HTTP_PATHS;
@@ -187,7 +187,7 @@ test('a stalled authority read, job lookup or evidence lookup ends as a signing 
 test('a client whose signing stalls ends before dispatch as an unavailable seller, with no request sent', async () => {
   const sent = [];
   const client = await wireClient({ resolveJob: STALLED, signingTimeoutMs: SIGNING_TIMEOUT_MS });
-  const agent = createSellerAgentClient({ url: 'http://127.0.0.1:9', authentication: client.auth, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: async (...args) => { sent.push(args); return new Response('{}'); } });
+  const agent = signedBuyerClient({ url: 'http://127.0.0.1:9', authentication: client.auth, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: async (...args) => { sent.push(args); return new Response('{}'); } });
   await assert.rejects(agent.agreementState({ jobId: JOB }), { name: 'SellerUnavailableError' });
   assert.equal(sent.length, 0);
 });
@@ -207,16 +207,16 @@ async function runningHost(t) {
   delete config.durableDirectory;
   delete config.commitOnSignature;
   delete config.vetMode;
-  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, tp1Network: testNetwork(), listener: proxyListener() });
+  const host = await startSellerHost({ ...config, artifactAnchor: nativeArtifactAnchor, dataDirectory, ...hostAuthority(), listener: proxyListener() });
   t.after(async () => { await host.close(); await rm(dataDirectory, { recursive: true, force: true }); });
   return { f, host };
 }
 
-test('a kit client with the shipped wire auth proposes to a running host and reads the state back, each answer verified', async (t) => {
+test('a signed buyer with the wire auth proposes to a running host and reads the state back, each answer verified', async (t) => {
   const { f, host } = await runningHost(t);
   const request = await f.proposal(host);
   const { auth } = await wireClient({ pin: host.listingPin, agreementHash: request.proposal.plan.agreementHash });
-  const client = createSellerAgentClient({ url: host.url, authentication: auth, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: fetchAsHost() });
+  const client = signedBuyerClient({ url: host.url, authentication: auth, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: fetchAsHost() });
   assert.equal((await client.propose(request)).disposition, 'complete');
   assert.equal(typeof await client.agreementState(request.transportIdentity), 'object');
 });
@@ -230,12 +230,12 @@ test('an answer whose body was changed after the seller signed it is refused as 
     const text = (await response.text()).replace('"complete"', '"complet3"');
     return new Response(text, { status: response.status, headers: response.headers });
   };
-  const client = createSellerAgentClient({ url: host.url, authentication: auth, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: tampering });
+  const client = signedBuyerClient({ url: host.url, authentication: auth, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: tampering });
   await assert.rejects(client.propose(request), { name: 'SellerUnavailableError' });
   assert.equal(client.failureCause, 'response-auth');
 });
 
-test('a kit client with the shipped wire auth gets a challenge and the context answer from a running host, each answer verified', async (t) => {
+test('a signed buyer with the wire auth gets a challenge and the context answer from a running host, each answer verified', async (t) => {
   const f = await contextHostFixture(t);
   const host = await f.start();
   const { scopeFor } = await f.buyerFor(host);
@@ -245,7 +245,7 @@ test('a kit client with the shipped wire auth gets a challenge and the context a
     notBefore: NOW - SESSION_LEAD_MS, expiresAt: NOW + SESSION_LIFETIME_MS, profile: base.binding.profile };
   const delegation = { payload: delegationPayload, signature: BUYER.sign(Buffer.from(DACS_SELLER_HTTP_DOMAINS.delegation + canonicalize(delegationPayload))).toString('base64url') };
   const authentication = createSellerWireClientAuth({ ...base.options, signer: { claim: session.claim, sign: session.signBytes }, delegation });
-  const client = createSellerAgentClient({ url: host.url, authentication, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: fetchAsHost() });
+  const client = signedBuyerClient({ url: host.url, authentication, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: fetchAsHost() });
   const scope = scopeFor(JOB);
   const { sessionNonce } = await client.contextChallenge({ scope });
   const bundle = presentationFor(buyer, sessionNonce, NOW);

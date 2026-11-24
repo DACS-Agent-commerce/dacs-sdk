@@ -38,13 +38,20 @@ function parseDemosAgent(
   };
 }
 
-/** Emit the canonical DACS-1 §6.3.1 Demos agent ClaimReference. */
+/**
+ * Emit the canonical DACS-1 §6.3.1 Demos agent ClaimReference.
+ *
+ * Throws `DacsError` with `identity.agent_public_key_invalid` unless the key is
+ * 32 bytes, or 64 hexadecimal characters with an optional `0x` prefix.
+ */
 export function demosAgentClaimRef(publicKey: Uint8Array | string): string {
   const hex = typeof publicKey === "string"
     ? publicKey.replace(/^0x/i, "")
     : Buffer.from(publicKey).toString("hex");
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
-    throw new DacsError("Demos agent public key must be exactly 32 bytes");
+    throw new DacsError("Demos agent public key must be exactly 32 bytes", {
+      code: "identity.agent_public_key_invalid",
+    });
   }
   return `did:demos:agent:${hex.toLowerCase()}`;
 }

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { createWireContext } from '../../src/dacs/seller-wire-requests.mjs';
 import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { wireBuyer } from './wire-buyer.mjs';
+import { readOnlyRoleOf, testEffectBoundary } from './agent-signing.mjs';
 import assert from 'node:assert/strict';
 import { contentHash } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, admitWireArtifact, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
@@ -71,7 +72,8 @@ export async function wireRouteFixture(t, { agent, listing, buyer, seller, store
   const journal = openWireRequestJournal(directory, { leaseMs, clock: now });
   const { store: rawStore, capacity } = boundPurchaseOf(store);
   const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
-  const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection: buyerWire.connection }, signer: seller, store, ready: () => true, now, agent, requireDelegation,
+  const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection: buyerWire.connection }, signer: { ...seller, readOnlyAnswerSigner: readOnlyRoleOf(seller) },
+    effectBoundary: testEffectBoundary({ binding: buyerWire.binding, currentLocal: buyerWire.connection }).effectBoundary, store, ready: () => true, now, agent, requireDelegation,
     journal, signedListing, readCommitmentReceipt, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }) });
   return { wire, buyerWire, createBuyer };
 }

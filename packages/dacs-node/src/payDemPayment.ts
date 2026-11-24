@@ -817,6 +817,28 @@ export function createDacsPayDemBuyerPaymentTrackV1(
   const walletSpendAuthority = options.walletSpendAuthority;
   const deferWalletReservationUntilPrepared = isDacsSdkPreparedPayDemRailV1(rail);
 
+  const readChain = async (
+    payment: Readonly<DacsPayDemBuyerPaymentInputV1>,
+    fence: Readonly<DacsLiveEffectFenceV1>,
+  ) => {
+    const checkpoint = database.loadEffectCheckpoint(
+      "payment",
+      fence.effectId,
+      PREPARED_CHECKPOINT,
+    );
+    const prepared = checkpoint === undefined
+      ? undefined
+      : capturePrepared(checkpoint.value, payment);
+    return captureChainReconciliation(
+      await options.reconcile({
+        payment,
+        ...(prepared === undefined ? {} : { prepared }),
+        fence,
+      }),
+      payment,
+    );
+  };
+
   return createDacsLiveEffectTrackV1<
     DacsPayDemBuyerPaymentInputV1,
     DacsPayDemBuyerPaymentResultV1,
@@ -988,21 +1010,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             reasonCode: WALLET_POLICY_MISMATCH,
           });
         }
-        const checkpoint = database.loadEffectCheckpoint(
-          "payment",
-          fence.effectId,
-          PREPARED_CHECKPOINT,
-        );
-        let prepared: Readonly<PayDemPreparedTransfer> | undefined;
-        if (checkpoint !== undefined) {
-          prepared = capturePrepared(checkpoint.value, payment);
-        }
-        const reconciled = await options.reconcile({
-          payment,
-          ...(prepared === undefined ? {} : { prepared }),
-          fence,
-        });
-        const captured = captureChainReconciliation(reconciled, payment);
+        const captured = await readChain(payment, fence);
         const reservation = walletReservation(payment, wallet);
         if (captured.status === "completed") {
           try {
@@ -1031,6 +1039,11 @@ export function createDacsPayDemBuyerPaymentTrackV1(
           }));
         }
         return captured;
+      },
+      // A completed payment is read from the node again before it is reported.
+      // This only reads: no wallet accounting and no notice.
+      async reauthenticate({ input, fence }) {
+        return readChain(capturePaymentInput(input), fence);
       },
     },
     projectResult(value) {

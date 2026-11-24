@@ -291,6 +291,7 @@ type D402SettlementResult
 type Dacs5ResumableSessionState
 type Dacs5SessionState
 type Dacs5SessionTransitionContext
+type DacsErrorCode
 type DacsPublicHttpsDependenciesV1
 type DacsPublicHttpsFetchOptionsV1
 type DacsPublicHttpsGetInitV1
@@ -1661,6 +1662,7 @@ value isCompositeBundleRequirement
 value isCompositeSeparator
 value isCompositeVerificationRecord
 value isDacs5SessionTransitionAllowed
+value isDacsErrorCode
 value isDacsPublicAddressV1
 value isDeliverableSpec
 value isDemosAgentClaimRef

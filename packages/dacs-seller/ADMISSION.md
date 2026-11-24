@@ -110,8 +110,11 @@ unknown-job state reads insert no rows. Expired completed and no-effect nonces c
 effect answer remains durable. Pending and uncertain effects require reconciliation and cannot expire into permission to
 repeat work.
 
-Policy defaults remain
-six writes per job, 24 writes and 96 DEM per hour, and 4 DEM per write. Unresolved
+Policy defaults are
+six writes per job, 24 writes and 1,200 DEM per hour, and 50 DEM per write. The 50 DEM
+is a ceiling on one write's whole debit, not the debit a write is expected to cost.
+A context start holds two writes at that ceiling, so each start holds 100 DEM and
+twelve starts fill the hour. Unresolved
 writes count beyond the hour until completed. Configuration may lower or raise
 the PR-defined configurable limits; it cannot disable their validation.
 
@@ -248,9 +251,10 @@ blocked by unresolved custody/issuance dependencies and the supersession restart
 vector (`wallet_journal_conflict`). This stack has no complete seller-suite pass.
 Use focused affected files during development; CI runs the complete seller set.
 
-Native publication requires `pins.deployment` at the supported node source commit
-`61b8e75aa8db5e408c49e1c3a89db4d673f45578` (the fee, nonce, broadcast and
-confirmation profile in deployment-qualification.mjs), a clean build marker,
+Native publication requires `pins.deployment` at a supported node source commit,
+`61b8e75aa8db5e408c49e1c3a89db4d673f45578` or
+`e6af8f4023fa4e77f482503dae97f1ca00834bf9` (`QUALIFIED_NODE_COMMITS` and the fee,
+nonce, broadcast and confirmation profile in deployment-qualification.mjs), a clean build marker,
 an artifact SHA-256, and qualification of fee, nonce, broadcast and confirmation
 operations. The trusted source capability must independently
 verify that exact pin through `verifyDeployment`. No live artifact is currently

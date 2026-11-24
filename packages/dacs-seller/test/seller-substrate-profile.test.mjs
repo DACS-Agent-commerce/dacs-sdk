@@ -4,12 +4,13 @@
 // an explicit opt-in. No module hooks; real Listing and signer.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { seller as fixtureSeller, NOW } from './helpers/protocol-fixture.mjs';
+import { seller as fixtureSeller, NOW, RECEIPT_FEE_CEILINGS } from './helpers/protocol-fixture.mjs';
 import { readFileSync } from 'node:fs';
 import { canonicalize, DACS_STANDARD_PIN } from '@kynesyslabs/dacs';
 import { sellerApi as seller } from './helpers/seller-internal-api.mjs';
 import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { railSteward } from './helpers/rail-authority-fixture.mjs';
+import { agentSigning } from './helpers/agent-signing.mjs';
 import { SELLER_PROFILE } from '../src/dacs/session-admission.mjs';
 
 function sellerWorld() {
@@ -21,9 +22,10 @@ function sellerWorld() {
   const listing = seller.attachListingSignature(draft, wallet(seller.listingSigningMessage(draft)));
   const unreachable = async () => { throw new Error('not reached at construction'); };
   return {
-    base: { signer: { claim: party.claim, sign:fixtureSeller.signBytes }, listing, deliverySchemaVerifier: { schemaUrl: listing.offering.deliverable.schemaUrl, verify: unreachable }, observeDemosTransfer: unreachable },
+    base: { ...agentSigning({ claim: party.claim, sign: fixtureSeller.signBytes }), listing, deliverySchemaVerifier: { schemaUrl: listing.offering.deliverable.schemaUrl, verify: unreachable }, observeDemosTransfer: unreachable },
     agreementAnchor: { source: 'profile/agreement-readback', readAgreement: unreachable },
-    artifacts: { nativeArtifactAnchor: { writer: party.claim, publish: unreachable, readRetained: unreachable, verifyReceipt: unreachable }, deliverableProducer: () => null },
+    artifacts: { nativeArtifactAnchor: { writer: party.claim, publish: unreachable, readRetained: unreachable, verifyReceipt: unreachable }, deliverableProducer: () => null,
+      receiptFeeCeilings: RECEIPT_FEE_CEILINGS },
     anchors: { read: unreachable, write: unreachable },
     railAuthority: railSteward().railAuthority(),
   };
@@ -62,7 +64,7 @@ test('each complete profile constructs', async () => {
   const w = sellerWorld();
   for (const options of [{ agreementAnchor: w.agreementAnchor, ...w.artifacts, railAuthority: w.railAuthority }, { anchors: w.anchors, simulatedFixture: true }]) {
     const agent = await seller.createSellerAgent({ ...w.base, ...options });
-    assert.equal(agent.claim, w.base.signer.claim);
+    assert.equal(agent.claim, w.base.effectSigner.claim);
     agent.close();
   }
 });

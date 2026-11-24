@@ -1,9 +1,11 @@
 // Public ESM boundary. Also runnable from an empty packed-package consumer.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
+import { installPackedPair } from './helpers/packed-install.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 function declaresPublicContract(source, line) {
@@ -38,13 +40,14 @@ const ROOT = {
     'demDeliveryContextUsage', 'isDemDeliveryContextAuthority',
     'rpcAuthRefusal', 'transferRefusal', 'sellerSessionTransitionState', 'createPurchaseReadbackCache',
     'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence',
-    'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport',
-    'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'createAuthorityReader'],
+    'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport', 'createSellerSessionKeys',
+    'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'createAuthorityReader', 'createPublicSellerClient',
+    'createPurchaseOperations', 'isPurchaseOperationId', 'createPurchaseChallenges', 'purchaseApprovalChallengeText', 'createLocalPurchaseAccount'],
   classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
     'SellerRefusedError', 'SellerUnavailableError', 'SellerTlsUnusableError', 'DemosSr2BridgeError', 'DemosSr2Error', 'NetworkBindingError', 'BuyerChainReadbackUnsupported', 'WalletFormatError'],
   values: ['PURCHASE_STATE_SCHEMA', 'PURCHASE_STATUS_HELP', 'DEM_DECIMAL', 'OS_INTEGER', 'vetNotPerformedRef', 'AGREEMENT_CONTEXT_SOURCE', 'DEM_DELIVERY_CONTEXT_SOURCE',
     'SR2_WALLET_KIND', 'DEVNET_AGREEMENT_KIND', 'DEVNET_AGREEMENT_PROFILE', 'DEVNET_NATIVE_BINDING_PATH', 'DEVNET_NATIVE_RPC_PATH', 'SDK_PROVENANCE',
-    'OFFLINE_AGREEMENT_MODE', 'DEVNET_NATIVE_COMMITMENT_MARKER'],
+    'OFFLINE_AGREEMENT_MODE', 'DEVNET_NATIVE_COMMITMENT_MARKER', 'PAID_WRITE_FEE_CEILING_OS'],
 };
 const GUIDANCE_NAMES = ['purchaseNext', 'PURCHASE_STATUS_HELP', 'protocolView'];
 const modules = {
@@ -58,12 +61,13 @@ const modules = {
   "public-verification.mjs": "createListingVerifier NotConfiguredError",
   "dacs/chain.mjs": "DEM_DECIMAL OS_INTEGER",
   "dacs/purchase-protocol.mjs": "deliveryEvidenceAddress vetNotPerformedRef",
-  "dacs/seller-http.mjs": "sellerFailureCause SellerRefusedError SellerUnavailableError SellerTlsUnusableError",
+  "dacs/seller-http.mjs": "sellerFailureCause SellerRefusedError SellerUnavailableError SellerTlsUnusableError createPublicSellerClient",
   "dacs/native-payment-evidence-consumer.mjs": "usesNativePaymentEvidence createNativePaymentEvidenceConsumer",
   "dacs/agreement-context-consumer.mjs": "AGREEMENT_CONTEXT_SOURCE isOperatorContextAuthority",
   "dacs/dem-delivery-context-consumer.mjs": "DEM_DELIVERY_CONTEXT_SOURCE demDeliveryContextUsage isDemDeliveryContextAuthority createDemDeliveryContext",
   "dacs/native-dem-delivery-consumer.mjs": "createNativeDemDeliveryCapability",
   "dacs/source-demo-seller-transport.mjs": "createSourceDemoSellerTransport",
+  "dacs/seller-session-keys.mjs": "createSellerSessionKeys",
   "devnet-demo/commitment-consumer.mjs": "createDevnetNativeCommitmentCapability DEVNET_NATIVE_COMMITMENT_MARKER",
   "dacs/demos-sr2-wallet-bridge.mjs": "SR2_WALLET_KIND DemosSr2BridgeError",
   "wallet/devnet-native-transport.mjs": "rpcAuthRefusal transferRefusal DEVNET_AGREEMENT_KIND DEVNET_AGREEMENT_PROFILE DEVNET_NATIVE_BINDING_PATH DEVNET_NATIVE_RPC_PATH",
@@ -77,7 +81,12 @@ const modules = {
   "dacs/buyer-chain-readback.mjs": "BuyerChainReadbackUnsupported",
   "client-errors.mjs": "OperationError NotWiredError",
   "signatures.mjs": "WalletFormatError",
-  "buyer-funding.mjs": "fundingHelpSentence"
+  "buyer-funding.mjs": "fundingHelpSentence",
+  "host/purchase-ops.mjs": "createPurchaseOperations",
+  "util/ids.mjs": "isPurchaseOperationId",
+  "host/purchase-challenges.mjs": "createPurchaseChallenges purchaseApprovalChallengeText",
+  "host/local-account.mjs": "createLocalPurchaseAccount",
+  "index.mjs": "PAID_WRITE_FEE_CEILING_OS"
 };
 
 for (const name of [...ROOT.functions, ...ROOT.classes, ...ROOT.values]) {
@@ -88,6 +97,7 @@ for (const name of [...ROOT.functions, ...ROOT.classes, ...ROOT.values]) {
     const module = Object.keys(modules).find(path => modules[path].split(' ').includes(name));
     const original = await import(new URL(module, import.meta.resolve('@kynesyslabs/dacs-client')));
     if (name === 'createProtocolPurchases') assert.notEqual(client[name], original[name], 'public protocol uses a held facade');
+    else if (name === 'createPublicSellerClient') assert.notEqual(client[name], original.buildPublicSellerClient, 'public seller client is the admission wrapper over its builder');
     else if (name === 'createPurchaseService') assert.notEqual(client[name], original.createPublicPurchaseService, 'public service is the admission wrapper over the diagnostic service');
     else if (GUIDANCE_NAMES.includes(name)) assert.notEqual(client[name], original[name], 'guidance is chosen on each call, not the admitted form itself');
     else assert.equal(client[name], original[name], 'export retains its defining identity');
@@ -98,9 +108,22 @@ test('root exposes exactly the reviewed names', async () => {
   assert.deepEqual(Object.keys(await import('@kynesyslabs/dacs-client')).sort(), [...ROOT.functions, ...ROOT.classes, ...ROOT.values].sort());
 });
 
-test('durable journal subpath exports exactly its factory, error, format and version', async () => {
+test('the root exports the testnet per-write fee ceiling as the positive decimal OS amount string 50000000000', async () => {
+  const { PAID_WRITE_FEE_CEILING_OS } = await import('@kynesyslabs/dacs-client');
+  assert.equal(typeof PAID_WRITE_FEE_CEILING_OS, 'string');
+  assert.equal(PAID_WRITE_FEE_CEILING_OS, '50000000000');
+  assert.match(PAID_WRITE_FEE_CEILING_OS, /^[1-9][0-9]*$/);
+});
+
+test('evidence recorder subpath exports exactly its factory', async () => {
+  const recorder = await import('@kynesyslabs/dacs-client/purchase/evidence-recorder');
+  assert.deepEqual(Object.keys(recorder), ['createPurchaseEvidenceRecorder']);
+});
+
+test('durable journal subpath exports exactly its factory, error, format, version and the wallet-lane view', async () => {
   const journal = await import('@kynesyslabs/dacs-client/wallet/durable-journal');
-  assert.deepEqual(Object.keys(journal).sort(), ['DURABLE_WALLET_JOURNAL_FORMAT', 'DURABLE_WALLET_JOURNAL_VERSION', 'DurableWalletJournalError', 'openDurableWalletJournal'].sort());
+  assert.deepEqual(Object.keys(journal).sort(), ['DURABLE_WALLET_JOURNAL_FORMAT', 'DURABLE_WALLET_JOURNAL_VERSION', 'DurableWalletJournalError', 'openDurableWalletJournal', 'createWalletLaneView', 'walletLane', 'walletLaneKey'].sort());
+  for (const name of ['createWalletLaneView', 'walletLane', 'walletLaneKey']) assert.equal(typeof journal[name], 'function');
   assert.equal(typeof journal.openDurableWalletJournal, 'function');
   assert.equal(typeof journal.DurableWalletJournalError, 'function');
   assert.equal(journal.DURABLE_WALLET_JOURNAL_FORMAT, 'dacs-durable-wallet-journal');
@@ -122,7 +145,7 @@ test('candidate manifest uses release metadata and the exact public boundary', a
   assert.equal(client.version, core.version);
   assert.deepEqual(client.peerDependencies, { '@kynesyslabs/dacs': core.version });
   assert.deepEqual(client.exports, { '.': './src/index.mjs', './wallet/durable-journal': './src/wallet/durable-journal.mjs', './node-wallet': './src/wallet/node-wallet-session.mjs',
-    './substrate/demos': './src/substrate/demos.mjs' });
+    './substrate/demos': './src/substrate/demos.mjs', './purchase/evidence-recorder': './src/passive-evidence-recorder.mjs' });
   assert.equal(client.publishConfig, undefined, 'release-set admission is pending');
   assert.deepEqual(client.repository, { type: 'git', url: core.repository.url, directory: 'packages/dacs-client' });
   assert.equal(client.bugs.url, core.bugs.url);
@@ -136,7 +159,7 @@ test('the client manifest declares exactly demosdk ^4.0.16 and dacs-node and @sc
   assert.equal(client.dependencies['@kynesyslabs/demosdk'], '^4.0.16');
   assert.equal(client.dependencies['@kynesyslabs/dacs-node'], core.version);
   assert.match(client.dependencies['@scure/bip39'], /^\d+\.\d+\.\d+$/);
-  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos'], 'no export is added for the loading modules');
+  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder'], 'no export is added for the loading modules');
   const script = `import * as module from 'node:module';
     const refuse = (specifier, context, next) => {
       if (/demosdk|demos-loader|demos-quiet-hooks|node-demos-loading/.test(specifier)) throw new Error('unexpected import of ' + specifier);
@@ -168,11 +191,14 @@ test('root import never loads SQLite', () => {
   assert.equal(child.status, 0, child.stdout + child.stderr);
 });
 
+// The per-write fee ceiling and the chain fee reader both purchase factories require.
+const FEE_CEILING = { feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } };
+
 test('public refusals retain the exported error identity', async () => {
   const client = await import('@kynesyslabs/dacs-client');
   assert.throws(() => client.createProtocolPurchases({}), error => error instanceof TypeError && error.message === 'admission_required');
   const { binding, currentLocal } = await bindFixture();
-  const buyer = client.createProtocolPurchases({ store: client.createSqlitePurchaseStore(), admission: { binding, currentLocal } });
+  const buyer = client.createProtocolPurchases({ store: client.createSqlitePurchaseStore(), admission: { binding, currentLocal }, ...FEE_CEILING });
   await assert.rejects(buyer.prepareTerms({}), error => error instanceof client.OperationError && error.code === 'profile_not_admitted');
 });
 
@@ -215,7 +241,7 @@ test('the complete public protocol method set refuses actions before host effect
   const effect = () => { effects++; throw new Error('TEST-host-effect'); };
   const options = { store: client.createSqlitePurchaseStore(), ops: { transition: effect, record: effect } };
   const { binding, currentLocal } = await bindFixture();
-  const internal = internalFactory(options), publicProtocol = client.createProtocolPurchases({ ...options, admission: { binding, currentLocal } });
+  const internal = internalFactory(options), publicProtocol = client.createProtocolPurchases({ ...options, admission: { binding, currentLocal }, ...FEE_CEILING });
   assert.deepEqual(Object.keys(publicProtocol).sort(), Object.keys(internal).sort());
   for (const [name, method] of Object.entries(publicProtocol)) {
     if (typeof method !== 'function' || PASSIVE_PROTOCOL_METHODS.has(name)) continue;
@@ -225,8 +251,8 @@ test('the complete public protocol method set refuses actions before host effect
   assert.equal(effects, 0);
 });
 
-const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment']);
-const PASSIVE_SERVICE_METHODS = new Set(['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning']);
+const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'readRetainedNativePaymentLane']);
+const PASSIVE_SERVICE_METHODS = new Set(['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning', 'nativePaymentLaneRead']);
 const refusesAsPromise = (member, name) => {
   const result = member({});
   assert.ok(result instanceof Promise, `${name} returns a Promise`);
@@ -245,8 +271,8 @@ async function heldPublicObjects() {
     .map(([name, method]) => [name, (...args) => { writes.count++; return method(...args); }]));
   const coordinates = client.createCoordinateStore({ db });
   const store = client.createSqlitePurchaseStore();
-  const protocol = client.createProtocolPurchases({ db, ops: counted, coordinates, store, admission });
-  const service = client.createPurchaseService({ db, ops: counted, coordinates, chain: {}, config: {}, store, protocol, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
+  const protocol = client.createProtocolPurchases({ db, ops: counted, coordinates, store, admission, ...FEE_CEILING });
+  const service = client.createPurchaseService({ db, ops: counted, coordinates, ...FEE_CEILING, config: {}, store, protocol, purposes: { APPROVE_PURCHASE: 'TEST-approve' }, admission });
   const verifier = client.createListingVerifier({ directory: {}, chain: {}, admission });
   const rows = () => JSON.stringify(db.prepare('SELECT name FROM sqlite_master WHERE type = ?').all('table').map(({ name }) => [name, db.prepare(`SELECT * FROM "${name}"`).all()]));
   return { service, protocol, verifier, writes, rows, close: () => db.close() };
@@ -269,7 +295,7 @@ test('every active method returns a Promise and every passive method keeps its s
   await refusesAsPromise(verifier.verify, 'verify');
 });
 
-test('every purchase-service member outside the passive list (status, portalOperation, portalEvidence, verifyDeal, planRunning) rejects profile_not_admitted with seller, signer, broadcast and row writes 0, and so does every active member of the Listing verifier, and every function member of the object the public createProtocolPurchases returns outside PASSIVE_PROTOCOL_METHODS (holdChainReadback, keepChainPointers and the native payment helpers such as cancelNativePayment included), with ops.transition and every other host write counter at 0', async (t) => {
+test('every purchase-service member outside the passive list (status, portalOperation, portalEvidence, verifyDeal, planRunning, nativePaymentLaneRead) rejects profile_not_admitted with seller, signer, broadcast and row writes 0, and so does every active member of the Listing verifier, and every function member of the object the public createProtocolPurchases returns outside PASSIVE_PROTOCOL_METHODS (holdChainReadback, keepChainPointers and the native payment helpers such as cancelNativePayment included), with ops.transition and every other host write counter at 0', async (t) => {
   const { service, protocol, verifier, writes, rows, close } = await heldPublicObjects();
   t.after(close);
   const before = rows();
@@ -313,8 +339,70 @@ test("node-wallet subpath exports exactly its reviewed names; the root import lo
  const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
  assert.equal(manifest.exports['./node-wallet'],'./src/wallet/node-wallet-session.mjs');
  const api=await import('../src/wallet/node-wallet-session.mjs');
- assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource','createNodeAuthorityCapability','composeNodeWalletSession',
+ assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource','createNodeAuthorityCapability','composeNodeWalletSession','openKeystoreWalletSession',
    'createHeldTransportFacade','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport','releaseAbandonedJournalLocks','passContext',
    'DEVNET_AGREEMENT_PROFILE','DEVNET_AGREEMENT_KIND','DEVNET_AGREEMENT_SOURCE','DEVNET_SETTLEMENT_KIND','DEVNET_SETTLEMENT_POLICY',
    'DEVNET_DELIVERY_KIND','DEVNET_DELIVERY_POLICY','DEVNET_DEMO_ARTIFACT_KIND','DEVNET_DEMO_ARTIFACT_POLICY','DEVNET_DEMO_ARTIFACT_TYPES'].sort());
+});
+
+const SELLER_CLIENT_ACTIONS = ['propose', 'agreementState', 'commit', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy'];
+
+test('createPublicSellerClient requires admission and rejects every active method while held with no connector call', async () => {
+  const { createPublicSellerClient } = await import('@kynesyslabs/dacs-client');
+  const calls = { request: 0, verifyResponse: 0 };
+  const authentication = { request: async () => { calls.request++; }, verifyResponse: async () => { calls.verifyResponse++; } };
+  const options = { publicEndpoint: 'https://seller.example.test', authentication };
+  assert.throws(() => createPublicSellerClient(options), { name: 'TypeError', message: 'admission_required' });
+  const { binding, currentLocal } = await bindFixture();
+  const seller = createPublicSellerClient({ ...options, admission: { binding, currentLocal }, commitOnSignature: true });
+  assert.equal(seller.origin, 'https://seller.example.test');
+  for (const name of [...SELLER_CLIENT_ACTIONS, 'commitOnSignature']) {
+    const result = seller[name]({ jobId: 'TEST-job' });
+    assert.ok(result instanceof Promise, `${name} returns a Promise`);
+    await assert.rejects(result, { code: 'profile_not_admitted' }, name);
+  }
+  assert.deepEqual(calls, { request: 0, verifyResponse: 0 });
+  for (const option of ['fetchImpl', 'connector', 'resolveHost', 'prepareTransmit', 'beforeTransmit']) {
+    assert.throws(() => createPublicSellerClient({ ...options, admission: { binding, currentLocal }, [option]: () => {} }), TypeError, option);
+  }
+});
+
+test('createPublicSellerClient refuses a timeoutMs outside 1000 through 300000 and a commitOnSignature that is not a boolean', async () => {
+  const { createPublicSellerClient } = await import('@kynesyslabs/dacs-client');
+  const { binding, currentLocal } = await bindFixture();
+  const authentication = { request: async () => assert.fail('nothing is signed'), verifyResponse: async () => assert.fail('nothing is verified') };
+  const build = (extra) => createPublicSellerClient({ admission: { binding, currentLocal }, publicEndpoint: 'https://seller.example.test', authentication, ...extra });
+  for (const timeoutMs of [-1, 0, 999, 300001, 1500.5, Number.NaN, Infinity, '5000', 'abc', null]) {
+    assert.throws(() => build({ timeoutMs }), { name: 'TypeError', message: 'timeoutMs must be an integer from 1000 through 300000' }, String(timeoutMs));
+  }
+  for (const timeoutMs of [undefined, 1000, 300000]) assert.equal(build({ timeoutMs }).origin, 'https://seller.example.test', String(timeoutMs));
+  for (const commitOnSignature of ['false', 'true', 1, 0, null, {}]) {
+    assert.throws(() => build({ commitOnSignature }), { name: 'TypeError', message: 'commitOnSignature must be boolean' }, String(commitOnSignature));
+  }
+  assert.equal('commitOnSignature' in build({ commitOnSignature: false }), false);
+  assert.equal('commitOnSignature' in build({}), false);
+  assert.equal(typeof build({ commitOnSignature: true }).commitOnSignature, 'function');
+});
+
+test('an archive installed outside the checkout exports createPublicSellerClient, constructs the held client and loads without SQLite, with no checkout-relative import', (t) => {
+  // This file also runs on the Node 24 leg, whose npm checks the app lock against the app manifest: the lock is
+  // recomputed for this app, as the other packed test on that leg does, rather than copied from the workspace.
+  const { app, run } = installPackedPair(t, { installedDependencyGraph: true });
+  writeFileSync(join(app, 'seller-client.mjs'), `
+    import assert from 'node:assert/strict';
+    import { existsSync } from 'node:fs';
+    import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+    assert.equal(existsSync(new URL('./node_modules/better-sqlite3', import.meta.url)), false, 'better-sqlite3 is absent');
+    assert.match(import.meta.resolve('@kynesyslabs/dacs-client'), /\\/node_modules\\/@kynesyslabs\\/dacs-client\\//, 'the package is the installed copy');
+    const client = await import('@kynesyslabs/dacs-client');
+    assert.equal(typeof client.createPublicSellerClient, 'function');
+    const local = { endpoint: 'https://rpc.example.invalid/', transportAuthority: 'vector-authority', connectionId: 'vector-conn-1' };
+    const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local, readAuthority: async scope => ({ local: { ...scope.local },
+      chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, provenance: 'TEST-authority', sessionId: scope.sessionId, participants: [] }) });
+    const authentication = { request: async () => assert.fail('held: nothing is signed'), verifyResponse: async () => assert.fail('held: nothing is read') };
+    const seller = client.createPublicSellerClient({ admission: { binding, currentLocal: () => ({ ...local }) }, publicEndpoint: 'https://seller.example.test', authentication });
+    await assert.rejects(seller.propose({}), { code: 'profile_not_admitted' });
+    assert.equal(process.moduleLoadList.includes('NativeModule sqlite'), false, 'SQLite was never loaded');
+  `);
+  run(process.execPath, ['seller-client.mjs'], app);
 });

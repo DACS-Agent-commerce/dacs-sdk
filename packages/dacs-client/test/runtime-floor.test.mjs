@@ -5,7 +5,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { assertPurchaseRuntime } from '../src/public-admission.mjs';
-import { createProtocolPurchases, createPurchaseService, createListingVerifier, createSqlitePurchaseStore, createCoordinateStore } from '../src/index.mjs';
+import { createProtocolPurchases, createPurchaseService, createListingVerifier, createPublicSellerClient, createSqlitePurchaseStore, createCoordinateStore } from '../src/index.mjs';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
@@ -27,12 +27,15 @@ function countingStandIns() {
   return { count, options: { db: standIn(), store: standIn(), ops: standIn(), coordinates: standIn(), journal: standIn(), custody: standIn(), signer: standIn() } };
 }
 
+// The per-write fee ceiling and the chain fee reader both purchase factories require.
+const FEE_CEILING = { feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } };
+
 function realOptions(t, name) {
   if (name === 'createListingVerifier') return { directory: {}, chain: {} };
-  if (name === 'createProtocolPurchases') return { store: createSqlitePurchaseStore() };
+  if (name === 'createProtocolPurchases') return { store: createSqlitePurchaseStore(), ...FEE_CEILING };
   const db = openDatabase(':memory:'); t.after(() => db.close());
   return { db, ops: createOperationStore({ db, handoffSecret: 'TEST-'.repeat(8), now: () => 1 }), coordinates: createCoordinateStore({ db }),
-    chain: {}, config: {}, store: createSqlitePurchaseStore(), purposes: { APPROVE_PURCHASE: 'TEST-approve' } };
+    ...FEE_CEILING, config: {}, store: createSqlitePurchaseStore(), purposes: { APPROVE_PURCHASE: 'TEST-approve' } };
 }
 
 const FACTORIES = { createProtocolPurchases, createPurchaseService, createListingVerifier };
@@ -76,6 +79,23 @@ test('under every ADMITTED version each public purchase factory gets past the ru
   }
 });
 
+test('the public seller client refuses every REFUSED process.version with runtime_unsupported before reading its options, and constructs under every ADMITTED version', async (t) => {
+  const { binding, currentLocal } = await bindFixture();
+  restoreProcessVersionAfter(t);
+  const { count, options } = countingStandIns();
+  for (const version of REFUSED) {
+    setProcessVersion(version);
+    assert.throws(() => createPublicSellerClient({ admission: { binding, currentLocal }, publicEndpoint: 'https://seller.example.test', authentication: options.signer }), isUnsupported(version), version);
+  }
+  assert.equal(count.reads, 0);
+  const authentication = { request: async () => assert.fail('nothing is signed at construction'), verifyResponse: async () => assert.fail('nothing is verified at construction') };
+  for (const version of ADMITTED) {
+    setProcessVersion(version);
+    const client = createPublicSellerClient({ admission: { binding, currentLocal }, publicEndpoint: 'https://seller.example.test', authentication });
+    assert.equal(client.origin, 'https://seller.example.test', version);
+  }
+});
+
 test('CI asserts the packed refusal on Node 20.19.0 and 22.13.0 and constructs each packed factory at the engine floor', () => {
   const workflow = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const step = (name) => {
@@ -102,4 +122,8 @@ test('CI asserts the packed refusal on Node 20.19.0 and 22.13.0 and constructs e
   assert.match(step("Use this leg's Node again after the refusal checks"), /node-version: \$\{\{ matrix\.node-version \}\}/);
   const floor = step('Check both packed JavaScript entry points at the engine floor');
   for (const name of Object.keys(FACTORIES)) assert.match(floor, new RegExp(`c\\.${name}\\(`), name);
+  for (const name of ['createProtocolPurchases', 'createPurchaseService']) {
+    assert.match(floor, new RegExp(`c\\.${name}\\([^\\n]*\\bchain\\b[^\\n]*\\bfeeCeilingOs\\b`), `${name} is given the fee reader and the fee ceiling it requires`);
+  }
+  assert.match(floor, /chain = \{ getTransactionFees: [^\n]*feeCeilingOs = c\.PAID_WRITE_FEE_CEILING_OS/, 'the ceiling is the exported testnet value and the chain reads fees');
 });

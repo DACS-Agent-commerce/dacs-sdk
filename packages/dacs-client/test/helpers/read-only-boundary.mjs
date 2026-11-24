@@ -2,4 +2,4 @@
 const unused = () => { throw new Error('TEST-this-transport-never-writes'); };
 
 /** Every effect member refuses, so a test that writes through a read-only transport fails loudly. */
-export const readOnlyBoundary = Object.freeze({ holdFence: unused, withOperation: unused, signPass: unused, dispatchPass: unused });
+export const readOnlyBoundary = Object.freeze({ holdFence: unused, withOperation: unused, signPass: unused, dispatchPass: unused, signAuthentication: unused, signerFor: unused });

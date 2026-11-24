@@ -258,7 +258,7 @@ test('the integrity role stays synchronous, so the durable state creates a store
   assert.ok(signature instanceof Uint8Array && typeof signature.then !== 'function', 'sign returns bytes, not a Promise');
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'TEST-seller-key-state-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const options = { dir: join(dir, 'state'), signer: key.integritySigner, listingPin: { contentHash: 'a'.repeat(64) } };
+  const options = { dir: join(dir, 'state'), integritySigner: key.integritySigner, listingPin: { contentHash: 'a'.repeat(64) } };
   const store = await createSellerDurableState(options);
   store.retainContext({ probe: 'integrity role' });
   store.close();

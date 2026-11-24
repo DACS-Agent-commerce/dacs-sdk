@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged index.mjs after merging the Directory contract part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "a4e078191a95b75c5e845a533dbd32951e6b4001",
+      "after": "a4e078191a95b75c5e845a533dbd32951e6b4001"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-4aadd77e9b92.json"
+  ],
+  "note": "Both parts changed this file and git merged them without a conflict; this record names the merged copy, which keeps both sides' changes. No file other than this record changes."
+}

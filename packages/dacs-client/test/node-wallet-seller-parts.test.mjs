@@ -13,7 +13,7 @@ import * as nativeTransport from '../src/wallet/devnet-native-transport.mjs';
 const trap = installNoEgress();
 test.after(() => trap.restore());
 const refused = error => error.code === 'profile_not_admitted';
-const ACTIVE = ['rpc', 'walletBinding', 'recoverStorageWrite', 'cancelNativeTransfer'];
+const ACTIVE = ['rpc', 'walletBinding', 'recoverStorageWrite', 'cancelNativeTransfer', 'withWalletNonceLock'];
 // Written independently of Object.keys or the implementation's wrapper configuration.
 const PASSIVE = ['pins', 'transportBinding', 'journal', 'settlementPublication', 'deliveryPublication', 'demoArtifactPublication',
   'readRpc', 'observeBinding', 'chainReader', 'nativeTransferClaimed', 'nativeTransferCancelled', 'nativeTransferRefused',
@@ -25,7 +25,7 @@ async function seller(t, options = {}) {
     sessionOptions: { approveConfirmedWrite: null, publications: publications(), ...options.sessionOptions } });
 }
 
-test('held, each active facade member (rpc, walletBinding, binding bind/signature/release, recoverStorageWrite, cancelNativeTransfer) rejects profile_not_admitted with node calls 0', async t => {
+test('held, each active facade member (rpc, walletBinding, binding bind/signature/release, recoverStorageWrite, cancelNativeTransfer, withWalletNonceLock) rejects profile_not_admitted with node calls 0', async t => {
   const w = await seller(t, { held: true }), facade = w.session.transport;
   for (const name of ACTIVE) {
     const pending = facade[name]({});

@@ -6,7 +6,7 @@ import {fixture,JOBS,recordFor} from './helpers/bilateral-vet-fixture.mjs';
 test('direct provider starts, recovery, resume and release refuse malformed jobs before any state or verifier call',async()=>{
  const w=fixture(),{createDevnetDemoAgreementContextProvider}=await import('../src/devnet-demo/agreement-context.mjs');
  const forbidden=()=>assert.fail('malformed job reached party Vet state');
- const p=createDevnetDemoAgreementContextProvider({anchor:w.anchor,wallet:{claim:w.seller.claim,signBytes:w.seller.sign},listing:w.listing,
+ const p=createDevnetDemoAgreementContextProvider({anchor:w.anchor,runCreate:w.config.runCreate,wallet:{claim:w.seller.claim,signBytes:w.seller.sign},listing:w.listing,
   store:{...w.store,read:forbidden,update:forbidden,entries:forbidden},counterparty:w.counterparty,log:()=>{}});
  for(const jobId of [undefined,null,7,'job-0',JOBS[0].toLowerCase(),JOBS[0].slice(1),'8'+JOBS[0].slice(1)]){
   const input=w.input(jobId);input.scope.jobId=jobId;
@@ -54,7 +54,7 @@ test('relay acknowledgement cannot substitute for a verified accepted receipt',a
 });
 test('missing buyer verifier refuses before any CVR signature or native effect',async()=>{
  const w=fixture();const {createDevnetDemoAgreementContextProvider}=await import('../src/devnet-demo/agreement-context.mjs');
- const p=createDevnetDemoAgreementContextProvider({anchor:w.anchor,wallet:{claim:w.seller.claim,signBytes:()=>assert.fail('signature')},listing:w.listing,store:w.store});
+ const p=createDevnetDemoAgreementContextProvider({anchor:w.anchor,runCreate:w.config.runCreate,wallet:{claim:w.seller.claim,signBytes:()=>assert.fail('signature')},listing:w.listing,store:w.store});
  assert.equal((await p.resolveBuyer(w.input(),{writable:()=>true})).code,'counterparty_vet_required');assert.equal(w.records.size,0);
 });
 test('a repeated resolveBuyer without a buyer verifier answers from the stored counterparty record',async()=>{

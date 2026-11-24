@@ -11,9 +11,9 @@ import {
   EVENTS, SHARDS, SPLIT_FILES, WEIGHTS, assign, assignUnits, checkPartition, checkPlan, clientDir, clientFiles, plan, sellerDir,
   sellerFiles, splitTests,
 } from "../../scripts/ci-shards.mjs";
+import { exactPattern, listTests, runSome } from "../../scripts/ci-test-names.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
-import { exactPattern, listTests, runSome } from "../../scripts/ci-test-names.mjs";
 
 function scratch(t, files) {
   const dir = mkdtempSync(join(tmpdir(), "ci-shards-test-"));

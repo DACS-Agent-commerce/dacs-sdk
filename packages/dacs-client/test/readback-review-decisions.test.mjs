@@ -25,6 +25,9 @@ const { createDevnetSettlementTransport, DEVNET_SETTLEMENT_POLICY }=await import
 const { createDevnetNativeCommitmentCapability, DEVNET_NATIVE_COMMITMENT_MARKER }=await import('../src/devnet-demo/commitment-consumer.mjs');
 const { createProtocolPurchases, protocolStageHelp }=await import('../src/dacs/protocol-purchases.mjs');
 const { SellerRefusedError }=await import('../src/dacs/seller-http.mjs');
+const { createSourceDemoSellerTransport }=await import('../src/dacs/source-demo-seller-transport.mjs');
+// A paid purchase always declares its seller transport. The seller client and its wire authentication are stand-ins here.
+const sellerTransport=createSourceDemoSellerTransport({authority:'TEST-review',sessionSignerFor:()=>({}),sessionPolicyFor:()=>({}),endpointProofFor:()=>({}),effectBoundary:readOnlyBoundary});
 // The seller is a real key pair so payment evidence can carry a real signature.
 const keyPair=seedByte=>{const seed=new Uint8Array(32).fill(seedByte),hex=Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString('hex');return {key:privateKeyFromSeed(seed),hex,claim:'did:demos:agent:'+hex};};
 const sellerKeys=keyPair(17),otherKeys=keyPair(23);
@@ -88,12 +91,12 @@ function coordinator(t, { status='settled_verified', stage='delivered', retained
  t.after(()=>{db.close();rmSync(dir,{recursive:true,force:true});});
  const ops=createOperationStore({db,handoffSecret:'TEST-only-d15-review-secret-000000000'});
  db.prepare('INSERT INTO accounts (id,auth_issuer,auth_subject,created_at) VALUES (?,?,?,?)').run('TEST-buyer','TEST','TEST-buyer',new Date().toISOString());
- const terms={buyer:{wallet:BUYER},seller:{payee:SELLER,claim:SELLER},price:{amountOs:'2500000000'},listing:pin,network:'testnet',rail:'demos-native:DEM',domain:{mode:'public-chain-read',chainIdentity:CHAIN},protocol:{transportBinding:sourceCapability.transportBinding,jobId:JOB,profile:'dacs-chatgpt-plugin/sr2-wallet-agreement/v1',sellerAgent:'https://seller.invalid',sellerCommitment:DEVNET_NATIVE_COMMITMENT_MARKER,sellerAgreementProjection:'public-signed-create',nativePayment:NATIVE_AGREEMENT_PAYMENT,nativePaymentEvidence:NATIVE_PAYMENT_EVIDENCE}};
+ const terms={buyer:{wallet:BUYER},seller:{payee:SELLER,claim:SELLER},price:{amountOs:'2500000000'},listing:pin,network:'testnet',rail:'demos-native:DEM',domain:{mode:'public-chain-read',chainIdentity:CHAIN},protocol:{transportBinding:sourceCapability.transportBinding,jobId:JOB,profile:'dacs-chatgpt-plugin/sr2-wallet-agreement/v1',sellerAgent:'https://seller.invalid',sellerCommitment:DEVNET_NATIVE_COMMITMENT_MARKER,sellerAgreementProjection:'public-signed-create',nativePayment:NATIVE_AGREEMENT_PAYMENT,nativePaymentEvidence:NATIVE_PAYMENT_EVIDENCE,sellerTransport:sellerTransport.declaration}};
  const protocol={stage,signatures:{agreement:'TEST-signature'},planned:{plan:{agreementHash},anchorAddress:logicalAddress},listing,agreement:{artifact:agreement,hash:agreementHash,ref:{anchor:{locator:logicalAddress}},anchorReceipt:receipt,signedProjection:{hash:txHash}},
    ...(retainedDelivery?{delivery:{...delivery,report},nativeEvidence:{status:'verified'},paymentEvidence:{ref:{contentHash:'d'.repeat(64)}}}:{}),...protocolPatch};
  const op=ops.createIdempotent({accountId:'TEST-buyer',kind:'purchase',idempotencyKey:'TEST',request:{},status,terms,termsHash:CHAIN,state:{protocol},expiresAt:new Date(Date.now()+3600000).toISOString()}).operation;
  const nativeEvidence=createNativePaymentEvidenceConsumer({rpcUrl:sourceCapability.pins.endpoint,sourceCapability});
- const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess});
+ const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerTransport,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess,feeCeilingOs:'50000000000',chain:{getTransactionFees:async()=>1n}});
  return {op,ops,service};
 }
 test('host chain-readback bookkeeping keeps its source and records a repeated hold once', t => {

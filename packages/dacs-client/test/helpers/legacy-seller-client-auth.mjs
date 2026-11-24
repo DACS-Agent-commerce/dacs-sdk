@@ -2,6 +2,7 @@
 import { randomBytes, createPublicKey } from 'node:crypto';
 import { canonicalize, sha256Hex, admitRawJson, ed25519Verify } from '@kynesyslabs/dacs';
 import { sellerTransportSigningBytes, verifySellerSessionDelegation, SellerTransportError } from './old-seller-transport.mjs';
+import { NO_TRANSMIT_GUARDS } from './seller-https-rig.mjs';
 const CLAIM = /^did:demos:agent:[0-9a-f]{64}$/;
 const clone = value => JSON.parse(JSON.stringify(value));
 const exact = (a, b) => canonicalize(a) === canonicalize(b);
@@ -53,7 +54,7 @@ export function createSellerTransportClientAuth({ buyerSigner, sessionSigner, de
       const payload = {
         version: '1', kind: 'request', method: 'POST', path, bodyHash: sha256Hex(text), jobId, buyer, seller, listingPin: context.listingPin, agreementHash: context.agreementHash, nonce: nonce(), expiresAt: live ? Math.min(time + lifetimeMs, retainedDelegation?.payload.expiresAt ?? Number.MAX_SAFE_INTEGER) : time + lifetimeMs
       };
-      return { payload, header: await signedHeader(payload, signing, retainedDelegation) };
+      return { payload, header: await signedHeader(payload, signing, retainedDelegation), transmitGuards: NO_TRANSMIT_GUARDS };
     },
     verifyResponse(request, { header, status, text, body }) {
       text ??= Buffer.from(body).toString('utf8');

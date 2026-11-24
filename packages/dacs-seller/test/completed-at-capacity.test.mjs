@@ -1,6 +1,7 @@
 // A completed operation answered while the store has no free capacity, and the reader of completed operations that reserves nothing.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { causeOf } from './helpers/refusal-body.mjs';
 import { readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { createCompletedOutcomeReader } from '../src/dacs/seller-http.mjs';
@@ -83,7 +84,7 @@ test('at zero free capacity a replay of a completed proposals operation gets the
   assert.deepEqual(operationOf(w, job.jobId, PATHS.proposals), attempts, 'the operation gained no attempt');
   watch.failure = sourceUnavailable('changed');
   const refused = await job.post();
-  assert.deepEqual({ status: refused.status, error: refused.body.error, cause: refused.body.cause }, { status: 503, error: 'seller_source_unavailable', cause: 'changed' });
+  assert.deepEqual({ status: refused.status, error: refused.body.error, cause: causeOf(refused.body) }, { status: 503, error: 'seller_source_unavailable', cause: 'changed' });
   assert.notEqual(refused.text, first.text, 'a failed revalidation withholds the stored text');
   assert.deepEqual(snapshot(w), before, 'a failed revalidation changed nothing');
   assert.deepEqual(operationOf(w, job.jobId, PATHS.proposals), attempts);

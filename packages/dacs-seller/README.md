@@ -33,10 +33,16 @@ durable stores use the native `better-sqlite3` module. Use the same version of
 The private package uses a core tarball built from the same checkout.
 This build refuses to start (`kit_operation_guard_off`) until the testnet
 switch, and every other entry that signs for a send or sends refuses too. A
-durable store still signs its own local records through the signer you give it:
-when it creates a new store and when it creates or updates an authenticated
-record (reopening a store or taking a lock signs nothing). The kit publishes
-none of these signatures; what your own signer does with them is up to it.
+durable store still signs its own local records, with the key's integrity role
+only: when it creates a new store and when it creates or updates an
+authenticated record (reopening a store or taking a lock signs nothing). The
+kit publishes none of these signatures. The store holds no signer for anything
+else: each Agreement co-signature, commitment, evidence and audit-source
+signature of the seller agent is made inside one pass of the host's effect
+boundary, with the key's effect role. Every answer that carries the Agreement
+co-signature (the first one, a repeat served from the cache and a state read)
+is written to the response inside a dispatch pass of that boundary, after the
+pass's checks and before its acknowledgement is recorded.
 
 The optional `contextSessionState({ jobId })` host capability is synchronous and
 returns a DACS-5 state name or `null` (unknown). Only a terminal DACS-5 name lets
@@ -122,7 +128,7 @@ untouched.
 import { startSellerHost, createOperatorBuyerAccess } from '@kynesyslabs/dacs-seller';
 
 const host = await startSellerHost({
-  signer,               // { claim: 'did:demos:agent:<hex>', sign(bytes) -> 64-byte Ed25519 signature }, synchronous
+  signer,               // the seller key's roles, as openSellerKey returns them: { claim, sign(bytes), integritySigner, readOnlyAnswerSigner }
   listing,              // the signed Listing this seller serves; the signer must control it
   dataDirectory,        // absolute real path of a private (0700) directory owned by this user
   contextSessionState,  // optional, synchronous ({ jobId }) -> DACS-5 state name or null
@@ -171,11 +177,20 @@ const host = await startSellerHost({
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
                          // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
   readCommitmentReceipt, // Chain-bound current SR-2 receipt reader, with bounded I/O.
-  tp1Network,            // { connection() -> { endpoint, transportAuthority, connectionId }, readAuthority(scope) }:
-                         // this host's own https connection and the trusted reader that confirms it and the
-                         // chain, read once within 10,000 ms (tp1_authority_timeout; connection() must return
-                         // at once). The host binds the SDK's approved TP-1 identity record over it before
-                         // it opens any state: no option, environment variable or file names a record
+  receiptFeeCeilings: { payFeeCeilingOs, anchorFeeCeilingOs }, // required, no default: the Pay and anchor fee
+                         // ceilings, each canonical decimal OS text (zero allowed); see "Seller receipt"
+  walletSession,         // { authority, connectionAuthority, finalize, close? }: the seller's wallet session.
+                         // authority is its read-only capability (it cannot sign or send); connectionAuthority
+                         // is the client's createAuthorityReader over it; finalize({ binding, effectBoundary,
+                         // stopped, feeCeilingOs, stateLock, dataDirectory }) resolves the session, with close().
+                         // Before it opens any state the host binds the SDK's approved TP-1 record (no option,
+                         // environment variable or file names one) through its production reader over this
+                         // session, each read within 10,000 ms (tp1_authority_timeout). Under the lock it finalizes it.
+                         // createSellerWalletSession(...) is the production port (below); with it, artifactAnchor
+                         // must be walletSession.artifactAnchor, or the host refuses with a TypeError
+  participantImplementations, // { entriesFor(claim) -> [{ claim, profile, modules, evidence, revoked }] }: the
+                         // independently approved enrollment of each buyer, read on every request; a buyer
+                         // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
                          // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
   resumeDeliverableCreate: deliveryJournal.resume, // optional (below); nativeDemDelivery is then
@@ -190,15 +205,25 @@ const host = await startSellerHost({
 // A buyer gets its challenge from the host's signed challenge route and presents it on the context route.
 ```
 
+Before the wire opens a signed request, the host checks the buyer's own
+signature on it (the buyer wallet's on a delegation, or the buyer's on a direct
+request). A signature that does not verify is refused
+`peer_delegation_signature_invalid` or `peer_signature_invalid` (401) before
+any authority read. One that does relates the buyer to that job for that
+request only; the host's reader also relates the buyer of a context admission
+that is still open. Discovery is answered for the seller's own claim only.
+
 The host keeps three state directories under `dataDirectory`: `seller/`,
 `transport/` and `wire-journal/`, the wire request journal, opened with a 300 s
 lease. `kit-format.json` (`{"format":"dacs-kit-data/tp1-1"}`) is written first, on
-a directory that holds none of them. A directory that holds any of them without
+a directory that holds none of them. Right after it the host creates and syncs
+`effects/`, the effect boundary's history, before it finalizes the wallet
+session; a failed sync refuses startup. A directory that holds any of the three without
 that marker, or with another one, is from an older kit format and is refused
 with `kit_store_format_unsupported` (`reason` `missing-marker`, `unknown-format`
 or `unreadable`); nothing is migrated. A transport store that still has the
 tables an earlier version created and the kit no longer uses (`peer_slots`,
-`peer_transactions`, `peer_nonces`, `peer_nonce_retention`) drops them when they are all
+`peer_transactions`, `peer_nonces`, `peer_nonce_retention`, `kit_context_reservations`) drops them when they are all
 empty, and is refused with `kit_store_format_unsupported` and left unchanged when any holds a
 row. A new transport store over a
 `wire-journal/` that already holds `k-` or `o-` files is refused with
@@ -282,25 +307,15 @@ refusal with its stable code and HTTP status. The other root exports are the
 parts the host composes, for operators who compose their own:
 `createSellerHttpHandler`, `createSellerTransportStore`,
 `createSellerContextRoute`,
-`createWireSellerContextRoute` (the context step on the wire) and the buyer
-side `createSellerAgentClient` and `createSellerWireClientAuth`. The host
+`createWireSellerContextRoute` (the context step on the wire),
+`createSellerAuthorityReader` (the host's TP-1 authority reader),
+`createSellerWalletSession` (the host's production `walletSession` port) and the buyer
+side `createSellerAgentClient`. The host
 answers every route through the wire, under the wire domain with a TP-1
 profile in each request, and refuses a request signed under the transport's
-old domain. The buyer's `authentication` for
-`createSellerAgentClient` is `createSellerWireClientAuth({ signer, binding,
-connection, endpointProof, publicEndpoint, seller, resolveJob })`: it signs
-and verifies every route the host serves, the challenge and the context step
-included, through the wire, from the `binding` of `bindTp1Profile` and the
-`endpointProof` of `verifyEndpointProof` (both from `@kynesyslabs/dacs/wire`,
-over the seller's signed discovery document), and `resolveJob(jobId)` gives the
-approved job's `{ listingPin, agreementHash, deadline? }`; a `deadline` it gives
-is passed to the check of the buyer's `delegation`. On the challenge and the
-context step there is no Agreement yet: the signed Agreement hash is the hash of
-the request's own `scope`, and only `listingPin` and `deadline` of `resolveJob`
-are used. Signing (the
-`resolveJob` and `evidenceFor` lookups and the buyer's authority read) must
-finish within `signingTimeoutMs` (default 10,000 ms), or the
-request ends as `wire_client_signing_timeout` before anything is sent. A host mounts the Vet and Agreement context
+old domain. `createSellerAgentClient` sends unsigned requests only: it refuses
+an `authentication` option (`seller_client_signing_unsupported`), so it never
+signs. A buyer that signs its requests uses `@kynesyslabs/dacs-client`. A host mounts the Vet and Agreement context
 route on the wire by passing `{ ...createSellerContextRoute({ ... }), ...createWireSellerContextRoute({ ... }) }`
 as the `context` option of `createSellerHttpHandler(agent, { wire, context })`;
 `wire` is a `createWireContext` context made for the same agent, and the handler
@@ -319,7 +334,7 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createWireSellerContextRoute`,
-`createSellerTransportStore` and `createSellerWireClientAuth`. The kit's other modules are reachable by
+`createSellerTransportStore`, `createSellerAuthorityReader` and `createSellerWalletSession`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
@@ -432,6 +447,21 @@ For `provenUnsignedAbsence` and `deadRefusedCreate`, that copy retains the
 process-local proof. Missing reasons become empty text; errors and
 message-bearing objects use their name and message; function and symbol
 reasons become text. Other reason values must pass the JSON reply limits.
+
+### Seller receipt
+
+Every ordinary `committed` answer of `/dacs/v1/commitments` carries
+`sellerReceipt: { agreementHash, reservedMaximumOs }`. `agreementHash` is the
+hash of the exact signed Agreement. `reservedMaximumOs` is the most the buyer
+reserves for this purchase: the Agreement price in OS plus `payFeeCeilingOs`
+plus `anchorFeeCeilingOs` from `receiptFeeCeilings`, as canonical decimal OS
+text. The wire response signature covers it with the rest of the answer. A
+fresh answer and a read-back of a retained commitment carry the same receipt,
+and a stored answer is replayed only while its receipt still matches the one
+the seller declares now. An early `commitment-held` answer carries none. The
+receipt is a declaration on the wire answer only: the Agreement, the commitment
+record and every transaction are unchanged. The host refuses to start without
+both ceilings; the SDK sets no default and infers none.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -632,8 +662,21 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   (`createSellerNodeWallet`, below); `isDevnetDemoTransport`
   (`src/dacs/devnet-source.mjs`, the client's own check) refuses any other
   value. Every write it makes is still held by the kit operation guard and the
-  client's purchase hold. An operator-supplied anchor must enforce the contract
-  itself.
+  client's purchase hold. It also needs `runCreate` from
+  `createSellerCreatePass` (`src/devnet-demo/create-pass.mjs`): each wallet
+  CREATE, and the one resend of a retained CREATE, runs after the kit effect
+  boundary's checks, under its fence, inside one effect pass of the wallet
+  session. That pass asks the lane's synchronous `currentAuthorization` check
+  last before the signature and before each transmission, so `publish` needs
+  `operationClass` and `currentAuthorization` for every artifact kind. The
+  operator's approval of a write runs inside that pass, so a manual approval
+  must finish within the pass's deadline, 10 seconds at most: a slower
+  `APPROVE` answers `tp1_authority_timeout` and nothing is signed. Moving the
+  approval outside the pass is planned. The kit's own fee and approval-hold
+  checks run only when the caller passes `debitOs` or `approvalRef`; the
+  seller's anchor passes neither, so the session pass's fee ceiling is the
+  fee check that applies to these CREATEs. An operator-supplied anchor must
+  enforce the contract itself.
 - Without the next option, a Deliverable CREATE the capability signed but did
   not broadcast (or that the node dropped) reads back as a plain absence, and the
   order stays held: only the capability's own journal could send it again.
@@ -1164,7 +1207,7 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   canonical address, record, transaction and
   finalized receipt are read again from its source in passive mode; an early
   commitment needs no buyer Agreement anchor for this. A source that fails answers `503
-  seller_source_unavailable` with its `cause` (`absent`, `changed`, `timeout`,
+  seller_source_unavailable` with its cause at the end of its message (`absent`, `changed`, `timeout`,
   `too_large` or `unavailable`), a closed buyer access keeps its own refusal,
   and the stored outcome is never rewritten.
 - It mounts the signed challenge route and the Vet and Agreement context route on
@@ -1177,15 +1220,17 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
 - The signed challenge route is composed directly, not by the host:
   `createSellerHttpHandler(agent, { wire, context })` serves
   `POST /dacs/v1/agreements/context/challenge` through the SDK's `./wire` when the
-  `wire` context (`createWireContext`) carries the host's `stopped` predicate; without
+  `wire` context (`createWireContext`, from
+  `@kynesyslabs/dacs-seller/src/dacs/seller-wire-requests.mjs`) carries the host's
+  `stopped` predicate; without
   one the handler refuses construction. No Agreement exists yet and the wire journal is never
   written. The seller refuses in this order: the body (64 KiB, one JSON value, no duplicate
   members or lossy numbers: `body_too_large`, `bad_json`; unsigned, like the envelope's
   refusals); the envelope (the wire's refusals); the signed path (`peer_request_mismatch`) and
   the scope job (`peer_job_invalid`, `peer_job_mismatch`); anything but `{ scope }` with the
   ten challenge-scope keys (`peer_context_mismatch`); the kit guard
-  (`kit_operation_guard_off`) and the stop predicate (`seller_stopped`, with `cause`
-  `stop_check_failed` or `stop_check_invalid` when it throws or answers a non-boolean); the
+  (`kit_operation_guard_off`) and the stop predicate (`seller_stopped`, whose message ends with
+  `(cause: stop_check_failed)` or `(cause: stop_check_invalid)` when it throws or answers a non-boolean); the
   wire's pre-Agreement admission (Listing pin, parties, delegation, `seller_not_ready`); the
   scope against the Listing (`context_scope_invalid`, `context_generated_at`), buyer access
   and the known job (ten seconds each, `session_admission_unavailable` with its cause);
@@ -1207,12 +1252,63 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   journals it opens. The source capability is the only value the devnet
   artifact anchor, issued-write readback and the source mode of native
   payment evidence accept. Each signature and send needs an effect pass made
-  through the composition's `effectPass`, and is refused while the kit
+  through the composition's `effectPass`. The wallet's views say
+  `guardsSigning: true`: a request's `authorize` check is asked as its
+  approval answer returns and again in the effect gate right before the
+  transaction signature, and any answer but an immediate `true` refuses
+  `not-authorized` with nothing signed or sent. A signature or send is also
+  refused while the kit
   operation guard is off or the client's purchase hold is held, which is how
   both ship. `start` does not build the wallet. Native DEM delivery and the
   DEM delivery context accept only `TEST-` authorities, as in the source kit.
   Native writes also need a
   qualified node deployment (`QUALIFIED_NODE_COMMITS`).
+- `createSellerWalletSession` (`src/devnet-demo/seller-wallet-session.mjs`) is
+  the host's production `walletSession` port. It takes the node connection
+  (`endpoint`, `transportAuthority`, `fetchImpl`), the seller `signer`,
+  `loadKeyRecord()`, and the `approve`, `approvalMode`, `journalMode`,
+  `publications` and `diagnostics` it passes unchanged to
+  `createSellerNodeWallet`, a wall `clock` (`Date.now` by default) and the
+  anchor's `buyerAccess` (`null` by default, which refuses every job's write
+  and read with `buyer_access_closed`); any other option is a TypeError. Its
+  `artifactAnchor` is the one handle the operator gives the host, the Vet
+  provider and the delivery capability. Until the host finalizes the port
+  under the state lock, every anchor method refuses
+  `wallet_session_not_finalized`. Finalization checks that the host's effect
+  boundary was built over its binding (`wallet_session_boundary_mismatch`) and
+  that the binding is current on the port's connection (the wire's `tp1_*`
+  refusals). Only then does it call `loadKeyRecord` once; the port zero-fills
+  the bytes it returns on every outcome. It builds the wallet over the port's
+  own connection and binds the handle to the artifact anchor composed over
+  it, whose wallet CREATEs run through `runCreate` over the host's effect
+  boundary and this session. That anchor's readback compares the chain identity the port's
+  connection reader observes (within the readback's remaining time, at most
+  10,000 ms, else `tp1_authority_timeout`) with the binding. The finalized
+  session has `effectPass`, `runInEffectPass`,
+  `walletFactory`, `transport` (with `recoverStorageWrite`),
+  `acquireConnectionFence` (the fence its passes need), `address`,
+  `observer`, `artifactJournal`, `paymentEvidence`, `readBalance` and
+  `close`. A second finalization refuses `wallet_session_finalize_once`, and
+  after a close the handle, the fence and finalization refuse
+  `wallet_session_closed`.
+- The port's `runCreate` is the one pass finalization builds, the same one the
+  anchor uses; before finalization it refuses `wallet_session_not_finalized` and
+  after a close `wallet_session_closed`, before any read. The Vet provider
+  (`createDevnetDemoAgreementContextProvider`) and the Listing publisher
+  (`createDevnetDemoListingPublisher`) require a `runCreate` option: pass
+  `port.runCreate`. Any `runCreate` the kit did not issue, a wrapper included,
+  is refused with a TypeError. Each Vet component signature, the identity
+  presentation and the Listing signature is made in that pass, right after the
+  boundary's stop check and final checks. The Listing signature and the
+  presentation are retained in the effect history: the same Listing draft
+  published again, also after a restart, reuses its signature without asking
+  the wallet. Their signer has 10 seconds from its call (`eb_sign_timeout`,
+  nothing retained). One that answers in time but after the pass window ends is
+  retained and then refused `stop_check_timeout`; the Listing retry reuses it.
+  A Vet signer that waits for a person holds the host's fence until it answers.
+  The provider's `resolveBuyer`, `recoverBuyer` and `resolveSeller` and each
+  method of the kit client `createSellerAgentClient` check the kit operation
+  guard at each call.
 - Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).
@@ -1229,9 +1325,14 @@ one read answer, refusal or discovery document, whose `sign` returns a Promise
 of the signature (always `await` both: a Promise is never accepted as signature
 bytes) and checks the TP-1 authority when it signs, and the kit guard for a
 `ready: true` discovery document; and `integritySigner`, for seller-state journal bytes only.
-After `close()` every role refuses. The host signs the discovery document it serves at
-`/.well-known/dacs-seller.json` and each read answer through `readOnlyAnswerSigner`, and
-every other answer with `sign`.
+After `close()` every role refuses. The host, `createSellerAgent` and `createWireContext` each
+require all three roles (a TypeError before anything is opened). The host signs the discovery
+document it serves at `/.well-known/dacs-seller.json`, each read answer and each refusal through
+`readOnlyAnswerSigner`, so a re-held host still answers them (its discovery document then says
+`ready: false`). A refusal body is exactly
+`{ error, message }`; a cause is at the end of the message as `(cause: <cause>)`. Every other
+answer is signed with `sign` inside a short pass of the host's effect boundary, so it waits behind
+any pass that holds the boundary's fence, for up to 10 seconds (`tp1_fence_timeout`).
 
 This checkout provides source modules. Build the core from the same checkout
 before importing the seller source kit.
