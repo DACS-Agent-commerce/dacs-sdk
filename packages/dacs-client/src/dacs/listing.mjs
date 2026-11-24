@@ -35,6 +35,7 @@ export const SDK_PROVENANCE = Object.freeze({
 const DID_PREFIX = 'did:demos:agent:';
 const LISTING_SEPARATOR = 'dacs-listing:v1:';
 const PRESENTATION_SEPARATOR = 'dacs-bundle-presentation:v1:';
+const SESSION_NONCE = /^[0-9a-f]{64}$/;
 
 export function utf8(bytes) {
   return Buffer.from(bytes).toString('utf8');
@@ -57,15 +58,14 @@ export function verifyComponent({ signedBytes: bytes, signature }) {
   }
 }
 
-export function buildUnsignedIdentityBundle({ address, presentedAt, sessionSeed }) {
+/**
+ * Builds the unsigned identity bundle `address` presents to the seller, with its hash and the wallet message that signs it.
+ * `sessionNonce` is the nonce of the seller's challenge; the client derives none. Throws TypeError unless it is 64 lowercase hex.
+ */
+export function buildUnsignedIdentityBundle({ address, presentedAt, sessionNonce }) {
+  if (typeof sessionNonce !== 'string' || !SESSION_NONCE.test(sessionNonce)) throw new TypeError('the session nonce must be the seller challenge nonce: 64 lowercase hex');
   const claim = claimForAddress(address);
-  const bundle = {
-    bundleVersion: '1',
-    presentedBy: claim,
-    presentedAt,
-    sessionNonce: sha256Hex(`dacs-chatgpt-plugin:${sessionSeed}:${claim}:${presentedAt}`),
-    claims: [{ ref: claim }],
-  };
+  const bundle = { bundleVersion: '1', presentedBy: claim, presentedAt, sessionNonce, claims: [{ ref: claim }] };
   const bundleHash = sha256Hex(canonicalize(bundle));
   return { bundle, bundleHash, message: utf8(signedBytes(PRESENTATION_SEPARATOR, bundleHash)) };
 }

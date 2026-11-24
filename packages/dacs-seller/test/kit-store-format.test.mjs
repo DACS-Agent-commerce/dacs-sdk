@@ -11,9 +11,10 @@ import { OBSOLETE_TRANSPORT_TABLES } from '../src/dacs/seller-obsolete-store-tab
 import { createSellerTransportStore } from './helpers/bound-transport-store.mjs';
 import { accountingFixture, JOB, JOB2, PIN, SELLER } from './helpers/reservation-accounting-fixture.mjs';
 
-const REMOVED = ['peer_slots', 'peer_transactions', 'peer_nonces', 'peer_nonce_retention'];
+const REMOVED = ['peer_slots', 'peer_transactions', 'peer_nonces', 'peer_nonce_retention', 'kit_context_reservations'];
 const REMOVED_INDEXES = ['peer_transactions_job', 'peer_nonces_effect'];
-const REMOVED_METHODS = ['reserve', 'finish', 'reconcile', 'resume', 'classify', 'contextAdmission', 'contextAnswer', 'claim', 'assertPending'];
+const REMOVED_METHODS = ['reserve', 'finish', 'reconcile', 'resume', 'classify', 'contextAdmission', 'contextAnswer', 'claim', 'assertPending',
+  'recoverLostContextReservations'];
 const KILL_CHILD = fileURLToPath(new URL('./helpers/obsolete-tables-kill-child.mjs', import.meta.url));
 const SOURCE_DIRECTORY = fileURLToPath(new URL('../src/', import.meta.url));
 const CLEANUP_MODULE = 'dacs/seller-obsolete-store-tables.mjs';
@@ -26,6 +27,7 @@ const REMOVED_SCHEMA = `
   CREATE TABLE peer_transactions (tx TEXT PRIMARY KEY, job TEXT NOT NULL, effect TEXT NOT NULL);
   CREATE TABLE peer_nonces (nonce TEXT PRIMARY KEY, request_hash TEXT NOT NULL, effect TEXT NOT NULL, status INTEGER, response TEXT);
   CREATE TABLE peer_nonce_retention (nonce TEXT PRIMARY KEY, buyer TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+  CREATE TABLE kit_context_reservations (effect TEXT PRIMARY KEY, nonce TEXT NOT NULL UNIQUE, accepted INTEGER NOT NULL CHECK (accepted IN (0, 1)));
   CREATE INDEX peer_transactions_job ON peer_transactions(job);
   CREATE INDEX peer_nonces_effect ON peer_nonces(effect);`;
 
@@ -76,7 +78,7 @@ test('the cleanup list names exactly the removed tables', () => {
 
 test('no old transport-store journal method, definition or caller remains, and removed table names appear only in the cleanup module', async (t) => {
   const f = await accountingFixture(t);
-  const kept = ['peer_meta', 'peer_jobs', 'peer_effects', 'peer_effect_jobs', 'kit_context_reservations'];
+  const kept = ['peer_meta', 'peer_jobs', 'peer_effects', 'peer_effect_jobs'];
   const tables = schemaOf(f.db).filter((row) => row.type === 'table').map((row) => row.name);
   assert.deepEqual(tables.filter((name) => name.startsWith('peer_')).sort(), [...kept.filter((name) => name.startsWith('peer_'))].sort());
   for (const method of [...REMOVED_METHODS, 'journaledOnlyReserve']) assert.equal(Object.hasOwn(f.store(), method), false, `the store has no ${method}`);
@@ -137,7 +139,8 @@ test('a store created before the removal, with accounted purchases and a complet
 test('a row in a removed table refuses startup and leaves the store untouched', async (t) => {
   for (const table of REMOVED) {
     const { f } = await earlierStoreFixture(t);
-    const row = { peer_slots: "('j:p', 'e')", peer_transactions: "('t', 'j', 'e')", peer_nonces: "('n', 'h', 'e', NULL, NULL)", peer_nonce_retention: "('n', 'b', 1, 2)" }[table];
+    const row = { peer_slots: "('j:p', 'e')", peer_transactions: "('t', 'j', 'e')", peer_nonces: "('n', 'h', 'e', NULL, NULL)", peer_nonce_retention: "('n', 'b', 1, 2)",
+      kit_context_reservations: "('e', 'n', 1)" }[table];
     f.db.exec(`INSERT INTO ${table} VALUES ${row}`);
     f.store().close();
     const schema = schemaOf(f.db), rows = keptRows(f.db), files = journalBytes(f), hash = fileHash(f.path);

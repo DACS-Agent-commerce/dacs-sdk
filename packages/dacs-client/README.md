@@ -64,15 +64,17 @@ The stop option: `createProtocolPurchases` and `createPurchaseService` take an o
 
 ### createProtocolPurchases
 
-Active: `holdChainReadback`, `prepareTerms`, `assertSellerAdmission`, `identityRequest`, `sessionRenewal`, `sessionRenewalAccept`, `planRequest`, `runningPlan`, `planRunning`, `planFlightsRunning`, `signRequest`, `submitAgreement`, `recheckCommitment`, `nativePaymentClaimed`, `nativePaymentTermsCancelled`, `nativePaymentRefused`, `cancelNativePayment`, `nativePaymentFailed`, `nativePaymentSuperseded`, `nativeIntentsSupersededBy`, `withNativePaymentLane`, `readNativePaymentLane`, `checkDelivery`, `recheck`, `countersignRequest`, `countersign`
+Active: `holdChainReadback`, `prepareTerms`, `assertSellerAdmission`, `identityRequest`, `agreementDelegation`, `sessionRenewal`, `sessionRenewalAccept`, `planRequest`, `runningPlan`, `planRunning`, `planFlightsRunning`, `signRequest`, `submitAgreement`, `recheckCommitment`, `nativePaymentClaimed`, `nativePaymentTermsCancelled`, `nativePaymentRefused`, `cancelNativePayment`, `nativePaymentFailed`, `nativePaymentSuperseded`, `nativeIntentsSupersededBy`, `withNativePaymentLane`, `readNativePaymentLane`, `checkDelivery`, `recheck`, `countersignRequest`, `countersign`
 
 `prepareTerms` does not return `terms.jobId`; the create path adds it.
+
+The Agreement starts in three wallet steps, each message saved before it is returned. `identityRequest` returns the seller session delegation message. `agreementDelegation` accepts its signature, has the session key ask the seller for its challenge, and returns the identity presentation message over the seller's nonce. Called without a signature, `agreementDelegation` accepts the delegation a session renewal saved, after the wire verifies it again. `planRequest` accepts the presentation and plans the Agreement. A purchase without a declared seller transport cannot ask for a challenge and is refused `seller_challenge_unavailable`. An unused challenge that expires before the presentation is accepted stops the start (`context_challenge_expired`).
 
 Passive: `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`, `observeReportedPayment`
 
 ### createPurchaseService
 
-Active: `prepare`, `issueApprovalChallenge`, `approve`, `prepareHandoff`, `nativePaymentLane`, `reportWalletResult`, `cancel`, `agreementIdentity`, `sessionRenewal`, `sessionRenewalAccept`, `agreementPlan`, `agreementSubmit`, `completionRequest`, `completionCountersign`, `protocolRecheck`
+Active: `prepare`, `issueApprovalChallenge`, `approve`, `prepareHandoff`, `nativePaymentLane`, `reportWalletResult`, `cancel`, `agreementIdentity`, `agreementDelegation`, `sessionRenewal`, `sessionRenewalAccept`, `agreementPlan`, `agreementSubmit`, `completionRequest`, `completionCountersign`, `protocolRecheck`
 
 Passive: `status`, `portalOperation`, `portalEvidence`, `verifyDeal`, `planRunning` (synchronous)
 
@@ -222,14 +224,23 @@ After a restart the registry is empty, and a purchase whose saved delegation nam
 
 1. `start(operationId)` makes a key in the new process.
 2. `sessionRenewal` returns `{operation, delegation: {payload, message}}`. The payload keeps the buyer, seller, Listing pin, job, profile and `expiresAt` of the saved delegation, and changes only `sessionPublicKey` and `notBefore`. The buyer's wallet signs `message`.
-3. `sessionRenewalAccept` takes that signature, verifies it against the purchase's own scope, and replaces the saved delegation. It never accepts an unsigned or unverified delegation.
-4. The host then continues through the existing entries, passing no `delegationSignature` to `agreementPlan`.
+3. `sessionRenewalAccept` takes that signature, verifies it against the purchase's own scope, and replaces the saved delegation and its wallet message. It never accepts an unsigned or unverified delegation.
+4. The host then continues through the existing entries, passing no `delegationSignature` to `agreementDelegation`; `agreementPlan` takes none.
 
-`sessionRenewal` answers `session_live` while the saved key is still held, `session_not_started` before `start`, `seller_session_ended` after the seller session ended, `invalid_state` when the purchase has no saved delegation, `seller_delegation_expiring` when the delegation of an unpaid purchase (no transfer can have been sent) is inside its safety margin of its expiry, `seller_delegation_expiring_payment_unresolved` inside that margin when a transfer may already have been sent but is not verified (`payment_handoff`, `broadcast_reported`, `payment_uncertain`): the buyer must not pay again or prepare a new purchase, but verify or recover the payment first, and `seller_delegation_expired` when the delegation of a paid (`settled_verified`) purchase has expired or its expiry is unknown; a paid purchase renews right up to that expiry, since the renewal is how the seller hears of the payment after a restart. `sessionRenewalAccept` answers `session_gone_reapprove` when there is no pending renewal or its key is no longer the live key, and `seller_delegation_expired` (the wire's `peer_delegation_expired` kept as its `cause`) when the delegation of a paid purchase expired before the renewal was accepted; nothing is saved. `signerFor` answers `session_gone_reapprove` or `session_not_started` for a purchase with or without a saved delegation. `start` throws `TypeError('session_operation_invalid')` for an id that is not a non-empty string.
+`sessionRenewal` answers `session_live` while the saved key is still held, `session_not_started` before `start`, `seller_session_ended` after the seller session ended, `invalid_state` when the purchase has no saved delegation, `seller_delegation_expiring` when the delegation of an unpaid purchase (no transfer can have been sent) is inside its safety margin of its expiry, `seller_delegation_expiring_payment_unresolved` inside that margin when a transfer may already have been sent but is not verified (`payment_handoff`, `broadcast_reported`, `payment_uncertain`): the buyer must not pay again or prepare a new purchase, but verify or recover the payment first, and `seller_delegation_expired` when the delegation of a paid (`settled_verified`) purchase has expired or its expiry is unknown; a paid purchase renews right up to that expiry, since the renewal is how the seller hears of the payment after a restart. `sessionRenewalAccept` answers `session_gone_reapprove` when there is no pending renewal or its key is no longer the live key, and `seller_delegation_expired` (the wire's `peer_delegation_expired` kept as its `cause`) when the delegation of a paid purchase expired before the renewal was accepted; nothing is saved. While it rebuilds the wallet message after the verification, `sessionRenewalAccept` can also answer `seller_authority_timeout` or `tp1_local_binding_changed`; nothing is saved and the pending renewal stays. `signerFor` answers `session_gone_reapprove` or `session_not_started` for a purchase with or without a saved delegation. `start` throws `TypeError('session_operation_invalid')` for an id that is not a non-empty string.
 
 ### Seller answer classification
 
 Each answer is verified on its exact received bytes, then classified by its HTTP status and `error` code, the route, and the request's provenance. The transport builds the record `{status, signed: true, body}` only after verification; an answer that fails verification is `unknown`. A `result` or `progress` answer is returned. Every other class throws: `definite` and `failed-bootstrap` as `SellerRefusedError` (`code` is the seller's code), the rest as `SellerUnavailableError` (`answerCode` is the seller's code). Both carry `answerClass`. In a protocol purchase, each seller route stores its exact request bytes under the purchase revision (`state.protocol.sellerRequests`) before the first send; the two read routes store nothing. A call with a stored attempt retries an unknown dispatch at most twice, 5 seconds apart, using the same bytes and fresh wire nonces. Unrecorded reads send once. One absolute deadline (15 seconds by default; context 240–300 seconds) includes storage, authority reads, signing and transport; an exhausted budget signs and sends nothing further. Unknown outcomes remain unknown, and a later explicit call reuses stored bytes. Failures before dispatch clear only their own attempt; swallowed failures retain their bounded class and cause. `createPublicSellerClient` keeps no request records: each call signs and sends once, nothing is stored or retried, and nothing about an unknown outcome survives a restart.
+
+A definite failed context bootstrap ends the purchase as `agreement_rejected`, stage `bootstrap-failed`.
+The saved `bootstrapEnd` retains the seller's code, HTTP status and recorded cause.
+An unused challenge that expires before presentation acceptance ends the same way.
+Only an explicit new purchase obtains a new job, challenge and wallet delegation; earlier attempts may have done seller work.
+A verified `party_vet_non_pass` instead ends at `agreement-rejected`, keeping its `counterparty` or `permanent` error class, with no fresh Start offered.
+Neither end retries or returns another wallet message. Unknown outcomes stay pending; an accepted presentation can be retried after challenge expiry.
+The plan step's context scope carries the `generatedAt` of the challenge scope saved in step 2, because the seller compares the two. A retry or restart sends the same scope.
+An approved Agreement time that differs from it is refused with `agreement_time_mismatch` before any context read.
 
 A verified `seller_stopped` answer (class `suspended`) durably records `state.protocol.sellerSuspension: {id, cause, path, at}`. So do a re-hold and a host stop (`writes_stopped`, `stop_check_failed`, `stop_check_invalid` or `stop_check_timeout` as `cause`), whether or not work is queued, when a seller request that stores its bytes sees them as it starts, before its send or at the wire signer, when the effect boundary raises them while that request is signed or right before its first byte, or when `verifyDeal`'s continuation sees them. A re-hold raised there still rejects as an unsent `SellerUnavailableError`. A host stop that refuses a service method also records it, for the purchase the request authenticates for. On the two read routes, only queued work records one. A purchase keeps its first suspension and its `id`: a later stop or re-hold records nothing. When a method rejects with a re-hold or host stop refusal whose suspension write failed, the refusal keeps its own `cause` and carries the write's error as `details.suspensionWriteError`. Retries and queued continuations stop, the outcome stays unknown and a dispatched payment is never marked failed. The record and the stored request bytes survive restart and every later save, and re-admission alone resumes nothing. `verifyDeal` keeps its readback and bookkeeping but does not continue a suspended purchase. The protocol view exposes the suspension. To resume, make a new explicit `protocolRecheck({operationId, token, resumeSuspensionId})` request with the suspension's `id`: it checks admission and buyer access again, then clears only the suspension it names, so an older request cannot clear a newer stop. Do not pay again.
 
@@ -251,7 +262,7 @@ A verified `seller_stopped` answer (class `suspended`) durably records `state.pr
 
 ## Factory integration
 
-Supply application inputs through host, including a synchronous operations-store factory. On a fresh database, apply the schema, construct the purchase store first, then prepare all statements (reads as well as writes). Existing databases need application-owned migrations preserving the schema constraints. Use the same connection for operation and coordinate writes.
+Supply application inputs through host, including a synchronous operations-store factory; the package ships one, with the approval challenges and a local account (see Shipped host adapters). On a fresh database, apply the schema, construct the purchase store first, then prepare all statements (reads as well as writes). Existing databases need application-owned migrations preserving the schema constraints. Use the same connection for operation and coordinate writes.
 
 ```js
 import { DatabaseSync } from 'node:sqlite';
@@ -286,6 +297,28 @@ const diagnostic = purchases.status(host.accountId, host.operation.id, host.toke
 ```
 
 The synchronous `store.transaction` commits both writes or rolls both back on an error. Nested synchronous calls use savepoints. Keep transaction control, database configuration and schema changes outside callbacks; asynchronous callbacks and results refuse. Call diagnostics outside the transaction. This example records host bookkeeping and grants no purchase or settlement authority.
+
+### Shipped host adapters
+
+`createPurchaseOperations`, `createPurchaseChallenges` and `createLocalPurchaseAccount` build `ops`, `challenges` and `accounts` on the same database and store as the factories. They write only inside the store's transaction.
+
+```js
+const ops = createPurchaseOperations({
+  db, store, handoffSecret: host.handoffSecret, handoffTtlMs: host.handoffTtlMs,
+});
+const accounts = createLocalPurchaseAccount({ db, store, wallet: host.walletAddress });
+const challenges = createPurchaseChallenges({
+  db, store, origin: host.origin, purpose: 'approve-purchase', ttlMs: 300_000,
+});
+// Pass ops, accounts and challenges to both factories, and
+// purposes: { APPROVE_PURCHASE: 'approve-purchase' } to createPurchaseService.
+```
+
+- `handoffSecret` (at least 32 characters) and `handoffTtlMs` are required and have no default. A purchase's handoff token is an HMAC of its id under the secret; it is never stored, and the handoff lifetime is never extended. Keep the secret across restarts: with another secret, earlier purchases can no longer be read through their tokens. `isPurchaseOperationId` is true exactly for the ids its `createIdempotent` mints.
+- A host that writes its own `ops` keeps what the shipped one does: one operation per account, key and request (`idempotency_conflict` for another request), `job_id` and `handoff_expires_at` written in the same insert, the saved status compared in `transition`, and only a hash of the handoff token stored.
+- The account id is derived from the wallet: `local:` followed by the normalized address, one `accounts` row per wallet. A saved row for that wallet that does not match refuses `local_account_mismatch`.
+- `issue` needs an account id (`challenge_account_required`). Every challenge is signed under the one `origin` the host passes at construction; an `origin` given to `issue` refuses `challenge_origin_not_accepted`. `purchaseApprovalChallengeText` rebuilds the signed text from the fields `issue` returns and that origin.
+- `verifyAndConsume` reads, checks and consumes a challenge in one store transaction, so a challenge is consumed at most once, and only for a signature by its own wallet.
 
 ### Database admission
 
@@ -338,7 +371,7 @@ The fields marked included are required when status is included; other statuses 
 
 ### Operations
 
-`ops` is synchronous, returns fresh hydrated operations, preserves original errors and uses the same database connection. Diagnostics use only `get`, `getByHandoff` and `history`. The additional `transition` method is used only by `watch.observe`; it must compare the saved status and atomically update state and append its event, refusing a stale status.
+`ops` is synchronous, returns fresh hydrated operations, preserves original errors and uses the same database connection. Diagnostics use only `get`, `getByHandoff` and `history`. The additional `transition` method is used only by `watch.observe`; it must compare the saved status and atomically update state and append its event, refusing a stale status. The package ships one (see Shipped host adapters).
 
 ### Diagnostics
 
