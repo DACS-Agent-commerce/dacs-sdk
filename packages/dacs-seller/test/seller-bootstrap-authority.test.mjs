@@ -21,7 +21,7 @@ import { fetchAsHost } from './helpers/listener-host.mjs';
 import { TP1_PROFILE, enrolled, enrollment, purchaseRow, scriptedNode, testWalletSession } from './helpers/kit-wallet-session.mjs';
 import { NOW, buyer, seller, testWallet } from './helpers/protocol-fixture.mjs';
 import { FIXTURE_ENDPOINT } from './helpers/wire-buyer.mjs';
-import { integrityRoleOf } from './helpers/agent-signing.mjs';
+import { integrityRoleOf, readOnlyRoleOf } from './helpers/agent-signing.mjs';
 
 const MISMATCH = 'tp1_participant_profile_mismatch';
 // A step that never comes fails its test instead of holding the run.
@@ -76,6 +76,7 @@ async function sellerWorld(t, { capability = contextCapability(), publicEndpoint
   const counts = { signs: 0, authority: 0 };
   const signer = { claim: seller.claim, sign: (bytes) => { counts.signs++; return seller.signBytes(bytes); } };
   signer.integritySigner = integrityRoleOf(signer);
+  signer.readOnlyAnswerSigner = readOnlyRoleOf(signer);
   const kitEnrollment = enrollment();
   const port = () => {
     const { walletSession } = testWalletSession();

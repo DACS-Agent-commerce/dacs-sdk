@@ -16,7 +16,7 @@ import {hostAuthority,testWalletSession} from './helpers/kit-wallet-session.mjs'
 import {seller,buyer,NOW,fixtureRecord,RECEIPT_FEE_CEILINGS} from './helpers/protocol-fixture.mjs';
 import {contributionVerifier} from '../src/dacs/purchase-protocol.mjs';
 import {startSellerHost,KIT_TP1_VET_MODE} from '../src/host.mjs';
-import {createSellerAgentClient} from '../src/dacs/seller-http.mjs';
+import {signedBuyerClient} from './helpers/signed-buyer-driver.mjs';
 import {DACS_SELLER_DISCOVERY_PATH} from '@kynesyslabs/dacs/wire';
 import {FIXTURE_ENDPOINT,wireAuthentication,wireBuyer} from './helpers/wire-buyer.mjs';
 import {LISTING_AUTHORITY,fetchAsHost,proxyListener} from './helpers/listener-host.mjs';
@@ -31,7 +31,7 @@ async function fixture(t,{wrap=agent=>agent,publicEndpoint=FIXTURE_ENDPOINT}={})
  api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,...hostAuthority(),listener:proxyListener()},hosts=[];
  const start=async(changes={})=>{const h=await api.startSellerHost({...options,...changes});hosts.push(h);return h;};
  t.after(async()=>{await chmod(dataDirectory,0o700);for(const h of hosts)await h.close().catch(()=>{});await rm(dataDirectory,{recursive:true,force:true});});
- const client=(host,request)=>createSellerAgentClient({url:host.url,authentication:wireAuthentication({buyer:{claim:buyer.claim,sign:buyer.signBytes},seller:{claim:seller.claim,sign:seller.signBytes},listingPin:host.listingPin,clock:()=>NOW},()=>request.proposal.plan.agreementHash),timeoutMs:60000,fetchImpl:fetchAsHost()});
+ const client=(host,request)=>signedBuyerClient({url:host.url,authentication:wireAuthentication({buyer:{claim:buyer.claim,sign:buyer.signBytes},seller:{claim:seller.claim,sign:seller.signBytes},listingPin:host.listingPin,clock:()=>NOW},()=>request.proposal.plan.agreementHash),timeoutMs:60000,fetchImpl:fetchAsHost()});
  return{...f,start,options,dataDirectory,client,setKeepAliveTimeout:api.setTestKeepAliveTimeout,setReadbackTimeout:api.setTestReadbackTimeout};
 }
 async function anchorAgreement(f,request,answer){
@@ -319,7 +319,7 @@ test('host refuses malformed options before opening any state',async t=>{
  // The data directory's mode must be exactly 0700: owner-only modes without full owner access refuse too.
  const notExactly0700=await Promise.all([0o500,0o600,0o710].map(async mode=>{const directory=await mkdtemp(join(root,'mode-'));await chmod(directory,mode);return [mode,directory];}));
  t.after(async()=>{await rm(root,{recursive:true,force:true});await rm(loose,{recursive:true,force:true});});
- const base=()=>({signer:{claim:seller.claim,sign:()=>{},integritySigner:{claim:seller.claim,sign:()=>{}}},listing:{seller:{publicEndpoint:FIXTURE_ENDPOINT}},listener:proxyListener(),dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',receiptFeeCeilings:RECEIPT_FEE_CEILINGS,...hostAuthority()});
+ const base=()=>({signer:{claim:seller.claim,sign:()=>{},integritySigner:{claim:seller.claim,sign:()=>{}},readOnlyAnswerSigner:async()=>{}},listing:{seller:{publicEndpoint:FIXTURE_ENDPOINT}},listener:proxyListener(),dataDirectory,buyerAccess:{},agreementAnchor:{},artifactAnchor:{},deliverableProducer(){},nativePaymentEvidence:{},reconcilePaymentEvidence(){},demDeliveryContext:{},nativeDemDelivery:{},railAuthority:{},sessionAdmission:{},readCommitmentReceipt:async()=>'valid',receiptFeeCeilings:RECEIPT_FEE_CEILINGS,...hostAuthority()});
  const cases=[
   ['non-object',null,/must be an object/],
   ['array options',[],/must be an object/],

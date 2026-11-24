@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { createDevnetDemoAgreementContextProvider, SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
 import { productionFixture } from './helpers/vet-production-fixture.mjs';
+import { testRunCreate } from './helpers/agent-signing.mjs';
 import { JOB, NOW, buyer, seller } from './helpers/protocol-fixture.mjs';
 import { compositeVerificationAddress } from '@kynesyslabs/dacs';
 import { createDemDeliveryContext, resolveDemDeliverySellerContext } from '../src/dacs/dem-delivery-context-consumer.mjs';
@@ -22,7 +23,7 @@ async function isolatedSellerSession(f){
 
 test('Vet factory validates ownership before any signer, anchor or row operation',()=>{
  let effects=0;const effect=()=>{effects++;throw new Error('TEST effect');};
- assert.throws(()=>createDevnetDemoAgreementContextProvider({anchor:{hasIntent:effect,publish:effect},wallet:{claim:seller.claim,signBytes:effect},store:{read:effect,update:effect,entries:effect}}),/Vet context is not assembled|Vet producer and native anchor/);assert.equal(effects,0);
+ assert.throws(()=>createDevnetDemoAgreementContextProvider({anchor:{hasIntent:effect,publish:effect},runCreate:testRunCreate().runCreate,wallet:{claim:seller.claim,signBytes:effect},store:{read:effect,update:effect,entries:effect}}),/Vet context is not assembled|Vet producer and native anchor/);assert.equal(effects,0);
 });
 // SN-2 bounds an issued challenge only by a floor: at least 32 lowercase-hex
 // characters and no upper bound. Odd lengths are conforming too.

@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { connect, type AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -10,15 +10,36 @@ import type {
   WalletSpendPolicyV1,
   WalletSpendRecoveryObservationV1,
   WalletSpendReservationV1,
-  WalletSpendStateV1,
 } from "@kynesyslabs/dacs";
 
+import { TP1_APPROVED_IDENTITY_RECORD } from "@kynesyslabs/dacs/wire";
+
+import { dacsWalletSpendLineageKeyV1, dacsWalletSpendPolicyHashV1 } from "../src/walletSpendPostgres.js";
 import { createDacsRemoteWalletSpendAuthorityV2 } from "../src/walletSpendRemote.js";
 import {
   startDacsWalletSpendTestnetAuthorityV1,
   type DacsWalletSpendTestnetAuthorityV1,
 } from "../src/walletSpendTestnetService.js";
-import { directoryContents } from "./helpers/walletSpendFileAuthorityStores.js";
+import {
+  CONFIRMED_AMOUNT,
+  CONFIRMED_FEE,
+  CONFIRMED_HASH,
+  DEMOS_NODE_URL,
+  DEMOS_WALLET,
+  closeDemosNodeStubs,
+  closedPortUrl,
+  demosAuthorityClient,
+  fetchRoutingDemosNodeTo,
+  demosHold,
+  demosLaneSettings,
+  demosNodeStub,
+  demosPolicy,
+  demosSettledClaim,
+  recordedDemosState,
+  withoutX402Lane,
+  type DemosNodeStub,
+} from "./helpers/walletSpendDemosNode.js";
+import { directoryContents, headStateFile as headState } from "./helpers/walletSpendFileAuthorityStores.js";
 import {
   FINAL_NUMBER,
   LATEST_NUMBER,
@@ -52,8 +73,10 @@ const cleanups: (() => Promise<void>)[] = [];
 
 afterEach(async () => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   await closeChainStubs();
+  await closeDemosNodeStubs();
 });
 
 interface Running {
@@ -76,14 +99,19 @@ async function running(state: ChainState = defaultChain(FIRST_FINAL_TIME)): Prom
   return attach(stub, settings);
 }
 
+/** A fetch that keeps each POST body it sends. */
+function recordingFetchInto(sentBodies: string[]): typeof fetch {
+  return async (input, init) => {
+    if (init?.method === "POST" && typeof init.body === "string") sentBodies.push(init.body);
+    return fetch(input, init);
+  };
+}
+
 async function attach(stub: ChainStub, settings: Running["settings"]): Promise<Running> {
   const authority = await startDacsWalletSpendTestnetAuthorityV1({ environment: settings.environment });
   cleanups.push(() => authority.stop());
   const sentBodies: string[] = [];
-  const recordingFetch: typeof fetch = async (input, init) => {
-    if (init?.method === "POST" && typeof init.body === "string") sentBodies.push(init.body);
-    return fetch(input, init);
-  };
+  const recordingFetch = recordingFetchInto(sentBodies);
   return {
     stub, authority, settings, sentBodies,
     client: (overrides = {}) => createDacsRemoteWalletSpendAuthorityV2({
@@ -97,13 +125,6 @@ async function attach(stub: ChainStub, settings: Running["settings"]): Promise<R
       fetch: recordingFetch,
     }),
   };
-}
-
-/** The highest-revision state file in the data directory. */
-function headState(dataDirectory: string): WalletSpendStateV1 {
-  const states = readdirSync(join(dataDirectory, "states")).map((name) =>
-    JSON.parse(readFileSync(join(dataDirectory, "states", name), "utf8")) as WalletSpendStateV1);
-  return states.reduce((head, state) => state.generation > head.generation ? state : head);
 }
 
 const witnessFiles = (dataDirectory: string) => directoryContents(join(dataDirectory, "witness"));
@@ -247,7 +268,10 @@ describe("testnet wallet-spend authority service", () => {
   });
 
   it("binds validBefore when it reserves, returns it to the buyer, and releases only after chain time passes it", async () => {
-    const service = await running();
+    await bindsValidBeforeAndReleasesAfterChainTime(await running());
+  });
+
+  async function bindsValidBeforeAndReleasesAfterChainTime(service: Running): Promise<void> {
     const client = await service.client();
     const dataDirectory = service.settings.dataDirectory;
     const untouched = { revision: (await client.inspect()).revision, witness: witnessFiles(dataDirectory) };
@@ -278,7 +302,7 @@ describe("testnet wallet-spend authority service", () => {
     await expect(client.reconcile(testnetReservation(), absentClaim)).resolves.toBe("released");
     const next = await permitFor(client, testnetReservation("job-two"));
     expect(next.authorizationValidBefore).toBe(validBefore + 1 + (LATEST_NUMBER - FINAL_NUMBER) * 2 + 120);
-  });
+  }
 
   it("releases a hold that never began on a not-invoked claim once chain time passes its validBefore", async () => {
     const service = await running();
@@ -469,5 +493,210 @@ describe("testnet wallet-spend authority service", () => {
     await expect(client.reconcile(testnetReservation(), absentClaim)).resolves.toBe("released");
     await expect(client.reserve(testnetReservation("job-two"), WINDOW))
       .resolves.toMatchObject({ status: "reserved" });
+  });
+
+  describe("Demos testnet lane", () => {
+    type DemSettings = Running["settings"] & Readonly<{ demDirectory: string }>;
+
+    /** Sends the service's requests for the configured Demos node to `target`. */
+    const routeDemosNodeTo = (target: string): void => {
+      vi.stubGlobal("fetch", fetchRoutingDemosNodeTo(target));
+    };
+
+    /** A node stub serving the approved identity, with the configured Demos node routed to it. */
+    async function approvedNode(options: Parameters<typeof demosNodeStub>[1] = {}): Promise<DemosNodeStub> {
+      const node = await demosNodeStub(recordedDemosState(TP1_APPROVED_IDENTITY_RECORD.chainIdentity), options);
+      routeDemosNodeTo(node.url);
+      return node;
+    }
+
+    /** Service settings with the DEM lane; without `x402`, the x402 lane's settings are removed. */
+    async function withDemLane(x402?: ChainStub): Promise<DemSettings> {
+      const settings = await serviceSettings({ rpcUrl: x402?.url ?? "https://base-sepolia.unused.example/" });
+      cleanups.push(() => settings.remove());
+      const lane = await demosLaneSettings({ root: settings.root, rpcUrl: DEMOS_NODE_URL });
+      const environment = x402 === undefined ? withoutX402Lane(settings.environment) : settings.environment;
+      return { ...settings, environment: { ...environment, ...lane.environment }, demDirectory: lane.dataDirectory };
+    }
+
+    async function startDem(settings: DemSettings) {
+      const authority = await startDacsWalletSpendTestnetAuthorityV1({ environment: settings.environment });
+      cleanups.push(() => authority.stop());
+      const sentBodies: string[] = [];
+      const demClient = (policy?: Partial<WalletSpendPolicyV1>) => demosAuthorityClient({
+        authority, tokenFile: settings.tokenFile, ...(policy === undefined ? {} : { policy }),
+        fetch: recordingFetchInto(sentBodies),
+      });
+      return { authority, sentBodies, demClient };
+    }
+
+    async function demPermit(client: Readonly<WalletSpendAuthorityV1>, jobId?: string) {
+      const claim = await client.reserve(demosHold(jobId));
+      if (claim.status !== "reserved") throw new Error(`expected reserved, got ${claim.status}`);
+      return claim.permit;
+    }
+
+    const absentDem: WalletSpendRecoveryObservationV1 = { disposition: "terminal-absent", evidenceHash: CONFIRMED_HASH };
+
+    async function freePort(): Promise<number> {
+      const server = createServer();
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const { port } = server.address() as AddressInfo;
+      await new Promise((resolve) => server.close(resolve));
+      return port;
+    }
+
+    it("serves inspect for the DEM lane and for both lanes on one address", async () => {
+      await approvedNode();
+      const demOnly = await startDem(await withDemLane());
+      const status = await (await demOnly.demClient()).inspect();
+      expect(status).toMatchObject({ policyId: "testnet-dem-buyer", chainId: "demos", activeEffects: 0 });
+      expect(status.assets[0]).toMatchObject({ asset: "DEM", maximumPerOrderDebit: "20000000000", balance: "12000000000" });
+      expect(demOnly.authority.lineageKey).toBeUndefined();
+      expect(demOnly.authority.policyHash).toBeUndefined();
+      expect(demOnly.authority.payDem).toEqual({
+        lineageKey: dacsWalletSpendLineageKeyV1(DEMOS_WALLET, "demos"),
+        policyHash: dacsWalletSpendPolicyHashV1(demosPolicy()),
+      });
+      await expect((await demOnly.demClient({ wallet: `0x${"ab".repeat(32)}` })).inspect())
+        .rejects.toMatchObject({ reasonCode: "wallet-spend-authority-lineage-unavailable" });
+
+      const chain = await chainStub(defaultChain(FIRST_FINAL_TIME));
+      const settings = await withDemLane(chain);
+      const both = await attach(chain, settings);
+      const x402Status = await (await both.client()).inspect();
+      expect(x402Status).toMatchObject({ chainId: "eip155:84532", activeEffects: 0 });
+      expect(x402Status.assets[0]).toMatchObject({ balance: "10000000" });
+      const demStatus = await (await demosAuthorityClient({ authority: both.authority, tokenFile: settings.tokenFile }))
+        .inspect();
+      expect(demStatus).toMatchObject({ chainId: "demos", activeEffects: 0 });
+      expect(demStatus.assets[0]).toMatchObject({ balance: "12000000000" });
+      expect(both.authority.policyHash).toBe(dacsWalletSpendPolicyHashV1(testnetPolicy()));
+      expect(both.authority.payDem?.lineageKey).not.toBe(both.authority.lineageKey);
+
+      await both.authority.stop();
+      await expect(portRefused(Number(new URL(both.authority.url).port))).resolves.toBe(true);
+    });
+
+    it("counts a DEM purchase once the chain shows it executed", async () => {
+      await approvedNode();
+      const settings = await withDemLane();
+      const client = await (await startDem(settings)).demClient();
+      const permit = await demPermit(client);
+      expect(permit.authorizationValidBefore).toBeUndefined();
+      expect(headState(settings.demDirectory).reservations[0]).not.toHaveProperty("authorizationValidBefore");
+      await permit.beginEffect();
+
+      const feePlusOne = (BigInt(CONFIRMED_FEE) + 1n).toString();
+      await expect(permit.settle(demosSettledClaim(CONFIRMED_HASH, feePlusOne))).rejects.toMatchObject(rejected);
+      await expect(permit.settle(demosSettledClaim())).resolves.toBeUndefined();
+      const paid = (BigInt(CONFIRMED_AMOUNT) + BigInt(CONFIRMED_FEE)).toString();
+      const status = await client.inspect();
+      expect(status.activeEffects).toBe(0);
+      expect(status.assets[0]?.cumulativeSettledDebit).toBe(paid);
+      await expect(client.reconcile(demosHold(), demosSettledClaim())).resolves.toBe("existing");
+      expect((await client.inspect()).assets[0]?.cumulativeSettledDebit).toBe(paid);
+      await expect(client.reserve(demosHold("job-two"))).resolves.toMatchObject({ status: "reserved" });
+    });
+
+    it("keeps the DEM lane held until the chain shows the payment", async () => {
+      const node = await approvedNode();
+      const settings = await withDemLane();
+      const client = await (await startDem(settings)).demClient();
+      const permit = await demPermit(client);
+      await permit.beginEffect();
+      const record = node.state.records.get(CONFIRMED_HASH);
+      node.state.records.delete(CONFIRMED_HASH);
+
+      await expect(permit.settle(demosSettledClaim())).rejects.toMatchObject(rejected);
+      pastLease();
+      await expect(client.reconcile(demosHold(), absentDem)).rejects.toMatchObject(rejected);
+      expect((await client.inspect()).activeEffects).toBe(1);
+      expect(headState(settings.demDirectory).reservations[0]?.stage).toBe("effect-pending");
+      await expect(client.reserve(demosHold("job-two")))
+        .resolves.toEqual({ status: "denied", reason: "concurrency-limit" });
+
+      node.state.records.set(CONFIRMED_HASH, record);
+      await expect(client.reconcile(demosHold(), demosSettledClaim())).resolves.toBe("settled");
+      expect((await client.inspect()).activeEffects).toBe(0);
+      await expect(client.reserve(demosHold("job-two"))).resolves.toMatchObject({ status: "reserved" });
+    });
+
+    it("refuses to start the DEM lane against any network but the approved testnet", async () => {
+      const chain = await chainStub(defaultChain(FIRST_FINAL_TIME));
+      const otherNetwork = await demosNodeStub(recordedDemosState("ab".repeat(32)));
+      const port = await freePort();
+      for (const [target, reasonCode] of [
+        [otherNetwork.url, "wallet-spend-testnet-authority-demos-network-mismatch"],
+        [await closedPortUrl(), "wallet-spend-testnet-authority-demos-node-unavailable"],
+      ] as const) {
+        routeDemosNodeTo(target);
+        const settings = await withDemLane(chain);
+        const environment = { ...settings.environment, DACS_WALLET_AUTHORITY_URL: `http://127.0.0.1:${port}` };
+        await expect(startDacsWalletSpendTestnetAuthorityV1({ environment })).rejects.toMatchObject({ reasonCode });
+        await expect(portRefused(port)).resolves.toBe(true);
+        expect(existsSync(settings.dataDirectory)).toBe(false);
+        expect(existsSync(settings.demDirectory)).toBe(false);
+      }
+    });
+
+    it("refuses to start when the DEM lane's witness is damaged and leaves the port closed", async () => {
+      const chain = await chainStub(defaultChain(FIRST_FINAL_TIME));
+      await approvedNode();
+      const port = await freePort();
+      const settings = await withDemLane(chain);
+      const environment = { ...settings.environment, DACS_WALLET_AUTHORITY_URL: `http://127.0.0.1:${port}` };
+      await (await startDacsWalletSpendTestnetAuthorityV1({ environment })).stop();
+      const witness = join(settings.demDirectory, "witness");
+      const head = join(witness, readdirSync(witness).sort().at(-1) ?? "");
+      const text = readFileSync(head, "utf8");
+      const signed = text.indexOf("\"stateHash\":\"") + "\"stateHash\":\"".length;
+      writeFileSync(head, `${text.slice(0, signed)}${text[signed] === "0" ? "1" : "0"}${text.slice(signed + 1)}`);
+
+      await expect(startDacsWalletSpendTestnetAuthorityV1({ environment }))
+        .rejects.toMatchObject({ reasonCode: "wallet-spend-file-witness-record-damaged" });
+      await expect(portRefused(port)).resolves.toBe(true);
+    });
+
+    it("a DEM hold recorded before a restart is held and never released by time", async () => {
+      let silent = false;
+      await approvedNode({ answer: () => (silent ? { status: 503, body: "" } : undefined) });
+      const settings = await withDemLane();
+      const first = await startDem(settings);
+      await demPermit(await first.demClient());
+      const reserveBody = first.sentBodies.find((body) => body.includes("\"operation\":\"reserve\""));
+      if (reserveBody === undefined) throw new Error("expected a reserve request");
+      await first.authority.stop();
+
+      const second = await startDem(settings);
+      const repeated = await fetch(new URL("v2/wallet-spend/operations", second.authority.url), {
+        method: "POST",
+        headers: { authorization: `Bearer ${TESTNET_TOKEN}`, "content-type": "application/json" },
+        body: reserveBody,
+      });
+      expect(repeated.status).toBe(200);
+      expect((await repeated.json() as { result: unknown }).result).toMatchObject({ status: "held", stage: "reserved" });
+
+      silent = true;
+      vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+      vi.setSystemTime(Date.now() + 10 * 86_400_000);
+      await expect((await second.demClient()).reconcile(demosHold(), absentDem)).rejects.toMatchObject(rejected);
+      expect(headState(settings.demDirectory).reservations).toEqual([
+        expect.objectContaining({ reservationId: demosHold().reservationId, stage: "reserved" }),
+      ]);
+    });
+
+    it("the x402 lane is unchanged beside the DEM lane", async () => {
+      const chain = await chainStub(defaultChain(FIRST_FINAL_TIME));
+      await approvedNode();
+      const settings = await withDemLane(chain);
+      const service = await attach(chain, settings);
+      const demClient = await demosAuthorityClient({ authority: service.authority, tokenFile: settings.tokenFile });
+      const before = { revision: (await demClient.inspect()).revision, witness: witnessFiles(settings.demDirectory) };
+
+      await bindsValidBeforeAndReleasesAfterChainTime(service);
+      expect((await demClient.inspect()).revision).toBe(before.revision);
+      expect(witnessFiles(settings.demDirectory)).toEqual(before.witness);
+    });
   });
 });

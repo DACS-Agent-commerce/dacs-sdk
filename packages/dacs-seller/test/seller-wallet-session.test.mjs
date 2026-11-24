@@ -23,9 +23,10 @@ const { acquireSellerStateLock } = await import('../src/devnet-demo/seller-state
 const { fixtureListing } = await import('./fixtures/listings.mjs');
 const { contextHostFixture } = await import('./helpers/host-context-client.mjs');
 const { anchorOptions, importSpiedWalletSession } = await import('./helpers/artifact-anchor-spy.mjs');
+const { isSellerCreatePass } = await import('../src/devnet-demo/create-pass.mjs');
 const CRASH_CHILD = new URL('./helpers/seller-wallet-session-crash-child.mjs', import.meta.url);
 
-const PORT_MEMBERS = ['authority', 'connectionAuthority', 'artifactAnchor', 'finalize', 'close'];
+const PORT_MEMBERS = ['authority', 'connectionAuthority', 'artifactAnchor', 'runCreate', 'finalize', 'close'];
 const SESSION_MEMBERS = ['effectPass', 'runInEffectPass', 'walletFactory', 'transport', 'acquireConnectionFence', 'address', 'observer', 'artifactJournal',
   'paymentEvidence', 'readBalance', 'close'];
 const ANCHOR_METHODS = ['publish', 'read', 'readRetained', 'retainedSignedCreate', 'hasIntent', 'verifyReceipt'];
@@ -118,6 +119,38 @@ test('before finalization the port can neither sign, send nor anchor: every arti
   assert.throws(() => port.authority.claim(), { code: 'wallet_session_closed' });
   await assert.rejects(port.finalize(finalizeInput(world, { effectBoundary: boundaryOver(world.stages.binding, world.directory) })), { code: 'wallet_session_closed' });
   assert.deepEqual({ reads: world.node.calls.length - reads, keyLoads: world.keyLoads, journals: world.issuanceJournals() }, { reads: 0, keyLoads: 0, journals: [] });
+});
+
+test('the port\'s runCreate refuses wallet_session_not_finalized before finalize and wallet_session_closed after close, before any read, and after finalize runs in the same pass builder the anchor uses', async (t) => {
+  const { createSellerWalletSession: createSpiedPort } = await importSpiedWalletSession();
+  const world = await walletSessionWorld(t, { createPort: createSpiedPort });
+  const { port } = world;
+  assert.equal(isSellerCreatePass(port.runCreate), true, 'the port\'s runCreate is one the kit issued');
+  const op = { operationId: 'TEST-port-pass', lane: 'TEST-port-pass', operationClass: 'job-create', currentAuthorization: () => true };
+  let worked = 0;
+  const reads = world.node.calls.length;
+  await assert.rejects(port.runCreate(op, () => { worked += 1; }), { code: 'wallet_session_not_finalized' });
+  assert.deepEqual({ worked, reads: world.node.calls.length - reads, keyLoads: world.keyLoads }, { worked: 0, reads: 0, keyLoads: 0 }, 'refused before any read');
+
+  const composed = anchorOptions.length;
+  await world.finalize();
+  const anchorRunCreate = anchorOptions[composed].runCreate;
+  assert.equal(isSellerCreatePass(anchorRunCreate), true, 'the anchor got an issued runCreate');
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const order = [];
+  const first = port.runCreate(op, async (members) => { order.push(['port', Object.keys(members).sort()]); await held; return 'TEST-port-answer'; });
+  for (let turn = 0; turn < 50 && order.length === 0; turn++) await new Promise((resolve) => setImmediate(resolve));
+  const second = anchorRunCreate({ ...op, operationId: 'TEST-anchor-pass', lane: 'TEST-anchor-pass' }, async () => { order.push(['anchor']); return 'TEST-anchor-answer'; });
+  await flush();
+  assert.deepEqual(order, [['port', ['guardedSigner', 'signPass']]], 'the anchor\'s pass waits on the fence the port\'s pass holds: one boundary and one pass builder');
+  release();
+  assert.deepEqual([await first, await second], ['TEST-port-answer', 'TEST-anchor-answer']);
+  assert.deepEqual(order.at(-1), ['anchor']);
+
+  await world.stages.close();
+  await assert.rejects(port.runCreate(op, () => { worked += 1; }), { code: 'wallet_session_closed' });
+  assert.equal(worked, 0, 'a closed port runs no work');
 });
 
 test('finalize refuses an effect boundary that is not the kit\'s or was built over another binding with wallet_session_boundary_mismatch, a binding bindTp1Profile did not make with tp1_binding_required and another connection\'s binding with tp1_local_binding_changed, each before the key is loaded or a journal opens; a second finalize refuses wallet_session_finalize_once', async (t) => {

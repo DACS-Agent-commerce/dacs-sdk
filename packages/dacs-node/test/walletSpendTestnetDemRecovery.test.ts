@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   captureWalletSpendPolicyV1,
-  settlementKey,
   type WalletSpendRecoveryObservationV1,
   type WalletSpendReservationV1,
   type WalletSpendStateV1,
@@ -20,16 +19,17 @@ import {
   openDacsWalletSpendDemEvidenceStoreV1,
 } from "../src/walletSpendTestnetDemRecovery.js";
 import {
-  CONFIRMED_AMOUNT,
   CONFIRMED_FEE,
   CONFIRMED_HASH,
   DEMOS_PAYEE,
-  DEMOS_WALLET,
+  DEMOS_RAIL_ID as RAIL_ID,
   FAILED_HASH,
   closeDemosNodeStubs,
   closedPortUrl,
+  demosHold as demHold,
   demosNodeStub,
   demosPolicy,
+  demosSettledClaim as settled,
   recordedDemosState,
   type DemosNodeAnswer,
   type DemosNodeCall,
@@ -50,37 +50,7 @@ afterEach(async () => {
 });
 
 const POLICY = captureWalletSpendPolicyV1(demosPolicy());
-const RAIL_ID = "pay-dem-native";
-/** The fee ceiling the buyer reserves: the confirmed record's 1 DEM fee fits under it. */
-const FEE_CEILING = "2000000000";
 const CREATED_AT = 1_700_000_000_000;
-
-/** A hold shaped as the SDK's pay-dem buyer builds it for one job phase. */
-function demHold(jobId = "job-dem", options: Readonly<{ fee?: boolean; payee?: string; amount?: string }> = {}):
-  WalletSpendReservationV1 {
-  const amount = options.amount ?? CONFIRMED_AMOUNT;
-  return {
-    reservationVersion: "1",
-    reservationId: `pay-dem:${settlementKey(RAIL_ID, jobId, 0)}`,
-    jobId,
-    phaseIndex: 0,
-    phase: "pay-dem",
-    agreementHash: "a".repeat(64),
-    settlementBindingHash: "b".repeat(64),
-    railId: RAIL_ID,
-    railDefinitionHash: "c".repeat(64),
-    wallet: DEMOS_WALLET,
-    chainId: "demos",
-    payee: options.payee ?? DEMOS_PAYEE,
-    finality: { model: "bft-final" },
-    debits: [
-      { asset: "DEM", purpose: "service", expectedAmount: amount, maximumAmount: amount },
-      ...(options.fee === false ? [] : [{
-        asset: "DEM", purpose: "network-fee" as const, expectedAmount: "0", maximumAmount: FEE_CEILING,
-      }]),
-    ],
-  };
-}
 
 function row(reservation: WalletSpendReservationV1, settledWith?: string): WalletSpendStoredReservationV1 {
   return {
@@ -99,18 +69,6 @@ function row(reservation: WalletSpendReservationV1, settledWith?: string): Walle
 
 function stateOf(...rows: WalletSpendStoredReservationV1[]): WalletSpendStateV1 {
   return { stateVersion: 1, policyHash: "f".repeat(64), generation: 2, reservations: rows, totals: [], rollingEvents: [] };
-}
-
-/** A settled claim; `fee` null leaves out the network-fee debit. */
-function settled(hash = CONFIRMED_HASH, fee: string | null = CONFIRMED_FEE): WalletSpendRecoveryObservationV1 {
-  return {
-    disposition: "settled",
-    evidenceHash: hash,
-    debits: [
-      { asset: "DEM", purpose: "service", amount: CONFIRMED_AMOUNT },
-      ...(fee === null ? [] : [{ asset: "DEM", purpose: "network-fee" as const, amount: fee }]),
-    ],
-  };
 }
 
 interface RuleWorld {

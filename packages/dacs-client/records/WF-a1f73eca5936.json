@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client entry point with the passive native payment lane read and the Directory scan limits",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "ccf4451e51cd9c1060775ac896c1b4811f5e3a3e",
+      "after": "ccf4451e51cd9c1060775ac896c1b4811f5e3a3e"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-a1f73eca5936.json"
+  ],
+  "note": "Both sides of the merge of the base recorded this file, so their newest records disagree; this record chooses the merged copy. The client entry point keeps this branch's passive native payment lane reader in both passive method lists and the purchase descriptions, and takes the base's description of the Directory row members and the bounded scan with its unconfirmed and incomplete codes. Git merged it without a conflict. No file other than this record changes."
+}

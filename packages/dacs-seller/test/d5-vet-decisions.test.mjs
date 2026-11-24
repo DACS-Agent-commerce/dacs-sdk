@@ -28,6 +28,7 @@ const {createDevnetDemoAgreementContextProvider}=await privateModule(sourceUrl,[
 const {createInMemoryPartyVetStore}=await import('../src/devnet-demo/party-vet-store.mjs');
 const stores=new WeakMap();
 const {fixtureListing}=await import('./fixtures/listings.mjs');
+const {testRunCreate}=await import('./helpers/agent-signing.mjs');
 const sdkFixtureListing=fixtureListing(fixtureSeller,{now:1800000000000});sdkFixtureListing.seller.identity={...bundleTemplate()};
 function bundleTemplate(){return {presentedBy:seller,bundleVersion:'1',presentedAt:1800000000000,sessionNonce:'b'.repeat(64),claims:[{ref:seller}]};}
 const {listingPin:pinFor}=await import('../src/dacs/purchase-protocol.mjs');
@@ -39,7 +40,7 @@ function provider(buyerRequirement={requirementVersion:'1',required:[],preferred
   madeRequirements.push(structuredClone(input.requirement));
   return {recordVersion:'1',jobId,evaluatedParty:seller,overallDecision:nonPassParty===seller?decision:'pass',signature:{signer:buyer}};
  }};
- const provider=createDevnetDemoAgreementContextProvider({vetMode,anchor:{vetMode,writer:seller,hasIntent:async()=>false,verifyReceipt:async()=> 'valid',readRetained:async({logicalAddress})=>records.has(logicalAddress)?({status:'present',artifact:records.get(logicalAddress),receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}}):({status:'absent'}),publish:async({logicalAddress,artifact})=>{records.set(logicalAddress,artifact);return {status:'present',artifact,receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}};}},wallet:{claim:seller,signBytes:fixtureSeller.signBytes},listing:{...sdkFixtureListing, buyerRequirement},store,counterparty,now:()=>scope.generatedAt});
+ const provider=createDevnetDemoAgreementContextProvider({vetMode,runCreate:testRunCreate().runCreate,anchor:{vetMode,writer:seller,hasIntent:async()=>false,verifyReceipt:async()=> 'valid',readRetained:async({logicalAddress})=>records.has(logicalAddress)?({status:'present',artifact:records.get(logicalAddress),receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}}):({status:'absent'}),publish:async({logicalAddress,artifact})=>{records.set(logicalAddress,artifact);return {status:'present',artifact,receipt:{nativeAddress:'native',state:'finalized',observationDisposition:'established'}};}},wallet:{claim:seller,signBytes:fixtureSeller.signBytes},listing:{...sdkFixtureListing, buyerRequirement},store,counterparty,now:()=>scope.generatedAt});
  return {...provider,resolveBuyer:(input,options={writable:()=>true})=>provider.resolveBuyer(input,options)};
 }
 async function retainProofs(){
