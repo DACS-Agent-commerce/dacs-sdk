@@ -349,4 +349,11 @@ test('a missing source or locked wallet refuses preview without a handle key cal
   w.session.wallet.lock();
   await assert.rejects(w.session.preparePaidWrite(request, FEE), hasCode('locked'));
   assert.deepEqual({ signs: counts.inner, effects: w.effects().length, reads: stateReads(w), records: await records(w) }, { signs: 0, effects: 0, reads: 0, records: before });
+  // A wallet locked while the preview reads the node is refused once the reads end, with no handle and nothing written.
+  const v = await keystoreWorld(t, keystoreDir(t).file());
+  await v.build();
+  const lockedRequest = v.request(), lockedBefore = await records(v);
+  v.node.intercept = row => { if (row.body?.params?.[0]?.message === 'getNetworkInfo') v.session.wallet.lock(); return null; };
+  await assert.rejects(v.session.preparePaidWrite(lockedRequest, FEE), hasCode('locked'));
+  assert.deepEqual({ effects: v.effects().length, records: await records(v) }, { effects: 0, records: lockedBefore });
 });
