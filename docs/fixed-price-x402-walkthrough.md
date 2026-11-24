@@ -28,13 +28,14 @@ too) prints `unknown command: <name>`. On any failure the script prints one mess
   holds test USDC (step 3). So step 9 exits 5, or 1 if another required check fails, with no plan
   line, after setup, and `record --listing-ref` then reports the `buy` step as `blocked`
   and the `setup` step as `unrun`.
-- **The funded purchase is unrun.** The repository has no runnable wallet-spend authority service, and
-  the buyer reads the seller only over public HTTPS from a public address.
+- **The funded purchase is unrun.** The generated project does not start a wallet-spend authority
+  service, and the buyer reads the seller only over public HTTPS from a public address.
   - The generated buyer always asks a separately operated wallet-spend authority before it pays.
-    The server side, `createDacsWalletSpendAuthorityServiceV2`, is called only from tests in this
-    repository. `init` writes an unpayable placeholder (the loopback URL of a port with no service
-    behind it, a random token, and a random witness key whose private half is never created), so the
-    buy check `x402.service-limit` cannot pass.
+    `@kynesyslabs/dacs-node` ships a testnet one, the `dacs-wallet-spend-testnet-authority` command,
+    but the generated project neither configures nor starts it. `init` writes an unpayable
+    placeholder (the loopback URL of a port with no service behind it, a random token, and a random
+    witness key whose private half is never created), so the buy check `x402.service-limit` cannot
+    pass.
   - The buyer refuses `localhost` and any non-public address when it reads the seller's Listing and
     result. The seller URL must be public HTTPS for a buy to get that far.
 - **A role service starts not ready.** A role service started on its own refuses messages and does no

@@ -79,6 +79,14 @@ export * from "./x402RuntimePayment.js";
 export * from "./walletSpendRuntime.js";
 export * from "./walletSpendPostgres.js";
 export * from "./walletSpendRemote.js";
+export {
+  startDacsWalletSpendTestnetAuthorityV1,
+  type DacsWalletSpendTestnetAuthorityV1,
+} from "./walletSpendTestnetService.js";
+export {
+  DACS_WALLET_SPEND_TESTNET_AUTHORITY_SETTING_NAMES,
+  DacsWalletSpendTestnetAuthorityError,
+} from "./walletSpendTestnetSettings.js";
 export * from "./x402SellerEvm.js";
 export * from "./x402Http.js";
 export * from "./evmRuntime.js";
