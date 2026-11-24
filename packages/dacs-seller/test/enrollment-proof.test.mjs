@@ -148,13 +148,17 @@ test('independently signed wrong profile module tuple empty evidence wrong entry
     'missing extra': [(env) => { delete env.extra; }, 'enrollment_invalid'],
     'extra envelope member': [(env) => { env.proof = 'x'; }, 'enrollment_invalid'],
     'response not an object': [(env) => { env.response = JSON.stringify(env.response); }, 'enrollment_invalid'],
-    'entry text with no canonical form': [(env) => { env.response.entries[0].evidence = 'row \ud800'; }, 'enrollment_invalid'],
   };
   for (const [label, [change, code]] of Object.entries(envelopeCases)) {
     const vector = storedVector('current-entry');
     change(vector.envelope);
     assertRefused(() => verify(vector), code, label);
   }
+
+  const noCanonicalForm = storedVector('current-entry');
+  noCanonicalForm.envelope.response.entries[0].evidence = 'row \ud800';
+  assert.throws(() => verify(noCanonicalForm), (error) => error instanceof OperationError && error.code === 'enrollment_invalid' &&
+    error.cause?.code === 'canonical.unicode_invalid', 'entry text with no canonical form keeps the canonical-form error as its cause');
 
   const vector = storedVector('current-entry');
   const { signature } = vector.envelope.response;
