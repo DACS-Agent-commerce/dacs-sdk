@@ -142,8 +142,9 @@ the version and integrity its source run observed, and matching uses them:
   integrity. The pqcrypto image finding therefore matches only the
   exact recorded manifest version `1.0.01`; another manifest version is
   unlisted even at the same package name and location.
-- SBOM findings match one `npm sbom` line with the installed and required
-  versions elided after `invalid:`/`extraneous:` and `required by`. Only these
+- SBOM findings match one `npm sbom` line with the installed version elided
+  after `invalid:`/`extraneous:` and the dependent package's version elided
+  after `required by`. Any required range in the line is retained. Only these
   rules ignore installed versions. An npm alias such as
   `@ton/core@npm:other@1.0.0` installs another package under the recorded
   name, so its version is not elided and the line is unlisted.
