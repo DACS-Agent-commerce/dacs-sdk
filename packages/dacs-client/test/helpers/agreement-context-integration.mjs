@@ -101,7 +101,7 @@ export async function startDemoContextSeller(h, { listingId, clock = () => Date.
   const api = await sellerReference();
   const wallet = createEphemeralWallet(), vetWriter = createEphemeralWallet(), steward = createEphemeralWallet();
   const nowMs = clock();
-  const { listing } = seedSellerListing(h, wallet, { listingId, now: nowMs, summary: { observedAt: new Date(nowMs).toISOString() } });
+  const { listing } = seedSellerListing(h, wallet, { listingId, now: nowMs, summary: { observedAt: nowMs } });
   assert.deepEqual(listing.buyerRequirement?.required ?? [], [], 'only the empty requirement class is exercised');
   const pin = { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(listing) };
   const stateDir = await mkdtemp(join(tmpdir(), 'dacs-plugin-context-demo-'));
