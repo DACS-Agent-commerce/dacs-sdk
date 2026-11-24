@@ -188,7 +188,8 @@ test('missing fee ceilings refuse native payment composition and fixture only co
 
   // A fixture-only composition (no native payment) needs no ceilings and cannot open native Pay for a receipt-bearing row.
   await world.commit();
-  const { nativeAgreementPayment: _payment, nativePaymentEvidence: _evidence, sellerTransport: _transport, ...fixtureOnly } = world.p.config;
+  const nativeOnly = new Set(['nativeAgreementPayment', 'nativePaymentEvidence', 'sellerTransport']);
+  const fixtureOnly = Object.fromEntries(Object.entries(world.p.config).filter(([name]) => !nativeOnly.has(name)));
   const fixture = createProtocolPurchases({ ...options, dacsProtocol: fixtureOnly });
   assert.throws(() => fixture.assertSellerReceiptReservation(world.get()), refused());
   await assert.rejects(fixture.readNativePaymentLane(world.get(), 'TEST-wallet-key'), refused('dacs_protocol_unavailable'));
