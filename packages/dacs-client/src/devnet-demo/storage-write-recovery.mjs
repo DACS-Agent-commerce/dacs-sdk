@@ -33,6 +33,8 @@ export function storageWriteIdentityMatches(block) {
     || exactFields(block,['id','number','hash','content','status','proposer','next_proposer','validation_data','attrs']);
 }
 
+const blockNumber=value=>Number.isSafeInteger(value) && value>=0;
+
 export function classifyStorageWriteSubmission(answer, hash) {
   const response=answer?.response;
   const hashes=['hash','txHash'].filter(key=>Object.hasOwn(response ?? {},key));
@@ -45,14 +47,32 @@ export function classifyStorageWriteSubmission(answer, hash) {
       extra!==null && typeof extra==='object' && !Array.isArray(extra)
       && Object.keys(extra).length===1 && Object.hasOwn(extra,'confirmationBlock')
       && Number.isSafeInteger(extra.confirmationBlock) && extra.confirmationBlock>=0);
+  // Node e6af8f40 admits the write to its own mempool and names the hash it took.
+  const mempoolAccepted=response===null && rpcEnvelope(answer,200,extra=>
+    exactFields(extra,['confirmationBlock','lastBlockNumber','published','hash','disposition'])
+    && extra.disposition==='mempool' && typeof hash==='string' && extra.hash===hash
+    && blockNumber(extra.confirmationBlock) && blockNumber(extra.lastBlockNumber) && typeof extra.published==='boolean');
+  // Node e6af8f40 refuses on a node that is not a staked validator before its
+  // mempool and publication: nothing was submitted, and this node takes no writes.
+  if(rpcEnvelope(answer,400,extra=>exactFields(extra,['error']) && extra.error==='NOT_A_VALIDATOR')
+    && exactFields(response,['message']) && typeof response.message==='string') return 'refused-not-validator';
   return response?.success!==false
-    && !Object.hasOwn(response ?? {},'error') && (hashBound || relayAccepted) ? 'accepted' : 'unknown';
+    && !Object.hasOwn(response ?? {},'error') && (hashBound || relayAccepted || mempoolAccepted) ? 'accepted' : 'unknown';
 }
 
-export function storageWriteAbsent(status, transaction) {
+// `referenceBlock` is the reference block R of the write's kept confirmation. The
+// node executes such a write only in block R+1 or R+2 (later it can only record
+// it as failed), so node e6af8f40's not-found answer proves absence only once it
+// has searched through R+2. Node 61b8e75's not-found answer names no block. A
+// failed lookup never proves absence.
+export function storageWriteAbsent(status, transaction, referenceBlock) {
+  const notFound=(rpcEnvelope(transaction,400,null) && transaction.response==='error')
+    || (transaction?.response===null && rpcEnvelope(transaction,404,extra=>
+      exactFields(extra,['reason','checkedThroughBlock']) && extra.reason==='not_found'
+      && blockNumber(extra.checkedThroughBlock) && blockNumber(referenceBlock)
+      && referenceBlock<=Number.MAX_SAFE_INTEGER-2 && extra.checkedThroughBlock>=referenceBlock+2));
   return rpcEnvelope(status,200,'') && status.response?.state==='unknown'
-    && Object.keys(status.response).length===1
-    && rpcEnvelope(transaction,400,null) && transaction.response==='error';
+    && Object.keys(status.response).length===1 && notFound;
 }
 
 export function storageWriteAccountNonce(value) {
