@@ -6,11 +6,12 @@
 // app/api/dacs/listings/route.ts and src/catalog/types.ts. Bounded-origin
 // transport is local policy, with no historical demo authority claim.
 //
-// A row is read as the Directory's row contract defines it: a `status` of
-// `active` or `revoked`, a `revocation` object exactly when the row is revoked,
-// `transactionReadiness` of `{disposition: "unassessed", reason}` and an
-// integer `catalogObservedAt`. A row that does not match is refused, never
-// repaired, and no legacy field is read in its place.
+// A row is read as the Directory's row contract defines it: the required
+// top-level row members are present, `status` is `active` or `revoked`, a
+// `revocation` object is present exactly when the row is revoked,
+// `transactionReadiness` is `{disposition: "unassessed", reason}` and
+// `catalogObservedAt` is an integer. A row that does not match is refused,
+// never repaired, and no legacy field is read in its place.
 import { encodeAddressSegment, isRevocationBinding } from '@kynesyslabs/dacs';
 import { fetchBoundedJson, OutboundError } from '../util/http.mjs';
 import { SIMULATION_HEADER, isRecord } from './chain.mjs';
@@ -23,7 +24,8 @@ const CURSOR = /^\d{1,9}$/;
 
 const MIN_PAGE_LIMIT = 1;
 const MAX_PAGE_LIMIT = 50;
-// A lookup reads at most this many pages; a cursor still present after the last one is an incomplete scan.
+// A lookup reads at most this many pages of MAX_PAGE_LIMIT rows. With a cursor
+// still present after the last one, the scan did not reach the end of the list.
 const MAX_SCAN_PAGES = 5;
 const MAX_MEMBER_NAME = 64;
 const REVOCATION_MEMBERS = ['sellerPrimaryClaim', 'listingId', 'listingVersion', 'listingContentHash', 'logicalAddress', 'markerAnchor', 'markerContentHash'];
@@ -34,6 +36,7 @@ export const DIRECTORY_CONTRACT_CODES = Object.freeze([
   'directory_row_ambiguous',
   'directory_row_malformed',
   'directory_scan_incomplete',
+  'directory_scan_unconfirmed',
   'directory_cursor_invalid',
   'directory_page_oversized',
 ]);
@@ -98,6 +101,8 @@ function rowProblem(raw) {
   if (!matches(HEX64, raw.contentHash)) return 'contentHash';
   if (raw.anchor?.kind !== 'storage-program' || !matches(LOCATOR, raw.anchor.locator)) return 'anchor';
   if (!matches(CLAIM, raw.seller?.primaryClaim)) return 'seller.primaryClaim';
+  if (!isRecord(raw.offering)) return 'offering';
+  if (!isRecord(raw.pricing)) return 'pricing';
   if (raw.status !== 'active' && raw.status !== 'revoked') return 'status';
   // Presence decides for an active row: `revocation: null` is still a violation.
   if (raw.status === 'active' && Object.hasOwn(raw, 'revocation')) return 'revocation';
@@ -105,10 +110,8 @@ function rowProblem(raw) {
     const problem = revocationProblem(raw.revocation, raw);
     if (problem !== null) return problem;
   }
-  // Absent members confer nothing, and the verifier blocks a missing or stale
-  // observation; a present member must match the contract.
-  if (raw.transactionReadiness !== undefined && !readinessIsUnassessed(raw.transactionReadiness)) return 'transactionReadiness';
-  if (raw.catalogObservedAt !== undefined && normalizeCatalogObservedAt(raw.catalogObservedAt) === undefined) return 'catalogObservedAt';
+  if (!readinessIsUnassessed(raw.transactionReadiness)) return 'transactionReadiness';
+  if (normalizeCatalogObservedAt(raw.catalogObservedAt) === undefined) return 'catalogObservedAt';
   return null;
 }
 
@@ -122,18 +125,18 @@ function projectSummary(raw) {
   if (!isRecord(raw)) return { problem: 'row' };
   const problem = rowProblem(raw);
   if (problem !== null) return { problem };
-  const pricing = raw.pricing ?? {};
+  const { offering, pricing } = raw;
   return { summary: {
     listingId: raw.listingId,
     version: raw.version,
     contentHash: raw.contentHash,
     anchor: { kind: 'storage-program', locator: raw.anchor.locator },
     seller: { primaryClaim: raw.seller.primaryClaim, displayName: str(raw.seller.displayName, 200) },
-    title: str(raw.offering?.title, 200) ?? '',
-    description: str(raw.offering?.description, 2000),
-    category: str(raw.offering?.category, 64),
-    tags: Array.isArray(raw.offering?.tags) ? raw.offering.tags.filter((t) => typeof t === 'string').slice(0, 16).map((t) => t.slice(0, 32)) : [],
-    rails: Array.isArray(raw.offering?.rails) ? raw.offering.rails.filter((t) => typeof t === 'string').slice(0, 8) : [],
+    title: str(offering.title, 200) ?? '',
+    description: str(offering.description, 2000),
+    category: str(offering.category, 64),
+    tags: Array.isArray(offering.tags) ? offering.tags.filter((t) => typeof t === 'string').slice(0, 16).map((t) => t.slice(0, 32)) : [],
+    rails: Array.isArray(offering.rails) ? offering.rails.filter((t) => typeof t === 'string').slice(0, 8) : [],
     pricingHint: {
       kind: str(pricing.kind, 32),
       priceHint: str(pricing.priceHint, 64),
@@ -215,11 +218,15 @@ export function createDirectoryClient({ origin, timeoutMs = 8000, maxBytes = 1_0
 
   /**
    * The summary (anchor locator, catalog status) for one exact listing, or null
-   * when a complete scan finds none. The scan reads at most five pages and
-   * answers only after a valid end. Throws OutboundError with a
-   * DIRECTORY_CONTRACT_CODES code for a second matching row, a malformed
-   * matching row, a repeated or malformed cursor, an oversized page, or a
-   * cursor still present after the last page.
+   * when a complete scan finds none. The scan reads at most five pages of 50
+   * rows. It answers only at a valid end of the list (a page with no cursor)
+   * within those pages, because the Directory has no exact-coordinates query
+   * and a second row for the same listing could sit past the fifth page.
+   * Throws OutboundError with a DIRECTORY_CONTRACT_CODES code for a second
+   * matching row, a malformed matching row, a repeated or malformed cursor, an
+   * oversized page, a cursor still present after the fifth page with a match
+   * found (directory_scan_unconfirmed), or with no match found
+   * (directory_scan_incomplete).
    */
   async function findSummary(coordinates) {
     const cursors = new Set();
@@ -236,6 +243,7 @@ export function createDirectoryClient({ origin, timeoutMs = 8000, maxBytes = 1_0
       cursors.add(page.cursor);
       cursor = page.cursor;
     }
+    if (match) throw contractError('directory_scan_unconfirmed', `a matching directory row was found but the seller's rows after page ${MAX_SCAN_PAGES} were not read, so it cannot be shown to be the only one`);
     throw contractError('directory_scan_incomplete', `directory scan has more pages after ${MAX_SCAN_PAGES}`);
   }
 

@@ -24,6 +24,7 @@ import { createSellerTransportStore } from './helpers/bound-transport-store.mjs'
 import { hostAuthority } from './helpers/kit-wallet-session.mjs';
 import { proxyListener, distinctHeaders } from './helpers/listener-host.mjs';
 import { FIRST_ADMISSION_SCOPE, withFirstAdmission } from './helpers/first-admission.mjs';
+import { RECEIPT_FEE_CEILINGS } from './helpers/protocol-fixture.mjs';
 import { agentSigning } from './helpers/agent-signing.mjs';
 import { signedBuyerClient } from './helpers/signed-buyer-driver.mjs';
 
@@ -84,7 +85,7 @@ async function world(t, { listingChanges = () => {}, sellerRequirement = null } 
     return entry;
   };
   const withLedger = (options) => options.sessionAdmission ? { ...options, challengeLedger: ledgerFor(options.durableDirectory, options.now ?? (() => now)).store.challenges } : options;
-  const capabilities = { readCommitmentReceipt: receiptReader(),
+  const capabilities = { readCommitmentReceipt: receiptReader(), receiptFeeCeilings: RECEIPT_FEE_CEILINGS,
     signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing, now: () => now,
     buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true, buyerForJob: candidate => candidate === jobId ? buyerKey.address : null }),
     agreementAnchor: { source: 'settlement-profile/agreement-readback', readAgreement: refuse('readAgreement') },

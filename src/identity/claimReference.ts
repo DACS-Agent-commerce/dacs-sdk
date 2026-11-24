@@ -262,12 +262,22 @@ export function isCanonicalClaimReference(value: unknown): value is string {
   return parseCanonicalClaimReference(value) !== null;
 }
 
+/**
+ * Parse a canonical ClaimReference, naming `label` in the error.
+ *
+ * Throws `DacsError` with `identity.claim_reference_noncanonical` when the value
+ * is not a canonical ClaimReference.
+ */
 export function requireCanonicalClaimReference(
   value: unknown,
   label = "ClaimReference",
 ): CanonicalClaimReferenceParts {
   const parsed = parseCanonicalClaimReference(value);
-  if (!parsed) throw new DacsError(`${label} must use canonical CORE B.1 CF-2 bytes`);
+  if (!parsed) {
+    throw new DacsError(`${label} must use canonical CORE B.1 CF-2 bytes`, {
+      code: "identity.claim_reference_noncanonical",
+    });
+  }
   return parsed;
 }
 

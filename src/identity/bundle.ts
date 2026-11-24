@@ -27,10 +27,15 @@ export function identityBundleHash(bundle: Readonly<IdentityBundle>): string {
  * The URI carries the lowercase hexadecimal encoding of the complete
  * domain-separated presentation bytes. It is deliberately not the bare bundle
  * hash and not a hash of those bytes.
+ *
+ * Throws `DacsError` with `identity.siwd_bundle_hash_invalid` when the hash is
+ * not a lowercase SHA-256 hex string.
  */
 export function siwdBundleResource(bundleHash: string): string {
   if (!LOWERCASE_SHA256.test(bundleHash)) {
-    throw new DacsError("SIWD bundle resource requires a lowercase SHA-256 bundle hash");
+    throw new DacsError("SIWD bundle resource requires a lowercase SHA-256 bundle hash", {
+      code: "identity.siwd_bundle_hash_invalid",
+    });
   }
   return `dacs:${Buffer.from(
     signedBytes(BUNDLE_PRESENTATION_SEPARATOR, bundleHash),

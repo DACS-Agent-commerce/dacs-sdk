@@ -373,13 +373,69 @@ async function sourceAuthHeaders(demos, address, stamp) {
   return { identity, timestamp, signature: signature.replace(/^0x/, '') };
 }
 
-// The source refuses auth headers stamped more than 2 minutes from its clock;
-// say so plainly rather than as an unavailable binding.
+// Fixed local messages only: never display text supplied by a relay or seller.
+const SOURCE_REFUSALS = Object.freeze({
+  wallet_auth_stale: 'the operator refused this wallet\'s request time: this device\'s clock is more than 2 minutes off. Correct the clock and try again; nothing was signed or sent.',
+  payment_cancelled: 'the operator refused this transfer: it has the terms of a cancelled payment. This attempt was refused and not sent. An earlier attempt may have been sent; the purchase\'s readback shows it.',
+  pin_version_retired: "the source refused this binding request: this pin version is retired; nothing is retried",
+  identity_mismatch: "the source refused this binding request: the observed chain differs from the reviewed pin; nothing is retried",
+  conflicting_identity: "the source refused this binding request: the observed chain identities conflict; nothing is retried",
+  wrong_block: "the source refused this binding request: the identity block height or confirmation is invalid; nothing is retried",
+  genesis_representation_mismatch: "the source refused this binding request: the node does not serve the reviewed genesis representation; nothing is retried",
+  ambiguous_observation: "the source refused this binding request: the identity observation has conflicting data; nothing is retried",
+  malformed_observation: "the source refused this binding request: the identity observation is malformed; nothing is retried",
+  cached_observation: "the source refused this binding request: the identity observation came from a cache; nothing is retried",
+  redirected_observation: "the source refused this binding request: the identity observation used a redirect; nothing is retried",
+  stale_observation: "the source refused this binding request: the identity observation is stale or from the future; nothing is retried",
+  connection_changed: "the source refused this binding request: the connection changed during the binding check; nothing is retried",
+  transport_mismatch: "the source refused this binding request: the transport differs from the reviewed binding; nothing is retried",
+  binding_mismatch: "the source refused this binding request: the saved binding differs from the reviewed binding; nothing is retried",
+  binding_busy: "the source refused this binding request: another binding check is in progress; nothing is retried",
+  invalid_clock: "the source refused this binding request: the source clock is invalid; nothing is retried",
+  invalid_params: "the source refused this binding request: the binding request is invalid; nothing is retried",
+  invalid_transport_owner: "the source refused this binding request: the transport did not supply a valid connection fence; nothing is retried",
+  network_binding_required: "the source refused this binding request: a current signature or broadcast connection fence is required; nothing is retried",
+  wallet_fenced: "the source refused this binding request: another signature lease holds this wallet; nothing is retried",
+  native_confirmation_required: "the source refused this binding request: the exact signed confirmation is required; nothing is retried",
+  signer_lane_busy: "the source refused this binding request: a retained payment-evidence write holds this signer; nothing is retried",
+  wallet_auth_required: "the source refused this binding request: the request lacks this wallet's valid authentication; nothing is retried",
+  wallet_auth_replayed: "the source refused this binding request: the request authentication was already used; nothing is retried",
+  wallet_auth_busy: "the source refused this binding request: the source cannot retain more wallet authentication requests; nothing is retried",
+  profile_not_admitted: "the source refused this binding request: this payment profile is held for review; nothing is retried",
+  runtime_unsupported: "the source refused this binding request: this runtime is unsupported; nothing is retried",
+  transfer_mismatch: "the source refused this binding request: the transfer differs from its signature lease; nothing is retried",
+  journal_error: "the source refused this binding request: the transaction journal did not retain the required record; nothing is retried",
+  readback_unverified: "the source refused this binding request: the retained transaction readback is unverified; nothing is retried",
+  not_issued: "the source refused this binding request: the transaction was not issued by this wallet; nothing is retried",
+  native_only: "the source refused this binding request: this capability permits native transfers only; nothing is retried",
+  outcome_unknown: "the source refused this binding request: an earlier transaction requires readback; nothing is retried",
+  writes_stopped: "the source refused this binding request: the host has stopped writes; nothing is retried",
+  stop_check_failed: "the source refused this binding request: the host's stop check failed; nothing is retried",
+  stop_check_invalid: "the source refused this binding request: the host's stop check gave no valid answer; nothing is retried",
+  stop_check_timeout: "the source refused this binding request: the host's stop check did not answer in time; nothing is retried",
+  fee_ceiling_required: "the source refused this binding request: the host has no valid fee ceiling; nothing is retried",
+  'write-fee-cap': "the source refused this binding request: this write is above the host's fee ceiling; nothing is retried",
+  tp1_binding_required: "the source refused this binding request: the source has no valid profile binding; nothing is retried",
+  tp1_local_binding_invalid: "the source refused this binding request: the source's connection description is invalid; nothing is retried",
+  tp1_local_binding_changed: "the source refused this binding request: the source's connection differs from its profile binding; nothing is retried",
+  tp1_connection_unverified: "the source refused this binding request: the profile authority did not verify the source's connection; nothing is retried",
+  tp1_participant_profile_mismatch: "the source refused this binding request: the session participants do not match the source's profile binding; nothing is retried",
+  tp1_authority_timeout: "the source refused this binding request: the profile authority did not answer in time; nothing is retried",
+  tp1_fence_invalid: "the source refused this binding request: the source's connection fence is invalid; nothing is retried",
+  tp1_fence_timeout: "the source refused this binding request: the source's connection fence was not acquired in time; nothing is retried",
+  tp1_fence_release_failed: "the source refused this binding request: an earlier connection fence could not be released; nothing is retried",
+  'journal-closed': "the source refused this binding request: the transaction journal is closed; nothing is retried",
+  'journal-busy': "the source refused this binding request: the transaction journal or the wallet's journal lane is busy; nothing is retried",
+  'journal-capacity': "the source refused this binding request: the transaction journal cannot hold the required record; nothing is retried",
+  'journal-fenced': "the source refused this binding request: this request does not hold the wallet's journal lane; nothing is retried",
+  'journal-integrity': "the source refused this binding request: the transaction journal is not intact; nothing is retried",
+  'journal-error': "the source refused this binding request: a transaction journal operation failed; nothing is retried",
+  'journal-invalid': "the source refused this binding request: the transaction journal rejected an invalid record or setting; nothing is retried",
+  'journal-reentrant': "the source refused this binding request: this request already holds the wallet's journal lane; nothing is retried",
+});
+
 function sourceRefusal(code, fallback, cause) {
-  return new EmbeddedWalletError(code, code === 'wallet_auth_stale'
-    ? 'the operator refused this wallet\'s request time: this device\'s clock is more than 2 minutes off. Correct the clock and try again; nothing was signed or sent.'
-    : code === 'payment_cancelled' ? 'the operator refused this transfer: it has the terms of a cancelled payment. This attempt was refused and not sent. An earlier attempt may have been sent; the purchase\'s readback shows it.'
-    : fallback, { cause });
+  return new EmbeddedWalletError(code, Object.hasOwn(SOURCE_REFUSALS, code) ? SOURCE_REFUSALS[code] : fallback, { cause });
 }
 
 function base64UrlOfText(value) {
@@ -1097,7 +1153,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     const plan = await (transport.devnetAgreement ? devnetAgreementAnchorPlan : storageAnchorPlan)(request,address,transport,relayOrigin);
     let binding,lease;
     const sourcePhase=async(body)=>{const auth=['bind','signature'].includes(body.phase)?await sourceAuthHeaders(demos,address,stamp):null;if(auth)stillCurrent(started);
-      const r=(bindingRelay ? await bindingRelay({ address,...body },auth) : await fetch(transport.bindingUrl,{method:'POST',headers:{'content-type':'application/json',...auth},body:JSON.stringify({...body,address}),credentials:'same-origin',redirect:'error'}));const v=await r.json();if(!r.ok || v.error)throw sourceRefusal(v.error ?? 'network_binding_required','fresh source network binding is unavailable',r.cause);return v;};
+      const r=(bindingRelay ? await bindingRelay({ address,...body },auth) : await fetch(transport.bindingUrl,{method:'POST',headers:{'content-type':'application/json',...auth},body:JSON.stringify({...body,address}),credentials:'same-origin',redirect:'error'}));const v=await r.json();if(!r.ok || v.error){if(v.error==null)throw new EmbeddedWalletError('network_binding_required','fresh source network binding is unavailable',{cause:r.cause});throw sourceRefusal(v.error,'fresh source network binding is unavailable',r.cause);}return v;};
     if(transport.devnetAgreement){const bound=await sourcePhase({phase:'bind'});if(bound.pending)throw new EmbeddedWalletError('outcome_unknown','an issued source transaction requires readback, never resend');binding=bound.binding;
       if(binding.chainIdentity!==transport.transportBinding.chainIdentity || binding.bindingId!==transport.transportBinding.bindingId)throw new EmbeddedWalletError('network_binding_required','fresh binding differs from signed source terms');}
     const lane = JSON.stringify([transport.network, transport.devnetAgreement ? transport.transportBinding.chainIdentity : DACS_STORAGE_ANCHOR_CHAIN_IDENTITY, address]);

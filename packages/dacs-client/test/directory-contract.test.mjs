@@ -250,10 +250,7 @@ test('observation 1 ms in the future is blocked', async () => {
   assert.equal(result.transactable, false);
 });
 test('missing observation is blocked', async () => {
-  const result = await world({ rows: [without(activeRow(), 'catalogObservedAt')] }).verify();
-  assert.equal(checkNamed(result, 'catalog-observation-fresh')?.ok, false);
-  assert.equal(checkNamed(result, ROW_CHECK), undefined);
-  assert.equal(result.transactable, false);
+  await refusedRow(without(activeRow(), 'catalogObservedAt'), 'directory_row_malformed', 'catalogObservedAt');
 });
 test('catalogObservedAt as a date string is malformed', async () => {
   await refusedRow(activeRow({ catalogObservedAt: new Date(CHECKED_AT - HOUR_MS).toISOString() }), 'directory_row_malformed', 'catalogObservedAt');
@@ -282,8 +279,23 @@ test('unassessed readiness grants nothing by itself and the reader decides', asy
   assertReachesRailAdmission(w, result);
   const revoked = await world({ rows: [revokedRow({ transactionReadiness: { disposition: 'unassessed', reason: 'catalog only' } })] }).verify();
   assert.equal(revoked.disposition, 'revoked');
-  const bare = world({ rows: [without(activeRow(), 'transactionReadiness')] });
-  assertReachesRailAdmission(bare, await bare.verify());
+  await refusedRow(without(activeRow(), 'transactionReadiness'), 'directory_row_malformed', 'transactionReadiness');
+});
+// Without listingId, version or seller a row has other coordinates, so the lookup never matches it.
+const COORDINATE_MEMBERS = ['listingId', 'version', 'seller'];
+test('a row missing any required Directory member is refused by the lookup naming that member', async () => {
+  for (const member of contract.rowMembers.filter((name) => !COORDINATE_MEMBERS.includes(name))) {
+    await refusedRow(without(activeRow(), member), 'directory_row_malformed', member);
+  }
+});
+test('search counts a row missing any required Directory member as rejected and lists a full row', async () => {
+  for (const member of contract.rowMembers) {
+    const served = { listings: [activeRow(), without(activeRow({ listingId: 'bad-row' }), member)] };
+    const directory = createDirectoryClient({ origin: ORIGIN, fetchImpl: async () => jsonResponse(served) });
+    const result = await directory.search({ limit: 50 });
+    assert.deepEqual(result.listings.map((summary) => summary.listingId), [listing.listingId], member);
+    assert.equal(result.rejected, 1, member);
+  }
 });
 
 test('a revocation with an unknown member is malformed naming that member', async () => {
@@ -322,12 +334,51 @@ test('a sole malformed exact row blocks as directory_row_malformed naming its me
   await assert.rejects(w.directory.findSummary({ listingId: listing.listingId, version: listing.listingVersion, seller }),
     (error) => error.kind === 'invalid' && error.code === 'directory_row_malformed' && error.member === 'transactionReadiness');
 });
-test('an early match with a cursor still present after the fifth page is directory_scan_incomplete and never a match or not-found', async () => {
-  const pages = { '': { listings: [activeRow()], cursor: '1' } };
-  for (const next of [1, 2, 3, 4]) pages[next] = { listings: [siblingRow({ version: next })], cursor: String(next + 1) };
+// The seller's `count` rows, 50 to a page as the lookup asks, with this
+// Listing's row at index `matchAt` and other Listings everywhere else.
+function sellerPages(count, matchAt) {
+  const rows = Array.from({ length: count }, (_, i) => (i === matchAt ? activeRow() : siblingRow({ listingId: `other-${i}` })));
+  const pages = {};
+  for (let page = 0; page * 50 < count; page += 1) {
+    const more = (page + 1) * 50 < count;
+    pages[page === 0 ? '' : String(page)] = { listings: rows.slice(page * 50, (page + 1) * 50), ...(more ? { cursor: String(page + 1) } : {}) };
+  }
+  return pages;
+}
+const listingPageReads = (w) => w.requests.filter((url) => url.pathname === '/api/dacs/listings').length;
+const exactCoordinates = { listingId: listing.listingId, version: listing.listingVersion, seller };
+const unconfirmed = (error) => error.kind === 'invalid' && error.code === 'directory_scan_unconfirmed';
+function assertUnconfirmedAndNeverVerified(w, result) {
+  assertRowRefused(result, 'directory_scan_unconfirmed');
+  assert.equal(result.transactable, false);
+  assert.equal(result.disposition, 'directory-row-invalid');
+  assert.equal(result.standardReaderInput, null);
+  assert.deepEqual(w.chainReads, []);
+  assert.equal(listingPageReads(w), 5);
+}
+test('a seller with 251 rows and the match on the first page is directory_scan_unconfirmed and never verified', async () => {
+  const w = world({ pages: sellerPages(251, 0) });
+  assertUnconfirmedAndNeverVerified(w, await w.verify());
+  await assert.rejects(w.directory.findSummary(exactCoordinates), unconfirmed);
+});
+test('conflicting rows for one listing at rows 1 and 251 are refused and never return row 1', async () => {
+  const pages = sellerPages(251, 0);
+  pages[5] = { listings: [activeRow({ contentHash: 'f'.repeat(64), pricing: { kind: 'fixed', priceHint: '9.5', currency: 'DEM' } })] };
   const w = world({ pages });
+  assertUnconfirmedAndNeverVerified(w, await w.verify());
+  await assert.rejects(w.directory.findSummary(exactCoordinates), unconfirmed);
+});
+test('a seller whose list ends within five pages with the match on the first page is found and verified', async () => {
+  const w = world({ pages: sellerPages(120, 0) });
+  assertReachesRailAdmission(w, await w.verify());
+  assert.equal(listingPageReads(w), 3);
+  const summary = await w.directory.findSummary(exactCoordinates);
+  assert.equal(summary.contentHash, listingHash);
+});
+test('a seller with 251 rows and no match in the five scanned pages is directory_scan_incomplete and never not-found', async () => {
+  const w = world({ pages: sellerPages(251, 250) });
   assertRowRefused(await w.verify(), 'directory_scan_incomplete');
-  assert.equal(w.requests.filter((url) => url.pathname === '/api/dacs/listings').length, 5);
+  assert.equal(listingPageReads(w), 5);
 });
 test('a repeated cursor or a present invalid cursor is directory_cursor_invalid', async () => {
   const repeated = world({ pages: { '': { listings: [activeRow()], cursor: '1' }, 1: { listings: [siblingRow()], cursor: '1' } } });

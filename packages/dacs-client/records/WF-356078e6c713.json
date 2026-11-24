@@ -1,0 +1,130 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF require a per-write fee ceiling on both purchase factories and check each paid write against it before anything is saved or offered",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "a18f1445b4d050e8ce77dfddb868f13475ef4184",
+      "after": "abb44afff8044fe667048284a96be20c4a7e2a93"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "38ae9ef1cfe56d7f17fbb5e9c90fb54f6fda48cf",
+      "after": "7af05fc96c945cf866ef17c7225854a1012fd0e5"
+    },
+    {
+      "path": "packages/dacs-client/src/public-admission.mjs",
+      "before": "dc231c7cc583dbd42ed2b78834fa8f7c6561749f",
+      "after": "471ab2dfa0a97477cb2afb1acfbd16b694ddf18d"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "591d04e84cfe5ae74997cdb409b122703cc6e83c",
+      "after": "b6457decdc71921f309c9b43f60fcf0113a00697"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "bc07d0969125601e104451059162eef25f4ec868",
+      "after": "c88133db00e476c722ed03e87dd5c85f71176ede"
+    },
+    {
+      "path": "packages/dacs-client/test/fee-ceiling.test.mjs",
+      "before": null,
+      "after": "00fe64714de0fb4cc0cd157c92ff5468a9b03089"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/kit-bootstrap-world.mjs",
+      "before": "1351bfd716de1d46a480cf91f24ce2f79a719be2",
+      "after": "222715b08c2c9809e2df2449ebaa10927d1baa62"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+      "before": "bb78693816a2e737d1772f6db579e1bea1e3a4c6",
+      "after": "05859eed08f94f3b50de9d47c034081e740e00e3"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/stored-request-flows.mjs",
+      "before": "a86b134ab40a4585d4b735c8b0b577f3278b6f55",
+      "after": "d95ad8a56f5ee263f222ae049ae139f5b64b12f9"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+      "before": "3ced1133d173105decae3c038d99c4ff5ba825cc",
+      "after": "14e4abc9c72ea96012a16b98873886db144dee96"
+    },
+    {
+      "path": "packages/dacs-client/test/package-contents.test.mjs",
+      "before": "b0000278e21fc1f74b28f97c2b55c6c046564379",
+      "after": "30cfe566d9e17bbf3cefaa1dd75bd5a7d2ac7b38"
+    },
+    {
+      "path": "packages/dacs-client/test/packed-consumer.test.mjs",
+      "before": "e76cd5452caead6305781a833e58352861bbfa2d",
+      "after": "f2f609157634323be6d760298fc6243295df3c22"
+    },
+    {
+      "path": "packages/dacs-client/test/public-admission.test.mjs",
+      "before": "15635cc1e59ce3a38fc26b73ebe6a93493789e42",
+      "after": "da8bdb183607a5978c1e965802bf656577d50c34"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "10341ecf881d06c5430944b6b8cc9fe9cef068e2",
+      "after": "8ed50e733139bf246206918c9c6543a465e8c7f2"
+    },
+    {
+      "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+      "before": "adcd517277f4b565b875f600321845e5fca7d5fc",
+      "after": "179af9998981e0fef383f730f0f9c7490471c1c5"
+    },
+    {
+      "path": "packages/dacs-client/test/readme-contract.test.mjs",
+      "before": "b2834fc814217c04d7f2632bf4faed6f46738e50",
+      "after": "9bd68593eb4fe5b54444bcf39fb0b1667de8b862"
+    },
+    {
+      "path": "packages/dacs-client/test/runtime-floor.test.mjs",
+      "before": "96202ca635ed7fd3868567d42a16870bace39099",
+      "after": "8303abcba2188f15012d7c355214263e898a03d2"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-suspension.test.mjs",
+      "before": "f331fbdc2ae3d119075534f238a7499630b89b64",
+      "after": "4d20011484b659b70e1b6f76a0b16ec7dfa3de3e"
+    },
+    {
+      "path": "packages/dacs-client/test/stop-seam.test.mjs",
+      "before": "c605f80db64d715fdfb722f2cd3222dfd0cadbea",
+      "after": "f50f9e931cfdaeab71deb875654f40c3155685ee"
+    }
+  ],
+  "commitFiles": [
+    ".github/workflows/ci.yml",
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-356078e6c713.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/public-admission.mjs",
+    "packages/dacs-client/src/purchases.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/test/fee-ceiling.test.mjs",
+    "packages/dacs-client/test/helpers/kit-bootstrap-world.mjs",
+    "packages/dacs-client/test/helpers/public-composition-world.mjs",
+    "packages/dacs-client/test/helpers/stored-request-flows.mjs",
+    "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+    "packages/dacs-client/test/package-contents.test.mjs",
+    "packages/dacs-client/test/packed-consumer.test.mjs",
+    "packages/dacs-client/test/public-admission.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "packages/dacs-client/test/readback-review-decisions.test.mjs",
+    "packages/dacs-client/test/readme-contract.test.mjs",
+    "packages/dacs-client/test/runtime-floor.test.mjs",
+    "packages/dacs-client/test/seller-suspension.test.mjs",
+    "packages/dacs-client/test/stop-seam.test.mjs",
+    "test/client/nonce-slot-cancel.test.ts",
+    "test/kit-client/client-purchase.mjs"
+  ],
+  "note": "createProtocolPurchases and createPurchaseService require feeCeilingOs, a positive decimal OS amount string, and a chain with getTransactionFees unless passiveOnly; there is no default. The check runs after passive_only_invalid and before the factory, throws TypeError(fee_ceiling_required) and never calls the fee reader. The root exports PAID_WRITE_FEE_CEILING_OS, the testnet value 50000000000 OS. The payment handoff, its re-offer, the cancel release and the buyer's Agreement CREATE compare amount plus network fee (the CREATE adds a 3 DEM storage reserve) with the ceiling before anything is saved, moved, offered or sent, and refuse OperationError(write-fee-cap) over it or when the fee cannot be read; a protocol start refuses a price or CREATE over it. A retained Agreement CREATE intent is only read back and is not checked. The positive OS amount rule moves to public-admission.mjs and node-wallet-session.mjs imports it."
+}
