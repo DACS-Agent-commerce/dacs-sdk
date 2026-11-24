@@ -12,6 +12,7 @@
 // GCRGeneration.js lines 173, 246, 249, 250; demosclass.js lines 719, 1547.
 // At demosdk 4.0.17: GCRGeneration.js lines 178, 302, 305, 306; demosclass.js lines 738, 1767, 1773.
 // At demosdk 4.0.18: GCRGeneration.js lines 178, 302, 305, 306; demosclass.js lines 738, 1775, 1781.
+// At demosdk 4.0.23: GCRGeneration.js lines 254, 378, 381, 382; demosclass.js lines 788, 2054, 2060.
 // GCRGeneration.js is the same file in 4.0.17 and 4.0.18, so one table entry covers both.
 import { createHash } from 'node:crypto';
 
@@ -35,6 +36,10 @@ const REVIEWED_SOURCES = Object.freeze({
     sourceSha256: '338fd4b44e0823e6c321e35f7dd794447982f631e2c31113a437513f8fcecb44',
     outputSha256: 'a3c3e7845241b6e4109e00de4353248da6814cbbcf91dc0bba329df709f3be06',
     statements: [{ line: 178, text: GAS_EDIT_ERROR }, { line: 302, text: NATIVE_OPERATION_TYPE }, { line: 305, text: NATIVE_PAYLOAD }, { line: 306, text: NATIVE_OPERATION }],
+  }, {
+    sourceSha256: 'f125dd426d60de501ee62de22ea73298e5dbf52309ead6c6762e90a8f0deb191',
+    outputSha256: '214a76ae00144d839ab1b480dbf2eed573138a92b2d8de907d911605cc0b071e',
+    statements: [{ line: 254, text: GAS_EDIT_ERROR }, { line: 378, text: NATIVE_OPERATION_TYPE }, { line: 381, text: NATIVE_PAYLOAD }, { line: 382, text: NATIVE_OPERATION }],
   }],
   'demosclass.js': [{
     sourceSha256: '6b80162f0e15f1e5e85bc4e2831401d47951afbac4d444d4095b0a889369e6c3',
@@ -48,6 +53,10 @@ const REVIEWED_SOURCES = Object.freeze({
     sourceSha256: 'ebc5dd85fe8f73f2c7ecede5e24343ed322eb319ae6f3744d971674a5b94adaa',
     outputSha256: '354b639026f63a7680ac07235d29d422ae90eaa1d763e842ae099604156208d7',
     statements: [{ line: 738, text: FEE_FALLBACK }, { line: 1775, text: FORK_READ_REFRESH_FAILED }, { line: 1781, text: FORK_READ_UNAVAILABLE }],
+  }, {
+    sourceSha256: '0295a1714c800b83698986fe1e1f53441d286b8fe859c10b7a55efe879f80bf7',
+    outputSha256: 'f4c03a7f939fd7ef16b1b8d54ba263179402ec95cb442a464120c71ffda3dff3',
+    statements: [{ line: 788, text: FEE_FALLBACK }, { line: 2054, text: FORK_READ_REFRESH_FAILED }, { line: 2060, text: FORK_READ_UNAVAILABLE }],
   }],
 });
 

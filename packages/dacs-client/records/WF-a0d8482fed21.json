@@ -1,0 +1,20 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged README with the bounded HTTPS seller client and move the record anchor to the merge",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/README.md",
+      "before": "8c5cdaf13a3a9199761f5ce6f1b01d58a36188ca",
+      "after": "8c5cdaf13a3a9199761f5ce6f1b01d58a36188ca"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/ANCHOR.json",
+    "packages/dacs-client/records/WF-a0d8482fed21.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ],
+  "note": "Both sides of the merge recorded the README; this record chooses the merged copy. It keeps the base's text and every hunk of the other side that describes the bounded HTTPS seller client, its runtime and option checks, and the public client's lack of request records. The commit also moves the anchor to the merge, so the anchored files start from their merged copies."
+}

@@ -6,18 +6,20 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { isCorePath, recordName } from './delta-record.mjs';
+import { isCorePath, isUnrecorded, recordName } from './delta-record.mjs';
 import { commits, expectedBlob, git, ledger, selects } from './delta-map.mjs';
 
 // The gate reads superseded and active records together and skips selectors
-// that do not resolve once (it reports those separately).
+// that do not resolve once (it reports those separately). It reads no README
+// entry: the README needs no record.
 function recordedPaths() {
   const history = commits(), data = ledger(), records = new Map();
   for (const change of [...(data.supersededChanges ?? []), ...data.changes]) {
     const matches = history.filter(commit => selects(change, commit));
     if (matches.length !== 1) continue;
     for (const file of change.files) {
-      if (isCorePath(file.path.slice('packages/dacs-client/'.length))) continue;
+      const rel = file.path.slice('packages/dacs-client/'.length);
+      if (isCorePath(rel) || isUnrecorded(rel)) continue;
       records.set(file.path, [...(records.get(file.path) ?? []), { sha: matches[0].sha, after: file.after }]);
     }
   }

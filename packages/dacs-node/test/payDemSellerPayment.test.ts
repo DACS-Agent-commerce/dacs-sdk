@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IdentityBundle, Listing, PaymentRailRef } from
   "@kynesyslabs/dacs/artifacts";
@@ -21,6 +21,7 @@ import {
 import { identityBundleHash } from "@kynesyslabs/dacs/identity";
 import {
   createFsSellerReceiptStore,
+  type DemosTransferObservation,
   type SellerListingAtCommitResolution,
   type SellerReceiptStore,
 } from "@kynesyslabs/dacs/seller";
@@ -488,6 +489,100 @@ describe("native DEM seller payment track", () => {
         phase: "pay-dem",
         paymentAmount: { amount: "1.25", currency: "DEM" },
       },
+    });
+  });
+
+  describe("replaying a completed payment", () => {
+    const INCLUDED = {
+      status: "included" as const,
+      execution: "executed" as const,
+      txHash: TX_HASH,
+      payer: PAYER,
+      payee: PAYEE,
+      amountOs: "1250000000",
+      blockNumber: 88,
+      includedAt: 5_000,
+    };
+
+    async function completedPayment() {
+      const root = mkdtempSync(join(tmpdir(), "dacs-pay-dem-seller-replay-"));
+      roots.push(root);
+      const database = await open(join(root, "seller.sqlite"));
+      const receipts = await createFsSellerReceiptStore({ dir: join(root, "receipts") });
+      putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+      const store = database.createPayDemCoordinatorStore("seller");
+      const loadedFixture = fixture(receipts);
+      await createFixedPricePayDemSellerCoordinator({
+        store,
+        workerId: "seller-coordinator-replay-start",
+        operations: { agreement: success() },
+      }).startOrder(ORDER);
+      const loaded = await store.load("seller", JOB_ID);
+      if (loaded.status !== "ok") throw new Error("seller order missing");
+      const notice = retainedNotice({
+        agreementHash: loadedFixture.agreementHash,
+        orderBindingHash: loaded.record.bindingHash,
+        orderLocalBindingHash: BUYER_LOCAL_BINDING_HASH,
+      });
+      let observation: DemosTransferObservation = INCLUDED;
+      const observe = vi.fn(async () => observation);
+      const payment = createDacsPayDemSellerPaymentTrackV1({
+        database,
+        workerId: "seller-payment-replay",
+        noticeRuntime: { load: () => notice },
+        resolvePayerPayingKey: () => BUYER,
+        intakeDeps: { ...loadedFixture.intakeDeps, observeDemosTransfer: observe },
+        retryDelayMs: 1,
+      });
+      let operation: Parameters<typeof payment>[0] | undefined;
+      const coordinator = createFixedPricePayDemSellerCoordinator({
+        store,
+        workerId: "seller-coordinator-replay",
+        operations: {
+          agreement: success(),
+          payment: (input) => {
+            operation = input;
+            return payment(input);
+          },
+        },
+      });
+      await coordinator.resumePendingOrders({ limit: 2 });
+      expect((await coordinator.getOrderStatus(JOB_ID))?.tracks.payment)
+        .toMatchObject({ state: "final", outcome: "success" });
+      if (operation === undefined) throw new Error("payment was not run");
+      return {
+        replay: () => payment(operation!),
+        observe,
+        observeNext: (next: DemosTransferObservation) => {
+          observation = next;
+        },
+      };
+    }
+
+    it("reports completion when the node still shows the transfer", async () => {
+      const { replay, observe } = await completedPayment();
+      const readsBefore = observe.mock.calls.length;
+
+      await expect(replay()).resolves.toMatchObject({
+        status: "final",
+        outcome: "success",
+        reference: `demos:${TX_HASH}:88`,
+      });
+      expect(observe.mock.calls.length).toBeGreaterThan(readsBefore);
+    });
+
+    it("does not report completion when the node now reports the transfer failed", async () => {
+      const { replay, observeNext } = await completedPayment();
+      observeNext({ status: "failed", reason: "transfer-failed" });
+
+      await expect(replay()).resolves.toMatchObject({ status: "operator-action" });
+    });
+
+    it("does not report completion when the node cannot be read", async () => {
+      const { replay, observeNext } = await completedPayment();
+      observeNext({ status: "unavailable", reason: "node-timeout" });
+
+      await expect(replay()).resolves.toMatchObject({ status: "indeterminate" });
     });
   });
 

@@ -1,22 +1,27 @@
 // Buyer-side HTTP transport the plugin uses to reach the seller agent.
 //
-// The client reaches loopback endpoints, and, when given a wire
-// authentication, a public https origin (`isPublicEndpoint`). Existing
-// unauthenticated fixture callers remain supported. Supplying an
-// authentication adapter enables signed peer requests, independently signed
-// seller responses and a durable intent journal.
-// In that mode an answer is classified (seller-response-class.mjs) only after
-// the wire verified its exact received bytes. Only a definite refusal or failed
-// bootstrap becomes SellerRefusedError; unsigned, malformed, interrupted,
-// ambiguous, held, suspended or readback-only answers are unavailable, with
-// their class and cause kept.
+// The client reaches one public https seller origin (`isPublicEndpoint`) through the
+// pinned connector (seller-https-connector.mjs), which bounds the answer and reports
+// whether any request byte was written. Calls carry a wire authentication: signed peer
+// requests and independently signed seller responses, with an optional durable intent journal.
+// An answer is classified (seller-response-class.mjs) only after the wire verified its
+// exact received bytes. Only a definite refusal or failed bootstrap becomes
+// SellerRefusedError; unsigned, malformed, interrupted, ambiguous, held, suspended or
+// readback-only answers are unavailable, with their class and cause kept.
+import { isIP } from 'node:net';
 import { DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, DACS_SELLER_RESUME_HEADER, isPublicEndpoint } from '@kynesyslabs/dacs/wire';
-import { cancelResponseBody, settleOnAbort } from '../util/http.mjs';
-import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
+import { settleOnAbort } from '../util/http.mjs';
+import { isDacsPublicAddressV1, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 import { classifySellerAnswer, SELLER_ANSWER_CLASS, SELLER_EFFECT_UNRESOLVED } from './seller-response-class.mjs';
+import { createSellerHttpsConnector, SellerHttpsConnectorError } from './seller-https-connector.mjs';
+import { commitOnSignatureConfig } from './commit-on-signature.mjs';
+import { isHostStopRefusal } from '../host-stop.mjs';
 
 const MAX_BODY = 64 * 1024;
-const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+/** The most response header bytes the connector reads from a seller. */
+const SELLER_RESPONSE_HEADER_BYTES = 16 * 1024;
+const CLIENT_OPTIONS = new Set(['publicEndpoint', 'timeoutMs', 'commitOnSignature', 'authentication', 'connector', 'requestRecords', 'clock', 'explicitResume']);
+const PUBLIC_CLIENT_OPTIONS = new Set(['admission', 'publicEndpoint', 'timeoutMs', 'commitOnSignature', 'authentication']);
 
 // The third argument is the classifier's {answerClass, code}: the class of the seller's answer and its error code.
 export class SellerUnavailableError extends Error {
@@ -107,25 +112,26 @@ function answerOrError(verdict, answer, status) {
   const { answerClass, code } = verdict;
   if (answerClass === RESULT || answerClass === PROGRESS) return answer;
   if (answerClass === DEFINITE || answerClass === FAILED_BOOTSTRAP) {
-    const refusalCode = code ?? `http_${status}`;
-    throw new SellerRefusedError(refusalCode, typeof answer.message === 'string' ? answer.message.slice(0, 200) : refusalCode, status, answerClass);
+    const refusalCode = code ?? (answerClass === FAILED_BOOTSTRAP && status === 429 ? 'seller_rate_limited' : `http_${status}`);
+    const refusal = new SellerRefusedError(refusalCode, typeof answer.message === 'string' ? answer.message.slice(0, 200) : refusalCode, status, answerClass);
+    if (typeof answer.cause === 'string') refusal.cause = answer.cause.slice(0, 240);
+    throw refusal;
   }
   throw new SellerUnavailableError(code === SELLER_EFFECT_UNRESOLVED ? SELLER_OPERATOR_MESSAGE : UNAVAILABLE_ANSWER_MESSAGE, statusCause(status), verdict);
 }
 
-/** Parses a seller endpoint: a public https origin when the calls are authenticated, otherwise a loopback one, in both cases without credentials, query or fragment. Throws for any other endpoint. */
-function parseSellerEndpoint(url, authenticated) {
-  const endpoint = String(url);
-  const base = new URL(endpoint.replace(/\/$/, ''));
-  const signedPublicEndpoint = authenticated && isPublicEndpoint(endpoint);
-  if (!signedPublicEndpoint && (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash)) {
-    throw new Error('seller agent endpoint must be a public https origin given a wire authentication, or loopback, without credentials, query or fragment');
-  }
-  return base;
+/** Parses a seller endpoint: an https origin with no credentials, path, query or fragment, and not a private or loopback IP literal. Throws TypeError for any other endpoint; a name is checked by the connector when it resolves. */
+function parsePublicEndpoint(publicEndpoint) {
+  const refusal = new TypeError('seller agent endpoint must be a public https origin: no credentials, path, query, fragment or private address');
+  if (!isPublicEndpoint(publicEndpoint)) throw refusal;
+  const url = new URL(publicEndpoint);
+  const host = url.hostname.replace(/^\[(.*)\]$/, '$1');
+  if (isIP(host) !== 0 && !isDacsPublicAddressV1(host)) throw refusal;
+  return url;
 }
 
-/** The origin a seller endpoint is reached at, accepted under the same rule as `createSellerAgentClient` (public https only when `authenticated`). Throws for any other endpoint. */
-export const sellerEndpointOrigin = (url, authenticated = false) => parseSellerEndpoint(url, authenticated).origin;
+/** The origin a seller endpoint is reached at, under the same rule as `createSellerHttpsClient`. Throws TypeError for any other endpoint. */
+export const sellerEndpointOrigin = (publicEndpoint) => parsePublicEndpoint(publicEndpoint).origin;
 
 /**
  * Creates the bounded seller transport. Every call returns a verified answer or throws a classified seller error.
@@ -133,18 +139,28 @@ export const sellerEndpointOrigin = (url, authenticated = false) => parseSellerE
  * `{text, stored, continuation, newPurchase, check(), finish(answerClass, answerCode)}`; `stored: true` identifies a durably
  * recorded effect attempt, while reads use false, and `failure(error)` records a refusal). Authenticated calls with
  * stored attempts retry unknown dispatches twice; all other calls send once. A suspended answer is recorded and never retried.
- * clock supplies `now()` and `sleep(ms)` so a test injects time.
- * `explicitResume(path)` (optional, authenticated calls only) is the caller's one-shot taker: it answers true at most once, for the route a buyer's explicit
+ * clock supplies `now()` and `sleep(ms)` so a test injects time. connector is `{send(options)}` from createSellerHttpsConnector.
+ * `explicitResume(path)` (optional) is the caller's one-shot taker: it answers true at most once, for the route a buyer's explicit
  * resume named. The first attempt of that call then carries a fresh proof of the resume (see `authentication.resumeProof`) in the `x-dacs-seller-resume` header.
  * No automatic retry of the call, and no other call, sends one; the proof is never kept.
+ * `request(path, body, {prepareTransmit, beforeTransmit})` hands the effect boundary's two callbacks to the connector unchanged;
+ * neither the construction options nor the named methods accept them. Throws TypeError for an option it does not take, an
+ * endpoint that is not a public https origin, or a missing authentication or connector.
  */
-export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs, authentication, commitOnSignature = false, requestRecords, clock = SELLER_CLOCK, explicitResume = null }) {
-  const base = parseSellerEndpoint(url, Boolean(authentication));
-  const origin = base.origin;
-  const prefix = base.pathname.replace(/\/$/, '');
-
-  if (authentication && prefix) throw new Error('authenticated seller transport uses the exact /dacs/v1 paths');
+export function createSellerHttpsClient(options) {
+  const unaccepted = Object.keys(options).find((name) => !CLIENT_OPTIONS.has(name));
+  if (unaccepted !== undefined) throw new TypeError(`seller client option is not accepted: ${unaccepted}`);
+  const { publicEndpoint, timeoutMs, authentication, commitOnSignature = false, requestRecords, clock = SELLER_CLOCK, connector, explicitResume = null } = options;
+  if (typeof authentication?.request !== 'function' || typeof authentication.verifyResponse !== 'function') throw new TypeError('seller client requires a wire authentication');
+  if (typeof connector?.send !== 'function') throw new TypeError('seller client requires a connector');
+  const origin = parsePublicEndpoint(publicEndpoint).origin;
   let lastFailureCause, lastFailureDispatched, hasDispatched = false;
+  // Routes are signed paths: a path that would leave the origin is refused.
+  const routeUrl = (path) => {
+    const url = new URL(path, origin);
+    if (url.origin !== origin) throw new TypeError('seller route path leaves the seller origin');
+    return url;
+  };
 
   const routeDeadlineMs = (path) => {
     const policy = SELLER_REQUEST_POLICY[path];
@@ -152,7 +168,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
   };
 
   // One absolute deadline includes storage, authority reads, signing, delays and transport.
-  async function post(path, body) {
+  async function post(path, body, transmit = {}) {
     const resumeProof = explicitResume?.(path) === true;
     const deadline = clock.now() + routeDeadlineMs(path);
     let unknown, unknownCause;
@@ -166,7 +182,7 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       }
       const attempt = requestRecords?.start(path, body);
       try {
-        const answer = await send(path, body, attempt, deadline, resumeProof && retry === 0);
+        const answer = await send(path, body, attempt, deadline, transmit, resumeProof && retry === 0);
         attempt?.finish(answer.answerClass);
         return answer.body;
       } catch (error) {
@@ -178,14 +194,14 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
         }
         // A retry that fails before dispatch is recorded as unsent, but the call still owes the earlier send's unknown outcome.
         if (unknown && error.answerClass === SELLER_ANSWER_CLASS.NOT_SENT) { lastFailureCause = unknownCause; lastFailureDispatched = undefined; throw unknown; }
-        if (!authentication || !attempt?.stored || error.answerClass !== SELLER_ANSWER_CLASS.UNKNOWN || retry === SELLER_UNKNOWN_RETRIES || clock.now() + SELLER_RETRY_DELAY_MS >= deadline) throw error;
+        if (!attempt?.stored || error.answerClass !== SELLER_ANSWER_CLASS.UNKNOWN || retry === SELLER_UNKNOWN_RETRIES || clock.now() + SELLER_RETRY_DELAY_MS >= deadline) throw error;
         unknown = error; unknownCause = lastFailureCause;
       }
       await clock.sleep(SELLER_RETRY_DELAY_MS);
     }
   }
 
-  async function send(path, requestBody, attempt, deadline, withResumeProof) {
+  async function send(path, requestBody, attempt, deadline, { prepareTransmit, beforeTransmit }, withResumeProof) {
     lastFailureCause = undefined;
     lastFailureDispatched = undefined;
     let phase = 'other', signal, dispatched = false;
@@ -201,66 +217,62 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
       checkDeadline();
       signal = AbortSignal.timeout(Math.ceil(deadline - clock.now()));
       phase = 'client-sign';
-      const signed = authentication ? await settleOnAbort(authentication.request(path, body, text, { signal, checkDeadline }), signal) : null;
-      const resumeHeader = withResumeProof && signed ? await settleOnAbort(authentication.resumeProof(signed, { signal, checkDeadline }), signal) : null;
+      const signed = await settleOnAbort(authentication.request(path, body, text, { signal, checkDeadline }), signal);
+      const resumeHeader = withResumeProof ? await settleOnAbort(authentication.resumeProof(signed, { signal, checkDeadline }), signal) : null;
       checkDeadline();
       try { attempt?.check(); } catch (refusal) { recordRefusals.add(refusal); throw refusal; }
       checkDeadline();
       phase = 'other';
-      hasDispatched = true; dispatched = true;
-      const response = await settleOnAbort(fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}), ...(resumeHeader ? { [DACS_SELLER_RESUME_HEADER]: resumeHeader } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal }), signal, cancelResponseBody);
-      phase = 'response-auth';
-      const declared = response.headers.get('content-length');
-      if (declared !== null && Number(declared) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) { cancelResponseBody(response); throw new Error('response exceeds byte limit'); }
-      const chunks = [];
-      let size = 0;
-      if (response.body) {
-        const reader = response.body.getReader();
-        signal.addEventListener('abort', () => { reader.cancel().catch(() => {}); }, { once: true });
-        for (;;) {
-          const { done, value } = await settleOnAbort(reader.read(), signal);
-          if (done) break;
-          size += value.byteLength;
-          if (size > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) { reader.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
-          chunks.push(value);
-        }
+      const { pathname } = routeUrl(path);
+      let response;
+      try {
+        response = await connector.send({ origin, path: pathname, method: 'POST', body: Buffer.from(text),
+          headers: { accept: 'application/json', 'content-type': 'application/json', [DACS_SELLER_HTTP_HEADER]: signed.header, ...(resumeHeader ? { [DACS_SELLER_RESUME_HEADER]: resumeHeader } : {}) },
+          deadlineMs: Math.max(1, Math.ceil(deadline - clock.now())), maxResponseBytes: DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes,
+          maxResponseHeaderBytes: SELLER_RESPONSE_HEADER_BYTES, prepareTransmit, beforeTransmit });
+        dispatched = true;
+      } catch (failure) {
+        // Only a rejection that says nothing was written leaves the call unsent.
+        dispatched = failure?.dispatched !== false;
+        throw failure;
+      } finally {
+        hasDispatched ||= dispatched;
       }
-      const answerBytes = Buffer.concat(chunks);
+      phase = response.status >= 300 && response.status < 400 ? 'redirect' : 'response-auth';
+      if (phase === 'redirect') throw new Error('seller answered with a redirect');
       // Unsigned 429/404/415/503 answers cannot authenticate their status.
       // Verify first: these failures stay response-auth, including signer fallback 503.
-      const answer = authentication
-        ? (await settleOnAbort(authentication.verifyResponse(signed.payload, { header: response.headers.get(DACS_SELLER_HTTP_HEADER), status: response.status, body: answerBytes }), signal)).body
-        : admitRawJson(answerBytes, { maxBytes: DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes });
+      const answer = (await settleOnAbort(authentication.verifyResponse(signed.payload, { header: response.headers[DACS_SELLER_HTTP_HEADER], status: response.status, body: response.body }), signal)).body;
       if (response.status >= 500 && response.status <= 599) phase = 'status-5xx';
-      if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '')) throw new Error('response did not return JSON');
+      if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers['content-type'] ?? '')) throw new Error('response did not return JSON');
       if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('response JSON is not an object');
       // The record exists only here, after the wire verified the exact bytes: the HTTP status it checked and the body it admitted.
-      if (authentication) {
-        phase = 'classified';
-        // Provenance and request kind come only from the adapter's own record of this request, never from the answer or a caller.
-        const verdict = classifySellerAnswer({ status: response.status, signed: true, body: answer }, { path, dispatched: true, continuation: attempt?.continuation ?? false, newPurchase: attempt?.newPurchase ?? false });
-        return { body: answerOrError(verdict, answer, response.status), answerClass: verdict.answerClass };
-      }
-      if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status) && typeof answer.error === 'string') throw new SellerRefusedError(answer.error, typeof answer.message === 'string' ? answer.message.slice(0, 200) : answer.error, response.status);
-      if (!response.ok) throw new Error('seller did not return success');
-      return { body: answer, answerClass: RESULT };
+      phase = 'classified';
+      // Provenance and request kind come only from the adapter's own record of this request, never from the answer or a caller.
+      const verdict = classifySellerAnswer({ status: response.status, signed: true, body: answer }, { path, dispatched: true, continuation: attempt?.continuation ?? false, newPurchase: attempt?.newPurchase ?? false });
+      return { body: answerOrError(verdict, answer, response.status), answerClass: verdict.answerClass };
     } catch (error) {
       if (recordRefusals.has(error)) throw error;
+      if (!dispatched && isHostStopRefusal(error)) throw error;
       if (phase === 'client-sign' && preDispatchFailures.has(error)) { lastFailureCause = 'tls'; lastFailureDispatched = false; throw error; }
       if (error instanceof SellerRefusedError) throw error;
       if (phase === 'classified' && error instanceof SellerUnavailableError) { lastFailureCause = error.causeCode; throw error; }
-      lastFailureCause = failureCause(error, phase, signal);
+      lastFailureCause = error instanceof SellerHttpsConnectorError ? error.causeCode : failureCause(error, phase, signal);
       const unavailable = new SellerUnavailableError(UNAVAILABLE_ANSWER_MESSAGE, lastFailureCause, { answerClass: dispatched ? SELLER_ANSWER_CLASS.UNKNOWN : SELLER_ANSWER_CLASS.NOT_SENT });
       if (!dispatched) { preDispatchFailures.add(unavailable); lastFailureDispatched = false; }
       if (error instanceof RawJsonAdmissionError) { unavailable.admissionCode = error.code; unavailable.admissionStage = error.stage; }
+      // A refusal while signing (the wire's own, such as seller_not_ready) happened before dispatch; it stays the cause.
+      if (lastFailureCause === 'client-sign') unavailable.cause = error;
       throw unavailable;
     }
   }
 
   return {
     origin,
-    // The route adapter for callers without a named method yet (the context and challenge routes belong to the bootstrap callers).
+    // The route adapter for callers without a named method (the context route belongs to the bootstrap's context step).
     request: post,
+    // The seller's challenge for a `{scope}` body: `{sessionNonce, expiresAt}` once the wire verified it; the caller checks its members.
+    contextChallenge: (body) => post(DACS_SELLER_HTTP_PATHS.contextChallenge, body),
     // Records the bounded outcome of a failure that the caller otherwise swallows.
     recordFailure: (error) => requestRecords?.failure(error),
     // The durable Agreement coordinator retains only disposition/reason.
@@ -280,4 +292,21 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
     countersign: (jobId, buyerSignature) => post('/dacs/v1/bundles/countersignature', { jobId, buyerSignature }),
     confirmBuyerCopy: (jobId) => post('/dacs/v1/bundles/buyer-copy', { jobId }),
   };
+}
+
+/**
+ * Builds the seller client behind the public `createPublicSellerClient`: `{admission, publicEndpoint, authentication, timeoutMs, commitOnSignature}`
+ * over the real pinned connector, with no request records. Returns `origin` and the named POST methods only, so a caller cannot reach the
+ * route adapter or the effect-boundary callbacks. Throws TypeError for any other option, an invalid endpoint or authentication, a
+ * `timeoutMs` that is not an integer from 1000 through 300000, or a `commitOnSignature` that is not a boolean.
+ */
+export function buildPublicSellerClient(options) {
+  const unaccepted = Object.keys(options).find((name) => !PUBLIC_CLIENT_OPTIONS.has(name));
+  if (unaccepted !== undefined) throw new TypeError(`seller client option is not accepted: ${unaccepted}`);
+  const { publicEndpoint, authentication, timeoutMs } = options;
+  if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > SELLER_MAX_TIMEOUT_MS)) throw new TypeError('timeoutMs must be an integer from 1000 through 300000');
+  const commitOnSignature = commitOnSignatureConfig(options.commitOnSignature);
+  const client = createSellerHttpsClient({ publicEndpoint, authentication, timeoutMs, commitOnSignature, connector: createSellerHttpsConnector() });
+  const { origin, propose, agreementState, commit, submitPayment, bundleRequest, countersign, confirmBuyerCopy } = client;
+  return { origin, propose, agreementState, commit, ...(client.commitOnSignature ? { commitOnSignature: client.commitOnSignature } : {}), submitPayment, bundleRequest, countersign, confirmBuyerCopy };
 }

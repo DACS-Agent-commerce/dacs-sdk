@@ -95,7 +95,8 @@ export function observedTransferMatches(observed, { txHash, terms, committedAt }
 // `anchorEvidence` is a narrow operator-owned wallet boundary, never a buyer
 // key or Boolean authority. Tests call the unchanged packaged wallet bridge.
 // Reader and observer always use the actual pinned SDK/adapter on this origin.
-export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability = null, anchorEvidence, readSignedProjection, fetchImpl = globalThis.fetch, now = () => Date.now(), signatureChainId }) {
+// In source mode `binding` and `observeIdentity` are the live adapter's identity inputs (see createDemosSr2Adapter).
+export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability = null, binding, observeIdentity, anchorEvidence, readSignedProjection, fetchImpl = globalThis.fetch, now = () => Date.now(), signatureChainId }) {
   if (anchorEvidence !== undefined) assertKitOperationAdmitted('createNativePaymentEvidenceConsumer');
   const rpc = new URL(rpcUrl);
   const source = sourceCapability !== null;
@@ -111,7 +112,7 @@ export function createNativePaymentEvidenceConsumer({ rpcUrl, sourceCapability =
   const sourceReader = source ? sourceCapability.chainReader() : null;
   const observer = source ? { observeDemosTransfer: (hash) => sourceReader.observeTransfer(hash) } : createPayDemSellerObserver({ rpc: rpc.href, fetchImpl: fixtureFetch });
   const memory = createInMemoryDemosSr2Journal();
-  const adapter = createDemosSr2Adapter({ rpcUrl: rpc.href, sourceCapability, now, fetchImpl: fixtureFetch, signatureChainId,
+  const adapter = createDemosSr2Adapter({ rpcUrl: rpc.href, sourceCapability, binding, observeIdentity, now, fetchImpl: fixtureFetch, signatureChainId,
     journal: { ...memory, put: async () => { throw new Error('native evidence reader cannot write'); } } });
   const capability = Object.freeze({ source: NATIVE_PAYMENT_EVIDENCE, rpcOrigin: rpc.origin,
     observeDemosTransfer: observer.observeDemosTransfer,
