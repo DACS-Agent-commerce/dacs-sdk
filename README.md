@@ -1096,6 +1096,7 @@ used without pulling in `demosdk`:
 | --- | --- | --- |
 | `@kynesyslabs/dacs` | optional (`createAgent` needs `demosdk`) | pure verification, or building live agents |
 | `@kynesyslabs/dacs/substrate` | yes at runtime | live Demos adapter; `raw` uses the SDK-owned `DemosRawClient` boundary |
+| `@kynesyslabs/dacs/write-attempt-guard` | yes, exactly 4.0.17 | a check before each signature and send of one connected demosdk wallet |
 | `@kynesyslabs/dacs/cli` | no by default | read-only doctor helpers |
 | `@kynesyslabs/dacs/rails` | no | x402 buyer settlement and seller paywall, evm-erc20, provider-injected AP2 and Solana SPL safety cores, and optional AP2 admission/provider/replay adapters |
 | `@kynesyslabs/dacs/registry` | no | resolve steward-signed rails/recipes; rail dispatch |
@@ -1138,6 +1139,31 @@ again with the live peers present. Both passes keep `skipLibCheck` disabled.
 The SDK-owned `DemosRawClient` boundary prevents demosdk's internal declaration
 graph from leaking into consumers; applications can explicitly narrow the
 unstable `raw` escape hatch when they intentionally depend on demosdk types.
+
+### Per-attempt write guard
+
+`installWriteAttemptGuard(demos, guard)` from `@kynesyslabs/dacs/write-attempt-guard`
+makes one connected `Demos` instance call `guard()` right before each signature
+and each POST attempt of a write. The check runs after demosdk's preparation
+awaits and again before every transport or RPC retry, so a stop marker that
+appears while a call waits stops its next attempt. Only an `undefined` return
+passes. A value the guard throws reaches the caller unchanged, even through
+demosdk's `{ result: 500 }` envelopes. Any other return value refuses with
+`WriteAttemptRefusedError` (`code: "write_attempt_refused"`). A refusal before
+the first POST means that call sent nothing; a refusal of a retry does not undo
+an earlier attempt that may have reached the node. Unsigned `nodeCall` reads and
+other instances are not checked. There is no uninstall.
+
+Install it right after connecting the wallet. It supports ed25519 wallets only;
+another algorithm, and the deprecated raw-key signers `tx.signWithAlgorithm`,
+`transactions.sign`/`signWithAlgorithm` and `DemosTransactions.sign`/`signWithAlgorithm`,
+refuse with `write_attempt_unsupported_signer`. The guard was reviewed against
+demosdk 4.0.17 and the Axios 1.17.0 ESM module that demosdk itself resolves; it
+checks requests on that Axios copy. Install exactly those versions. With any
+other demosdk, another Axios copy under demosdk, or a request interceptor
+registered on that Axios before the first install, installation throws
+`WriteAttemptInstallError` with `code: "write_attempt_install_invalid"` and
+changes nothing.
 
 ## Package artifacts
 
