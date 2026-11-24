@@ -1,6 +1,7 @@
-// The one way the seller's artifact anchor runs a wallet CREATE or its resend: the kit effect boundary's checks and fence
-// first, then one effect pass of the wallet session whose steps are the boundary's own refresh, the host's stop check and
-// the boundary's synchronous tail, with the job's current-authorization check last.
+// The one way the seller's artifact anchor runs a wallet CREATE or its resend, and the seller's Listing, Vet and identity
+// presentation signatures are made: the kit effect boundary's checks and fence first, then one effect pass of the wallet
+// session whose steps are the boundary's own refresh, the host's stop check and the boundary's synchronous tail, with the
+// job's current-authorization check last.
 import { passContext } from '@kynesyslabs/dacs-client/node-wallet';
 import { effectBoundaryBinding, effectPassRemainingMs, jobPassContext } from '../dacs/effect-boundary.mjs';
 import { OperationError } from '../operations.mjs';
@@ -8,6 +9,25 @@ import { OperationError } from '../operations.mjs';
 // The longest session pass the client accepts, in milliseconds.
 const SESSION_PASS_MAX_MS = 10000;
 const SELLER_CREATE_KIND = 'seller-create';
+// Every runCreate this module hands out: a signature site accepts only these, so its signer always runs behind the boundary's checks.
+const issued = new WeakSet();
+const issue = (runCreate) => { issued.add(runCreate); return runCreate; };
+
+/** True when `value` is a runCreate that createSellerCreatePass or lateSellerCreatePass issued. Never throws. */
+export const isSellerCreatePass = (value) => issued.has(value);
+
+/**
+ * Issues a runCreate for a holder that binds its pass later, such as the wallet-session port: each call asks `resolve()` for
+ * the runCreate to use and runs it. Rejects with `resolve()`'s own error (before anything is read), with a TypeError when
+ * `resolve()` answers a runCreate this module did not issue, or with that runCreate's own outcome.
+ */
+export function lateSellerCreatePass(resolve) {
+  return issue(async (input, work) => {
+    const runCreate = resolve();
+    if (!issued.has(runCreate)) throw new TypeError('the late-bound runCreate must be one createSellerCreatePass issued');
+    return runCreate(input, work);
+  });
+}
 
 /**
  * Builds a job pass's current-authorization check from `held` (a job hold's check, such as the seller agent's
@@ -38,11 +58,13 @@ export function currentAuthorizationFor({ held, revision }) {
  * 2. inside it takes the session's connection fence and, with nothing awaited in between, reads the kit pass's remaining
  *    window: none left refuses `effect_pass_invalid` and `work` is never called; otherwise it opens a session pass whose
  *    deadline is that window (at most 10,000 ms) on `clock`;
- * 3. calls `work({ guardedSigner })` in the pass, where `guardedSigner(sign)` wraps an RPC-authentication signer so that
- *    the boundary's stop check and synchronous tail run right before each signature;
+ * 3. calls `work({ guardedSigner, signPass })` in the pass, where `guardedSigner(sign)` wraps a signer so that the
+ *    boundary's stop check and synchronous tail run right before each signature, and `signPass(innerSign)` is the boundary's
+ *    signPass on this pass: it resolves the bytes retained for the operation, or calls `innerSign()` once and retains them;
  * 4. releases the session fence, then the kit fence, on every outcome.
  * Resolves `work`'s answer. Rejects with the boundary's refusal, `effect_pass_invalid`, the session's own refusal or
- * `work`'s error. Throws TypeError for a boundary createEffectBoundary did not make.
+ * `work`'s error. Throws TypeError for a boundary createEffectBoundary did not make. The runCreate is issued
+ * (isSellerCreatePass answers true for it).
  */
 export function createSellerCreatePass({ effectBoundary, session, stopped, feeCeilingOs, clock }) {
   const binding = effectBoundaryBinding(effectBoundary);
@@ -64,7 +86,8 @@ export function createSellerCreatePass({ effectBoundary, session, stopped, feeCe
         const signer = effectBoundary.signerFor(held, { sign });
         return (message) => signer.sign(message);
       };
-      return await session.runInEffectPass(handle, () => work({ guardedSigner }));
+      const signPass = (innerSign) => effectBoundary.signPass(held, innerSign).then(({ bytes }) => bytes);
+      return await session.runInEffectPass(handle, () => work({ guardedSigner, signPass }));
     } finally { lease.release(); }
   }
 
@@ -73,5 +96,5 @@ export function createSellerCreatePass({ effectBoundary, session, stopped, feeCe
     const op = { operationId, lane, kind: SELLER_CREATE_KIND, paidWrite: debitOs !== null, debitOs, approvalRef, k1Rev, pinVersion: binding.profile.pinVersion };
     return effectBoundary.withFence(op, (held) => inSessionPass(held, input, work), { context: jobPassContext(operationClass, currentAuthorization) });
   }
-  return Object.freeze({ runCreate });
+  return Object.freeze({ runCreate: issue(runCreate) });
 }
