@@ -154,11 +154,15 @@ const TEST_RUN_LABEL = /^TEST-RUN-[A-Za-z0-9._-]{8,80}$/;
 const TP1_LABEL = /^TP1-[0-9a-f]{32}$/;
 const isPublicationLabel = (value, fixtureLabel) => typeof value === 'string' && (fixtureLabel.test(value) || TP1_LABEL.test(value));
 
+// An Agreement transport binding's node endpoint, when no endpoint rule is passed in (this file is served alone and imports nothing): https only.
+const httpsNodeEndpoint = (endpoint) => (new URL(endpoint).protocol === 'https:' ? endpoint : null);
+
 // The transport is honoured only in its exact documented shape; its members
 // are read once here and never invoked unless the shape matches. A held
 // testnet transport carries only its network label: it has no rpcUrl and
-// never reaches a node.
-function readTransport(candidate, relayOrigin = globalThis.location?.origin) {
+// never reaches a node. A Node caller passes the wire's `canonicalNodeEndpoint`
+// as `nodeEndpoint`; it judges the binding's endpoint under the binding's chain identity.
+function readTransport(candidate, relayOrigin = globalThis.location?.origin, nodeEndpoint = httpsNodeEndpoint) {
   if (candidate === null || typeof candidate !== 'object') return null;
   const { profile, rpcUrl, network, resolveGithubUser } = candidate;
   if (typeof network !== 'string' || !network) return null;
@@ -176,7 +180,7 @@ function readTransport(candidate, relayOrigin = globalThis.location?.origin) {
         || !['http:','https:'].includes(rpc.protocol) || rpc.username || rpc.password || rpc.search || rpc.hash || binding.username || binding.password || binding.search || binding.hash
         || rpc.pathname !== '/portal/api/devnet-native-wallet-rpc' || binding.pathname !== '/portal/api/devnet-native-wallet-binding') return null;
       const bindingKeys=['source','bindingVersion','bindingId','network','chainIdentity','pinVersion','endpoint','transportAuthority',...(settlement?['settlementPublication']:[]),...(delivery?['deliveryPublication']:[]),...(demo?['demoArtifactPublication']:[])];
-      if(agreement && (!hasKeys(candidate.transportBinding,bindingKeys) || candidate.transportBinding.source !== 'devnet-agreement-transport/v1' || candidate.transportBinding.bindingVersion !== 'dacs-demos-network-binding/v1' || candidate.transportBinding.network !== network || !HASH.test(candidate.transportBinding.bindingId) || !HASH.test(candidate.transportBinding.chainIdentity) || new URL(candidate.transportBinding.endpoint).protocol !== 'https:')) return null;
+      if(agreement && (!hasKeys(candidate.transportBinding,bindingKeys) || candidate.transportBinding.source !== 'devnet-agreement-transport/v1' || candidate.transportBinding.bindingVersion !== 'dacs-demos-network-binding/v1' || candidate.transportBinding.network !== network || !HASH.test(candidate.transportBinding.bindingId) || !HASH.test(candidate.transportBinding.chainIdentity) || nodeEndpoint(candidate.transportBinding.endpoint, { chainIdentity: candidate.transportBinding.chainIdentity }) === null)) return null;
       if(settlement && (!hasKeys(candidate.settlementPublication,['policy','artifactKind','phase','railId','phaseIndex','authority']) || candidate.settlementPublication.policy!==DEVNET_SETTLEMENT_POLICY || candidate.settlementPublication.artifactKind!=='SettlementEvidence' || candidate.settlementPublication.phase!=='pay-dem' || candidate.settlementPublication.railId!=='demos-native:DEM' || candidate.settlementPublication.phaseIndex!==2 || !isPublicationLabel(candidate.settlementPublication.authority,TEST_LABEL) || anchorJson(candidate.transportBinding.settlementPublication)!==anchorJson(candidate.settlementPublication))) return null;
       if(delivery && (!hasKeys(candidate.deliveryPublication,['policy','artifactKind','phase','phaseIndex','authority']) || candidate.deliveryPublication.policy!==DEVNET_DELIVERY_POLICY || candidate.deliveryPublication.artifactKind!=='Deliverable' || candidate.deliveryPublication.phase!=='deliver-storage-program' || !Number.isSafeInteger(candidate.deliveryPublication.phaseIndex) || candidate.deliveryPublication.phaseIndex<0 || !isPublicationLabel(candidate.deliveryPublication.authority,TEST_LABEL) || anchorJson(candidate.transportBinding.deliveryPublication)!==anchorJson(candidate.deliveryPublication))) return null;
       if(demo && (!hasKeys(candidate.demoArtifactPublication,['policy','artifactKinds','authority']) || candidate.demoArtifactPublication.policy!==DEVNET_DEMO_ARTIFACT_POLICY || ![DEVNET_DEMO_ARTIFACT_TYPES,[...DEVNET_DEMO_ARTIFACT_TYPES,'SettlementEvidence']].some(kinds=>anchorJson(candidate.demoArtifactPublication.artifactKinds)===anchorJson(kinds)) || !isPublicationLabel(candidate.demoArtifactPublication.authority,TEST_RUN_LABEL) || anchorJson(candidate.transportBinding.demoArtifactPublication)!==anchorJson(candidate.demoArtifactPublication))) return null;
@@ -746,9 +750,9 @@ async function devnetAgreementAnchorPlan(request, address, transport, relayOrigi
 }
 
 
-export function createDevnetAgreementWalletTransport(profile, { relayOrigin } = {}) {
+export function createDevnetAgreementWalletTransport(profile, { relayOrigin, nodeEndpoint } = {}) {
   const candidate={profile:profile?.profile,network:profile?.network,rpcUrl:profile?.rpcUrl,bindingUrl:profile?.bindingUrl,transportBinding:profile?.transportBinding,...(profile?.settlementPublication?{settlementPublication:profile.settlementPublication}:{}),...(profile?.deliveryPublication?{deliveryPublication:profile.deliveryPublication}:{}),...(profile?.demoArtifactPublication?{demoArtifactPublication:profile.demoArtifactPublication}:{})};
-  if(!readTransport(candidate, relayOrigin)?.devnetAgreement) throw new EmbeddedWalletError('held_for_review','no exact same-origin Agreement source capability is available');
+  if(!readTransport(candidate, relayOrigin, nodeEndpoint)?.devnetAgreement) throw new EmbeddedWalletError('held_for_review','no exact same-origin Agreement source capability is available');
   return Object.freeze(candidate);
 }
 
@@ -805,9 +809,9 @@ function proofHandle(context, proofUrl) {
   return handle;
 }
 
-export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, transactionTransport, validateMnemonic, anchorJournal, relayOrigin, bindingRelay, stamp = () => Date.now(), recordCause } = {}) {
+export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, transactionTransport, validateMnemonic, anchorJournal, relayOrigin, nodeEndpoint, bindingRelay, stamp = () => Date.now(), recordCause } = {}) {
   if (typeof DemosCtor !== 'function') throw new TypeError('createSdkWalletSession requires the Demos SDK class as DemosCtor');
-  const transport = readTransport(transactionTransport, relayOrigin);
+  const transport = readTransport(transactionTransport, relayOrigin, nodeEndpoint);
   // Explicit caller-owned atomic journal. RAM implementations are offline
   // evidence only; production persistence/recovery is a separate integration.
   const journal = anchorJournal && ['get', 'put', 'withWalletLock'].every((k) => typeof anchorJournal[k] === 'function') ? anchorJournal : null;
