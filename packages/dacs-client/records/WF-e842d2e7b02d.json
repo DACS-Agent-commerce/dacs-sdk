@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client entry point and fetch deadline test with the signature routing and the Directory row contract",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "ef82c303fb18936a2a85ee38bb63b749f770cf67",
+      "after": "ef82c303fb18936a2a85ee38bb63b749f770cf67"
+    },
+    {
+      "path": "packages/dacs-client/test/fetch-abort-settle.test.mjs",
+      "before": "b0fa0462d61eeff765081f48827cbf993ab675d6",
+      "after": "b0fa0462d61eeff765081f48827cbf993ab675d6"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-e842d2e7b02d.json"
+  ],
+  "note": "Both sides of the merge of the base recorded these files, so their newest records disagree; this record chooses the merged copies. The client entry point keeps this branch's exports and takes the base's description of the Directory client's row contract and timed-out reads. The fetch deadline test keeps this branch's tests and expects the base's timeout kind for a bounded read that reaches its deadline. Both merged cleanly."
+}
