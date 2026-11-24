@@ -13,10 +13,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { networkInfo } from './helpers/network-info.mjs';
-import { createDevnetNativeTransport, DEVNET_NATIVE_BINDING_PATH } from '../src/wallet/devnet-native-transport.mjs';
+import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
+import { createDevnetAgreementTransport, createDevnetNativeTransport, DEVNET_NATIVE_BINDING_PATH } from '../src/wallet/devnet-native-transport.mjs';
 import { openDurableWalletJournal } from '../src/wallet/durable-journal.mjs';
-import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
-import { createDevnetNativeWalletTransport, createSdkWalletSession } from '../src/public/portal/embedded-wallet/sdk-provider.mjs';
+import { buildNativeTransferPayload, deriveStorageAddress } from '../src/dacs/wallet-transactions.mjs';
+import { createDevnetAgreementWalletTransport, createDevnetNativeWalletTransport, createSdkWalletSession } from '../src/public/portal/embedded-wallet/sdk-provider.mjs';
 
 const OWNER='TEST-native-owner', ORIGIN='https://wallet.test', PAYEE='0x'+'7'.repeat(64);
 const PINS={network:'testnet',chainIdentity:'c'.repeat(64),pinVersion:BOUND_PIN_VERSION,endpoint:'https://rpc.invalid/',transportAuthority:OWNER};
@@ -60,9 +61,10 @@ function testNode() {
 }
 
 // inclusionWaitMs 0 never polls; a positive wait polls once per ms with no real sleep.
-async function world(t,{inclusionWaitMs=0,authPause=()=>new Promise(resolve=>setTimeout(resolve,2)),...clockOptions}={}) {
+// agreement uses the Agreement source transport; bindingReply makes the binding relay answer 409 with that exact body.
+async function world(t,{inclusionWaitMs=0,bindingRefusal=null,agreement=false,bindingReply=null,authPause=()=>new Promise(resolve=>setTimeout(resolve,2)),...clockOptions}={}) {
  const dir=mkdtempSync(join(tmpdir(),'native-broadcast-once-')),path=join(dir,'journal.sqlite');
- const node=testNode(),calls=[],approvals=[];
+ const node=testNode(),calls=[],approvals=[],errors=[];
  const {publicKey,privateKey}=generateKeyPairSync('ed25519');
  const address='0x'+Buffer.from(publicKey.export({format:'jwk'}).x,'base64url').toString('hex');
  const signText=m=>sign(null,Buffer.from(m,'utf8'),privateKey).toString('hex');
@@ -71,7 +73,7 @@ async function world(t,{inclusionWaitMs=0,authPause=()=>new Promise(resolve=>set
  const sdkAuth=()=>{const identity=`ed25519:${address}`,timestamp=String(stamp++);return {identity,timestamp,signature:signText(sha(`${identity}:${timestamp}`))};};
  let journal=openDurableWalletJournal({path,mode:'create'}),transport;
  const start=()=>{const transportOwner={getContext:()=>({...CONTEXT}),acquireConnectionFence:()=>({context:{...CONTEXT},release(){}})};
-  transport=createDevnetNativeTransport({expected:PINS,journal,fetchImpl:node.fetch,inclusionWaitMs,inclusionPollMs:1,sleep:async()=>{},...clockOptions,
+  transport=(agreement?createDevnetAgreementTransport:createDevnetNativeTransport)({expected:PINS,journal,fetchImpl:node.fetch,inclusionWaitMs,inclusionPollMs:1,sleep:async()=>{},...clockOptions,
   boundary:writingBoundary({owner:transportOwner,journal}),transportOwner});};
  start();
  // The same-origin binding relay the wallet posts to. The wallet stamps its
@@ -81,6 +83,8 @@ async function world(t,{inclusionWaitMs=0,authPause=()=>new Promise(resolve=>set
  globalThis.location=new URL(ORIGIN+'/');
  globalThis.fetch=async(url,init)=>{
   assert.equal(new URL(url).pathname,DEVNET_NATIVE_BINDING_PATH);
+  if(bindingReply) return Object.assign(Response.json(bindingReply.body,{status:409}),{cause:bindingReply.cause});
+  if(bindingRefusal) return Object.assign(Response.json({error:bindingRefusal.code,message:"TEST untrusted server text"},{status:409}),{cause:bindingRefusal});
   await authPause();
   try{return Response.json(await transport.walletBinding(JSON.parse(init.body),init.headers));}
   catch(error){return Response.json({error:error.code??'internal_error'},{status:409});}
@@ -108,11 +112,12 @@ async function world(t,{inclusionWaitMs=0,authPause=()=>new Promise(resolve=>set
   // The SDK reports a failed broadcast request as result 500.
   async broadcast(confirmed){calls.push('broadcast');try{broadcastAnswer=await transport.rpc({method:'execute',params:[{extra:'broadcastTx',data:confirmed}]},sdkAuth());return broadcastAnswer;}catch{return {result:500,response:'TEST transport failure'};}}
  }
- const wallet=createSdkWalletSession({DemosCtor:TestDemos,transactionTransport:createDevnetNativeWalletTransport(transport.profile(ORIGIN)),approve:async request=>{approvals.push(request);return true;}});
+ const profile=transport.profile(ORIGIN);
+ const wallet=createSdkWalletSession({DemosCtor:TestDemos,recordCause:(_envelope,error)=>errors.push(error),transactionTransport:agreement?createDevnetAgreementWalletTransport(profile):createDevnetNativeWalletTransport(profile),...(agreement?{anchorJournal:journal}:{}),approve:async request=>{approvals.push(request);return true;}});
  await wallet.create();
  assert.equal(wallet.getPublicAccount().address,address);
  const tx=buildNativeTransferPayload({from:address,to:PAYEE,amountOs:'2500000000',nonce:1,timestamp:Date.now(),encoding:'os-string'});
- return {node,calls,approvals,wallet,address,sdkAuth,
+ return {node,calls,approvals,errors,wallet,address,sdkAuth,profile,
   send:()=>wallet.request({method:'sendTransaction',params:[tx]}),
   validity:()=>validity,broadcastAnswer:()=>broadcastAnswer,transport:()=>transport,
   lane:async()=>(await journal.entries()).find(([key])=>key.startsWith('devnet/native-wallet/'))?.[1],
@@ -308,3 +313,100 @@ for (const jump of [-1000, 1000]) test(`native inclusion wait ignores a ${jump} 
  assert.equal(elapsed,6);assert.equal(polls,3);
  assert.equal(w.count('broadcast'),1);
 });
+
+for (const [code,message] of [
+ ['pin_version_retired','the source refused this binding request: this pin version is retired; nothing is retried'],
+ ['wrong_block','the source refused this binding request: the identity block height or confirmation is invalid; nothing is retried'],
+ ['genesis_representation_mismatch','the source refused this binding request: the node does not serve the reviewed genesis representation; nothing is retried'],
+ ['writes_stopped','the source refused this binding request: the host has stopped writes; nothing is retried'],
+ ['stop_check_failed','the source refused this binding request: the host\'s stop check failed; nothing is retried'],
+ ['stop_check_invalid','the source refused this binding request: the host\'s stop check gave no valid answer; nothing is retried'],
+ ['stop_check_timeout','the source refused this binding request: the host\'s stop check did not answer in time; nothing is retried'],
+ ['fee_ceiling_required','the source refused this binding request: the host has no valid fee ceiling; nothing is retried'],
+ ['write-fee-cap','the source refused this binding request: this write is above the host\'s fee ceiling; nothing is retried'],
+ ['tp1_binding_required','the source refused this binding request: the source has no valid profile binding; nothing is retried'],
+ ['tp1_local_binding_invalid','the source refused this binding request: the source\'s connection description is invalid; nothing is retried'],
+ ['tp1_local_binding_changed','the source refused this binding request: the source\'s connection differs from its profile binding; nothing is retried'],
+ ['tp1_connection_unverified','the source refused this binding request: the profile authority did not verify the source\'s connection; nothing is retried'],
+ ['tp1_participant_profile_mismatch','the source refused this binding request: the session participants do not match the source\'s profile binding; nothing is retried'],
+ ['tp1_authority_timeout','the source refused this binding request: the profile authority did not answer in time; nothing is retried'],
+ ['tp1_fence_invalid','the source refused this binding request: the source\'s connection fence is invalid; nothing is retried'],
+ ['tp1_fence_timeout','the source refused this binding request: the source\'s connection fence was not acquired in time; nothing is retried'],
+ ['tp1_fence_release_failed','the source refused this binding request: an earlier connection fence could not be released; nothing is retried'],
+ ['journal-closed','the source refused this binding request: the transaction journal is closed; nothing is retried'],
+ ['journal-busy','the source refused this binding request: the transaction journal or the wallet\'s journal lane is busy; nothing is retried'],
+ ['journal-capacity','the source refused this binding request: the transaction journal cannot hold the required record; nothing is retried'],
+ ['journal-fenced','the source refused this binding request: this request does not hold the wallet\'s journal lane; nothing is retried'],
+ ['journal-integrity','the source refused this binding request: the transaction journal is not intact; nothing is retried'],
+ ['journal-error','the source refused this binding request: a transaction journal operation failed; nothing is retried'],
+ ['journal-invalid','the source refused this binding request: the transaction journal rejected an invalid record or setting; nothing is retried'],
+ ['journal-reentrant','the source refused this binding request: this request already holds the wallet\'s journal lane; nothing is retried'],
+ ['TEST_future_binding_refusal','the independently supplied network binding is unavailable; nothing is retried'],
+ ['unavailable','the independently supplied network binding is unavailable; nothing is retried'],
+ ['toString','the independently supplied network binding is unavailable; nothing is retried'],
+]) {
+ test(`binding refusal ${code} keeps its code and cause with the local message`,async t=>{
+  const cause=Object.assign(new Error('TEST private source detail'),{code});
+  const w=await world(t,{bindingRefusal:cause});
+  const result=await w.send();
+  assert.equal(result.success,false);
+  assert.deepEqual(result.error,{code,message});
+  assert.equal(w.errors.length,1);
+  assert.equal(w.errors[0].code,code);
+  assert.equal(w.errors[0].message,message);
+  assert.equal(w.errors[0].cause,cause);
+  assert.equal(w.count('sign'),0);
+  assert.equal(w.count('confirm'),0);
+  assert.equal(w.count('broadcast'),0);
+  assert.deepEqual(w.node.broadcasts,[]);
+ });
+}
+
+// A signed Agreement CREATE for this wallet, built as the seller-facing flow does (TP-1 fixture shape).
+async function agreementAnchor(w) {
+ const {createPrivateKey,createPublicKey}=await import('node:crypto');
+ const sellerKey=createPrivateKey({key:Buffer.concat([Buffer.from('302e020100300506032b657004220420','hex'),Buffer.alloc(32,2)]),format:'der',type:'pkcs8'});
+ const seller='did:demos:agent:'+Buffer.from(createPublicKey(sellerKey).export({format:'jwk'}).x,'base64url').toString('hex');
+ const owner='did:demos:agent:'+w.address.slice(2),jobId='01M5YKPJG0248H248H248H248H',logicalAddress='dacs3:agreement:'+jobId;
+ const scope={payeeBoundAgreementVersion:'1',derivedFromPattern:'fixed-price',jobId,
+  parties:[{role:'buyer',primaryClaim:owner},{role:'seller',primaryClaim:seller}],
+  terms:{price:{currency:'DEM',amount:'1'},rail:{railId:'demos-native:DEM',railVersion:1},payoutBindings:[{payeeAddress:'0x'+seller.slice('did:demos:agent:'.length),phaseIndex:2,railId:'demos-native:DEM'}]}};
+ const contentHash=sha256Hex(canonicalize(scope)),message='dacs-payee-bound-agreement:v1:'+contentHash;
+ const signed=await w.wallet.request({method:'sign',params:[message]});
+ assert.equal(signed.success,true,JSON.stringify(signed));
+ const artifact={...scope,signatures:[{party:owner,algorithm:'ed25519',value:Buffer.from(signed.data.signature,'hex').toString('base64url')},{party:seller,algorithm:'ed25519',value:sign(null,Buffer.from(message),sellerKey).toString('base64url')}]};
+ const envelopeHash=sha256Hex(canonicalize(artifact)),networkBinding=w.profile.transportBinding;
+ const nonce=1,programName=logicalAddress.replace(/:/g,'%3A'),storageAddress=deriveStorageAddress(w.address,programName,nonce,'');
+ const op={operation:'CREATE_STORAGE_PROGRAM',programName,storageAddress,salt:'',encoding:'json',storageLocation:'onchain',acl:{mode:'public'},data:artifact,metadata:{logicalAddress,contentHash,envelopeHash,artifactKind:'Agreement',networkBinding}};
+ const transaction={content:{type:'storageProgram',from:w.address,to:storageAddress,amount:0,data:['storageProgram',op],nonce,timestamp:Date.now(),transaction_fee:{network_fee:0,rpc_fee:0,additional_fee:0,rpc_address:null},network:networkBinding.network,chainIdentity:networkBinding.chainIdentity},signature:null,hash:'',status:'',blockNumber:null};
+ return {kind:'devnet-agreement-storage-create',profile:'devnet-agreement',network:networkBinding.network,owner,artifactKind:'Agreement',jobId,logicalAddress,contentHash,envelopeHash,transaction};
+}
+
+// The Agreement anchor's bind request reads the relay's body itself. A refusal
+// that names no code keeps network_binding_required with the anchor's generic
+// text; a named code goes through the same table as the native transfer.
+for (const [name,body,code,message] of [
+ ['an empty body',{},'network_binding_required','fresh source network binding is unavailable'],
+ ['error null',{error:null},'network_binding_required','fresh source network binding is unavailable'],
+ ['network_binding_required',{error:'network_binding_required'},'network_binding_required','the source refused this binding request: a current signature or broadcast connection fence is required; nothing is retried'],
+ ['writes_stopped',{error:'writes_stopped'},'writes_stopped','the source refused this binding request: the host has stopped writes; nothing is retried'],
+ ['journal-closed',{error:'journal-closed'},'journal-closed','the source refused this binding request: the transaction journal is closed; nothing is retried'],
+ ['TEST_future_binding_refusal',{error:'TEST_future_binding_refusal'},'TEST_future_binding_refusal','fresh source network binding is unavailable'],
+ ['an empty error code',{error:''},'','fresh source network binding is unavailable'],
+]) {
+ test(`anchor binding refusal with ${name} reports ${code||'its empty code'} with the local message`,async t=>{
+  const cause=new Error('TEST private relay detail');
+  const w=await world(t,{agreement:true,bindingReply:{body:Object.keys(body).length?{...body,message:'TEST untrusted server text'}:body,cause}});
+  const result=await w.wallet.request({method:'sendTransaction',params:[await agreementAnchor(w)]});
+  assert.equal(result.success,false,JSON.stringify(result));
+  assert.deepEqual(result.error,{code,message});
+  assert.equal(w.errors.length,1);
+  assert.equal(w.errors[0].code,code);
+  assert.equal(w.errors[0].message,message);
+  assert.equal(w.errors[0].cause,cause);
+  assert.equal(w.count('sign'),0);
+  assert.equal(w.count('confirm'),0);
+  assert.equal(w.count('broadcast'),0);
+  assert.deepEqual(w.node.broadcasts,[]);
+ });
+}
