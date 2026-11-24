@@ -330,7 +330,7 @@ for (const [name, response, kind] of [
 }
 test('bounded fetch reports its own timeout in one documented shape', async () => {
   const read = bounded((_url, init) => new Promise((_resolve, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason))), { timeoutMs: 1 });
-  await assert.rejects(read, error => error.kind === 'unavailable' && error.message === 'request timed out');
+  await assert.rejects(read, error => error.kind === 'timeout' && error.message === 'request timed out');
 });
 test('bounded fetch keeps the cause of an ordinary network failure', async () => {
   const cause = new TypeError('TEST-network');
