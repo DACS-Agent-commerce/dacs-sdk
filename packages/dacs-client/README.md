@@ -48,7 +48,7 @@ Delta records also check parent continuity against the newest ancestor records f
 
 ## Public API
 
-A plugin composes a purchase from the root names only. Each export's doc comment in `src/index.mjs` names what it returns and what it throws or rejects with; this section lists the factories' methods and the error contract.
+A plugin composes a purchase from the root names and the purchase subpaths below. Each export's doc comment in `src/index.mjs` names what it returns and what it throws or rejects with; this section lists the factories' methods and the error contract.
 
 The admission option: `admission: { binding, currentLocal }` is required by each factory below.
 - Construction throws `TypeError('admission_required')` without exactly those two members, `TypeError('admission_input_untrusted')` for a `profile`, `record`, `identityRecord` or `actionsAdmitted` option, and `OperationError('runtime_unsupported')` below the Node floor.
@@ -112,6 +112,22 @@ Passive: `origin` (a string)
 - `recordWalletResult({ deliveryId, hash, nonce, state })` resolves `{ status, count }`. `hash` is 64 lowercase hex, `nonce` a non-negative safe integer, `state` one of `submitted`, `rejected` or `unknown`. The report is not rejected with an error when it is malformed: it resolves `{ status: 'invalid_report' }` and writes nothing, so check `status`. Otherwise `status` is `recorded`, `repeat` for a report identical to one kept (no slot used), or `evidence_limit` for a ninth distinct report (history unchanged). Journal errors, such as a busy lane, reject unchanged.
 - `resultHistory(deliveryId)` resolves the kept reports in the order they were accepted, each frozen with `verified: false`. A report is a pointer the wallet gave, never proof that a transfer happened or settled; check the chain before relying on it.
 - `openRetainedCreateJournal({ deliveryId, laneKey })` resolves a frozen copy of the journal records under `laneKey` and the retained CREATEs that name `deliveryId`. It reads the whole journal once and has no write, lock or resume member.
+
+### createPurchaseWalletBridge
+
+`import { createPurchaseWalletBridge } from '@kynesyslabs/dacs-client/purchase/wallet-bridge'`. It builds the bridge that `createProtocolPurchases` takes from `dacsProtocol.walletAgreement.bridgeFor(operation)`, for one purchase. Build a new one, with its own callback, for each operation; nothing is cached between them.
+
+`createPurchaseWalletBridge({ walletFactory })` calls `walletFactory()` once, when it is built. The callback only gathers configuration: it must not sign, send or write. It returns `{ rpcUrl, network, journal, sourceCapability, requestWallet }`:
+- `rpcUrl` and `network` equal the `walletAgreement` values of the purchase service that receives the bridge, and `journal` and `sourceCapability` are the same objects. The journal is the buyer wallet's one durable journal from `./wallet/durable-journal`, shared by all of that wallet's purchases. The purchase service finds the verified Agreement CREATE there, and a wallet request still unresolved for one purchase refuses the next one on the same wallet with `wallet-fenced`.
+- `requestWallet({ anchorJournal })` returns this operation's packaged wallet `{ request, getPublicAccount, getWriteProfile }`. A wallet request factory alone is not enough: without the four values above there is no source to read the CREATE back from and no journal.
+- Other members are ignored. The bridge takes no `anchor`, `resume` or `verifyReceipt` from the host.
+
+It returns a frozen `{ anchor(input), resume(input), verifyReceipt(input) }`, the client's storage-anchor bridge built from that configuration. Each member passes its argument and result through unchanged.
+- `anchor` asks the wallet at most once for a prepared Agreement CREATE, then reads it back from the source; a retained plan is only read back. Only `status: 'native-read-visible'` means the CREATE was read back and verified; `indeterminate` and `rejected` carry a `code`. Every result says `finality: 'not-established'`.
+- `resume` reads a retained CREATE back and never asks the wallet. With nothing issued it throws `authorization-required`.
+- `verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter, artifactKind })` resolves `valid`, `invalid` or `indeterminate`. It reads the native record, its creating transaction and its block again through the source capability, so a receipt is never accepted on its own.
+
+Construction throws a `DemosSr2BridgeError` with code `wallet-required` before any wallet request, signature or write when `walletFactory` is not a function, its result has no `requestWallet` function, or `requestWallet` returns no packaged wallet. The storage-anchor bridge's own refusals keep their codes, such as `profile-held` for a missing source capability and `journal-required`. An error thrown by `walletFactory` reaches the caller unchanged.
 
 ### Other exports
 
