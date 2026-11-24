@@ -1,0 +1,31 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF keep portalOperation and verifyDeal to readback while the host is stopped",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "1c2b47a4b08a6288772361bc086567c38e848bc9",
+      "after": "a474b04f698f0bbdda8d48e00165676ee3d0f1ad"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "d583527e59411dc99ee07d1df26ead2d4226cdac",
+      "after": "46b1516ab98c09763698320acc27493f5e779b9f"
+    },
+    {
+      "path": "packages/dacs-client/test/stop-seam.test.mjs",
+      "before": "83097c562635d630921870754bbbd5d3aad4f26d",
+      "after": "592a982943fdf354f3fe774c2da08e97eb4f10e6"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-0d0a233f7f09.json",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/purchases.mjs",
+    "packages/dacs-client/test/stop-seam.test.mjs"
+  ],
+  "note": "While the host stop answers stopped, portalOperation projects expiry without saving it, and verifyDeal reads the stop once at entry and is readback only: it saves no expiry, hash, settlement or payment_uncertain move and starts no seller or native payment work. Where the continuation would run it records the purchase's suspension, then returns the stored row with verification {outcome: 'readback_only', reason: <stop code>}. A failed suspension write rejects with the stop's refusal carrying details.suspensionWriteError. The buyer-access-closed readback keeps its source reads and rules and carries reason; a malformed txHash is still refused. Restated test: the lstat KILL check test counts verifyDeal's entry read beside the continuation's two."
+}
