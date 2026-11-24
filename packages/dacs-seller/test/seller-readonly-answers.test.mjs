@@ -2,7 +2,10 @@
 // answers and the co-signature stay behind the guard, and a refusal's cause travels inside its message.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DACS_SELLER_HTTP_DOMAINS } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_PATHS } from '@kynesyslabs/dacs/wire';
+import { agentFixture } from './helpers/seller-agent-isolated-fixture.mjs';
+import { JOBS } from './helpers/bilateral-vet-fixture.mjs';
+import { fetchAsHost } from './helpers/listener-host.mjs';
 import { countedKeyRoles } from './helpers/counted-key-roles.mjs';
 import { proposalWireWorld } from './helpers/proposal-wire-world.mjs';
 import { PATHS } from './helpers/wire-routes-world.mjs';
@@ -31,18 +34,48 @@ test('open custody and start the composed host while admitted, then re-hold it: 
   const host = await contextHostFixture(t);
   const started = await host.start({ signer: keyRolesOf(custody) });
   const buyer = await host.buyerFor(started);
-  const challenge = await buyer.challenge();
+  const discovery = async () => {
+    const served = await fetchAsHost()(started.url + DACS_SELLER_DISCOVERY_PATH);
+    return { status: served.status, proof: await buyer.verifyDiscovery(Buffer.from(await served.arrayBuffer())) };
+  };
+  const challenge = await buyer.post(DACS_SELLER_HTTP_PATHS.contextChallenge, await buyer.signChallenge());
   assert.deepEqual([challenge.status, challenge.signed], [200, true], 'while admitted the composed host answers the challenge, signed');
+  await buyer.verify(challenge);
   assert.ok(custody.counts.effect >= 1 && custody.counts.integrity >= 1, 'the effect role signed the answer and the integrity role the journal');
+  const admittedDiscovery = await discovery();
+  assert.deepEqual([admittedDiscovery.status, admittedDiscovery.proof.ready], [200, true], 'while admitted the host serves a verifiable ready:true discovery document');
   guard.setKitOperationGuardForTest('off');
   const heldAt = counted(custody);
-  const refused = await buyer.challenge();
+  const refused = await buyer.post(DACS_SELLER_HTTP_PATHS.contextChallenge, await buyer.signChallenge());
   assert.deepEqual([refused.status, refused.body.error, Object.keys(refused.body).sort(), refused.signed], [503, 'kit_operation_guard_off', REFUSAL_MEMBERS, true], 'a signed refusal');
-  const contextRefusal = await buyer.context(JOB, challenge.body.sessionNonce);
+  await buyer.verify(refused);
+  const contextRefusal = await buyer.post(DACS_SELLER_HTTP_PATHS.context, await buyer.signContext(JOB, challenge.body.sessionNonce));
   assert.deepEqual([contextRefusal.status >= 400, Object.keys(contextRefusal.body).sort(), contextRefusal.signed], [true, REFUSAL_MEMBERS, true], 'a signed context-route refusal');
+  await buyer.verify(contextRefusal);
+  const heldDiscovery = await discovery();
+  assert.deepEqual([heldDiscovery.status, heldDiscovery.proof.ready], [200, false], 'the re-held host serves a verifiable ready:false discovery document');
   assert.equal(custody.counts.effect, heldAt.effect, 'the re-held host made no effect signature');
-  assert.equal(custody.counts.readOnly, heldAt.readOnly + 2, 'both refusals were signed by the read-only role');
+  assert.equal(custody.counts.readOnly, heldAt.readOnly + 3, 'both refusals and the discovery document were signed by the read-only role');
   guard.setKitOperationGuardForTest('testnet-tp1');
+
+  // Readback through the agent the custody roles sign for: the commitment's anchor is written and read back while admitted; after the
+  // re-hold the same readback authenticates it again and records its completion with the integrity role alone, and that record verifies.
+  const records = await countedKeyRoles(t);
+  const a = await agentFixture({ lifecycle: true, roles: { effectSigner: records.effectSigner, integritySigner: records.integritySigner } });
+  t.after(() => a.close());
+  await a.agent.commit({ jobId: JOBS[0] });
+  guard.setKitOperationGuardForTest('off');
+  const readbackAt = counted(records);
+  const readback = await a.agent.reconcile({ jobId: JOBS[0] });
+  guard.setKitOperationGuardForTest('testnet-tp1');
+  assert.equal(readback.status, 'reconciled', JSON.stringify(readback));
+  assert.ok(readback.outcomes.length >= 1 && readback.outcomes.every(({ status }) => status === 'present-authenticated'), 'every anchor of the job read back authenticated');
+  assert.deepEqual([records.counts.integrity - readbackAt.integrity, records.counts.effect - readbackAt.effect, records.counts.readOnly - readbackAt.readOnly],
+    [readback.outcomes.length, 0, 0], 'each completion record was signed by the integrity role, and nothing else signed');
+  for (const { address } of readback.outcomes) {
+    const receipt = await a.store.reconcileAnchor(`anchor:${address}`, a.anchors, { record: false });
+    assert.equal(typeof receipt, 'object', `the integrity-signed completion record of ${address} verifies when read`);
+  }
 
   const reads = await countedKeyRoles(t);
   const w = await proposalWireWorld(t);

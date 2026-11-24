@@ -1308,7 +1308,8 @@ bytes) and checks the TP-1 authority when it signs, and the kit guard for a
 After `close()` every role refuses. The host, `createSellerAgent` and `createWireContext` each
 require all three roles (a TypeError before anything is opened). The host signs the discovery
 document it serves at `/.well-known/dacs-seller.json`, each read answer and each refusal through
-`readOnlyAnswerSigner`, so a re-held host still answers them. A refusal body is exactly
+`readOnlyAnswerSigner`, so a re-held host still answers them (its discovery document then says
+`ready: false`). A refusal body is exactly
 `{ error, message }`; a cause is at the end of the message as `(cause: <cause>)`. Every other
 answer is signed with `sign` inside a short pass of the host's effect boundary, so it waits behind
 any pass that holds the boundary's fence, for up to 10 seconds (`tp1_fence_timeout`).
