@@ -117,7 +117,7 @@ Passive: `origin` (a string)
 
 - `recordWalletResult({ deliveryId, hash, nonce, state })` resolves `{ status, count }`. `hash` is 64 lowercase hex, `nonce` a non-negative safe integer, `state` one of `submitted`, `rejected` or `unknown`. The report is not rejected with an error when it is malformed: it resolves `{ status: 'invalid_report' }` and writes nothing, so check `status`. Otherwise `status` is `recorded`, `repeat` for a report identical to one kept (no slot used), or `evidence_limit` for a ninth distinct report (history unchanged). Journal errors, such as a busy lane, reject unchanged.
 - `resultHistory(deliveryId)` resolves the kept reports in the order they were accepted, each frozen with `verified: false`. A report is a pointer the wallet gave, never proof that a transfer happened or settled; check the chain before relying on it.
-- `openRetainedCreateJournal({ deliveryId, laneKey })` resolves a frozen copy of the journal records under `laneKey` and the retained CREATEs that name `deliveryId`. It reads the whole journal once and has no write, lock or resume member.
+- `openRetainedCreateJournal({ deliveryId })` resolves a frozen `{ deliveryId, records }` holding only the retained signed CREATEs that name `deliveryId`, whatever their journal key. The caller authenticates the delivery first. It refuses any other input, such as a `laneKey`, with `reader_input_invalid` before reading. It selects by shape, without verifying signatures or checking the chain, reads the whole journal once and has no write, lock or resume member.
 
 ### Other exports
 
