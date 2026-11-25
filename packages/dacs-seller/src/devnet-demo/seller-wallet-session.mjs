@@ -97,7 +97,6 @@ export function createSellerWalletSession(options) {
   checkOptions(options);
   const { endpoint, transportAuthority, fetchImpl, signer, loadKeyRecord, approve, approvalMode, journalMode, publications, diagnostics,
     clock = { now: () => Date.now() }, buyerAccess = null } = options;
-  // No chain identity is passed, so the owner admits only an https root.
   const owner = createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl });
   let finalizeCalled = false, closed = false, closing = null, session = null, anchor = null, finalizedRunCreate = null;
   const { authority, connectionAuthority } = createNodeAuthorityReader({ owner, claim: () => {

@@ -1259,9 +1259,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `not-authorized` with nothing signed or sent. A signature or send is also
   refused while the kit
   operation guard is off or the client's purchase hold is held, which is how
-  both ship. `start` does not build the wallet. The delivery constructors take
-  a `TEST-` label or a TP-1 token with the composition's own `binding`; a
-  token is refused in that same state, and a `TP1-` label string grants nothing.
+  both ship. `start` does not build the wallet. The delivery constructors take a `TEST-` label or a TP-1 token with
+  the composition's own `binding`; a token is refused in that same state, and a `TP1-` label string grants nothing.
   Native writes also need a
   qualified node deployment (`QUALIFIED_NODE_COMMITS`).
 - `createSellerWalletSession` (`src/devnet-demo/seller-wallet-session.mjs`) is
@@ -1272,10 +1271,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `createSellerNodeWallet`, a wall `clock` (`Date.now` by default) and the
   anchor's `buyerAccess` (`null` by default, which refuses every job's write
   and read with `buyer_access_closed`); any other option is a TypeError. The
-  `endpoint` is an https root (plain http refuses `transport_mismatch`). Its
-  read-only pair comes from `createNodeAuthorityReader({ owner, claim })`. At
-  finalize a publication naming the binding's own `TP1-` label gets a token for
-  that binding; the anchor keeps the label. Its
+  `endpoint` is an https root (plain http refuses `transport_mismatch`). Its read-only pair comes from `createNodeAuthorityReader({ owner, claim })`.
+  At finalize a publication naming the binding's own `TP1-` label gets a token for that binding; the anchor keeps the label. Its
   `artifactAnchor` is the one handle the operator gives the host, the Vet
   provider and the delivery capability. Until the host finalizes the port
   under the state lock, every anchor method refuses
