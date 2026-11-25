@@ -16,7 +16,7 @@ const code = (expected) => (error) => error?.code === expected;
 const iso = (ms) => new Date(ms).toISOString();
 const envelopeOf = (p) => ({ readback: true, retained: { stage: 'broadcast-accepted', hash: p.txHash, nonce: p.createNonce } });
 const PASSIVE_SERVICE = ['nativePaymentLaneRead', 'planRunning', 'portalEvidence', 'portalOperation', 'status', 'verifyDeal'];
-const PASSIVE_PROTOCOL = ['assertBuyerAccess', 'observeReportedPayment', 'readIssued', 'readIssuedPayment', 'readRetainedNativePaymentLane', 'supportsMode'];
+const PASSIVE_PROTOCOL = ['assertBuyerAccess', 'assertSellerReceiptReservation', 'observeReportedPayment', 'readIssued', 'readIssuedPayment', 'readRetainedNativePaymentLane', 'supportsMode'];
 const functionNames = (object) => Object.keys(object).filter((name) => typeof object[name] === 'function').sort();
 
 async function issuedWorld(t, options) {

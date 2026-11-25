@@ -354,7 +354,7 @@ test('stopped: every active method of both purchase factories rejects writes_sto
   const stop = { now: true };
   const world = await realFactories(t, { stopped: () => stop.now });
   const readsBefore = world.authority.state.calls;
-  const passiveProtocol = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'readRetainedNativePaymentLane'];
+  const passiveProtocol = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'assertSellerReceiptReservation', 'readRetainedNativePaymentLane'];
   const passiveService = ['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning', 'nativePaymentLaneRead'];
   const members = [...activeMembers(world.protocol, passiveProtocol), ...activeMembers(world.service, passiveService)];
   assert.ok(members.length > 20);
@@ -362,6 +362,7 @@ test('stopped: every active method of both purchase factories rejects writes_sto
   assert.equal(world.authority.state.calls, readsBefore);
   assert.equal(world.db.prepare('SELECT COUNT(*) AS n FROM operations').get().n, 0);
   assert.equal(world.protocol.supportsMode('TEST-mode'), false);
+  assert.throws(() => world.protocol.assertSellerReceiptReservation({ terms: {}, state: { protocol: {} } }), { code: 'seller_receipt_reservation_insufficient' });
   assert.equal(world.service.planRunning({ status: 'cancelled' }), false);
   const made = recordingFactory();
   const wrapped = admitPublicFactory(made.factory, { hostStop: true, passive: ['passiveReader'] })({ admission: world.admission, stopped: () => stop.now });
