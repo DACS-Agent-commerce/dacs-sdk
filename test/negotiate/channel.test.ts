@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, test, vi } from "vitest";
 
+import { DacsError } from "../../src/errors.js";
 import {
   admitChannelMessage,
   ed25519Verify,
@@ -355,5 +356,46 @@ describe("DACS-3 channel admission", () => {
     const result = await admitChannelMessage(message(), context(1), verifier);
     expect(result.decision).toBe("fail");
     expect(verifier).not.toHaveBeenCalled();
+  });
+});
+
+describe("unsigned channel message errors carry catalog codes", () => {
+  const unsigned = {
+    channelId: CHANNEL,
+    sequence: 1,
+    sender: SENDER,
+    sentAt: 1_750_000_000_000,
+    type: "offer" as const,
+    body: { price: "10" },
+  };
+
+  test.each([
+    {
+      name: "a message that already has a signature",
+      candidate: message(),
+      code: "channel.message_already_signed",
+      text: "unsigned channel message must omit signature",
+    },
+    {
+      name: "an envelope that is malformed",
+      candidate: { ...unsigned, sequence: 0 },
+      code: "channel.message_malformed",
+      text: "unsigned channel message envelope is malformed",
+    },
+  ])("$name is refused with its code", ({ candidate, code, text }) => {
+    let thrown: unknown;
+    try {
+      prepareChannelMessageSigningInput(candidate);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(DacsError);
+    expect(thrown).toMatchObject({
+      code,
+      category: "permanent",
+      message: text,
+      name: "DacsError",
+    });
+    expect(Object.keys(thrown as object).sort()).toEqual(["category", "code", "name"]);
   });
 });

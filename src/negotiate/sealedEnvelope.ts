@@ -203,7 +203,7 @@ export function assignSealedEnvelopeRoles(input: {
     input.auctionMode,
   );
   if (!resolved.ok) {
-    throw new DacsError(resolved.reason);
+    throw new DacsError(resolved.reason, { code: "sealed.mode_unresolved" });
   }
 
   const buyer =
