@@ -242,7 +242,12 @@ export function prepareChannelMessageSigningInput<TBody = unknown>(
     candidate,
     "unsigned channel message",
   );
-  if (!isRecord(envelope) || hasOwn(envelope, "signature")) {
+  if (!isRecord(envelope)) {
+    throw new DacsError("unsigned channel message must omit signature", {
+      code: "channel.message_malformed",
+    });
+  }
+  if (hasOwn(envelope, "signature")) {
     throw new DacsError("unsigned channel message must omit signature", {
       code: "channel.message_already_signed",
     });

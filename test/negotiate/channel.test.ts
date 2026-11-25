@@ -382,6 +382,30 @@ describe("unsigned channel message errors carry catalog codes", () => {
       code: "channel.message_malformed",
       text: "unsigned channel message envelope is malformed",
     },
+    {
+      name: "an empty array",
+      candidate: [],
+      code: "channel.message_malformed",
+      text: "unsigned channel message must omit signature",
+    },
+    {
+      name: "a string",
+      candidate: "offer",
+      code: "channel.message_malformed",
+      text: "unsigned channel message must omit signature",
+    },
+    {
+      name: "a number",
+      candidate: 7,
+      code: "channel.message_malformed",
+      text: "unsigned channel message must omit signature",
+    },
+    {
+      name: "null",
+      candidate: null,
+      code: "channel.message_malformed",
+      text: "unsigned channel message must omit signature",
+    },
   ])("$name is refused with its code", ({ candidate, code, text }) => {
     let thrown: unknown;
     try {
