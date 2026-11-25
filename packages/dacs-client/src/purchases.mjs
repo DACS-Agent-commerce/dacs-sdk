@@ -708,7 +708,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     }
     if (operation.status !== 'approved') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
     // The payment's debit is its price plus the network fee; over the host's ceiling nothing is saved, moved or offered.
-    await assertWriteWithinFeeCeiling(feeCeilingOs, t.price.amountOs, chain);
+    // A native payment's seller receipt is checked against this same fee read below.
+    const networkFeeOs = await assertWriteWithinFeeCeiling(feeCeilingOs, t.price.amountOs, chain);
     // Authoritative: always a fresh chain readback, never the preflight's.
     const recheck = await verifier.verify({ listingId: t.listing.listingId, version: t.listing.version, seller: t.seller.claim, purchaseId: operation.id, fresh: true });
     if (!recheck.transactable || recheck.contentHash !== t.listing.contentHash || recheck.price?.amountOs !== t.price.amountOs || recheck.payee !== t.seller.payee) {
@@ -730,6 +731,16 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         await protocolGate(operation, 'handoff');
       } catch (error) {
         if (admissionRefused(error) || !(error instanceof OperationError)) throw error;
+        ops.record(operation.id, 'handoff_refused', { reason: error.code });
+        return { operation, payload: null, refused: error.code };
+      }
+    }
+    // A native payment opens only on the seller's signed receipt: it covers this Pay's debit and is within the buyer's ceilings and cap.
+    if (usesNativeAgreementPayment(operation)) {
+      try {
+        protocol.assertSellerReceiptReservation(operation, networkFeeOs);
+      } catch (error) {
+        if (!(error instanceof OperationError)) throw error;
         ops.record(operation.id, 'handoff_refused', { reason: error.code });
         return { operation, payload: null, refused: error.code };
       }
@@ -761,6 +772,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       // A concurrent handoff may have saved first; its coordinates win.
       const existing = coordinates.get(operation.id);
       if (existing) return existing;
+      // The row this transaction writes, not the snapshot checked above, must still carry a usable receipt.
+      if (usesNativeAgreementPayment(operation)) protocol.assertSellerReceiptReservation(ops.get(operation.accountId, operation.id), networkFeeOs);
       assertNoUnresolved(t.buyer.wallet, operation.id);
       const consumed = coordinates.walletConsumedSenderNonce(t.buyer.wallet, t.network, expectedNonce)
         .find(({ operationId }) => sameDomain(ops.get(operation.accountId, operationId)?.terms.domain, t.domain));
