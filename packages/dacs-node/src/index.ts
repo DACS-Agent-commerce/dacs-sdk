@@ -84,7 +84,10 @@ export {
   type DacsWalletSpendTestnetAuthorityV1,
 } from "./walletSpendTestnetService.js";
 export {
+  DACS_WALLET_SPEND_TESTNET_AUTHORITY_COMMON_SETTING_NAMES,
+  DACS_WALLET_SPEND_TESTNET_AUTHORITY_PAY_DEM_SETTING_NAMES,
   DACS_WALLET_SPEND_TESTNET_AUTHORITY_SETTING_NAMES,
+  DACS_WALLET_SPEND_TESTNET_DEMOS_CHAIN_ID,
   DacsWalletSpendTestnetAuthorityError,
 } from "./walletSpendTestnetSettings.js";
 export * from "./x402SellerEvm.js";

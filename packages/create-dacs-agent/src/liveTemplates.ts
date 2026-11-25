@@ -43,10 +43,8 @@ function packageJson(options: LiveProjectTemplateOptions): string {
       "dacs:upgrade": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js upgrade",
       "dacs:service": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/service.js",
       "dacs:smoke:offline": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/offline-smoke.js",
-      ...(x402 ? {
-        "dacs:authority": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js authority",
-        "dacs:authority:policy": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js authority-policy",
-      } : {}),
+      "dacs:authority": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js authority",
+      "dacs:authority:policy": "npm run build --silent && node --import @kynesyslabs/dacs-node/demos-loader dist/src/cli.js authority-policy",
     },
     dependencies: {
       "@kynesyslabs/dacs": SDK_VERSION,
@@ -1750,16 +1748,38 @@ export type GeneratedX402WalletSpendPolicyFileResultV1 =
   | Readonly<{ status: "written"; path: string; policyHash: string }>
   | Readonly<{ status: "refused"; reasonCode: PolicyFileRefusalV1 }>;
 
-type X402WalletSpendPolicy = ReturnType<typeof configuredX402WalletSpendPolicy>;
+type PayDemPolicyFileRefusalV1 =
+  | "authority-pay-dem-policy-file-setting-missing"
+  | "authority-pay-dem-profile-required"
+  | "authority-policy-actor-unavailable"
+  | "authority-policy-limits-invalid"
+  | "authority-policy-write-failed";
 
-function policyFileRefused(reasonCode: PolicyFileRefusalV1): GeneratedX402WalletSpendPolicyFileResultV1 {
+export type GeneratedPayDemWalletSpendPolicyFileResultV1 =
+  | Readonly<{ status: "written"; path: string; policyHash: string }>
+  | Readonly<{ status: "refused"; reasonCode: PayDemPolicyFileRefusalV1 }>;
+
+type GeneratedWalletSpendPolicy = ReturnType<typeof configuredX402WalletSpendPolicy>;
+
+function policyFileRefused<Refusal extends string>(reasonCode: Refusal): Readonly<{
+  status: "refused";
+  reasonCode: Refusal;
+}> {
   return Object.freeze({ status: "refused" as const, reasonCode });
+}
+
+function buyerRailEnabled(rail: GeneratedRailProfile): boolean {
+  try {
+    return dacsLiveRailProfiles(loadRoleConfig("buyer")).includes(rail);
+  } catch {
+    return false;
+  }
 }
 
 // The same rail, asset check and policy builder as the doctor's x402.service-limit check.
 async function buyerX402WalletSpendPolicy(
   actors: DoctorActors,
-): Promise<X402WalletSpendPolicy | PolicyFileRefusalV1> {
+): Promise<GeneratedWalletSpendPolicy | PolicyFileRefusalV1> {
   const stewardAuthority = configuredRailStewardAuthority();
   const stewardPublicKey = stewardAuthority === undefined
     ? null : canonicalDemosAgentPublicKey(stewardAuthority);
@@ -1815,6 +1835,21 @@ async function replacePrivateFile(path: string, content: string): Promise<void> 
   }
 }
 
+// Both rails' policy files are written the same way: canonical JSON, replaced whole.
+async function writePolicyFile(configured: string, policy: GeneratedWalletSpendPolicy) {
+  const path = resolve(configured);
+  try {
+    await replacePrivateFile(path, canonicalize(policy));
+  } catch {
+    return policyFileRefused("authority-policy-write-failed");
+  }
+  return Object.freeze({
+    status: "written" as const,
+    path,
+    policyHash: dacsWalletSpendPolicyHashV1(policy),
+  });
+}
+
 /**
  * Writes the buyer's x402 wallet-spend policy, as canonical JSON, to
  * DACS_WALLET_AUTHORITY_POLICY_FILE for the testnet authority service. It reads
@@ -1830,33 +1865,47 @@ export async function writeGeneratedX402WalletSpendPolicyFileV1():
   if (configured === undefined || configured.trim() === "") {
     return policyFileRefused("authority-policy-file-setting-missing");
   }
-  try {
-    if (!dacsLiveRailProfiles(loadRoleConfig("buyer")).includes("x402")) {
-      return policyFileRefused("authority-x402-profile-required");
-    }
-  } catch {
-    return policyFileRefused("authority-x402-profile-required");
-  }
+  if (!buyerRailEnabled("x402")) return policyFileRefused("authority-x402-profile-required");
   const actors = await openDoctorActors("pre-start");
   if (actors === undefined) return policyFileRefused("authority-policy-actor-unavailable");
-  let policy: X402WalletSpendPolicy | PolicyFileRefusalV1;
+  let policy: GeneratedWalletSpendPolicy | PolicyFileRefusalV1;
   try {
     policy = await buyerX402WalletSpendPolicy(actors);
   } finally {
     closeDoctorActors(actors);
   }
   if (typeof policy === "string") return policyFileRefused(policy);
-  const path = resolve(configured);
-  try {
-    await replacePrivateFile(path, canonicalize(policy));
-  } catch {
-    return policyFileRefused("authority-policy-write-failed");
+  return writePolicyFile(configured, policy);
+}
+
+/**
+ * Writes the buyer's pay-dem wallet-spend policy, as canonical JSON, to
+ * DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE for the testnet authority service's
+ * DEM lane. It builds the policy the buyer's DEM client sends, for the buyer's
+ * Demos wallet, which it reads from the doctor's actors opened read-only. It
+ * reads no registry.
+ *
+ * @returns "written" with the path and policy hash, or "refused" with a reason
+ *   code; a refusal leaves the policy file as it was.
+ */
+export async function writeGeneratedPayDemWalletSpendPolicyFileV1():
+    Promise<GeneratedPayDemWalletSpendPolicyFileResultV1> {
+  const configured = process.env.DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE;
+  if (configured === undefined || configured.trim() === "") {
+    return policyFileRefused("authority-pay-dem-policy-file-setting-missing");
   }
-  return Object.freeze({
-    status: "written" as const,
-    path,
-    policyHash: dacsWalletSpendPolicyHashV1(policy),
-  });
+  if (!buyerRailEnabled("pay-dem")) return policyFileRefused("authority-pay-dem-profile-required");
+  const actors = await openDoctorActors("pre-start");
+  if (actors === undefined) return policyFileRefused("authority-policy-actor-unavailable");
+  let policy: GeneratedWalletSpendPolicy;
+  try {
+    policy = configuredPayDemWalletSpendPolicy(actors.buyer.runtime.walletAddress);
+  } catch {
+    return policyFileRefused("authority-policy-limits-invalid");
+  } finally {
+    closeDoctorActors(actors);
+  }
+  return writePolicyFile(configured, policy);
 }
 `;
 
@@ -3129,7 +3178,11 @@ import {
   loadRoleConfig,
   serviceEndpoint,
 } from "./config.js";
-import { runGeneratedDoctor, writeGeneratedX402WalletSpendPolicyFileV1 } from "./doctor.js";
+import {
+  runGeneratedDoctor,
+  writeGeneratedPayDemWalletSpendPolicyFileV1,
+  writeGeneratedX402WalletSpendPolicyFileV1,
+} from "./doctor.js";
 import {
   executeGeneratedListingSetupV1,
   prepareGeneratedListingSetupV1,
@@ -3810,18 +3863,15 @@ async function uninstall(args: readonly string[]): Promise<number> {
 
 const PRINT_WITNESS_KEY_FLAG = "--print-witness-public-key";
 
-// Runs the testnet wallet-spend authority until SIGINT or SIGTERM. With the
-// witness flag it runs the SDK's service bin instead, which prints the witness
-// public key for DACS_WALLET_AUTHORITY_WITNESS_SEED_FILE and starts nothing.
+// Runs the testnet wallet-spend authority, with a lane for each rail whose
+// settings are set, until SIGINT or SIGTERM. With the witness flag it runs the
+// SDK's service bin instead, which prints the witness public key for
+// DACS_WALLET_AUTHORITY_WITNESS_SEED_FILE and starts nothing.
 async function authority(args: readonly string[]): Promise<number> {
   const printKey = args.length === 1 && args[0] === PRINT_WITNESS_KEY_FLAG;
   if (args.length !== 0 && !printKey) {
     process.stderr.write("usage: npm run dacs:authority [-- " + PRINT_WITNESS_KEY_FLAG + "]\\n");
     return 2;
-  }
-  if (!dacsLiveRailProfiles(loadRoleConfig("buyer")).includes("x402")) {
-    process.stderr.write(JSON.stringify({ status: "refused", reasonCode: "authority-x402-profile-required" }) + "\\n");
-    return 1;
   }
   if (printKey) {
     const bin = fileURLToPath(new URL(
@@ -3856,23 +3906,38 @@ async function authority(args: readonly string[]): Promise<number> {
     witnessVerificationKey: service.witnessVerificationKey,
     lineageKey: service.lineageKey,
     policyHash: service.policyHash,
+    payDemLineageKey: service.payDem?.lineageKey,
+    payDemPolicyHash: service.payDem?.policyHash,
   }) + "\\n");
   await stopRequested;
   await service.stop();
   return 0;
 }
 
+const POLICY_FILE_WRITERS = Object.freeze([
+  ["x402", writeGeneratedX402WalletSpendPolicyFileV1],
+  ["pay-dem", writeGeneratedPayDemWalletSpendPolicyFileV1],
+] as const);
+
+// Writes the policy file of each rail this buyer uses, x402 first, and stops at
+// the first refusal. A file already written stays whole: each write is atomic.
 async function authorityPolicy(args: readonly string[]): Promise<number> {
   if (args.length !== 0) {
     process.stderr.write("usage: npm run dacs:authority:policy\\n");
     return 2;
   }
-  const result = await writeGeneratedX402WalletSpendPolicyFileV1();
-  if (result.status === "refused") {
-    process.stderr.write(JSON.stringify(result) + "\\n");
-    return 1;
+  const rails = dacsLiveRailProfiles(loadRoleConfig("buyer"));
+  for (const [rail, write] of POLICY_FILE_WRITERS) {
+    if (!rails.includes(rail)) continue;
+    const result = await write();
+    if (result.status === "refused") {
+      process.stderr.write(JSON.stringify({ status: "refused", rail, reasonCode: result.reasonCode }) + "\\n");
+      return 1;
+    }
+    process.stdout.write(JSON.stringify({
+      status: "written", rail, path: result.path, policyHash: result.policyHash,
+    }) + "\\n");
   }
-  process.stdout.write(JSON.stringify(result) + "\\n");
   return 0;
 }
 
@@ -4850,6 +4915,10 @@ services:
       DACS_X402_WALLET_MAX_ROLLING_DEBIT: \${DACS_X402_WALLET_MAX_ROLLING_DEBIT:-10}
       DACS_X402_WALLET_MAX_CUMULATIVE_DEBIT: \${DACS_X402_WALLET_MAX_CUMULATIVE_DEBIT:-100}
       DACS_X402_WALLET_MAX_COUNTERPARTY_DEBIT: \${DACS_X402_WALLET_MAX_COUNTERPARTY_DEBIT:-25}
+      DACS_PAY_DEM_WALLET_MINIMUM_RESERVE: \${DACS_PAY_DEM_WALLET_MINIMUM_RESERVE:-5}
+      DACS_PAY_DEM_WALLET_MAX_ROLLING_DEBIT: \${DACS_PAY_DEM_WALLET_MAX_ROLLING_DEBIT:-25}
+      DACS_PAY_DEM_WALLET_MAX_CUMULATIVE_DEBIT: \${DACS_PAY_DEM_WALLET_MAX_CUMULATIVE_DEBIT:-100}
+      DACS_PAY_DEM_WALLET_MAX_COUNTERPARTY_DEBIT: \${DACS_PAY_DEM_WALLET_MAX_COUNTERPARTY_DEBIT:-25}
       DACS_LISTING_DRAFT_FILE: /run/dacs/listing-draft.json
       DACS_BUYER_SERVICE_URL: http://127.0.0.1:3101
       DACS_SELLER_SERVICE_URL: http://127.0.0.1:3102
@@ -4902,8 +4971,6 @@ function compose(options: LiveProjectTemplateOptions): string {
         "DACS_BUYER_EVM_SECRET_FILE", "DACS_SELLER_EVM_SECRET_FILE",
         "DACS_SELLER_EVM_PAYEE", "DACS_X402_", "DACS_EVM_",
         "DACS_FIXED_PRICE_AMOUNT", "DACS_MAX_EVM_",
-        "DACS_WALLET_MAX_CONCURRENT_EFFECTS", "DACS_WALLET_MAX_RETAINED_RESERVATIONS",
-        "DACS_WALLET_ROLLING_WINDOW_MS", "DACS_WALLET_MAX_ROLLING_EFFECTS",
       ]
     : ["DACS_PAY_DEM_", "DACS_MAX_PAY_DEM_"];
   return configured.split("\n").filter((line) =>
@@ -4969,6 +5036,8 @@ DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE=
 DACS_WALLET_AUTHORITY_WITNESS_SEED_FILE=
 DACS_WALLET_AUTHORITY_DATA_DIRECTORY=
 DACS_WALLET_AUTHORITY_POLICY_FILE=
+DACS_PAY_DEM_WALLET_AUTHORITY_DATA_DIRECTORY=
+DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE=
 DACS_SELLER_DEMOS_SECRET_FILE=
 DACS_SELLER_EVM_SECRET_FILE=
 DACS_FUNDED_DOCTOR_AUTHORITY=
@@ -4989,8 +5058,7 @@ DACS_BACKUP_AUTH_KEY_FILE=
         "DACS_BUYER_EVM_SECRET_FILE=", "DACS_SELLER_EVM_SECRET_FILE=",
         "DACS_SELLER_EVM_PAYEE=", "DACS_X402_", "DACS_EVM_",
         "DACS_FIXED_PRICE_AMOUNT=", "DACS_MAX_EVM_",
-        "DACS_WALLET_AUTHORITY_WITNESS_SEED_FILE=", "DACS_WALLET_AUTHORITY_DATA_DIRECTORY=",
-        "DACS_WALLET_AUTHORITY_POLICY_FILE=",
+        "DACS_WALLET_AUTHORITY_DATA_DIRECTORY=", "DACS_WALLET_AUTHORITY_POLICY_FILE=",
       ]
     : ["DACS_PAY_DEM_", "DACS_MAX_PAY_DEM_"];
   return configured.split("\n").filter((line) =>
@@ -5016,14 +5084,28 @@ secrets/*
 `;
 
 function testnetAuthorityReadme(options: LiveProjectTemplateOptions): string {
+  const x402 = options.rails !== "pay-dem";
+  const payDem = options.rails !== "x402";
   const both = options.rails === "both";
+  const lanes = [
+    ...(x402 ? ["Base Sepolia (\`eip155:84532\`) for x402"] : []),
+    ...(payDem ? ["the Demos testnet (\`demos\`) for DEM"] : []),
+  ].join(" and ");
+  const checks = [
+    ...(x402 ? ["\`x402.service-limit\`"] : []),
+    ...(payDem ? ["\`pay-dem.service-limit\`"] : []),
+  ].join(" or ");
   return `
 ## Testnet authority service
 
-1. For testnet only (\`eip155:84532\`), the SDK includes a file-backed wallet-spend
-   authority service that runs on this machine's loopback address. It serves
-   only the x402 policy. It is not the production authority: its witness and
-   state share one directory, and it does not detect a restored old copy.
+1. For testnet only, the SDK includes a file-backed wallet-spend authority
+   service that runs on this machine's loopback address. It runs
+   ${lanes}, each rail this project uses in its own lane,
+   with its own policy file and data directory. It is not the production
+   authority: its witness and state share one directory, and it does not
+   detect a restored old copy.${payDem ? `
+   At start it refuses a Demos node whose network identity is not the approved
+   Demos testnet (\`wallet-spend-testnet-authority-demos-network-mismatch\`).` : ""}
 2. Create two private files outside this project, mode 0600, owned by the
    runtime user (DACS_RUNTIME_UID): a bearer token of at least 32 characters,
    and a witness seed of 64 hexadecimal characters. Name them in
@@ -5033,29 +5115,36 @@ function testnetAuthorityReadme(options: LiveProjectTemplateOptions): string {
    loader refuses a file owned by another user (\`secret-file-owner-mismatch\`),
    and \`npm run dacs:authority:policy\` also reads both roles' identity files.
 3. Set \`DACS_WALLET_AUTHORITY_URL\` to an \`http://127.0.0.1:<port>/\` address,
-   \`DACS_WALLET_AUTHORITY_ID\`, a new \`DACS_WALLET_AUTHORITY_EPOCH\`,
-   \`DACS_WALLET_AUTHORITY_DATA_DIRECTORY\` to a new directory outside the role
-   data directories, \`DACS_WALLET_AUTHORITY_POLICY_FILE\`, and
-   \`DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK=1\`. The service also reads
-   \`DACS_EVM_RPC_URL\` and \`DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK\`, which
-   the buyer already needs.
+   \`DACS_WALLET_AUTHORITY_ID\`, a new \`DACS_WALLET_AUTHORITY_EPOCH\`, and
+   \`DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK=1\`.${x402 ? `
+   For x402, set \`DACS_WALLET_AUTHORITY_DATA_DIRECTORY\` to a new directory
+   outside the role data directories, and \`DACS_WALLET_AUTHORITY_POLICY_FILE\`.
+   The x402 lane also reads \`DACS_EVM_RPC_URL\` and
+   \`DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK\`, which the buyer already needs.` : ""}${payDem ? `
+   For DEM, set \`DACS_PAY_DEM_WALLET_AUTHORITY_DATA_DIRECTORY\` to a new
+   directory outside the role data directories${x402 ? " and the x402 one" : ""}, and
+   \`DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE\`. The DEM lane also reads
+   \`DACS_DEMOS_RPC_URL\`, which the roles already use.` : ""}
 4. Run \`npm run dacs:authority -- --print-witness-public-key\` and put the
    printed key in \`DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY\`.
-5. Run \`npm run dacs:authority:policy\`, then \`npm run dacs:authority\`, and keep
-   the service running while buying. Start the roles with \`npm run dacs:up\`.
-   Before the first purchase, run
-   \`npm run dacs:doctor -- --phase post-start --for buy${both ? " --rail x402" : ""}\` and buy only
-   when its \`x402.service-limit\` check passes. If the buyer's pins differ from
-   the service, the buyer refuses the answer only after the service has
-   recorded the hold, and that hold then waits for the rule in point 7. The
-   doctor's check records nothing.
+5. Run \`npm run dacs:authority:policy\`, which writes the policy file of each
+   rail this project uses, then \`npm run dacs:authority\`, and keep the service
+   running while buying. Start the roles with \`npm run dacs:up\`. Before the
+   first purchase, run \`npm run dacs:doctor -- --phase post-start --for buy\`${both ? `,
+   adding \`--rail x402\` or \`--rail pay-dem\`,` : ""}
+   and buy on a rail only when its ${checks} check passes.
+   If the buyer's pins differ from the service, the buyer refuses the answer
+   only after the service has recorded the hold, and that hold then waits for
+   the rule in point 7. The doctor's check records nothing.
 6. Changing any wallet limit, the wallet or the rail asset changes the policy.
    Write the policy again and start a new lineage: a new data directory and a
    new epoch. A new lineage starts its spend totals from zero. The service
    refuses a changed policy on an existing data directory. With Docker, also
    restart the buyer (\`npm run dacs:down\`, then \`npm run dacs:up\`) so that it
-   reads the changed limit.
-7. The service counts a payment only when the chain shows this purchase's
+   reads the changed limit.${both ? ` This holds for both lanes, and both share
+   one epoch, so a new lineage is new data directories for both lanes and a new
+   epoch.` : ""}
+7. ${x402 ? `The x402 lane counts a payment only when the chain shows this purchase's
    authorization nonce used in a final transaction that moves exactly the
    agreed amount to the agreed payee. When it records a hold, it sets the
    authorization's expiry (\`validBefore\`) from the chain's time, at most 24
@@ -5067,29 +5156,31 @@ function testnetAuthorityReadme(options: LiveProjectTemplateOptions): string {
    buying waits until then. If the service prints \`hold-needs-operator\` with
    \`wallet-spend-chain-nonce-used-unmatched\`, that nonce paid for something
    else: the hold stays, and the wallet key should be treated as in use outside
-   this buyer. Never reuse an epoch.
-${both ? `8. This service refuses the \`pay-dem\` policy. With it configured,
-   \`npm run dacs:buy -- --rail pay-dem\` fails, and so does the post-start
-   doctor's \`pay-dem.service-limit\` check, which the doctor requires whenever
-   it runs without \`--rail x402\`. \`pay-dem\` purchases need the separately
-   operated authority at \`DACS_WALLET_AUTHORITY_URL\` instead.
+   this buyer.
+   ` : ""}${payDem ? `The DEM lane counts a payment only when the chain shows that transfer
+   executed: from the buyer's Demos wallet, to the agreed payee, for the exact
+   amount, with the fee the confirmed record shows. A DEM transfer carries no
+   expiry, so the DEM lane never releases a hold by time or on a claim alone.
+   At reserve it records the buyer wallet's next Demos transaction number, and
+   the buyer never sends a payment for that hold with any other number. If a
+   DEM purchase was interrupted and its payment never landed, send two
+   transactions from the buyer's Demos wallet (a 1 DEM transfer to itself is
+   the smallest). The first uses that number and the second moves the wallet
+   past it. The buyer then asks the service to release the hold. The service
+   releases it only when the chain shows the wallet past that number and the
+   transaction at that number pays nothing to the seller. Otherwise the hold
+   stays, and DEM buying waits until you start a new lineage (point 6). If the
+   service prints \`hold-needs-operator\` with a \`wallet-spend-dem-\` code,
+   check that transfer before buying again.
+   ` : ""}Never reuse an epoch.
+${both ? `8. One service on one address serves both lanes, because the buyer uses one
+   authority connection for both rails. Both lanes share the token, id, epoch
+   and witness key; each has its own policy file and data directory.
 ` : ""}`;
 }
 
 function secretsReadme(options: LiveProjectTemplateOptions): string {
   const x402 = options.rails !== "pay-dem";
-  const productionAuthority = x402
-    ? `In production, the separately operated
-authority retains PostgreSQL credentials, wallet/chain lineage, policy migration
-and all authoritative accounting, fenced by an independently rollback-resistant
-witness; never place those capabilities in this project or mount them into the
-buyer. The testnet service described below is not that authority: it keeps its
-state and witness in one local directory, uses no PostgreSQL, and does not
-detect a restored old copy.`
-    : `The separately operated authority
-retains PostgreSQL credentials, wallet/chain lineage, policy migration and all
-authoritative accounting; never place those capabilities in this project or
-mount them into the buyer.`;
   return `# Role secrets
 
 Keep buyer and seller Demos identities in two different files outside this
@@ -5105,7 +5196,13 @@ The buyer requires \`DACS_WALLET_AUTHORITY_URL\`, the operator-controlled
 \`DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY\` pins, plus a role-scoped bearer
 secret at \`DACS_BUYER_WALLET_AUTHORITY_TOKEN_FILE\`. The generated buyer speaks
 only the continuity-capable V2 authority protocol and has no V1 or filesystem
-fallback. ${productionAuthority} Use HTTPS. Plain HTTP is accepted only for an
+fallback. In production, the separately operated
+authority retains PostgreSQL credentials, wallet/chain lineage, policy migration
+and all authoritative accounting, fenced by an independently rollback-resistant
+witness; never place those capabilities in this project or mount them into the
+buyer. The testnet service described below is not that authority: it keeps its
+state and witness in one local directory, uses no PostgreSQL, and does not
+detect a restored old copy. Use HTTPS. Plain HTTP is accepted only for an
 explicit loopback test/local authority with
 \`DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK=1\`. The generated backup and
 restore commands cover actor data only and never select authority database state.
@@ -5119,7 +5216,7 @@ Backup and restore require a separate operator-owned
 characters, keep the file outside this project, and set mode 0600. It
 authenticates backup manifests but is not a buyer or seller protocol key.
 Do not persist a write-confirmation variable in .env or Compose.
-${x402 ? testnetAuthorityReadme(options) : ""}`;
+${testnetAuthorityReadme(options)}`;
 }
 
 function readme(options: LiveProjectTemplateOptions): string {

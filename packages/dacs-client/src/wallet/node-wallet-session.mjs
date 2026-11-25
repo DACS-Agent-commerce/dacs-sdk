@@ -28,7 +28,8 @@ import { assertCurrentAuthorization, currentPassContext, isPassContext, passCont
 import { createReadQueue } from './read-queue.mjs';
 import { createSignerReservations } from './signer-reservation.mjs';
 import { createKeystoreWalletOpener, JOURNAL_METHODS } from './keystore-wallet-opener.mjs';
-import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError, normalizeMnemonic } from '../public/portal/embedded-wallet/sdk-provider.mjs';
+import { createPaidApproval } from './paid-approval.mjs';
+import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError, normalizeMnemonic, projectPaidWrite } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 
 // A comparison value inside the descriptor only: `_doPost` checks the URL it is given equals the
 // descriptor's `rpcUrl` and never fetches it, and `bindingRelay` replaces the binding fetches.
@@ -106,8 +107,8 @@ export { isDevnetAgreementTransport, isDevnetSettlementTransport, isDevnetDemoTr
  */
 export function createHeldTransportFacade({ admission, transport } = {}) {
   const wrapped = admitPublicFactory(() => transport, { passive: PASSIVE_TRANSPORT_METHODS, purchase: true })({ admission });
-  // The reopen entry is the composition's own (`withheldReopen`), never a member a host or a relay holds.
-  const members = Object.fromEntries(Object.entries(wrapped).filter(([name]) => !['actionsAdmitted', 'reopenWithheldBroadcast'].includes(name)));
+  // The reopen entry (`withheldReopen`) and the nonce-lane inspection are the composition's own, never members a host or a relay holds.
+  const members = Object.fromEntries(Object.entries(wrapped).filter(([name]) => !['actionsAdmitted', 'reopenWithheldBroadcast', 'inspectWalletNonceLane'].includes(name)));
   const facade = Object.freeze({ ...members, binding(request, ...args) {
     try {
       return request?.phase === READBACK_PHASE ? transport.binding({ ...request, phase: READBACK_PHASE }, ...args) : wrapped.binding(request, ...args);
@@ -124,7 +125,7 @@ export function createHeldTransportFacade({ admission, transport } = {}) {
   return facade;
 }
 
-// `signCreate` and `broadcast` are active: each call refuses profile_not_admitted while held and checks the binding before it runs.
+// `approveAhead`, `approveSendAhead`, `signCreate` and `broadcast` are active: each call refuses profile_not_admitted while held and checks the binding before it runs.
 // The two reads are passive and keep working while held.
 function createHeldAdapter(admission, adapter) {
   const wrapped = admitPublicFactory(() => adapter, { passive: ['readAccountNonce', 'readTransactionState'], purchase: true })({ admission });
@@ -422,6 +423,8 @@ function createEffectGate({ owner, expectedLocal, clock, qualify, passRequired, 
     for (const check of pass?.synchronousChecks ?? []) assertSynchronousCheck(check({ phase }));
     if (pass) assertCurrentAuthorization(pass.context);
     const debit = checkContent?.();
+    // An approved paid write names its pass ceiling; any other pass ceiling, higher or lower, is refused.
+    if (debit?.requiredCeilingOs !== undefined && debit.requiredCeilingOs !== pass?.feeCeilingOs) throw refuseGate('paid_approval_mismatch', 'the effect pass fee ceiling is not the approved one; nothing was signed');
     if (pass && debit) assertFeeWithinCeiling(debit, pass.feeCeilingOs);
   }
   async function pass(request, inner) {
@@ -440,13 +443,13 @@ function createEffectGate({ owner, expectedLocal, clock, qualify, passRequired, 
 // Each wrapper `guardedCrypto` made, mapped to the SDK crypto it wraps.
 const guardedInner = new WeakMap();
 
-// The SDK's crypto, except that a transaction signature made inside `sign` runs through the effect gate, its content check first;
-// outside `sign` (RPC authentication) every call passes through.
-function guardedCrypto(inner, signScope, gate) {
+// The SDK's crypto, except that a transaction signature made inside `sign` runs through the effect gate, its content check first (and the
+// keystore's approved-content check after it); outside `sign` (RPC authentication) every call passes through.
+function guardedCrypto(inner, signScope, gate, approvedContent = (_content, debit) => debit) {
   const sign = (algorithm, message) => {
     const scope = signScope.getStore();
     if (!scope) return inner.sign(algorithm, message);
-    const checkContent = () => { try { return checkFinalContent(scope, message); } catch (cause) { throw cause instanceof EmbeddedWalletError ? cause : refuseContent(cause); } };
+    const checkContent = () => { try { return approvedContent(scope.transaction.content, checkFinalContent(scope, message)); } catch (cause) { throw cause instanceof EmbeddedWalletError ? cause : refuseContent(cause); } };
     return gate.pass({ phase: 'sign', checkContent }, () => inner.sign(algorithm, message));
   };
   const wrapper = new Proxy(inner, { get(target, key) {
@@ -476,7 +479,7 @@ function routeCryptoThroughAccessor(demos) {
   assertCryptoGuarded(demos);
 }
 
-function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate, boundary, pinVersion }) {
+function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate, boundary, pinVersion, approvedContent }) {
   const signScope = new AsyncLocalStorage(), guards = new WeakMap();
   return class NodeDemos extends Demos {
     constructor() {
@@ -487,7 +490,7 @@ function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate, boun
 
     get crypto() { return guards.get(this) ?? null; }
     // A wrapper handed back (an SDK that hides the field after assigning it reads it through this getter) is unwrapped, so the gate runs once.
-    set crypto(inner) { guards.set(this, inner && guardedCrypto(guardedInner.get(inner) ?? inner, signScope, gate)); }
+    set crypto(inner) { guards.set(this, inner && guardedCrypto(guardedInner.get(inner) ?? inner, signScope, gate, approvedContent)); }
 
     /** Signs like the SDK, but refuses before the inner signature unless `options.finalContent(content)` accepts the finalized content. */
     sign(transaction, { finalContent, ...sdkOptions } = {}) {
@@ -627,9 +630,11 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
  * of `createNodeWalletSession` over a seller transport.
  * `transport` is the registered held facade of `createHeldTransportFacade`; `observer` is `createNodeObserver({owner, clock})` over the same owner, with no fence.
  * The facade has `withWalletNonceLock(scope, work)`, the wallet's native lane held around `work` (see the README's "Wallet nonce lane").
- * `paymentEvidenceAdapter` is `{signCreate, broadcast, readAccountNonce, readTransactionState}`: the first two are active members under the hold and run in the caller's
- * effect pass (`signCreate` signs one payment-evidence storage CREATE on the signer reservation and sends nothing; `broadcast` confirms and dispatches the stored bytes),
- * and the two reads are passive (see `node-payment-evidence-adapter.mjs`).
+ * `paymentEvidenceAdapter` is `{approveAhead, approveSendAhead, signCreate, broadcast, readAccountNonce, readTransactionState}`: the first four are active members
+ * under the hold. `approveAhead` and `approveSendAhead` run outside every effect pass and take the approval of one CREATE, or of its stored bytes' send, as a hold;
+ * they need `stopped()` to answer a boolean synchronously. `signCreate` and `broadcast` run in the caller's effect pass, with or without a hold (`signCreate` signs one
+ * payment-evidence storage CREATE on the signer reservation and sends nothing; `broadcast` confirms and dispatches the stored bytes), and the two reads are passive
+ * (see `node-payment-evidence-adapter.mjs`).
  * Options are those of `createNodeWalletSession` plus `publications: {settlementPublication, deliveryPublication, demoArtifactPublication}`, the required
  * `approveConfirmedWrite`, a function or an explicit `null` (manual mode, no callback installed), and the optional `qualify({phase, signal})` the effect gate awaits
  * first. A confirmation by another sender, or of a Listing CREATE, is answered `true` without calling the policy; every other seller confirmation calls it once,
@@ -637,7 +642,8 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
  * Also requires `stateOwnership` `{directory, held()}`, the host's proof that it holds the state lock for the directory containing `journal`. Before it
  * returns, the composition removes the lock rows of dead holders from `journal` and retires every signer reservation that has no signed bytes. It also requires
  * `paymentEvidenceApproval` `{prepare, open, reopen, confirm, settle}`, the kit's approval ledger for payment-evidence CREATEs; `open` and `settle` serve the
- * signer reservation.
+ * signer reservation. A hold from `approveAhead` or `approveSendAhead` also needs the ledger's synchronous `revocationGeneration()`; construction requires only the
+ * five members.
  * Rejects as `createNodeWalletSession` does, with TypeError(approveConfirmedWrite) for any other policy value, OperationError(invalid_params) for a `qualify`
  * that is not a function, the transport's own refusal of the publications, `state_ownership_required` (cause kept when the proof itself failed) without a
  * valid proof, and `invalid_params` when a ledger member is not a function.
@@ -676,6 +682,9 @@ const composeBuyerWithRequiredPass = options => composeStages(options, true);
  * OperationError(runtime_unsupported) and the stop codes (writes_stopped | stop_check_failed | stop_check_invalid; `stopped()` must answer a boolean
  * synchronously); then OperationError(keystore_unreadable | keystore_unlock_failed | invalid_mnemonic), a composition stage's own error, or
  * keystore_address_mismatch after the composition is closed. It writes and caches nothing, and zero-fills every phrase copy it makes.
+ * The composition and each `walletFactory` view also have `preparePaidWrite(request, {feeCeilingOs})` and `authorizePaidWrite(prepared, approvedContent)`
+ * of `createPaidApproval` (`paid-approval.mjs`): a `wallet.request` for `sendTransaction` needs that view's one-use permit as `{paidApproval: permit}`
+ * (otherwise `paid_approval_required`, with nothing signed or sent), and the host's `approve` is not asked for it.
  */
 export const openKeystoreWalletSession = createKeystoreWalletOpener({ compose: composeBuyerWithRequiredPass });
 
@@ -706,7 +715,7 @@ function finalizeEffectBoundary({ owner, journal, admission, stopped, feeCeiling
 // `requirePass` is set only by the keystore entry's composition; no option reaches it.
 async function buildNodeComposition(options, seller, requirePass = false) {
   const key = options?.key;
-  let keyCopy, transport, session, sellerAddress, evidenceDemos;
+  let keyCopy, transport, session, sellerAddress, evidenceDemos, paidApproval;
   try {
     const { owner, journal, approve, approveConfirmedWrite, publications, qualify, stateOwnership, paymentEvidenceApproval, stopped, feeCeilingOs, clock = { now: () => Date.now() } } = checkConstruction(options).options;
     const admission = { ...options.admission };
@@ -723,12 +732,14 @@ async function buildNodeComposition(options, seller, requirePass = false) {
     const gate = createEffectGate({ owner, expectedLocal: admission.binding.local, clock, qualify, passRequired: seller || requirePass, jobContextRequired: seller });
     // A confirmTx or broadcastTx body is gated and the real fetch runs synchronously after the gate. A refused body is not dispatched, although
     // this attempt's earlier reads (the nonce check) were; an effect body this attempt already sent stays dispatched.
-    const fetchImpl = (input, init) => {
+    // A caller's `finalCheck` runs in the gate's last synchronous run for that body, right before the real fetch.
+    const fetchImpl = (input, init, { finalCheck } = {}) => {
       const attempt = attempts.getStore(), stage = executeStageOf(init?.body);
       const send = () => { if (attempt) attempt.dispatched = true; return owner.fetchImpl(input, init); };
       if (!stage) return send();
       if (attempt) attempt.dispatched = attempt.effectSent === true;
-      return gate.pass({ phase: stage, signal: init.signal }, () => { if (attempt) attempt.effectSent = true; return send(); });
+      const checks = finalCheck ? { checkContent: () => { finalCheck(); } } : {};
+      return gate.pass({ phase: stage, signal: init.signal, ...checks }, () => { if (attempt) attempt.effectSent = true; return send(); });
     };
     const stamps = createRpcStampSource(clock);
     const reopenGrants = createReopenGrants();
@@ -743,17 +754,20 @@ async function buildNodeComposition(options, seller, requirePass = false) {
       : createDevnetAgreementTransport(transportOptions);
     const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN });
     const anchorJournal = Object.fromEntries(['get', 'put', 'withWalletLock'].map(name => [name, (...args) => (selectedJournal.getStore() ?? journal)[name](...args)]));
-    const NodeDemos = nodeDemosClass(Demos, { transport, rpcUrl: transactionTransport.rpcUrl, stamps, attempts, gate, boundary: effectBoundary, pinVersion: expected.pinVersion });
-    session = createSdkWalletSession({ DemosCtor: NodeDemos, approve, transactionTransport,
+    // The keystore's paid writes are checked against the host's one-use approval at the wallet's approval step and before the inner signature.
+    const paidChecks = requirePass ? { approvedContent: (content, debit) => paidApproval.signedContentCheck(content, debit), paidApprovalCheck: callback => paidApproval.approvalCheck(callback) } : {};
+    const NodeDemos = nodeDemosClass(Demos, { transport, rpcUrl: transactionTransport.rpcUrl, stamps, attempts, gate, boundary: effectBoundary, pinVersion: expected.pinVersion, approvedContent: paidChecks.approvedContent });
+    session = createSdkWalletSession({ DemosCtor: NodeDemos, approve, paidApprovalCheck: paidChecks.paidApprovalCheck, transactionTransport,
       validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity), recordCause });
     const mnemonic = decodeMnemonic(keyCopy);
     await session.importMnemonic(mnemonic);
     // Routing identity outlives signing custody, which passive wallet.lock() clears.
     if (seller) sellerAddress = session.getPublicAccount().address;
-    const walletFactory = ({ anchorJournal: selected = journal } = {}) => admitPublicFactory(() => ({
-      request: request => selectedJournal.run(selected, () => session.request(request)),
-      ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),
-    }), { passive: PASSIVE_METHODS, purchase: true })({ admission });
+    paidApproval = requirePass ? createPaidApproval({ session, transport, transactionTransport, relayOrigin: NODE_WALLET_RELAY_ORIGIN, feeCeilingOs, projectPaidWrite, EmbeddedWalletError }) : null;
+    const walletFactory = ({ anchorJournal: selected = journal } = {}) => admitPublicFactory(() => {
+      const send = request => selectedJournal.run(selected, () => session.request(request));
+      return { request: send, ...paidApproval?.viewFor(selected, send), ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])) };
+    }, { passive: PASSIVE_METHODS, purchase: true })({ admission });
     const reservations = seller ? createSignerReservations({ journal, pins: expected, openApproval: requestText => paymentEvidenceApproval.open(requestText),
       settleApproval: (ledgerId, outcome, reason, requestText) => paymentEvidenceApproval.settle({ ledgerId, requestText }, outcome, reason) }) : null;
     await reservations?.recover({ stateOwnership });
@@ -765,8 +779,9 @@ async function buildNodeComposition(options, seller, requirePass = false) {
     }
     const paymentEvidenceAdapter = seller ? createHeldAdapter(admission, createPaymentEvidenceCreateAdapter({ reservations, approval: paymentEvidenceApproval,
       demos: evidenceDemos, observer, journal, pins: expected, clock, rpcUrl: transactionTransport.rpcUrl, isWalletLocked: () => session.isLocked(),
-      owner, fetchImpl, stamps, recordCause })) : null;
-    const composition = Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass, effectBoundary,
+      owner, fetchImpl, stamps, stopped, recordCause })) : null;
+    const wallet = walletFactory();
+    const composition = Object.freeze({ wallet, walletFactory, ...(paidApproval ? { preparePaidWrite: (...args) => wallet.preparePaidWrite(...args), authorizePaidWrite: (...args) => wallet.authorizePaidWrite(...args) } : {}), internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass, effectBoundary,
       transport: createHeldTransportFacade({ admission, transport }), ...(seller ? { observer, paymentEvidenceAdapter } : {}),
       withheldReopen: Object.freeze({ register: scope => reopenGrants.register(scope), reopen: request => transport.reopenWithheldBroadcast(request) }),
       async close() { session.lock(); evidenceDemos?.disconnect(); await transport.close(); } });

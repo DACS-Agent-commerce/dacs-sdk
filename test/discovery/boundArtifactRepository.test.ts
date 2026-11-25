@@ -12,6 +12,7 @@ import {
   type BindingPublisher,
   type BoundArtifactAdapter,
 } from "../../src/discovery/index.js";
+import { DacsError, SubstrateError } from "../../src/errors.js";
 
 const SELLER = "0xseller";
 const LOGICAL = "dacs1:0xseller:market-data:v1";
@@ -482,5 +483,126 @@ describe("createBoundArtifactRepository (#58 publish/consume binding lifecycle)"
     expect(first.anchor.address).toBe("stor-1");
     expect(second.anchor.address).toBe("stor-2");
     expect(backend.writes).toBe(2);
+  });
+});
+
+describe("write errors carry a catalog code", () => {
+  type Row = {
+    name: string;
+    logicalAddress?: string;
+    artifact?: unknown;
+    options?: Record<string, unknown>;
+    adapter?: (backend: FakeBackend) => Partial<BoundArtifactAdapter>;
+    errorName: "DacsError" | "SubstrateError";
+    category: "permanent" | "substrate";
+    code: string;
+    message: string;
+    writes: number;
+    cause?: Record<string, unknown>;
+  };
+  const emptyAddress = (backend: FakeBackend): Partial<BoundArtifactAdapter> => ({
+    async anchorWriteOnce() {
+      backend.writes += 1;
+      return { address: "", txRef: "tx-empty" };
+    },
+  });
+  const rows: Row[] = [
+    {
+      name: "anchor metadata that is not an object",
+      options: { anchor: { metadata: "x" } },
+      errorName: "DacsError", category: "permanent", code: "binding.anchor_metadata_invalid",
+      message: "anchor metadata must be an object", writes: 0,
+    },
+    {
+      name: "anchor metadata that conflicts with the artifact hash",
+      options: { anchor: { metadata: { contentHash: "other" } } },
+      errorName: "DacsError", category: "permanent", code: "binding.anchor_metadata_invalid",
+      message: "anchor metadata contentHash conflicts with the repository artifact binding", writes: 0,
+    },
+    {
+      name: "anchor metadata with another logical_address",
+      options: { anchor: { metadata: { logical_address: "dacs1:other" } } },
+      errorName: "DacsError", category: "permanent", code: "binding.anchor_metadata_invalid",
+      message: "anchor metadata logical_address conflicts with the repository logical address", writes: 0,
+    },
+    {
+      name: "an empty logical address",
+      logicalAddress: "",
+      errorName: "DacsError", category: "permanent", code: "binding.logical_address_invalid",
+      message: "logicalAddress must not be empty", writes: 0,
+    },
+    {
+      name: "a logical address with surrounding space",
+      logicalAddress: ` ${LOGICAL}`,
+      errorName: "DacsError", category: "permanent", code: "binding.logical_address_invalid",
+      message: "logicalAddress must be trimmed and NFC-normalized", writes: 0,
+    },
+    {
+      name: "an adapter that returns an empty owner address",
+      adapter: () => ({ getAddress: () => "" }),
+      errorName: "SubstrateError", category: "substrate", code: "anchor.owner_address_empty",
+      message: "adapter returned an empty owner address", writes: 0,
+    },
+    {
+      name: "an empty storage name",
+      options: { storageName: " " },
+      errorName: "DacsError", category: "permanent", code: "binding.storage_name_invalid",
+      message: "storageName must not be empty", writes: 0,
+    },
+    {
+      name: "an artifact that is not an object",
+      artifact: [],
+      errorName: "DacsError", category: "permanent", code: "binding.artifact_invalid",
+      message: "artifact must be a canonicalizable JSON object", writes: 0,
+      cause: { message: "artifact is not a JSON object" },
+    },
+    {
+      name: "an artifact that cannot be cloned",
+      artifact: { f: () => 1 },
+      errorName: "DacsError", category: "permanent", code: "binding.artifact_invalid",
+      message: "artifact must be a canonicalizable JSON object", writes: 0,
+      cause: { name: "DataCloneError" },
+    },
+    {
+      name: "an adapter that returns an empty native address",
+      adapter: emptyAddress,
+      errorName: "SubstrateError", category: "substrate", code: "anchor.native_address_empty",
+      message: "anchorWriteOnce returned an empty native address", writes: 1,
+    },
+  ];
+
+  test.each(rows)("$name", async (row) => {
+    const backend = createBackend();
+    const bindings = createInMemoryBindingStore();
+    let published = 0;
+    const repository = createBoundArtifactRepository({
+      adapter: { ...fakeAdapter(SELLER, backend), ...row.adapter?.(backend) },
+      index: bindings,
+      publisher: {
+        async publish(binding) {
+          published += 1;
+          return bindings.publish(binding);
+        },
+      },
+    });
+
+    const error: unknown = await repository
+      .write(row.logicalAddress ?? LOGICAL, (row.artifact ?? RECORD) as Record<string, unknown>, row.options)
+      .then(() => undefined, (e: unknown) => e);
+
+    expect(error).toBeInstanceOf(DacsError);
+    expect(error).toMatchObject({
+      name: row.errorName,
+      category: row.category,
+      code: row.code,
+      message: row.message,
+    });
+    expect(error instanceof SubstrateError).toBe(row.errorName === "SubstrateError");
+    expect(Object.keys(error as object).sort()).toEqual(["category", "code", "name"]);
+    if (row.cause !== undefined) {
+      expect((error as Error).cause).toMatchObject(row.cause);
+    }
+    expect(backend.writes).toBe(row.writes);
+    expect(published).toBe(0);
   });
 });

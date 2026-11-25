@@ -8,7 +8,8 @@ const summary = {
   listingId: 'example', version: 1, contentHash: 'a'.repeat(64),
   anchor: { kind: 'storage-program', locator: `stor-${'b'.repeat(40)}` },
   seller: { primaryClaim: `did:demos:agent:${'c'.repeat(64)}` },
-  offering: { title: 'Example', description: '' }, status: 'active',
+  offering: { title: 'Example', description: '' }, pricing: {}, status: 'active',
+  catalogObservedAt: 0, transactionReadiness: { disposition: 'unassessed', reason: 'catalog only' },
 };
 function listingBytes(length) {
   const body = { listings: Array.from({ length: 50 }, (_, i) => ({

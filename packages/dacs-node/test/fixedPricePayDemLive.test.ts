@@ -106,9 +106,12 @@ describe("fixed-price pay-dem live factories", () => {
       demosRpcUrl: "https://dev.node2.demos.sh",
       recipeRegistryVersion: 1,
       observeDemosTransfer: observer,
+      walletSpendAuthority: { policy: { wallet: `0x${"1".repeat(64)}`, chainId: "demos" } },
     } as never);
 
     expect(result).toHaveProperty("buyer");
+    // The reconciliation reads the wallet's account nonce through the bounded Demos reader.
+    expect(factories.buyerReconciliation).toHaveBeenCalledWith(observer, expect.any(Function));
     expect(factories.buyerCommerce).toHaveBeenCalledWith(expect.objectContaining({
       context,
       observeDemosTransfer: observer,
