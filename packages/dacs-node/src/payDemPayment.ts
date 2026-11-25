@@ -1041,9 +1041,17 @@ export function createDacsPayDemBuyerPaymentTrackV1(
         return captured;
       },
       // A completed payment is read from the node again before it is reported.
-      // This only reads: no wallet accounting and no notice.
+      // This only reads: no wallet accounting and no notice. The payment is
+      // already recorded as made, so a read that shows no transfer is not proof
+      // the transfer never happened: it stays unconfirmed and is read again.
       async reauthenticate({ input, fence }) {
-        return readChain(capturePaymentInput(input), fence);
+        const captured = await readChain(capturePaymentInput(input), fence);
+        return captured.status === "absent"
+          ? Object.freeze({
+              status: "indeterminate" as const,
+              reasonCode: "pay-dem-recorded-transfer-unconfirmed",
+            })
+          : captured;
       },
     },
     projectResult(value) {

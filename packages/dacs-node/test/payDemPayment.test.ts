@@ -697,19 +697,116 @@ describe("native DEM buyer payment track", () => {
       expect(walletReconcile).not.toHaveBeenCalled();
     });
 
-    it("does not report a recorded payment complete when the node finds no such transfer", async () => {
+    it("keeps a recorded payment unconfirmed, not failed, when the node finds no such transfer", async () => {
       const reconcile = vi.fn(() => ({
         status: "absent" as const,
         absenceProofHash: "7".repeat(64),
       }));
       const { replay, settle, walletReconcile } = await completedPayment(reconcile);
 
-      await expect(replay()).resolves.toEqual({
-        status: "operator-action",
-        reasonCode: "effect-replay-record-absent",
+      await expect(replay()).resolves.toMatchObject({
+        status: "indeterminate",
+        reasonCode: "pay-dem-recorded-transfer-unconfirmed",
       });
       expect(settle).toHaveBeenCalledTimes(1);
       expect(walletReconcile).not.toHaveBeenCalled();
+    });
+
+    it("retries a payment that landed when one node read fails while its replay is checked", async () => {
+      const database = await open(join(root(), "buyer.sqlite"));
+      putDacsLiveOrderInputV1({ database, order: ORDER, application: {} });
+      const settle = vi.fn(async (input: Parameters<PayDemRail["settle"]>[0]) => {
+        await input.journalPreparedTransfer!({
+          txHash: TX_HASH,
+          nonce: 7,
+          payer: PAYER,
+          payee: PAYEE,
+          amountOs: AUTHORITY.amountOs,
+          network: "demos",
+          confirmedTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          maxTotalDebitOs: AUTHORITY.maxTotalDebitOs,
+          recovery: input.recovery!,
+        });
+        await input.assertCurrentBeforeBroadcast!();
+        return RAIL_RESULT as PayDemRailResult;
+      });
+      // The transfer landed, so the wallet's nonce is past the prepared nonce.
+      let nodeReply: "unavailable" | "included" = "unavailable";
+      const observe = vi.fn(async (): Promise<DemosTransferObservation> =>
+        nodeReply === "included"
+          ? {
+              status: "included",
+              execution: "executed",
+              nonce: 7,
+              txHash: TX_HASH,
+              payer: PAYER,
+              payee: PAYEE,
+              amountOs: AUTHORITY.amountOs,
+              blockNumber: 42,
+              includedAt: 1_000,
+            }
+          : { status: "unavailable" });
+      const readAccountNonce = vi.fn(async () => 8);
+      const wallet = createAccountingTestWalletSpendAuthorityV1({
+        wallet: PAYER_WALLET,
+        chainId: "demos",
+        asset: "DEM",
+        maximumConcurrentEffects: 1,
+      });
+      const paymentFor = (workerId: string) => createDacsPayDemBuyerPaymentTrackV1({
+        walletSpendAuthority: wallet,
+        database,
+        workerId,
+        rail: markDacsSdkPreparedPayDemRailV1<PayDemRail>({ address: PAYER, settle }),
+        resolveAuthority: () => AUTHORITY,
+        reconcile: createDacsFixedPricePayDemBuyerReconciliationV1(observe, readAccountNonce),
+        publishNotice: vi.fn(),
+        retryDelayMs: 1,
+      });
+
+      // The first process records the payment and stops before the coordinator
+      // records it.
+      const store = database.createPayDemCoordinatorStore("buyer");
+      const firstCoordinator = createFixedPricePayDemBuyerCoordinator({
+        store: {
+          ...store,
+          record: async (input: Parameters<typeof store.record>[0]) => {
+            if (input.track === "payment") throw new Error("process stopped");
+            return store.record(input);
+          },
+        },
+        workerId: "buyer-coordinator-first",
+        operations: { agreement: success, payment: paymentFor("buyer-payment-first") },
+        leaseDurationMs: 500,
+      });
+      await firstCoordinator.startOrder(ORDER);
+      await expect(firstCoordinator.runPending({ limit: 2 })).rejects.toThrow("process stopped");
+      expect(settle).toHaveBeenCalledTimes(1);
+
+      // After a restart and once the first coordinator's lease has run out, the
+      // recorded payment is replayed while the node does not answer.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const secondCoordinator = createFixedPricePayDemBuyerCoordinator({
+        store: database.createPayDemCoordinatorStore("buyer"),
+        workerId: "buyer-coordinator-second",
+        operations: { payment: paymentFor("buyer-payment-second") },
+      });
+      await secondCoordinator.runPending({ limit: 1 });
+      expect(observe).toHaveBeenCalledTimes(1);
+      expect(readAccountNonce).toHaveBeenCalledTimes(1);
+      const held = (await secondCoordinator.getOrderStatus(JOB_ID))?.tracks.payment;
+      expect(held).toMatchObject({
+        state: "indeterminate",
+        reasonCode: "pay-dem-recorded-transfer-unconfirmed",
+      });
+
+      // The next read succeeds: the order completes without a second payment.
+      nodeReply = "included";
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      await secondCoordinator.runPending({ limit: 1 });
+      expect((await secondCoordinator.getOrderStatus(JOB_ID))?.tracks.payment)
+        .toMatchObject({ state: "final", outcome: "success" });
+      expect(settle).toHaveBeenCalledTimes(1);
     });
 
     it("does not report a recorded payment complete when the node shows another block", async () => {
