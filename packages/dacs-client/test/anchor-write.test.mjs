@@ -119,6 +119,7 @@ test('a changed or inconsistent saved anchor write makes the public read refuse 
     ['another kind', { ...record, kind: 'dem-transfer' }], ['a numeric network', { ...record, network: 1 }], ['a numeric job id', { ...record, jobId: 1 }],
     ['a nonce fence as text', { ...record, nonceFence: String(record.nonceFence) }], ['a negative nonce fence', { ...record, nonceFence: -1, expectedNonce: 0 }],
     ['an unsafe nonce fence', { ...record, nonceFence: 2 ** 53, expectedNonce: 2 ** 53 + 1 }],
+    ['an unsafe expected nonce', { ...record, nonceFence: Number.MAX_SAFE_INTEGER, expectedNonce: Number.MAX_SAFE_INTEGER + 1 }],
     ['another wallet', consistent({ from: '0x' + 'f'.repeat(64) })], ['another network', consistent({ network: 'mainnet' })],
     ['another job id', consistent({ jobId: OTHER_JOB_ID })], ['an expected nonce that is not the fence plus one', { ...record, expectedNonce: record.nonceFence + 2 }],
     ['an upper-case id', { ...record, reservedWriteId: record.reservedWriteId.toUpperCase() }], ['an id that does not recompute', { ...record, reservedWriteId: 'a'.repeat(64) }],

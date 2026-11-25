@@ -1,0 +1,23 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF refuse a saved anchor write record whose expected nonce is not a safe integer",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "a859d52c9483f87a623aa38be0cd5cc4ae17ae11",
+      "after": "98c9a33b6a0ea55ae7991f3a8a83715c8a5f10d7"
+    },
+    {
+      "path": "packages/dacs-client/test/anchor-write.test.mjs",
+      "before": "bbf469242d7ddc97a02eaa164a063d67e90f3ade",
+      "after": "55dd420d602b69534c37958950bdeb31a9d15f94"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-9479fb6979de.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/test/anchor-write.test.mjs"
+  ]
+}

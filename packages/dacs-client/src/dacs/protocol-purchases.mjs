@@ -175,8 +175,8 @@ function boundSellerReceipt(receipt, agreementHash) {
 const ANCHOR_WRITE_KIND = 'agreement-create';
 const ANCHOR_WRITE_NAMES = ['expectedNonce', 'from', 'jobId', 'kind', 'network', 'nonceFence', 'reservedWriteId'];
 const ANCHOR_WRITE_ID_TEXT = /^[0-9a-f]{64}$/;
-const anchorWriteUnsaved = () => new OperationError('anchor_write_unsaved', 'this is not a protocol purchase with a saved anchor write record; nothing was read');
-const anchorWriteInvalid = (member) => new OperationError('anchor_write_invalid', `the saved anchor write record's ${member} does not match this purchase; nothing was read`, { member });
+const anchorWriteUnsaved = () => new OperationError('anchor_write_unsaved', 'the operation is not a protocol purchase with a saved anchor write record');
+const anchorWriteInvalid = (member) => new OperationError('anchor_write_invalid', `the saved anchor write record's ${member} does not match this purchase`, { member });
 
 /**
  * buildAnchorWrite({network,from,nonceFence,jobId}) returns the frozen anchor write record a protocol purchase saves at prepare:
@@ -196,7 +196,7 @@ function assertAnchorWriteMatches(record, terms) {
   if (record.from !== terms.buyer.wallet) throw anchorWriteInvalid('from');
   if (record.jobId !== terms.protocol.jobId) throw anchorWriteInvalid('jobId');
   if (!Number.isSafeInteger(record.nonceFence) || record.nonceFence < 0) throw anchorWriteInvalid('nonceFence');
-  if (record.expectedNonce !== record.nonceFence + 1) throw anchorWriteInvalid('expectedNonce');
+  if (!Number.isSafeInteger(record.expectedNonce) || record.expectedNonce !== record.nonceFence + 1) throw anchorWriteInvalid('expectedNonce');
   if (!ANCHOR_WRITE_ID_TEXT.test(record.reservedWriteId) || record.reservedWriteId !== buildAnchorWrite(record).reservedWriteId) throw anchorWriteInvalid('reservedWriteId');
 }
 
