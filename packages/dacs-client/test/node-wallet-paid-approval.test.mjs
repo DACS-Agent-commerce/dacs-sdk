@@ -579,6 +579,21 @@ test('a changed callback-only binding field refuses before an inner transaction 
   assert.deepEqual({ signed: w.counts.inSign, effects: w.effects().length, approvals: w.approvals }, { signed: 0, effects: 0, approvals: [] });
 });
 
+test('a paid write whose broadcast acknowledgement is lost spends its permit and is not sent again', async t => {
+  const w = await paidWorld(t);
+  const request = w.request(), { permit } = await permitFor(w.session.wallet, request);
+  w.node.mode = 'drop';
+  const lost = await sendInPass(w, w.session.wallet, request, { paidApproval: permit });
+  w.node.mode = 'accept';
+  assert.equal(lost.success, false, JSON.stringify(lost));
+  const sent = marks(w);
+  assert.deepEqual({ signed: sent.signed, broadcasts: sent.broadcasts }, { signed: 1, broadcasts: 1 });
+  assert.equal((await sendInPass(w, w.session.wallet, request, { paidApproval: permit })).error?.code, 'paid_approval_used');
+  // A new approval starts from a preview, which refuses while the issued transfer is unread.
+  await assert.rejects(w.session.preparePaidWrite(w.request(), FEE), hasCode('outcome_unknown'));
+  assert.deepEqual(marks(w), sent);
+});
+
 test('higher and lower valid pass ceilings than the prepared ceiling refuse before an inner transaction signature', async t => {
   const w = await paidWorld(t), prepared = { feeCeilingOs: '30000000000' };
   for (const passCeiling of ['40000000000', '20000000000']) {
