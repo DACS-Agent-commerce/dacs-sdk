@@ -1,0 +1,45 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF keep plain http out of every connection that signs or sends",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "before": "c8414147db2e5508116df45c010a41a33c9e0fd9",
+      "after": "2467428793d276ce1551de2573e706547952edcc"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "a07e11e8a5d7cdc21711f824d6e87476bd2fc7b4",
+      "after": "da8f88d6aae851c90d213cf477fb342549119210"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/paid-approval.mjs",
+      "before": "190ea2914c2bdabdb25b5e87f4ce52b8a846b67d",
+      "after": "15ef5d039bb5cb60e31399d6a3328eab3476c1d1"
+    },
+    {
+      "path": "packages/dacs-client/test/node-endpoint.test.mjs",
+      "before": "1edaac03fccf1ebd7e2419aa067b9cb3064afd40",
+      "after": "8b57aa7dd3b70fa10b4cfa6407a38b4f0082f675"
+    }
+  ],
+  "commitFiles": [
+    "docs/dacs-seller-http-v1.md",
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-bee2ac3ce455.json",
+    "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/src/wallet/paid-approval.mjs",
+    "packages/dacs-client/test/node-endpoint.test.mjs",
+    "packages/dacs-seller/src/devnet-demo/seller-wallet-session.mjs",
+    "packages/dacs-seller/test/host-wire-state.test.mjs",
+    "packages/dacs-seller/test/seller-wallet-session.test.mjs",
+    "src/wire/node-endpoint.ts",
+    "src/wire/profile.ts",
+    "test/wire/authority.test.ts",
+    "test/wire/networkIdentity.test.ts"
+  ],
+  "note": "A plain-http node reply carries no authentication, so the wire's connection binding (localBinding in bindTp1Profile, assertTp1Binding and assertTp1Authority) now takes a canonical https root only, whatever the chain identity; every wire signer and every Node session requires that binding. The node transport owner and the network binder still accept a plain-http root under the approved chain identity for the read-only observer and authority capability. The paid-write planner, the SDK session and the paid approval no longer take a node endpoint rule and keep the provider's https-only check, so the Node session no longer passes canonicalNodeEndpoint to them; createSellerWalletSession builds an https-only owner. node-endpoint.test.mjs now shows the owner and binder reads over http and the staged and keystore compositions refusing tp1_local_binding_invalid before any key load, signature or send."
+}

@@ -154,15 +154,11 @@ const TEST_RUN_LABEL = /^TEST-RUN-[A-Za-z0-9._-]{8,80}$/;
 const TP1_LABEL = /^TP1-[0-9a-f]{32}$/;
 const isPublicationLabel = (value, fixtureLabel) => typeof value === 'string' && (fixtureLabel.test(value) || TP1_LABEL.test(value));
 
-// An Agreement transport binding's node endpoint, when no endpoint rule is passed in (this file is served alone and imports nothing): https only.
-const httpsNodeEndpoint = (endpoint) => (new URL(endpoint).protocol === 'https:' ? endpoint : null);
-
 // The transport is honoured only in its exact documented shape; its members
 // are read once here and never invoked unless the shape matches. A held
 // testnet transport carries only its network label: it has no rpcUrl and
-// never reaches a node. A Node caller passes the wire's `canonicalNodeEndpoint`
-// as `nodeEndpoint`; it judges the binding's endpoint under the binding's chain identity.
-function readTransport(candidate, relayOrigin = globalThis.location?.origin, nodeEndpoint = httpsNodeEndpoint) {
+// never reaches a node.
+function readTransport(candidate, relayOrigin = globalThis.location?.origin) {
   if (candidate === null || typeof candidate !== 'object') return null;
   const { profile, rpcUrl, network, resolveGithubUser } = candidate;
   if (typeof network !== 'string' || !network) return null;
@@ -180,7 +176,7 @@ function readTransport(candidate, relayOrigin = globalThis.location?.origin, nod
         || !['http:','https:'].includes(rpc.protocol) || rpc.username || rpc.password || rpc.search || rpc.hash || binding.username || binding.password || binding.search || binding.hash
         || rpc.pathname !== '/portal/api/devnet-native-wallet-rpc' || binding.pathname !== '/portal/api/devnet-native-wallet-binding') return null;
       const bindingKeys=['source','bindingVersion','bindingId','network','chainIdentity','pinVersion','endpoint','transportAuthority',...(settlement?['settlementPublication']:[]),...(delivery?['deliveryPublication']:[]),...(demo?['demoArtifactPublication']:[])];
-      if(agreement && (!hasKeys(candidate.transportBinding,bindingKeys) || candidate.transportBinding.source !== 'devnet-agreement-transport/v1' || candidate.transportBinding.bindingVersion !== 'dacs-demos-network-binding/v1' || candidate.transportBinding.network !== network || !HASH.test(candidate.transportBinding.bindingId) || !HASH.test(candidate.transportBinding.chainIdentity) || nodeEndpoint(candidate.transportBinding.endpoint, { chainIdentity: candidate.transportBinding.chainIdentity }) === null)) return null;
+      if(agreement && (!hasKeys(candidate.transportBinding,bindingKeys) || candidate.transportBinding.source !== 'devnet-agreement-transport/v1' || candidate.transportBinding.bindingVersion !== 'dacs-demos-network-binding/v1' || candidate.transportBinding.network !== network || !HASH.test(candidate.transportBinding.bindingId) || !HASH.test(candidate.transportBinding.chainIdentity) || new URL(candidate.transportBinding.endpoint).protocol !== 'https:')) return null;
       if(settlement && (!hasKeys(candidate.settlementPublication,['policy','artifactKind','phase','railId','phaseIndex','authority']) || candidate.settlementPublication.policy!==DEVNET_SETTLEMENT_POLICY || candidate.settlementPublication.artifactKind!=='SettlementEvidence' || candidate.settlementPublication.phase!=='pay-dem' || candidate.settlementPublication.railId!=='demos-native:DEM' || candidate.settlementPublication.phaseIndex!==2 || !isPublicationLabel(candidate.settlementPublication.authority,TEST_LABEL) || anchorJson(candidate.transportBinding.settlementPublication)!==anchorJson(candidate.settlementPublication))) return null;
       if(delivery && (!hasKeys(candidate.deliveryPublication,['policy','artifactKind','phase','phaseIndex','authority']) || candidate.deliveryPublication.policy!==DEVNET_DELIVERY_POLICY || candidate.deliveryPublication.artifactKind!=='Deliverable' || candidate.deliveryPublication.phase!=='deliver-storage-program' || !Number.isSafeInteger(candidate.deliveryPublication.phaseIndex) || candidate.deliveryPublication.phaseIndex<0 || !isPublicationLabel(candidate.deliveryPublication.authority,TEST_LABEL) || anchorJson(candidate.transportBinding.deliveryPublication)!==anchorJson(candidate.deliveryPublication))) return null;
       if(demo && (!hasKeys(candidate.demoArtifactPublication,['policy','artifactKinds','authority']) || candidate.demoArtifactPublication.policy!==DEVNET_DEMO_ARTIFACT_POLICY || ![DEVNET_DEMO_ARTIFACT_TYPES,[...DEVNET_DEMO_ARTIFACT_TYPES,'SettlementEvidence']].some(kinds=>anchorJson(candidate.demoArtifactPublication.artifactKinds)===anchorJson(kinds)) || !isPublicationLabel(candidate.demoArtifactPublication.authority,TEST_RUN_LABEL) || anchorJson(candidate.transportBinding.demoArtifactPublication)!==anchorJson(candidate.demoArtifactPublication))) return null;
@@ -806,9 +802,9 @@ async function devnetAgreementAnchorPlan(request, address, transport, relayOrigi
 }
 
 
-export function createDevnetAgreementWalletTransport(profile, { relayOrigin, nodeEndpoint } = {}) {
+export function createDevnetAgreementWalletTransport(profile, { relayOrigin } = {}) {
   const candidate={profile:profile?.profile,network:profile?.network,rpcUrl:profile?.rpcUrl,bindingUrl:profile?.bindingUrl,transportBinding:profile?.transportBinding,...(profile?.settlementPublication?{settlementPublication:profile.settlementPublication}:{}),...(profile?.deliveryPublication?{deliveryPublication:profile.deliveryPublication}:{}),...(profile?.demoArtifactPublication?{demoArtifactPublication:profile.demoArtifactPublication}:{})};
-  if(!readTransport(candidate, relayOrigin, nodeEndpoint)?.devnetAgreement) throw new EmbeddedWalletError('held_for_review','no exact same-origin Agreement source capability is available');
+  if(!readTransport(candidate, relayOrigin)?.devnetAgreement) throw new EmbeddedWalletError('held_for_review','no exact same-origin Agreement source capability is available');
   return Object.freeze(candidate);
 }
 
@@ -920,18 +916,17 @@ async function createProjection({ transaction, address, binding, fee, chainNonce
 /**
  * projectPaidWrite(input) resolves the approval request and the Demos-finalized content of one native send or storage anchor CREATE, made from checked
  * observations with no network read, signature or write: `{callback: {method, address, purpose, content}, signedContent, nonceSource, observedNonce}`.
- * `input` is `{request, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, nodeEndpoint, scopedPaidWrite}`: the
+ * `input` is `{request, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, scopedPaidWrite}`: the
  * `sendTransaction` request and its one transaction, the wallet address, the source's fresh network binding, the node's `getNetworkParameters` answer,
- * whether its denomination fork is active, the wallet's next nonce on the chain, and the wallet's transport descriptor, relay origin and the node
- * endpoint rule its session admitted it under (https only when absent). A CREATE is
+ * whether its denomination fork is active, the wallet's next nonce on the chain, and the wallet's transport descriptor and relay origin. A CREATE is
  * planned by the transport's anchor planner, which checks its envelope, signed-scope and derived-address hashes and its relay origin.
  * `scopedPaidWrite` is the keystore buyer's paid write: it requires a positive safe-integer timestamp, adds `nonceSource` and `observedNonce` to the
  * callback content, and projects `signedContent` (demosdk 4.0.17's finalized `transaction.content`); otherwise `signedContent` is null, since Demos
  * stamps a missing time when it signs. Rejects with EmbeddedWalletError(not_configured | invalid_params | wrong_wallet | unsupported | stale_plan |
  * network_binding_unavailable | network_binding_required).
  */
-export async function projectPaidWrite({ request, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, nodeEndpoint, scopedPaidWrite = false }) {
-  const transport = readTransport(transactionTransport, relayOrigin, nodeEndpoint);
+export async function projectPaidWrite({ request, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, scopedPaidWrite = false }) {
+  const transport = readTransport(transactionTransport, relayOrigin);
   if (!transport || transport.held) throw new EmbeddedWalletError('not_configured', 'paid writes need a configured write transport');
   if (request?.method !== 'sendTransaction' || !Array.isArray(request.params) || request.params.length !== 1 || request.params[0] !== transaction) throw new EmbeddedWalletError('invalid_params', 'sendTransaction expects params: [transaction]');
   const create = transaction?.kind === DACS_STORAGE_ANCHOR_KIND || isSourceCreate(transaction, transport);
@@ -955,9 +950,9 @@ function proofHandle(context, proofUrl) {
 // `paidApprovalCheck(request)`, when given, is asked first at each write approval: true means the host approved this exact write before it was
 // entered, undefined sends the request to `approve` as usual, and a throw refuses it. With it, a native send or CREATE approval request also
 // carries its `nonceSource` and `observedNonce`, as the paid-write preview shows them.
-export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, paidApprovalCheck, transactionTransport, validateMnemonic, anchorJournal, relayOrigin, nodeEndpoint, bindingRelay, stamp = () => Date.now(), recordCause } = {}) {
+export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, paidApprovalCheck, transactionTransport, validateMnemonic, anchorJournal, relayOrigin, bindingRelay, stamp = () => Date.now(), recordCause } = {}) {
   if (typeof DemosCtor !== 'function') throw new TypeError('createSdkWalletSession requires the Demos SDK class as DemosCtor');
-  const transport = readTransport(transactionTransport, relayOrigin, nodeEndpoint);
+  const transport = readTransport(transactionTransport, relayOrigin);
   // Explicit caller-owned atomic journal. RAM implementations are offline
   // evidence only; production persistence/recovery is a separate integration.
   const journal = anchorJournal && ['get', 'put', 'withWalletLock'].every((k) => typeof anchorJournal[k] === 'function') ? anchorJournal : null;
@@ -1180,7 +1175,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, pai
     // On an Agreement transport the denomination the node reports at approval is the one the signed content must carry.
     const approvedPostFork = transport.devnetAgreement ? (await nodeRead(demos, started, 'getNetworkInfo', {}, (v) => typeof v?.forks?.osDenomination?.activated === 'boolean')).forks.osDenomination.activated : undefined;
     // The live nonce was compared with the planned one above (the loopback fixture reads none).
-    const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params }, transaction: tx, address, binding: networkFence, fee, postFork: approvedPostFork, chainNonce: plan.nonce, transactionTransport, relayOrigin, nodeEndpoint, scopedPaidWrite: Boolean(paidApprovalCheck) });
+    const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params }, transaction: tx, address, binding: networkFence, fee, postFork: approvedPostFork, chainNonce: plan.nonce, transactionTransport, relayOrigin, scopedPaidWrite: Boolean(paidApprovalCheck) });
     stillCurrent(started);
     await approvedWrite(started, callback);
     if(transport.devnetNative) {
@@ -1250,7 +1245,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, pai
       const debit = nativeDebit({ amountOs: plan.storageFeeOs }, fee);
       if (!debit) throw new EmbeddedWalletError('unsupported', 'the anchor fees cannot be shown exactly before signing');
       // The live nonce was compared with the planned one above.
-      const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params: [request] }, transaction: request, address, binding, fee, postFork, chainNonce: plan.nonce, transactionTransport, relayOrigin, nodeEndpoint, scopedPaidWrite: Boolean(paidApprovalCheck) });
+      const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params: [request] }, transaction: request, address, binding, fee, postFork, chainNonce: plan.nonce, transactionTransport, relayOrigin, scopedPaidWrite: Boolean(paidApprovalCheck) });
       stillCurrent(started);
       await approvedWrite(started, callback);
       if (demos.rpc_url !== transport.rpcUrl) throw new EmbeddedWalletError('payload_mismatch', 'the approved anchor RPC route changed; nothing was signed');

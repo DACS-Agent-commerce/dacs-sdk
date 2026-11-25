@@ -198,6 +198,7 @@ describe("independent TP-1 authorization context", () => {
   // The actor's own connection, before any authority read or signature: an https-only endpoint with no
   // credentials, query or fragment, given exactly as its normalized href, and identifier-shaped transport and connection.
   it.each([
+    ["an http root endpoint, even under the approved record", { endpoint: "http://unverified.example/" }],
     ["an http endpoint with a path", { endpoint: "http://unverified.example/rpc" }],
     ["an http endpoint with a query", { endpoint: "http://unverified.example/?q" }],
     ["a path", { endpoint: "https://unverified.example/rpc" }],
@@ -226,20 +227,19 @@ describe("independent TP-1 authorization context", () => {
     await expect(Promise.resolve().then(() => wire.signWireEnvelope(x.request, { ...entries.signing, local: invalid }))).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
     expect(x.buyer.calls + x.seller.calls).toBe(0);
   });
-  it("binds and signs on an http root endpoint under the approved record, after the reader authenticates that connection", async () => {
-    const x = (await world());
+  it("refuses an http root endpoint under the approved record even after the reader authenticates that connection, and signs nothing on it", async () => {
+    const x = (await world()), entries = await boundaries(x);
     const plain = { ...local, endpoint: "http://unverified.example/", connectionId: "generation-2" };
+    x.attestConnection(plain);
     let reads = 0;
     const readAuthority = (scope: wire.Tp1AuthorityScope) => { reads++; return x.options.readAuthority(scope); };
-    await expect(wire.bindTp1Profile({ ...x.options, local: plain, readAuthority })).rejects.toMatchObject({ code: "tp1_connection_unverified" });
-    expect(reads).toBe(1);
-    x.attestConnection(plain);
-    const binding = await wire.bindTp1Profile({ ...x.options, local: plain });
-    expect(binding.local).toEqual(plain);
-    await wire.assertTp1Binding(binding, plain);
-    await wire.signWireResponse(x.request, 200, "{}", { signer: x.seller, binding, local: plain, now, purchaseProfile: binding.profile });
-    expect(x.seller.calls).toBe(1);
-    await expect(Promise.resolve().then(() => wire.assertTp1Binding(binding, { ...plain, endpoint: "http://unverified.example/rpc" }))).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    await expect(wire.bindTp1Profile({ ...x.options, local: plain, readAuthority })).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    expect(reads).toBe(0);
+    await expect(wire.assertTp1Binding(x.binding, plain)).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    await expect(wire.assertTp1Authority(x.binding, plain, [], null)).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    await expect(wire.signWireResponse(x.request, 200, "{}", { signer: x.seller, binding: x.binding, local: plain, now, purchaseProfile: x.binding.profile })).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    await expect(wire.signSellerSessionDelegation(entries.delegationPayload, x.buyer, x.binding, plain)).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    expect(x.buyer.calls + x.seller.calls).toBe(0);
   });
   it.each((["request", "response", "delegation", "discovery"] as const).flatMap(kind =>
     (["connection", "participant"] as const).map(revocation => ({ kind, revocation }))))(

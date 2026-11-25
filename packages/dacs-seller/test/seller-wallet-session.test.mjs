@@ -13,7 +13,7 @@ import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { agreementRequest } from '../../dacs-client/test/helpers/tp1-node-fixture.mjs';
 import { ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, T0, api, finalization, jsonResponse, keyRecordBytes, ok, privateDataDirectory, replayNode, sellerPublications,
   setPurchaseAdmission, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
-import { allZero, createSellerWalletSession, mnemonicSigner, portOptions, walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
+import { allZero, createSellerWalletSession, portOptions, walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
 
 const guard = await import('../src/kit-operation-guard.mjs');
 const { createEffectBoundary, effectBoundaryBinding } = await import('../src/dacs/effect-boundary.mjs');
@@ -34,7 +34,7 @@ const PASS_WINDOW_MS = 10_000;
 const AUTHORITY_DEADLINE_MS = 10_000;
 const JOB_ID = '01M5YKPJG0248H248H248H248H';
 const OTHER_CHAIN = 'd'.repeat(64);
-// Public Demos testnet nodes serve their RPC over plain http.
+// Plain http carries no authentication, so a signing session refuses it.
 const PLAIN_ENDPOINT = 'http://rpc.example.invalid/';
 const SECOND_MNEMONIC = entropyToMnemonic(new Uint8Array(32).fill(4), wordlist);
 const BOUNDARY_CLOCK = Object.freeze({ now: () => 0, after: () => () => {} });
@@ -374,31 +374,12 @@ test('createSellerWalletSession refuses an endpoint that is not a canonical root
   assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
 });
 
-test('over a plain-http node root the production port binds the approved record through the host\'s stages, finalizes under the state lock, and a CREATE in a pass is confirmed and broadcast once on that endpoint', async (t) => {
-  const signatures = await spyTransactionSignatures(t.mock);
-  const world = await walletSessionWorld(t, { options: { endpoint: PLAIN_ENDPOINT } });
-  assert.equal(world.stages.binding.local.endpoint, PLAIN_ENDPOINT);
-  const { session } = await world.finalize();
-  const wallet = session.walletFactory({ anchorJournal: session.artifactJournal });
-  const answer = await inSessionPass(session, wallet, await agreementRequest({ session: { wallet }, node: world.node }));
-  assert.equal(answer.success, true, JSON.stringify(answer));
-  assert.deepEqual(world.node.reads.filter((read) => read === 'confirmTx' || read === 'broadcastTx'), ['confirmTx', 'broadcastTx'], 'confirmed and broadcast once');
-  assert.equal(signatures.length, 1, 'signed once');
-  assert.ok(world.node.calls.every((row) => row.url.startsWith(PLAIN_ENDPOINT)), 'every node request went to the plain-http root');
-});
-
-test('a node over a plain-http root that reports another chain refuses the host\'s stages before the key is loaded, the signer is called or anything is signed or sent', async (t) => {
-  const signatures = await spyTransactionSignatures(t.mock);
+test('a plain-http node root, even under the approved chain, is refused at construction with transport_mismatch before any node read or key load', async () => {
   const node = replayNode();
-  node.reply = otherChain;
-  const signer = await mnemonicSigner();
-  let signerCalls = 0, keyLoads = 0;
-  const counted = { claim: signer.claim, sign: (bytes) => { signerCalls += 1; return signer.sign(bytes); } };
-  await assert.rejects(walletSessionWorld(t, { node, keyBytes: () => { keyLoads += 1; return keyRecordBytes(); }, options: { endpoint: PLAIN_ENDPOINT, signer: counted } }),
-    { code: 'tp1_connection_unverified' });
-  assert.ok(node.reads.includes('getBlockByNumber'), 'the binding asked the node for its chain');
-  assert.deepEqual({ signerCalls, keyLoads, signatures: signatures.length, effects: node.reads.filter((read) => read === 'confirmTx' || read === 'broadcastTx') },
-    { signerCalls: 0, keyLoads: 0, signatures: 0, effects: [] });
+  let keyLoads = 0;
+  const valid = await portOptions(node, async () => { keyLoads += 1; return keyRecordBytes(); });
+  assert.throws(() => createSellerWalletSession({ ...valid, endpoint: PLAIN_ENDPOINT }), { code: 'transport_mismatch' });
+  assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
 });
 
 test('finalize refuses a binding whose authority is no longer current with tp1_connection_unverified, and one whose authority read stalls with tp1_authority_timeout at 10,000 ms but not at 9,999 ms, each before the key is loaded or an issuance journal opens', async (t) => {
