@@ -53,6 +53,7 @@ test('the shipped native seller host signs a commitment answer whose receipt the
   assert.doesNotThrow(() => buyer.protocol.assertSellerReceiptReservation(operation(withReceipt)));
 
   // The same answer with its receipt removed fails closed.
-  const { sellerReceipt: _removed, ...withoutReceipt } = withReceipt;
+  const withoutReceipt = { ...withReceipt };
+  delete withoutReceipt.sellerReceipt;
   assert.throws(() => buyer.protocol.assertSellerReceiptReservation(operation(withoutReceipt)), refused);
 });
