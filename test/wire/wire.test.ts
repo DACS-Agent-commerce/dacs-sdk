@@ -327,7 +327,7 @@ describe("package export", () => {
     const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
     expect(pkg.exports["./wire"]).toEqual({ types: "./dist/wire/index.d.ts", import: "./dist/wire/index.js" });
     expect(pkg.exports["./wire/node-endpoint"]).toEqual({ types: "./dist/wire/node-endpoint.d.ts", import: "./dist/wire/node-endpoint.js" });
-    expect(Object.keys(pkg.exports)).toEqual([".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire", "./wire/node-endpoint"]);
+    expect(Object.keys(pkg.exports)).toEqual([".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire", "./wire/node-endpoint", "./write-attempt-guard"]);
   });
 
   it("ships no approval injection: approval.ts holds only the frozen approval list, and only profile.ts reads it", () => {

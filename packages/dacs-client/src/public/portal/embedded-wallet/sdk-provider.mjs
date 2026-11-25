@@ -952,7 +952,10 @@ function proofHandle(context, proofUrl) {
   return handle;
 }
 
-export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, transactionTransport, validateMnemonic, anchorJournal, relayOrigin, nodeEndpoint, bindingRelay, stamp = () => Date.now(), recordCause } = {}) {
+// `paidApprovalCheck(request)`, when given, is asked first at each write approval: true means the host approved this exact write before it was
+// entered, undefined sends the request to `approve` as usual, and a throw refuses it. With it, a native send or CREATE approval request also
+// carries its `nonceSource` and `observedNonce`, as the paid-write preview shows them.
+export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, paidApprovalCheck, transactionTransport, validateMnemonic, anchorJournal, relayOrigin, nodeEndpoint, bindingRelay, stamp = () => Date.now(), recordCause } = {}) {
   if (typeof DemosCtor !== 'function') throw new TypeError('createSdkWalletSession requires the Demos SDK class as DemosCtor');
   const transport = readTransport(transactionTransport, relayOrigin, nodeEndpoint);
   // Explicit caller-owned atomic journal. RAM implementations are offline
@@ -1093,6 +1096,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
   }
 
   async function approvedWrite(started, request) {
+    if (paidApprovalCheck?.(request) === true) return stillCurrent(started);
     if (typeof approve !== 'function') throw new EmbeddedWalletError('not_configured', 'no approval handler is configured for this wallet');
     const answer = await approve(request);
     stillCurrent(started);
@@ -1176,7 +1180,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     // On an Agreement transport the denomination the node reports at approval is the one the signed content must carry.
     const approvedPostFork = transport.devnetAgreement ? (await nodeRead(demos, started, 'getNetworkInfo', {}, (v) => typeof v?.forks?.osDenomination?.activated === 'boolean')).forks.osDenomination.activated : undefined;
     // The live nonce was compared with the planned one above (the loopback fixture reads none).
-    const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params }, transaction: tx, address, binding: networkFence, fee, postFork: approvedPostFork, chainNonce: plan.nonce, transactionTransport, relayOrigin, nodeEndpoint });
+    const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params }, transaction: tx, address, binding: networkFence, fee, postFork: approvedPostFork, chainNonce: plan.nonce, transactionTransport, relayOrigin, nodeEndpoint, scopedPaidWrite: Boolean(paidApprovalCheck) });
     stillCurrent(started);
     await approvedWrite(started, callback);
     if(transport.devnetNative) {
@@ -1246,7 +1250,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
       const debit = nativeDebit({ amountOs: plan.storageFeeOs }, fee);
       if (!debit) throw new EmbeddedWalletError('unsupported', 'the anchor fees cannot be shown exactly before signing');
       // The live nonce was compared with the planned one above.
-      const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params: [request] }, transaction: request, address, binding, fee, postFork, chainNonce: plan.nonce, transactionTransport, relayOrigin, nodeEndpoint });
+      const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params: [request] }, transaction: request, address, binding, fee, postFork, chainNonce: plan.nonce, transactionTransport, relayOrigin, nodeEndpoint, scopedPaidWrite: Boolean(paidApprovalCheck) });
       stillCurrent(started);
       await approvedWrite(started, callback);
       if (demos.rpc_url !== transport.rpcUrl) throw new EmbeddedWalletError('payload_mismatch', 'the approved anchor RPC route changed; nothing was signed');
