@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged keystore session and public API tests after the part 1 merge",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+      "before": "05831b834e6f2f7fe8eb3e11906ea811083c155f",
+      "after": "05831b834e6f2f7fe8eb3e11906ea811083c155f"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "bdc1678988cdb5dac00ce7825e9d28946cc16578",
+      "after": "bdc1678988cdb5dac00ce7825e9d28946cc16578"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-f0f4140043a1.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies. Git merged both without a conflict. No file other than this record changes."
+}
