@@ -148,6 +148,19 @@ Both records require verified, established `finalized` receipts on every answer.
 Checkpoints reuse retained signatures; unknown signing outcomes stay held.
 The seller writes and signs both Vet records as orchestrator (known testnet gap G3); the buyer-written Vet arrives in N1.
 
+A buyer's enrollment can come from `openVerifiedEnrollmentReader`, which
+accepts only answers signed by the node key the operator pins. Its result is
+every signed entry for the buyer, revoked ones included, or `[]` for a signed
+complete empty set. Each call reads the node again with a fresh nonce; nothing
+is cached. A failed read never becomes an empty list. It rejects with an
+`enrollment_*` refusal: a bad signature, another signer, nonce, claim, Listing
+pin, chain or block, a malformed or oversized answer, a timeout, a changed
+connection, a closed reader or an unavailable node. When the session admission
+reads it on a first presentation, that rejection becomes
+`session_admission_unavailable` (503) with the enrollment refusal as its cause.
+No presentation is accepted, and no purchase step signs or sends anything.
+enrollment-host.test.mjs covers this path.
+
 Buyer-side seller requirements are not a capability of this route: an extra
 request scope field is refused. The seller is evaluated against that empty
 requirement, independently of the Listing's buyer requirement, during initial
