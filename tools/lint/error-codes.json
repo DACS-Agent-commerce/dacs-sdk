@@ -1,11 +1,116 @@
 {
   "description": "Files and folders under src/ whose errors are all coded, checked by tools/lint/error-codes.mjs. A folder ends with a slash. A plain Error, TypeError, RangeError or SyntaxError throw that has to stay is listed in retainedPlainThrows with the throw as written and the reason it stays.",
-  "migrated": ["src/canonical/decimal.ts", "src/canonical/jcs.ts", "src/artifacts/", "src/crypto/"],
+  "migrated": ["src/canonical/decimal.ts", "src/canonical/jcs.ts", "src/artifacts/", "src/crypto/", "src/discovery/", "src/identity/"],
   "retainedPlainThrows": [
     {
       "path": "src/artifacts/signatures.ts",
       "throw": "new TypeError()",
       "reason": "Thrown inside a try whose catch right below it returns a malformed or unresolved verification result; it never leaves verifyComponentSignature."
+    },
+    {
+      "path": "src/discovery/boundArtifactRepository.ts",
+      "throw": "new Error(\"artifact is not a JSON object\")",
+      "reason": "Thrown inside the try in write, whose catch right below it throws the coded binding.artifact_invalid error with this one as its cause."
+    },
+    {
+      "path": "src/discovery/catalog.ts",
+      "throw": "new Error(message)",
+      "reason": "Thrown inside the try in queryCatalogPage, directly or through readBoundedJson, which is called only there; its catch returns an indeterminate result, so it never leaves the function."
+    },
+    {
+      "path": "src/discovery/catalog.ts",
+      "throw": "new Error(\"catalog response has no body\")",
+      "reason": "Thrown inside the try in queryCatalogPage, directly or through readBoundedJson, which is called only there; its catch returns an indeterminate result, so it never leaves the function."
+    },
+    {
+      "path": "src/discovery/catalog.ts",
+      "throw": "new Error(\"catalog response exceeds maxResponseBytes\")",
+      "reason": "Thrown inside the try in queryCatalogPage, directly or through readBoundedJson, which is called only there; its catch returns an indeterminate result, so it never leaves the function."
+    },
+    {
+      "path": "src/discovery/catalog.ts",
+      "throw": "new Error(\"catalog response is not valid UTF-8 JSON\")",
+      "reason": "Thrown inside the try in queryCatalogPage, directly or through readBoundedJson, which is called only there; its catch returns an indeterminate result, so it never leaves the function."
+    },
+    {
+      "path": "src/discovery/catalog.ts",
+      "throw": "new Error(`Directory manifest returned HTTP ${response.status}`)",
+      "reason": "Thrown inside the try in queryCatalogPage, directly or through readBoundedJson, which is called only there; its catch returns an indeterminate result, so it never leaves the function."
+    },
+    {
+      "path": "src/discovery/catalog.ts",
+      "throw": "new Error(\"Directory manifest is malformed or has an unsupported version\")",
+      "reason": "Thrown inside the try in queryCatalogPage, directly or through readBoundedJson, which is called only there; its catch returns an indeterminate result, so it never leaves the function."
+    },
+    {
+      "path": "src/discovery/catalog.ts",
+      "throw": "new Error(\"Directory manifest catalog must be an absolute URL\")",
+      "reason": "Thrown inside the try in queryCatalogPage, directly or through readBoundedJson, which is called only there; its catch returns an indeterminate result, so it never leaves the function."
+    },
+    {
+      "path": "src/discovery/catalog.ts",
+      "throw": "new Error(\"Directory manifest catalog does not match catalogUrl\")",
+      "reason": "Thrown inside the try in queryCatalogPage, directly or through readBoundedJson, which is called only there; its catch returns an indeterminate result, so it never leaves the function."
+    },
+    {
+      "path": "src/discovery/scanner.ts",
+      "throw": "new Error(\"history page must contain an entries array\")",
+      "reason": "Thrown by validateRawPage, which is called only inside the try in scanAnchorPage; its catch returns an indeterminate page with the same cursor."
+    },
+    {
+      "path": "src/discovery/scanner.ts",
+      "throw": "new Error(\"history page nextCursor must be a string or null\")",
+      "reason": "Thrown by validateRawPage, which is called only inside the try in scanAnchorPage; its catch returns an indeterminate page with the same cursor."
+    },
+    {
+      "path": "src/discovery/scanner.ts",
+      "throw": "new Error(`history entry ${index} must be an object`)",
+      "reason": "Thrown by validateRawPage, which is called only inside the try in scanAnchorPage; its catch returns an indeterminate page with the same cursor."
+    },
+    {
+      "path": "src/discovery/scanner.ts",
+      "throw": "new Error(`history entry ${index} has no native address`)",
+      "reason": "Thrown by validateRawPage, which is called only inside the try in scanAnchorPage; its catch returns an indeterminate page with the same cursor."
+    },
+    {
+      "path": "src/discovery/scanner.ts",
+      "throw": "new Error(`history entry ${index} has invalid logical metadata`)",
+      "reason": "Thrown by validateRawPage, which is called only inside the try in scanAnchorPage; its catch returns an indeterminate page with the same cursor."
+    },
+    {
+      "path": "src/discovery/scanner.ts",
+      "throw": "new Error(`history entry ${index} has an invalid owner`)",
+      "reason": "Thrown by validateRawPage, which is called only inside the try in scanAnchorPage; its catch returns an indeterminate page with the same cursor."
+    },
+    {
+      "path": "src/discovery/scanner.ts",
+      "throw": "new Error(\"history page cursor did not advance\")",
+      "reason": "Thrown inside the try in scanAnchorPage, whose catch right below it returns an indeterminate page with the same cursor."
+    },
+    {
+      "path": "src/discovery/verifiedRead.ts",
+      "throw": "new Error(\"binding is not an object\")",
+      "reason": "Thrown inside a try in resolveAndRead whose catch right below it returns an indeterminate result."
+    },
+    {
+      "path": "src/discovery/verifiedRead.ts",
+      "throw": "new Error(\"record is not an object\")",
+      "reason": "Thrown inside a try in resolveAndRead whose catch right below it returns an indeterminate result."
+    },
+    {
+      "path": "src/identity/demosCci.ts",
+      "throw": "new TypeError(`${key} must be an own non-Proxy data function`)",
+      "reason": "Runs only inside the try in authenticateDemosCciRecord and, through captureTlsnDeps, the try in classifyCciTlsnProof; both catches return a result, so it never leaves either function."
+    },
+    {
+      "path": "src/identity/demosCci.ts",
+      "throw": "new TypeError(\"dependencies must be a plain record\")",
+      "reason": "Thrown inside the try in authenticateDemosCciRecord, whose catch right below it returns an error result."
+    },
+    {
+      "path": "src/identity/demosCci.ts",
+      "throw": "new TypeError(\"authentication dependencies contain unknown fields\")",
+      "reason": "Thrown inside the try in authenticateDemosCciRecord, whose catch right below it returns an error result."
     }
   ]
 }

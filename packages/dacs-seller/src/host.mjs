@@ -11,8 +11,9 @@
 //
 // The host only composes package modules. The operator supplies the signer
 // (the seller key's signing roles: the agent signs its
-// effects with `sign` inside the host's effect boundary, and its durable state
-// signs its journal with `integritySigner`) and the native capabilities, which are required:
+// effects with `sign` inside the host's effect boundary, its durable state
+// signs its journal with `integritySigner`, and discovery, read answers and
+// refusals are signed with `readOnlyAnswerSigner`) and the native capabilities, which are required:
 // the host never builds a fixture substrate, and it starts only with the whole
 // chain to delivery (native payment evidence anchored by one
 // createPaymentEvidenceWalletJournal, with that journal's
@@ -74,7 +75,7 @@ import { PASSIVE_RETAINED_READ, isDeadRefusedCreate, isProvenUnsignedAbsence } f
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { listingPin } from './dacs/purchase-protocol.mjs';
 import { createContextAdmissionTransaction } from './dacs/seller-admission-transaction.mjs';
-import { createSellerAgent } from './dacs/seller-agent.mjs';
+import { createSellerAgent, receiptFeeCeilingsConfig } from './dacs/seller-agent.mjs';
 import { createClosedBootstrapGate } from './dacs/closed-bootstrap-gate.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-capacity-defaults.mjs';
 import { completedContextOutcome, contextOperationView, createSellerContextRecords, createSellerContextRoute, createWireSellerContextRoute } from './dacs/seller-context-route.mjs';
@@ -96,7 +97,7 @@ import { isPrivateDirectory } from './private-directory.mjs';
  * variable, Listing member or request field selects another. */
 export const KIT_TP1_VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
 const REQUIRED = Object.freeze(['signer', 'listing', 'listener', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
-  'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'walletSession', 'participantImplementations', 'readCommitmentReceipt']);
+  'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'walletSession', 'participantImplementations', 'readCommitmentReceipt', 'receiptFeeCeilings']);
 const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'maxReservationUnits', 'now', 'contextSessionState']);
 // One journal for every seller route; its lease must exceed the 240 s context step.
 const KIT_JOURNAL_LEASE_MS = 300000;
@@ -310,8 +311,12 @@ export async function startSellerHost(options) {
   const { signer, listing, dataDirectory, buyerAccess, agreementAnchor, artifactAnchor, deliverableProducer, observeDemosTransfer,
     nativePaymentEvidence, reconcilePaymentEvidence, resumeDeliverableCreate = null, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, walletSession, participantImplementations, readCommitmentReceipt, deliveryEvidenceEnabled = false, deliverySchemaVerifier = null, maxJobs = DEFAULT_SELLER_MAX_JOBS, maxRecords = DEFAULT_MAX_RECORDS,
     maxReservationUnits = maxRecords, now = () => Date.now(), contextSessionState = null } = options;
-  if (typeof signer.sign !== 'function' || typeof signer.integritySigner?.sign !== 'function') throw new TypeError('signer must be the seller key\'s signing roles (sign and integritySigner)');
+  if (typeof signer.sign !== 'function' || typeof signer.integritySigner?.sign !== 'function' || typeof signer.readOnlyAnswerSigner !== 'function') {
+    throw new TypeError('signer must be the seller key\'s signing roles (sign, integritySigner and readOnlyAnswerSigner)');
+  }
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
+  // The ceilings every committed answer's seller receipt adds to the Agreement price; there is no default.
+  const receiptFeeCeilings = receiptFeeCeilingsConfig(options.receiptFeeCeilings);
   if (contextSessionState !== null && typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
   // The wire accepts the Listing of a continuing request only as its own admission returned it: admitted once per start.
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing), 'utf8'));
@@ -385,9 +390,9 @@ export async function startSellerHost(options) {
     const records = createSellerContextRecords({ listing, admission: (jobId) => admission.admissionRecord(jobId), contextOutcome: (jobId) => completedContextOutcome(journal, sellerClaim)(jobId) });
     // One gate, registered with the coordinator and asked by the agent: a purchase starts only from a successful context admission.
     const closedBootstrapGate = createClosedBootstrapGate({ admission: (jobId) => admission.admissionRecord(jobId), purchaseProfile: (jobId) => store.purchaseProfile(jobId), profile: binding.profile });
-    const agent = await createSellerAgent({ effectSigner: signer, integritySigner: signer.integritySigner, effectBoundary, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'), jobSlotReleased: store.jobSlotReleased, closedBootstrapGate,
+    const agent = await createSellerAgent({ effectSigner: signer, integritySigner: signer.integritySigner, readOnlyAnswerSigner: signer.readOnlyAnswerSigner, effectBoundary, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'), jobSlotReleased: store.jobSlotReleased, closedBootstrapGate,
       agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE,
-      contextRequest: records.exactRequest });
+      contextRequest: records.exactRequest, receiptFeeCeilings });
     opened.push(() => agent.close());
     // This host holds the state lock, so a job lock row left by an earlier process has no holder: release it.
     for (const { job, reason } of agent.releaseStaleLocks()) {
@@ -429,7 +434,7 @@ export async function startSellerHost(options) {
     const acceptsNewPurchase = () => sellerReady() && admission.fitsNewPurchase();
     // The one context every signed route on `./wire` uses, with SQL accounting before wire reservation. Each signed request and
     // answer reads the wallet session's current connection again through it, and opens under its own bootstrap scope.
-    const wire = createWireContext({ binding, tp1Network: { connection: stages.local }, bootstrap: stages.bootstrap, signer, store, journal, ready: acceptsNewPurchase, stopped: hostStopped, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion, publicEndpoint: listing.seller.publicEndpoint });
+    const wire = createWireContext({ binding, tp1Network: { connection: stages.local }, bootstrap: stages.bootstrap, signer, effectBoundary, store, journal, ready: acceptsNewPurchase, stopped: hostStopped, now, agent, requireDelegation: false, signedListing, readCommitmentReceipt, capacity, reservations, completion, publicEndpoint: listing.seller.publicEndpoint });
     const contextWork = createContextWorkRegistry();
     const buyerWalletAccess = operatorBuyerAccessConfig(buyerAccess);
     const assertBuyerAccess = (buyerClaim) => buyerWalletAccess.assertWallet(addressForClaim(buyerClaim));

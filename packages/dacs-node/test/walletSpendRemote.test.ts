@@ -119,6 +119,7 @@ async function serverV2(
   now: () => number = () => 1_000,
   selected: WalletSpendPolicyV1 = policy(),
   bindAuthorizationValidBefore?: WalletSpendAuthorityDependenciesV1["bindAuthorizationValidBefore"],
+  bindPlannedTransferNonce?: WalletSpendAuthorityDependenciesV1["bindPlannedTransferNonce"],
 ) {
   const reference = createInMemoryDacsWalletSpendContinuityWitnessV1({
     authorityId: "wallet-authority-production", epoch: "epoch-2026-09",
@@ -139,6 +140,7 @@ async function serverV2(
     store,
     dependencies: {
       ...(bindAuthorizationValidBefore ? { bindAuthorizationValidBefore } : {}),
+      ...(bindPlannedTransferNonce ? { bindPlannedTransferNonce } : {}),
       readBalance: async () => "1000",
       authenticateRecovery: async () => true,
       owner: "remote-service",
@@ -1733,6 +1735,51 @@ it("the V2 permit carries the bound validBefore to the buyer and back", async ()
   // Use a different reservation so the service returns a new permit.
   await expect(remote.reserve({ ...reservation(), reservationId: "remote-two" }))
     .rejects.toMatchObject({ reasonCode: "wallet-spend-authority-permit-invalid" });
+});
+
+it("carries the planned transfer nonce on the permit both ways", async () => {
+  /** A V2 client of `local`; `rewrite` replaces the planned nonce on every permit the service answers. */
+  const clientOf = async (local: Awaited<ReturnType<typeof serverV2>>, sent: unknown[], rewrite?: unknown) =>
+    createDacsRemoteWalletSpendAuthorityV2({
+      policy: policy(), endpoint: "http://127.0.0.1:8080/", tokenFilePath: await tokenFile(),
+      authorityId: local.authorityId, epoch: local.epoch,
+      witnessVerificationKey: local.verificationKey, allowInsecureLoopback: true,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        if (request.method === "POST") sent.push(await request.clone().json());
+        const response = await local.handler(request);
+        if (rewrite === undefined || request.method !== "POST") return response;
+        const body = await response.json() as { result: { permit: { plannedTransferNonce: unknown } } };
+        body.result.permit.plannedTransferNonce = rewrite;
+        return new Response(JSON.stringify(body), { status: 200 });
+      },
+    });
+
+  // (a) The service's planned nonce reaches the buyer, and the buyer's begin sends it back.
+  const bind = vi.fn(async () => 7);
+  const local = await serverV2(() => 1_000, policy(), undefined, bind);
+  const sent: Array<{ operation: string; payload: { permit?: unknown } }> = [];
+  const claim = await (await clientOf(local, sent)).reserve(reservation());
+  if (claim.status !== "reserved") throw new Error("expected reservation");
+  expect(bind).toHaveBeenCalledWith({ reservation: reservation(), policyHash: local.authority.policyHash });
+  expect(claim.permit.plannedTransferNonce).toBe(7);
+  await claim.permit.beginEffect();
+  expect(sent.find((request) => request.operation === "begin")?.payload.permit)
+    .toMatchObject({ plannedTransferNonce: 7 });
+  if (local.bindingInput.store.read === undefined) throw new Error("expected readable store");
+  const state = await local.bindingInput.store.read(dacsWalletSpendLineageKeyV1(policy().wallet, policy().chainId));
+  expect(state?.reservations[0]).toMatchObject({ stage: "effect-pending", plannedTransferNonce: 7 });
+
+  // (b) A permit whose planned nonce is not a non-negative safe integer is refused by the client.
+  for (const malformed of [-1, "7"]) {
+    const answering = await serverV2(() => 1_000, policy(), undefined, async () => 7);
+    await expect((await clientOf(answering, [], malformed)).reserve(reservation()))
+      .rejects.toMatchObject({ reasonCode: "wallet-spend-authority-permit-invalid" });
+  }
+
+  // (c) Without the hook the permit has no planned nonce.
+  const plainClaim = await (await clientOf(await serverV2(() => 1_000, policy()), [])).reserve(reservation());
+  expect(plainClaim.status === "reserved" && plainClaim.permit).not.toHaveProperty("plannedTransferNonce");
 });
 
 it("a remote authority without an expiry binder denies a window request and keeps its slot free", async () => {

@@ -21,6 +21,7 @@ import { exchange } from './d5-http-fixture.mjs';
 import { testWallet } from './protocol-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from './wire-authority-fixture.mjs';
 import { wireBuyer } from './wire-buyer.mjs';
+import { readOnlyRoleOf, testEffectBoundary } from './agent-signing.mjs';
 
 export const T0 = Date.UTC(2026, 9, 27, 12);
 export const JOB = generateCanonicalJobId({ timestamp: T0, entropy: new Uint8Array(10).fill(0x11) });
@@ -52,7 +53,8 @@ export function watchSql(t) {
 }
 
 // `resume` is `{ directory, generation }` of an earlier world whose store and journal are closed: this world opens the same files, as a restart does.
-export async function challengeWorld(t, { store: storeOptions = {}, requireDelegation = false, resume = null } = {}) {
+// sellerRoles: the seller key's roles the wire signs answers with, in place of the fixture seller's.
+export async function challengeWorld(t, { store: storeOptions = {}, requireDelegation = false, resume = null, sellerRoles = null } = {}) {
   const directory = resume?.directory ?? await mkdtemp(join(tmpdir(), 'TEST-challenge-route-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const path = join(directory, 'transport.sqlite'), journalDirectory = join(directory, 'wire-journal');
@@ -81,7 +83,9 @@ export async function challengeWorld(t, { store: storeOptions = {}, requireDeleg
     continuationEvidenceOf: () => { calls.continuationEvidenceOf++; return null; }, retainsPaymentClaim: () => true, retainsPaymentWork: () => true, assertSettlementCredit: () => {} };
   const readCommitmentReceipt = Object.assign(() => { calls.readCommitmentReceipt++; return 'valid'; }, { chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
   /** The wire context over the current store; `overrides` replace only the members they name. */
-  const makeWire = (overrides = {}) => createWireContext({ binding, tp1Network: { connection: () => { calls.connection++; return { ...TEST_CONNECTION }; } }, signer: signer(SELLER), store, journal,
+  const effectBoundary = testEffectBoundary({ binding }).effectBoundary;
+  const makeWire = (overrides = {}) => createWireContext({ binding, tp1Network: { connection: () => { calls.connection++; return { ...TEST_CONNECTION }; } },
+    signer: sellerRoles ?? { ...signer(SELLER), readOnlyAnswerSigner: readOnlyRoleOf(signer(SELLER)) }, effectBoundary, store, journal,
     ready: () => state.ready(), stopped: () => state.stop(), now, agent, requireDelegation, signedListing: admitWireArtifact(Buffer.from(JSON.stringify(listing))), readCommitmentReceipt, ...overrides });
   let wire = null;
   const compose = () => {

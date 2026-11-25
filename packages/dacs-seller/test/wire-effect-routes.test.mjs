@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { causeOf } from './helpers/refusal-body.mjs';
 import { spawnSync } from 'node:child_process';
 import DatabaseSync from 'better-sqlite3';
 import { NO_EFFECT_ERRORS, SellerAgentError, transportOutcome } from '../src/dacs/seller-agent.mjs';
@@ -400,7 +401,7 @@ test('a completed payments operation is revalidated read only before the stored 
   await w.verified(replayed);
   w.agent.revalidateCompletedAnswer = async () => { throw new SellerTransportError('seller_source_unavailable', 503, { cause: 'changed' }); };
   const refused = await w.request(PATHS.payments);
-  assert.deepEqual({ status: refused.status, error: refused.body.error, cause: refused.body.cause, signed: refused.signed }, { status: 503, error: 'seller_source_unavailable', cause: 'changed', signed: true });
+  assert.deepEqual({ status: refused.status, error: refused.body.error, cause: causeOf(refused.body), signed: refused.signed }, { status: 503, error: 'seller_source_unavailable', cause: 'changed', signed: true });
   assert.deepEqual(w.agent.calls, calls, 'no replay ran the payment again');
   assert.equal(operationOf(w, w.jobId, PATHS.payments).state, 'completed', 'the stored outcome stays');
 });
@@ -458,7 +459,7 @@ for (const route of ['commitments', 'commitmentSignature']) {
     await w.verified(replayed);
     w.agent.revalidateCompletedAnswer = async () => { throw new SellerTransportError('seller_source_unavailable', 503, { cause: 'timeout' }); };
     const refused = await w.request(PATHS[route]);
-    assert.deepEqual({ status: refused.status, error: refused.body.error, cause: refused.body.cause }, { status: 503, error: 'seller_source_unavailable', cause: 'timeout' }, 'a source that fails withholds the answer');
+    assert.deepEqual({ status: refused.status, error: refused.body.error, cause: causeOf(refused.body) }, { status: 503, error: 'seller_source_unavailable', cause: 'timeout' }, 'a source that fails withholds the answer');
     assert.equal(refused.signed, true);
     assert.deepEqual(w.agent.calls, commits, 'no replay ran the commitment again');
   });
@@ -975,7 +976,7 @@ test('a completed fixture payment at zero free capacity answers the same signed 
   w.script.observe = async () => ({ status: 'pending', reason: 'demos-pending' });
   for (let n = 0; n < 2; n++) {
     const refused = await w.send(PATHS.payments, signed);
-    assert.deepEqual([refused.status, refused.body.error, refused.body.cause, refused.signed], [503, 'seller_source_unavailable', 'unavailable', true]);
+    assert.deepEqual([refused.status, refused.body.error, causeOf(refused.body), refused.signed], [503, 'seller_source_unavailable', 'unavailable', true]);
     await assert.rejects(settled(), (error) => error.code === 'seller_source_unavailable');
   }
   assert.deepEqual(snapshot(), before);

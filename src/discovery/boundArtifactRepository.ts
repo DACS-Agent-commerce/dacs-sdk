@@ -4,6 +4,7 @@ import {
   logicalToStorageProgramName,
   sha256Hex,
 } from "../canonical/index.js";
+import { DacsError, SubstrateError } from "../errors.js";
 import type {
   AnchorRef,
   AnchorWriteOnceOptions,
@@ -81,6 +82,13 @@ export interface BoundArtifactRepository {
    * second physical artifact with different content or a new nonce. A success
    * status means the exact tuple was also read back through the configured
    * consumer index.
+   *
+   * Throws a `DacsError` coded `binding.logical_address_invalid`,
+   * `binding.storage_name_invalid` or `binding.anchor_metadata_invalid` for
+   * those arguments, and `binding.artifact_invalid` when the artifact cannot
+   * be cloned or is not a plain object. An adapter that returns an empty
+   * owner or native address throws a `SubstrateError` coded
+   * `anchor.owner_address_empty` or `anchor.native_address_empty`.
    */
   write(
     logicalAddress: string,
@@ -110,7 +118,7 @@ function anchorOptionsWithLogicalAddress(
     supplied !== undefined &&
     (typeof supplied !== "object" || supplied === null || Array.isArray(supplied))
   ) {
-    throw new Error("anchor metadata must be an object");
+    throw new DacsError("anchor metadata must be an object", { code: "binding.anchor_metadata_invalid" });
   }
   const requiredMetadata = {
     logicalAddress,
@@ -123,10 +131,11 @@ function anchorOptionsWithLogicalAddress(
       Object.prototype.hasOwnProperty.call(supplied, key) &&
       supplied[key] !== expected
     ) {
-      throw new Error(
+      throw new DacsError(
         `anchor metadata ${key} conflicts with the repository ${
           key === "logicalAddress" ? "logical address" : "artifact binding"
         }`,
+        { code: "binding.anchor_metadata_invalid" },
       );
     }
   }
@@ -135,8 +144,9 @@ function anchorOptionsWithLogicalAddress(
     Object.prototype.hasOwnProperty.call(supplied, "logical_address") &&
     supplied.logical_address !== logicalAddress
   ) {
-    throw new Error(
+    throw new DacsError(
       "anchor metadata logical_address conflicts with the repository logical address",
+      { code: "binding.anchor_metadata_invalid" },
     );
   }
   return {
@@ -236,19 +246,22 @@ export function createBoundArtifactRepository(
     async write(logicalAddress, artifact, options) {
       const canonicalLogicalAddress = logicalAddress.trim().normalize("NFC");
       if (canonicalLogicalAddress.length === 0) {
-        throw new Error("logicalAddress must not be empty");
+        throw new DacsError("logicalAddress must not be empty", { code: "binding.logical_address_invalid" });
       }
       if (logicalAddress !== canonicalLogicalAddress) {
-        throw new Error("logicalAddress must be trimmed and NFC-normalized");
+        throw new DacsError(
+          "logicalAddress must be trimmed and NFC-normalized",
+          { code: "binding.logical_address_invalid" },
+        );
       }
       const owner = deps.adapter.getAddress();
       if (owner.trim().length === 0) {
-        throw new Error("adapter returned an empty owner address");
+        throw new SubstrateError("adapter returned an empty owner address", { code: "anchor.owner_address_empty" });
       }
       const storageName =
         options?.storageName ?? logicalToStorageProgramName(logicalAddress);
       if (storageName.trim().length === 0) {
-        throw new Error("storageName must not be empty");
+        throw new DacsError("storageName must not be empty", { code: "binding.storage_name_invalid" });
       }
 
       // Deep-pin the exact JSON supplied by the caller before crossing an async
@@ -266,8 +279,9 @@ export function createBoundArtifactRepository(
         }
         pinnedArtifact = pinned as Record<string, unknown>;
       } catch (error) {
-        throw new Error("artifact must be a canonicalizable JSON object", {
+        throw new DacsError("artifact must be a canonicalizable JSON object", {
           cause: error,
+          code: "binding.artifact_invalid",
         });
       }
       const artifactContentHash = contentHash(pinnedArtifact);
@@ -283,7 +297,7 @@ export function createBoundArtifactRepository(
         ),
       );
       if (anchor.address.trim().length === 0) {
-        throw new Error("anchorWriteOnce returned an empty native address");
+        throw new SubstrateError("anchorWriteOnce returned an empty native address", { code: "anchor.native_address_empty" });
       }
 
       const binding: AnchorBinding = {

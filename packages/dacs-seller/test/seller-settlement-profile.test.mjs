@@ -24,7 +24,9 @@ import { createSellerTransportStore } from './helpers/bound-transport-store.mjs'
 import { hostAuthority } from './helpers/kit-wallet-session.mjs';
 import { proxyListener, distinctHeaders } from './helpers/listener-host.mjs';
 import { FIRST_ADMISSION_SCOPE, withFirstAdmission } from './helpers/first-admission.mjs';
+import { RECEIPT_FEE_CEILINGS } from './helpers/protocol-fixture.mjs';
 import { agentSigning } from './helpers/agent-signing.mjs';
+import { signedBuyerClient } from './helpers/signed-buyer-driver.mjs';
 
 let nextWallet=90;
 function key(){const tag=nextWallet++,privateKey=core.privateKeyFromSeed(new Uint8Array(32).fill(tag)),raw=Buffer.from(core.rawPublicKey(core.publicKeyFromSeed(new Uint8Array(32).fill(tag))));return{privateKey,address:'0x'+raw.toString('hex'),claim:'did:demos:agent:'+raw.toString('hex'),sign:bytes=>Buffer.from(core.ed25519Sign(bytes,privateKey)),signWallet:message=>'0x'+Buffer.from(core.ed25519Sign(Buffer.from(message),privateKey)).toString('hex')};}
@@ -83,7 +85,7 @@ async function world(t, { listingChanges = () => {}, sellerRequirement = null } 
     return entry;
   };
   const withLedger = (options) => options.sessionAdmission ? { ...options, challengeLedger: ledgerFor(options.durableDirectory, options.now ?? (() => now)).store.challenges } : options;
-  const capabilities = { readCommitmentReceipt: receiptReader(),
+  const capabilities = { readCommitmentReceipt: receiptReader(), receiptFeeCeilings: RECEIPT_FEE_CEILINGS,
     signer: { claim: sellerKey.claim, sign: sellerKey.sign }, listing, now: () => now,
     buyerAccess: seller.createOperatorBuyerAccess({ openBuyerAccess: true, buyerForJob: candidate => candidate === jobId ? buyerKey.address : null }),
     agreementAnchor: { source: 'settlement-profile/agreement-readback', readAgreement: refuse('readAgreement') },
@@ -436,7 +438,7 @@ async function httpSeller(t, w, { gate = {} } = {}) {
   const { wire, buyerWire } = await wireRouteFixture(t, { agent: facade, listing: w.listing, buyer: { claim: w.buyerKey.claim, sign: w.buyerKey.sign }, seller: w.signer, store, now: () => w.now });
   const handle = seller.createSellerHttpHandler(facade, { wire });
   const proposal = await w.proposalFor(w.vetted);
-  const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: inProcessFetch(handle, last),
+  const client = signedBuyerClient({ url: 'http://127.0.0.1:1', fetchImpl: inProcessFetch(handle, last),
     authentication: buyerWire.authentication(() => proposal.proposal.plan.agreementHash) });
   const restart = async (railAuthority) => { agent.close(); agent = await build(railAuthority); };
   return { chain, client, proposal, last, restart, get agent() { return agent; } };

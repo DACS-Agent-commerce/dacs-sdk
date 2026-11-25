@@ -231,8 +231,10 @@ export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `dev
 // holding the lock row of `nativeWalletLaneKey(pins, owner)` in this journal, the row every native write of that wallet takes,
 // a buyer's included. Inside it, this transport's readback, CREATE recovery and broadcast claim for that wallet continue in the
 // held lane; a lease that names a transfer, a transfer's confirmation claim and a cancellation still refuse journal-reentrant.
-// It is the one use of the wallet lane taken before the connection fence, so it is refused inside an effect pass
-// (nonce_lane_order), and a fence holder that then needs the lane waits at most the journal's lock timeout.
+// It is taken before the connection fence, so it is refused inside an effect pass (nonce_lane_order), and a fence holder that
+// then needs the lane waits at most the journal's lock timeout. Every Agreement transport also has
+// `inspectWalletNonceLane({owner, network, chainIdentity})`, which reads that lane's retained stage under the same lock and the
+// same refusals, and takes no work; the held facade does not carry it.
 export function createDevnetNativeTransport(options) { return constructTransport(options,false); }
 export function createDevnetAgreementTransport(options) { return constructTransport(options,true); }
 // Separate opt-in composition. The Agreement-only constructor above remains
@@ -447,15 +449,36 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
    * journal-reentrant, journal-closed, journal-integrity) and transport_closed. A hold lost while `work` runs rejects journal-fenced.
    */
   async function withWalletNonceLock(scope, work) {
-    const keys = scope !== null && typeof scope === 'object' ? Reflect.ownKeys(scope) : [];
-    if (keys.length !== NONCE_LANE_SCOPE_KEYS.length || !NONCE_LANE_SCOPE_KEYS.every((key) => keys.includes(key)) || typeof work !== 'function') fail('invalid_params','the nonce lane scope is exactly {owner, network, chainIdentity} and its work is a function');
-    const { owner, network, chainIdentity } = scope;
-    if (typeof owner !== 'string' || !ADDRESS.test(owner) || network !== pinned.network || canonicalChainIdentity(chainIdentity) !== pinned.chainIdentity) fail('invalid_params','the nonce lane scope names a native address on the pinned network and chain');
+    if (typeof work !== 'function') fail('invalid_params','the nonce lane work is a function');
+    const owner = nonceLaneOwner(scope);
     if (typeof journal.withOwnedOrAcquiredLane !== 'function') fail('nonce_lane_unavailable','this journal cannot keep the wallet lane through the wallet\'s own writes');
-    if (insideEffectPass()) fail('nonce_lane_order','the wallet nonce lane is taken before an effect pass, never inside one');
+    refuseInsidePass();
     return journal.withWalletLock(lane(owner), () => {
       if (closed) fail('transport_closed','the native transport is closed');
       return work();
+    });
+  }
+  // The owner of a nonce lane scope: exactly {owner, network, chainIdentity}, a native address on the pinned network and chain.
+  function nonceLaneOwner(scope) {
+    const keys = scope !== null && typeof scope === 'object' ? Reflect.ownKeys(scope) : [];
+    if (keys.length !== NONCE_LANE_SCOPE_KEYS.length || !NONCE_LANE_SCOPE_KEYS.every((key) => keys.includes(key))) fail('invalid_params','the nonce lane scope is exactly {owner, network, chainIdentity}');
+    const { owner, network, chainIdentity } = scope;
+    if (typeof owner !== 'string' || !ADDRESS.test(owner) || network !== pinned.network || canonicalChainIdentity(chainIdentity) !== pinned.chainIdentity) fail('invalid_params','the nonce lane scope names a native address on the pinned network and chain');
+    return owner;
+  }
+  const refuseInsidePass = () => { if (insideEffectPass()) fail('nonce_lane_order','the wallet nonce lane is taken before an effect pass, never inside one'); };
+  /**
+   * Resolves the stage of the wallet's retained native lane row as a frozen `{stage}` (null for a row without a string stage), or null when there is
+   * none, read under the lane's lock with no network read and no record write. Rejects as `withWalletNonceLock` does before its work runs, except that
+   * any journal with `withWalletLock` serves it.
+   */
+  async function inspectWalletNonceLane(scope) {
+    const owner = nonceLaneOwner(scope);
+    refuseInsidePass();
+    return journal.withWalletLock(lane(owner), async () => {
+      if (closed) fail('transport_closed','the native transport is closed');
+      const retained = await journal.get(lane(owner));
+      return retained == null ? null : Object.freeze({ stage: typeof retained.stage === 'string' ? retained.stage : null });
     });
   }
   const intent = (hash) => `devnet/native-transfer/${hash}`;
@@ -1169,7 +1192,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           const status=await raw({method:'nodeCall',params:[{message:'getTransactionStatus',data:{hash}}]});
           const found=await raw({method:'nodeCall',params:[{message:'getTxByHash',data:{hash}}]});
           const nonce=await readNonce();
-          return storageWriteAbsent(status,found) && nonce===storageWriteAccountNonce(r.nonce)-1
+          return storageWriteAbsent(status,found,r.storageWriteReferenceBlock) && nonce===storageWriteAccountNonce(r.nonce)-1
             && storageWriteAccountNonce(r.nonce)>0;
         };
         try {
@@ -1539,6 +1562,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     ...(settlement?{recoverStorageWrite:(request)=>tracked(()=>recoverStorageWrite(request)),
       onStorageWriteResend(listener) { if(typeof listener!=='function')throw new TypeError('resend listener required');resendListeners.add(listener);return()=>resendListeners.delete(listener); }}:{}),
     ...(agreement?{pins:pinned,transportBinding:declaration,journal,...publications,
+      inspectWalletNonceLane:(scope)=>tracked(()=>inspectWalletNonceLane(scope)),
       // What the source, in any process on this journal, has claimed of one
       // prepared transfer (payload: the unsigned transfer the plugin handed
       // to the wallet), with no network read: 'signature-lease', the stage of

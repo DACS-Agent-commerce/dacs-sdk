@@ -1,8 +1,15 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { join } from "node:path";
 
-import { canonicalWalletSpendWalletV1 } from "@kynesyslabs/dacs";
+import {
+  canonicalWalletSpendWalletV1,
+  type WalletSpendAuthorityDependenciesV1,
+  type WalletSpendPolicyV1,
+  type WalletSpendStateV1,
+} from "@kynesyslabs/dacs";
 
+import { createDacsWalletSpendDemosReaderV1, type DacsWalletSpendDemosReaderV1 } from "./walletSpendDemosReader.js";
 import { createDacsWalletSpendEvmReaderV1, type DacsWalletSpendEvmReaderV1 } from "./walletSpendEvmReader.js";
 import {
   openDacsWalletSpendFileAuthorityStoresV1,
@@ -10,6 +17,10 @@ import {
 } from "./walletSpendFileAuthorityStores.js";
 import { createDacsWalletSpendContinuityAuthorityV2 } from "./walletSpendPostgres.js";
 import { createDacsWalletSpendAuthorityServiceV2 } from "./walletSpendRemote.js";
+import {
+  createDacsWalletSpendTestnetDemRecoveryV1,
+  openDacsWalletSpendDemEvidenceStoreV1,
+} from "./walletSpendTestnetDemRecovery.js";
 import { createRetainingDacsWalletSpendOperationLogV1 } from "./walletSpendTestnetOperationLog.js";
 import { createDacsWalletSpendTestnetRecoveryV1 } from "./walletSpendTestnetRecovery.js";
 import {
@@ -25,9 +36,13 @@ export interface DacsWalletSpendTestnetAuthorityV1 {
   readonly authorityId: string;
   readonly epoch: string;
   readonly witnessVerificationKey: string;
-  readonly lineageKey: string;
-  readonly policyHash: string;
-  /** Stops accepting, waits up to 5 s for running requests, then closes the stores. */
+  /** The x402 lane's lineage, present when that lane is configured. */
+  readonly lineageKey?: string;
+  /** The x402 lane's policy hash, present when that lane is configured. */
+  readonly policyHash?: string;
+  /** The DEM lane's lineage and policy hash, present when that lane is configured. */
+  readonly payDem?: Readonly<{ lineageKey: string; policyHash: string }>;
+  /** Stops accepting, waits up to 5 s for running requests, then closes every lane's stores. */
   stop(): Promise<void>;
 }
 
@@ -169,41 +184,90 @@ function closeServer(server: Server, graceMs: number): Promise<void> {
   return closed.finally(() => clearTimeout(grace));
 }
 
-/** Builds the per-request handler over the open stores. */
-function composeHandler({ settings, tokenDigest, stores, reader }: Readonly<{
+/** One lineage the service serves: its open stores, its policy and its chain rule. */
+interface Lane {
+  stores: Readonly<DacsWalletSpendFileAuthorityStoresV1>;
+  policy: Readonly<WalletSpendPolicyV1>;
+  dependencies: Readonly<Pick<WalletSpendAuthorityDependenciesV1,
+    "readBalance" | "authenticateRecovery" | "bindAuthorizationValidBefore" | "bindPlannedTransferNonce">>;
+}
+
+/** The lane's head state; its stores are provisioned at open, so a missing head is an error. */
+function headStateReader(stores: Readonly<DacsWalletSpendFileAuthorityStoresV1>) {
+  return async (): Promise<Readonly<WalletSpendStateV1>> => {
+    const state = await stores.stateStore().read?.(stores.lineageKey);
+    if (state === undefined || state === null) throw new Error("wallet-spend-continuity-state-missing");
+    return state;
+  };
+}
+
+const reportLine = (line: Readonly<Record<string, string>>): void => {
+  process.stderr.write(`${JSON.stringify(line)}\n`);
+};
+
+/** The x402 lane: Base Sepolia reads and its chain rule, which binds each hold's validBefore. */
+function x402Lane(stores: Lane["stores"], policy: Lane["policy"], reader: Readonly<DacsWalletSpendEvmReaderV1>): Lane {
+  const recovery = createDacsWalletSpendTestnetRecoveryV1({ policy, reader, report: reportLine });
+  return {
+    stores,
+    policy,
+    dependencies: {
+      readBalance: reader.readBalance,
+      authenticateRecovery: recovery.authenticateRecovery,
+      bindAuthorizationValidBefore: recovery.bindAuthorizationValidBefore,
+    },
+  };
+}
+
+/**
+ * The DEM lane: Demos testnet reads and its chain rule. It binds no validBefore: a signed DEM
+ * transfer carries no expiry. Each new hold binds the wallet's next account nonce instead, so the
+ * hold ends when the chain shows its transfer, or shows that nonce used by a transaction that pays
+ * the payee nothing.
+ */
+function payDemLane(
+  stores: Lane["stores"],
+  policy: Lane["policy"],
+  reader: Readonly<DacsWalletSpendDemosReaderV1>,
+  evidenceStore: Parameters<typeof createDacsWalletSpendTestnetDemRecoveryV1>[0]["evidenceStore"],
+): Lane {
+  const recovery = createDacsWalletSpendTestnetDemRecoveryV1({
+    policy, reader, readState: headStateReader(stores), evidenceStore, report: reportLine,
+  });
+  return {
+    stores,
+    policy,
+    dependencies: {
+      readBalance: reader.readBalance,
+      authenticateRecovery: recovery.authenticateRecovery,
+      bindPlannedTransferNonce: () => reader.plannedTransferNonce(),
+    },
+  };
+}
+
+/** Builds the per-request handler over the open lanes; a request reaches only the lane of its lineage. */
+function composeHandler({ settings, tokenDigest, lanes }: Readonly<{
   settings: Settings;
   tokenDigest: Uint8Array;
-  stores: Readonly<DacsWalletSpendFileAuthorityStoresV1>;
-  reader: Readonly<DacsWalletSpendEvmReaderV1>;
+  lanes: readonly Lane[];
 }>): Handler {
-  const { policy } = settings;
-  const recovery = createDacsWalletSpendTestnetRecoveryV1({
-    policy,
-    reader,
-    report: (line) => process.stderr.write(`${JSON.stringify(line)}\n`),
-  });
   return createDacsWalletSpendAuthorityServiceV2({
     authenticate(token) {
       const presented = createHash("sha256").update(token, "utf8").digest();
       return timingSafeEqual(presented, tokenDigest) ? BUYER_ROLE : null;
     },
     resolveAuthority(scope) {
-      if (scope.roleId !== BUYER_ROLE || scope.authorityId !== settings.authorityId ||
-          scope.epoch !== settings.epoch || scope.lineageKey !== stores.lineageKey ||
-          scope.policyHash !== settings.policyHash || scope.chainId !== policy.chainId ||
-          canonicalWalletSpendWalletV1(scope.wallet) !== policy.wallet) {
+      const lane = lanes.find(({ stores }) => stores.lineageKey === scope.lineageKey);
+      if (lane === undefined || scope.roleId !== BUYER_ROLE || scope.authorityId !== settings.authorityId ||
+          scope.epoch !== settings.epoch || scope.policyHash !== lane.stores.policyHash ||
+          scope.chainId !== lane.policy.chainId || canonicalWalletSpendWalletV1(scope.wallet) !== lane.policy.wallet) {
         return null;
       }
       const { roleId, operationId, requestHash } = scope;
       return createDacsWalletSpendContinuityAuthorityV2({
-        policy,
-        store: stores.stateStore({ roleId, operationId, requestHash }),
-        dependencies: {
-          readBalance: reader.readBalance,
-          authenticateRecovery: recovery.authenticateRecovery,
-          bindAuthorizationValidBefore: recovery.bindAuthorizationValidBefore,
-          owner: OWNER,
-        },
+        policy: lane.policy,
+        store: lane.stores.stateStore({ roleId, operationId, requestHash }),
+        dependencies: { ...lane.dependencies, owner: OWNER },
       });
     },
     operations: createRetainingDacsWalletSpendOperationLogV1(RETAINED_OPERATIONS),
@@ -211,15 +275,18 @@ function composeHandler({ settings, tokenDigest, stores, reader }: Readonly<{
 }
 
 /**
- * Starts the testnet wallet-spend authority: it checks the settings and the RPC's
- * chain, binds the loopback port before it opens the data directory, and serves
- * only the V2 operation routes. Requests that arrive before the stores are open
- * wait for them.
+ * Starts the testnet wallet-spend authority: it checks the settings, the Base
+ * Sepolia RPC's chain for the x402 lane and the Demos node's identity for the
+ * DEM lane, binds the loopback port before it opens any data directory, and
+ * serves only the V2 operation routes, each lane under its own lineage.
+ * Requests that arrive before the stores are open wait for them.
  *
  * @param input.environment The settings source; `process.env` when omitted.
  * @returns The running authority and its public identity.
  * @throws DacsWalletSpendTestnetAuthorityError naming the refusal, for example
- *   `wallet-spend-testnet-authority-listen-failed` when the port is taken.
+ *   `wallet-spend-testnet-authority-listen-failed` when the port is taken, or
+ *   `wallet-spend-testnet-authority-demos-network-mismatch` when the Demos node
+ *   is not the approved testnet.
  */
 export async function startDacsWalletSpendTestnetAuthorityV1(input: Readonly<{
   environment?: Readonly<Record<string, string | undefined>>;
@@ -228,38 +295,66 @@ export async function startDacsWalletSpendTestnetAuthorityV1(input: Readonly<{
   try {
     loaded = await loadDacsWalletSpendTestnetAuthoritySettingsV1(input.environment ?? process.env);
     const { settings, tokenDigest, witnessSeed } = loaded;
-    const reader = createDacsWalletSpendEvmReaderV1({
-      rpcUrl: settings.evmRpcUrl, policy: settings.policy,
-      authorizationSearchFromBlock: settings.authorizationSearchFromBlock,
-    });
-    await reader.assertChain();
+    // Each configured lane's chain is checked before the port is bound or a directory is opened.
+    const x402 = settings.x402 === undefined ? undefined : {
+      settings: settings.x402,
+      reader: createDacsWalletSpendEvmReaderV1({
+        rpcUrl: settings.x402.evmRpcUrl, policy: settings.x402.policy,
+        authorizationSearchFromBlock: settings.x402.authorizationSearchFromBlock,
+      }),
+    };
+    await x402?.reader.assertChain();
+    const payDem = settings.payDem === undefined ? undefined : {
+      settings: settings.payDem,
+      reader: createDacsWalletSpendDemosReaderV1({ rpcUrl: settings.payDem.demosRpcUrl, policy: settings.payDem.policy }),
+    };
+    await payDem?.reader.assertNetwork();
 
     const { server, origin, serve } = await bindPort(settings.listen);
-    let stores: Readonly<DacsWalletSpendFileAuthorityStoresV1>;
-    try {
-      stores = await openDacsWalletSpendFileAuthorityStoresV1({
-        directory: settings.dataDirectory, policy: settings.policy,
+    const openStores = (lane: Readonly<{ dataDirectory: string; policy: Lane["policy"] }>) =>
+      openDacsWalletSpendFileAuthorityStoresV1({
+        directory: lane.dataDirectory, policy: lane.policy,
         authorityId: settings.authorityId, epoch: settings.epoch, seed: witnessSeed,
       });
+    let x402Open: Lane | undefined;
+    let payDemOpen: Lane | undefined;
+    const closeStores = () => Promise.all([x402Open?.stores.close(), payDemOpen?.stores.close()]);
+    try {
+      if (x402 !== undefined) x402Open = x402Lane(await openStores(x402.settings), x402.settings.policy, x402.reader);
+      if (payDem !== undefined) {
+        const stores = await openStores(payDem.settings);
+        // Opened inside the lane's data directory, beside `witness/` and `states/`; it outlives restarts.
+        const evidenceStore = await openDacsWalletSpendDemEvidenceStoreV1(join(payDem.settings.dataDirectory, "transfers"))
+          .catch(async (error: unknown) => { await stores.close(); throw error; });
+        payDemOpen = payDemLane(stores, payDem.settings.policy, payDem.reader, evidenceStore);
+      }
     } catch (error) {
       serve(new Error("wallet-spend-testnet-authority-stores-unavailable"));
       await closeServer(server, 0);
+      await closeStores();
       throw error;
     }
-    serve(composeHandler({ settings, tokenDigest, stores, reader }));
+    serve(composeHandler({
+      settings, tokenDigest, lanes: [x402Open, payDemOpen].filter((lane) => lane !== undefined),
+    }));
 
     let stopped: Promise<void> | undefined;
     const stop = async (): Promise<void> => {
       await closeServer(server, STOP_GRACE_MS);
-      await stores.close();
+      await closeStores();
     };
     return Object.freeze({
       url: `${origin}/`,
       authorityId: settings.authorityId,
       epoch: settings.epoch,
-      witnessVerificationKey: stores.verificationKey,
-      lineageKey: stores.lineageKey,
-      policyHash: stores.policyHash,
+      // The settings check that the seed derives this key, and every lane's stores sign with that seed.
+      witnessVerificationKey: settings.witnessVerificationKey,
+      ...(x402Open === undefined ? {} : {
+        lineageKey: x402Open.stores.lineageKey, policyHash: x402Open.stores.policyHash,
+      }),
+      ...(payDemOpen === undefined ? {} : {
+        payDem: Object.freeze({ lineageKey: payDemOpen.stores.lineageKey, policyHash: payDemOpen.stores.policyHash }),
+      }),
       stop: () => (stopped ??= stop()),
     });
   } catch (error) {

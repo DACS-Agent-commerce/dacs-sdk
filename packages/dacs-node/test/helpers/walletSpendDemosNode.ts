@@ -1,8 +1,18 @@
 import { readFileSync } from "node:fs";
+import { writeFile } from "node:fs/promises";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { join } from "node:path";
 
-import type { WalletSpendPolicyV1 } from "@kynesyslabs/dacs";
+import {
+  settlementKey,
+  type WalletSpendAuthorityV1,
+  type WalletSpendPolicyV1,
+  type WalletSpendReservationV1,
+  type WalletSpendSettlementObservationV1,
+} from "@kynesyslabs/dacs";
+
+import { createDacsRemoteWalletSpendAuthorityV2 } from "../../src/walletSpendRemote.js";
 
 /** The payer and payee of the recorded node2 transfers, bare lowercase hex. */
 export const DEMOS_PAYER = "c0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a";
@@ -57,6 +67,109 @@ export function demosPolicy(overrides: Partial<WalletSpendPolicyV1> = {}): Walle
   };
 }
 
+/**
+ * The Demos node address the service tests configure. The start check binds only an https node, so
+ * the tests route this name to a loopback stub: `fetchRoutingDemosNodeTo` in process, and
+ * `routeDemosNodeFetch.mjs` (target in `DACS_TEST_DEMOS_NODE_TARGET`) in a child process.
+ */
+export const DEMOS_NODE_URL = "https://demos-node.test/";
+
+/** `base`, except that requests for `DEMOS_NODE_URL` go to `target`. */
+export function fetchRoutingDemosNodeTo(target: string, base: typeof fetch = globalThis.fetch): typeof fetch {
+  return (input, init) => base(String(input) === DEMOS_NODE_URL ? target : input, init);
+}
+
+export const DEMOS_RAIL_ID = "pay-dem-native";
+/** The fee ceiling the buyer reserves: the confirmed record's 1 DEM fee fits under it. */
+export const DEMOS_FEE_CEILING = "2000000000";
+
+/** A hold shaped as the SDK's pay-dem buyer builds it for one job phase. */
+export function demosHold(jobId = "job-dem", options: Readonly<{ fee?: boolean; payee?: string; amount?: string }> = {}):
+  WalletSpendReservationV1 {
+  const amount = options.amount ?? CONFIRMED_AMOUNT;
+  return {
+    reservationVersion: "1",
+    reservationId: `pay-dem:${settlementKey(DEMOS_RAIL_ID, jobId, 0)}`,
+    jobId,
+    phaseIndex: 0,
+    phase: "pay-dem",
+    agreementHash: "a".repeat(64),
+    settlementBindingHash: "b".repeat(64),
+    railId: DEMOS_RAIL_ID,
+    railDefinitionHash: "c".repeat(64),
+    wallet: DEMOS_WALLET,
+    chainId: "demos",
+    payee: options.payee ?? DEMOS_PAYEE,
+    finality: { model: "bft-final" },
+    debits: [
+      { asset: "DEM", purpose: "service", expectedAmount: amount, maximumAmount: amount },
+      ...(options.fee === false ? [] : [{
+        asset: "DEM", purpose: "network-fee" as const, expectedAmount: "0", maximumAmount: DEMOS_FEE_CEILING,
+      }]),
+    ],
+  };
+}
+
+/** A settled claim for the confirmed transfer; `fee` null leaves out the network-fee debit. */
+export function demosSettledClaim(hash = CONFIRMED_HASH, fee: string | null = CONFIRMED_FEE): WalletSpendSettlementObservationV1 {
+  return {
+    disposition: "settled",
+    evidenceHash: hash,
+    debits: [
+      { asset: "DEM", purpose: "service", amount: CONFIRMED_AMOUNT },
+      ...(fee === null ? [] : [{ asset: "DEM", purpose: "network-fee" as const, amount: fee }]),
+    ],
+  };
+}
+
+/** The x402 lane's own four settings; without them a service runs the DEM lane alone. */
+export const X402_LANE_SETTING_NAMES = Object.freeze([
+  "DACS_WALLET_AUTHORITY_DATA_DIRECTORY",
+  "DACS_WALLET_AUTHORITY_POLICY_FILE",
+  "DACS_EVM_RPC_URL",
+  "DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK",
+]);
+
+/** The environment without the x402 lane's settings. */
+export function withoutX402Lane(environment: Readonly<Record<string, string | undefined>>): Record<string, string | undefined> {
+  return { ...environment, ...Object.fromEntries(X402_LANE_SETTING_NAMES.map((name) => [name, undefined])) };
+}
+
+/** The DEM lane's three settings: a data directory and a policy file under `root`, and the node URL. */
+export async function demosLaneSettings(input: Readonly<{ root: string; rpcUrl: string; policy?: unknown }>):
+  Promise<Readonly<{ dataDirectory: string; environment: Record<string, string> }>> {
+  const dataDirectory = join(input.root, "dem-data");
+  const policyFile = join(input.root, "dem-policy.json");
+  await writeFile(policyFile, JSON.stringify(input.policy ?? demosPolicy()), { mode: 0o644 });
+  return {
+    dataDirectory,
+    environment: {
+      DACS_PAY_DEM_WALLET_AUTHORITY_DATA_DIRECTORY: dataDirectory,
+      DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE: policyFile,
+      DACS_DEMOS_RPC_URL: input.rpcUrl,
+    },
+  };
+}
+
+/** The remote V2 client a generated pay-dem buyer builds, for the DEM policy (with overrides). */
+export function demosAuthorityClient(input: Readonly<{
+  authority: Readonly<{ url: string; authorityId: string; epoch: string; witnessVerificationKey: string }>;
+  tokenFile: string;
+  policy?: Partial<WalletSpendPolicyV1>;
+  fetch?: typeof fetch;
+}>): Promise<Readonly<WalletSpendAuthorityV1>> {
+  return createDacsRemoteWalletSpendAuthorityV2({
+    policy: demosPolicy(input.policy),
+    endpoint: input.authority.url,
+    tokenFilePath: input.tokenFile,
+    authorityId: input.authority.authorityId,
+    epoch: input.authority.epoch,
+    witnessVerificationKey: input.authority.witnessVerificationKey,
+    allowInsecureLoopback: true,
+    ...(input.fetch === undefined ? {} : { fetch: input.fetch }),
+  });
+}
+
 /** One `nodeCall` request as the stub received it. */
 export interface DemosNodeCall { message: string; data: Record<string, unknown> }
 
@@ -71,6 +184,10 @@ export interface DemosNodeState {
   genesisHash: string;
   forkActivated: unknown;
   balance: unknown;
+  /** The `getAddressNonce` answer: the payer's highest confirmed nonce. */
+  accountNonce: unknown;
+  /** The `getTransactionHistory` page, newest first. */
+  history: unknown[];
 }
 
 export interface DemosNodeStub {
@@ -92,14 +209,47 @@ export async function closeDemosNodeStubs(): Promise<void> {
   })));
 }
 
-/** The default state: the recorded records, the approved identity and a post-fork balance. */
+/**
+ * The default state: the recorded records, the approved identity, a post-fork balance, and an account
+ * nonce one below the confirmed transfer's, so a new hold's planned nonce is that transfer's nonce.
+ */
 export function recordedDemosState(genesisHash: string): DemosNodeState {
   return {
     records: new Map(Object.keys(node2.getTxByHash).map((hash) => [hash, recordedTransaction(hash)])),
     genesisHash,
     forkActivated: true,
     balance: "12000000000",
+    accountNonce: CONFIRMED_NONCE - 1,
+    history: [],
   };
+}
+
+/** The confirmed transfer's record rewritten as a 1 DEM confirmed transfer from the payer to itself. */
+export function selfTransferRecord(hash: string, nonce: number): Record<string, unknown> {
+  const record = recordedTransaction(CONFIRMED_HASH);
+  const content = record.content as Record<string, unknown> & { data: [string, { args: unknown[] }] };
+  const oneDem = "1000000000";
+  record.hash = hash;
+  record.blockNumber = CONFIRMED_BLOCK + nonce;
+  content.nonce = String(nonce);
+  content.to = DEMOS_WALLET;
+  content.amount = Number(oneDem);
+  content.data[1].args = [DEMOS_PAYER, oneDem];
+  content.gcr_edits = [
+    { type: "balance", operation: "remove", isRollback: false, account: DEMOS_WALLET, amount: oneDem },
+    { type: "balance", operation: "add", isRollback: false, account: DEMOS_WALLET, amount: oneDem },
+    { type: "balance", operation: "remove", isRollback: false, account: DEMOS_WALLET, amount: CONFIRMED_FEE },
+    { type: "nonce", operation: "add", isRollback: false, account: DEMOS_WALLET, amount: 1 },
+  ];
+  return record;
+}
+
+/** A history row for an incoming transfer from another account. */
+export function inboundHistoryRow(hash: string): Record<string, unknown> {
+  const sender = `0x${"cd".repeat(32)}`;
+  return { hash, status: "confirmed", blockNumber: CONFIRMED_BLOCK, content: {
+    type: "native", from: sender, from_ed25519_address: sender, to: DEMOS_WALLET, nonce: "3",
+  } };
 }
 
 const ok = (response: unknown) => ({ status: 200, body: { result: 200, response } });
@@ -140,6 +290,10 @@ function defaultAnswer(state: DemosNodeState, call: DemosNodeCall): DemosNodeAns
       return ok({ forks: { osDenomination: { activationHeight: 0, activated: state.forkActivated } } });
     case "getAddressInfo":
       return ok({ balance: state.balance });
+    case "getAddressNonce":
+      return ok(state.accountNonce);
+    case "getTransactionHistory":
+      return ok(state.history);
     default:
       return { status: 200, body: { result: 400, response: "error" } };
   }

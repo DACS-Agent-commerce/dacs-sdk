@@ -1,104 +1,30 @@
-// P49s1 part b: the buyer's keystore wallet entry. Keystores are written here the way the plugin's writer does
-// (dacs-plugin stdio-mcp/src/keystore.ts:33-52, :127-129 at 980c45b): JSON.stringify(ks, null, 2) + '\n', base64 members, mode 0600, create only.
+// The buyer's keystore wallet entry and its paid-write refusal and preview. Keystores are written the way the plugin's writer does
+// (test/helpers/keystore-world.mjs).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCipheriv, randomBytes, scryptSync } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { api, mnemonicBytes, scriptedNode } from './helpers/tp1-node-fixture.mjs';
+import { agreementRequest, api, mnemonicBytes } from './helpers/tp1-node-fixture.mjs';
 import { finalizedWorld } from './helpers/finalized-node-world.mjs';
 import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
 import { confirmThroughFacade, sha, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
+import { addressOfFixture, buildCountingSigns, inPlainPass, keystoreDir, keystoreOf, keystoreWorld, knownFixtureAddress, N_TEST, PASSPHRASE, PHRASE, scryptKey } from './helpers/keystore-world.mjs';
 // After the fixture installed the admission hook (test/helpers/purchase-admission-hook.mjs): src/ modules load dynamically.
 const { createKeystoreWalletOpener, JOURNAL_METHODS } = await import('../src/wallet/keystore-wallet-opener.mjs');
-const { passContext } = await import('../src/wallet/pass-context.mjs');
-const { OWNER_AUTHORITY, OWNER_ENDPOINT } = await import('./helpers/queued-owner.mjs');
+const { nativeWalletLaneKey } = await import('../src/wallet/devnet-native-transport.mjs');
 
-const PASSPHRASE = 'TEST-keystore-passphrase';
-const PHRASE = new TextDecoder().decode(mnemonicBytes());
 const OTHER_ADDRESS = '0x' + 'ab'.repeat(32);
-const N_TEST = 2 ** 14;
-
-const scryptKey = (passphrase, salt, N) => scryptSync(passphrase.normalize('NFKC'), salt, 32, { N, r: 8, p: 1, maxmem: 256 * N * 8 + 1024 * 1024 });
-
-/** The plugin's encryptMnemonic (keystore.ts:33-52), with `plaintext` encrypted as given (the plugin trims it first). */
-function keystoreOf(plaintext, { passphrase = PASSPHRASE, N = N_TEST, address } = {}) {
-  const salt = randomBytes(32), iv = randomBytes(12), key = scryptKey(passphrase, salt, N);
-  const cipher = createCipheriv('aes-256-gcm', key, iv);
-  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
-  return { version: 1, kdf: 'scrypt', kdfparams: { N, r: 8, p: 1, salt: salt.toString('base64') }, cipher: 'aes-256-gcm',
-    iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), ciphertext: ciphertext.toString('base64'), ...(address ? { address } : {}) };
-}
-
-/** The plugin's writeKeystore (keystore.ts:127-129): create only, mode 0600. */
-function writeKeystore(path, ks) {
-  writeFileSync(path, typeof ks === 'string' ? ks : JSON.stringify(ks, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-  return path;
-}
-
-function keystoreDir(t) {
-  const dir = mkdtempSync(join(tmpdir(), 'keystore-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  let n = 0;
-  return { dir, file: (ks = keystoreOf(PHRASE)) => writeKeystore(join(dir, `ks-${n++}.json`), ks) };
-}
-
-// The fixture phrase's address, read once from a composition made the existing way.
-let fixtureAddress;
-async function addressOfFixture(t) {
-  if (!fixtureAddress) { const w = await finalizedWorld(t); await w.build(); fixtureAddress = w.session.wallet.getPublicAccount().address; await w.close(); }
-  return fixtureAddress;
-}
-
-/**
- * A finalized world whose session is composed by openKeystoreWalletSession over `keystorePath`, with a synchronous stop check. Its owner is
- * the exported transport owner over the world's scripted node (`passOwner`), because an effect pass needs a lease the composition's own owner made.
- */
-async function keystoreWorld(t, keystorePath, input = {}) {
-  const expectedAddress = await addressOfFixture(t), node = scriptedNode();
-  const passOwner = api.createNodeTransportOwner({ endpoint: OWNER_ENDPOINT, transportAuthority: OWNER_AUTHORITY, fetchImpl: node.fetch });
-  const w = await finalizedWorld(t, { node, input: { owner: passOwner, keystorePath, passphrase: PASSPHRASE, expectedAddress, stopped: () => false, ...input },
-    compose: options => api.openKeystoreWalletSession(Object.fromEntries(Object.entries(options).filter(([name]) => name !== 'key'))) });
-  t.after(() => passOwner.close());
-  return Object.assign(w, { passOwner });
-}
-
-/** Counts the transaction-hash signatures made inside the session's SDK sign, as test/helpers/node-wallet-signing-spy.mjs does. */
-async function buildCountingSigns(t, w) {
-  const { Demos } = await (await import('../src/wallet/node-demos-loading.mjs')).loadNodeDemos();
-  const connect = Demos.prototype.connectWallet;
-  let instance;
-  t.mock.method(Demos.prototype, 'connectWallet', function spyConnect(...args) { instance = this; return Reflect.apply(connect, this, args); });
-  await w.build();
-  const sdkCrypto = Object.getPrototypeOf(instance.crypto), innerSign = sdkCrypto.sign, proto = Object.getPrototypeOf(instance), sign = proto.sign;
-  const counts = { inner: 0, inSign: 0 };
-  t.mock.method(sdkCrypto, 'sign', function spyInner(...args) { counts.inner += 1; return Reflect.apply(innerSign, this, args); });
-  t.mock.method(proto, 'sign', async function spySign(...args) {
-    const before = counts.inner;
-    try { return await Reflect.apply(sign, this, args); } finally { counts.inSign += counts.inner - before; }
-  });
-  return counts;
-}
-
-/** Runs `work` in a plain effect pass (passContext(), no job class) on the owner's fence. */
-async function inPlainPass(w, work) {
-  const lease = await w.passOwner.acquireConnectionFence();
-  try {
-    const handle = w.session.effectPass({ fence: lease, deadline: w.clock.now() + 5000, refreshAuthority: () => {}, finalStop: () => {},
-      synchronousChecks: [], feeCeilingOs: '50000000000', context: passContext() });
-    return await w.session.runInEffectPass(handle, work);
-  } finally { lease.release(); }
-}
 
 const fakeJournal = () => Object.fromEntries(JOURNAL_METHODS.map(name => [name, async () => undefined]));
 
 /** Valid opener options over `keystorePath` with a synchronous stop and a fake journal; nothing in them opens anything. */
-const openerOptions = (keystorePath, extra = {}) => ({ keystorePath, passphrase: PASSPHRASE, expectedAddress: fixtureAddress ?? OTHER_ADDRESS,
+const openerOptions = (keystorePath, extra = {}) => ({ keystorePath, passphrase: PASSPHRASE, expectedAddress: knownFixtureAddress() ?? OTHER_ADDRESS,
   owner: {}, journal: fakeJournal(), approve: async () => true, stopped: () => false, feeCeilingOs: '50000000000', ...extra });
 
 /** A compose double that records each key it receives (never writing to it) and its bytes at the time of the call. */
-function composeDouble({ address = () => fixtureAddress, reject = null } = {}) {
+function composeDouble({ address = knownFixtureAddress, reject = null } = {}) {
   const calls = [], counts = { close: 0, sent: 0 };
   const compose = async options => {
     calls.push({ options, key: options.key, seen: Buffer.from(options.key).toString('utf8') });
@@ -111,7 +37,7 @@ function composeDouble({ address = () => fixtureAddress, reject = null } = {}) {
 const hasCode = code => error => error?.code === code;
 const isZeros = bytes => bytes.every(byte => byte === 0);
 
-test("openKeystoreWalletSession composes the buyer's Node wallet from a version-1 keystore, the plugin's own file included, and the composed wallet signs as the keystore's address", async t => {
+test("openKeystoreWalletSession composes the buyer's Node wallet from a version-1 keystore and refuses an unpermitted send before signing or execute", async t => {
   const files = keystoreDir(t), address = await addressOfFixture(t);
   // The plugin's write: the default N = 2^17, the trimmed phrase, the informational address and the onboarding member.
   const pluginFile = files.file({ ...keystoreOf(PHRASE, { N: 2 ** 17, address: OTHER_ADDRESS }), onboarding: { createdAt: '2026-11-21T00:00:00.000Z' } });
@@ -123,10 +49,8 @@ test("openKeystoreWalletSession composes the buyer's Node wallet from a version-
   assert.equal(w.session.wallet.getPublicAccount().address, address, 'the keystore address the host bound, not the file\'s informational one');
   assert.equal(typeof w.session.binding, 'object');
   const result = await inPlainPass(w, () => w.send());
-  assert.equal(result.success, true, JSON.stringify(result));
-  assert.equal(counts.inSign, 1);
-  assert.equal(w.node.broadcasts.length, 1);
-  assert.equal(w.node.broadcasts[0].content.from, address);
+  assert.equal(result.error?.code, 'paid_approval_required', JSON.stringify(result));
+  assert.deepEqual({ signs: counts.inner, effects: w.effects().length, broadcasts: w.node.broadcasts.length }, { signs: 0, effects: 0, broadcasts: 0 });
   // NFKC: a passphrase written as the plugin normalizes it opens with its compatibility form too.
   const nfkc = files.file(keystoreOf(PHRASE, { passphrase: 'TEST-passﬁ-phrase' }));
   for (const passphrase of ['TEST-passﬁ-phrase', 'TEST-passfi-phrase']) {
@@ -306,7 +230,7 @@ test("keystore-file.mjs and keystore-wallet-opener.mjs import no file-writing, S
     assert.doesNotMatch(source, /\bimport\s*\(|\brequire\s*\(|\bfetch\s*\(|\bconsole\.|process\.std(out|err)|writeFile|appendFile|sqlite|journal\.(put|appendUnderLock)/i, file);
   }
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.equal(Object.keys(manifest.exports).length, 4);
+  assert.equal(Object.keys(manifest.exports).length, 5);
   for (const [entry, path] of Object.entries(manifest.exports)) {
     const names = Object.keys(await import(new URL('../' + path, import.meta.url).href));
     assert.ok(!names.includes('readKeystorePhrase') && !names.includes('createKeystoreWalletOpener'), entry);
@@ -314,19 +238,17 @@ test("keystore-file.mjs and keystore-wallet-opener.mjs import no file-writing, S
   assert.ok(manifest.files.includes('src/wallet/keystore-file.mjs') && manifest.files.includes('src/wallet/keystore-wallet-opener.mjs'), 'both modules ship in the package');
 });
 
-test("a buyer session opened through openKeystoreWalletSession refuses a native transaction signature and each confirmTx and broadcastTx body with no current effect pass (effect_pass_required), with zero signatures and zero transport calls, while the same send inside runInEffectPass with a plain pass is signed and sent once; composeNodeWalletSession still sends without a pass; and a pass-rule option is refused before the keystore is read", async t => {
+test("a keystore buyer refuses unpermitted sends inside and outside a plain pass while confirmTx and broadcastTx still require a pass and a non-keystore buyer keeps its Base path", async t => {
   const files = keystoreDir(t), file = files.file();
   const passRequired = error => causeChain(error).some(cause => cause.code === 'effect_pass_required');
-  // A native send: refused outside any pass, signed and sent once inside a plain pass.
+  // A native send without an approval: refused outside any pass and inside a plain pass, with nothing signed or sent.
   const w = await keystoreWorld(t, file);
   const counts = await buildCountingSigns(t, w);
-  const refused = await w.send();
-  assert.equal(refused.success, false, JSON.stringify(refused));
-  assert.equal(refused.error.code, 'effect_pass_required', JSON.stringify(refused));
-  assert.deepEqual({ signs: counts.inSign, effects: w.effects().length, confirms: w.node.confirms.length, broadcasts: w.node.broadcasts.length }, { signs: 0, effects: 0, confirms: 0, broadcasts: 0 });
-  const sent = await inPlainPass(w, () => w.send());
-  assert.equal(sent.success, true, JSON.stringify(sent));
-  assert.deepEqual({ signs: counts.inSign, confirms: w.node.confirms.length, broadcasts: w.node.broadcasts.length }, { signs: 1, confirms: 1, broadcasts: 1 });
+  for (const send of [() => w.send(), () => inPlainPass(w, () => w.send())]) {
+    const refused = await send();
+    assert.deepEqual({ success: refused.success, code: refused.error?.code }, { success: false, code: 'paid_approval_required' }, JSON.stringify(refused));
+  }
+  assert.deepEqual({ signs: counts.inner, effects: w.effects().length, confirms: w.node.confirms.length, broadcasts: w.node.broadcasts.length }, { signs: 0, effects: 0, confirms: 0, broadcasts: 0 });
   // A confirmTx body on the session's transport outside any pass (its own world: the refused call leaves its signature lease to expire).
   const c = await keystoreWorld(t, files.file());
   await c.build();
@@ -355,4 +277,83 @@ test("a buyer session opened through openKeystoreWalletSession refuses a native 
     await assert.rejects(api.openKeystoreWalletSession(openerOptions(absent, change)), error => error instanceof TypeError, JSON.stringify(Object.keys(change)));
   }
   await assert.rejects(api.openKeystoreWalletSession(openerOptions(absent)), hasCode('keystore_unreadable'), 'control: without the option the read is reached');
+});
+
+const FEE = { feeCeilingOs: '50000000000' };
+const records = async w => JSON.stringify(await w.journal.entries());
+const stateReads = w => w.node.calls.filter(row => ['getAddressNonce', 'getNetworkParameters', 'getNetworkInfo'].includes(row.body?.params?.[0]?.message)).length;
+
+test('a real keystore native and CREATE request without a permit refuse before every key signature and execute call', async t => {
+  const w = await keystoreWorld(t, keystoreDir(t).file());
+  const counts = await buildCountingSigns(t, w);
+  const create = await agreementRequest(w), signs = counts.inner, reads = stateReads(w);
+  const views = [w.session.wallet, w.session.walletFactory({ anchorJournal: w.journal })];
+  for (const view of views) {
+    for (const request of [w.request(), create]) {
+      for (const send of [() => view.request(request), () => view.request(request, { paidApproval: {} }), () => inPlainPass(w, () => view.request(request, { paidApproval: {} }))]) {
+        assert.deepEqual(await send(), { success: false, data: null, error: { code: 'paid_approval_required', message: 'a keystore paid write needs a one-use approval of its prepared content; nothing was signed or sent' } });
+      }
+    }
+  }
+  // An unsupported transaction shape is refused the same way, before the provider could look at it.
+  assert.equal((await w.session.wallet.request({ method: 'sendTransaction', params: [{ content: { type: 'TEST-unsupported' } }] })).error.code, 'paid_approval_required');
+  assert.deepEqual({ signs: counts.inner, effects: w.effects().length, reads: stateReads(w), confirms: w.node.confirms.length, broadcasts: w.node.broadcasts.length },
+    { signs, effects: 0, reads, confirms: 0, broadcasts: 0 });
+});
+
+test('a missing malformed zero or above-session preview fee ceiling refuses without a handle key call or execute', async t => {
+  const w = await keystoreWorld(t, keystoreDir(t).file());
+  const counts = await buildCountingSigns(t, w);
+  const rows = [
+    ['no options', undefined, 'invalid_params'], ['empty options', {}, 'invalid_params'], ['an undefined ceiling', { feeCeilingOs: undefined }, 'invalid_params'],
+    ['a zero ceiling', { feeCeilingOs: '0' }, 'invalid_params'], ['a leading zero', { feeCeilingOs: '050' }, 'invalid_params'], ['a decimal ceiling', { feeCeilingOs: '1.5' }, 'invalid_params'],
+    ['a numeric ceiling', { feeCeilingOs: 5 }, 'invalid_params'], ['an extra option', { ...FEE, retry: true }, 'invalid_params'],
+    ['a ceiling above the session ceiling', { feeCeilingOs: '50000000001' }, 'fee_ceiling_above_session'],
+  ];
+  for (const [name, options, code] of rows) await assert.rejects(w.session.preparePaidWrite(w.request(), options), hasCode(code), name);
+  assert.deepEqual({ signs: counts.inner, effects: w.effects().length, reads: stateReads(w) }, { signs: 0, effects: 0, reads: 0 });
+  // Control: the session ceiling itself, and a lower one, are accepted.
+  for (const feeCeilingOs of ['50000000000', '1']) assert.equal((await w.session.preparePaidWrite(w.request(), { feeCeilingOs })).content.content.feeCeilingOs, feeCeilingOs);
+});
+
+test('real keystore native and CREATE previews permit completed retained rows and refuse uncertain rows without a key call or journal write', async t => {
+  const w = await keystoreWorld(t, keystoreDir(t).file());
+  const counts = await buildCountingSigns(t, w);
+  const create = await agreementRequest(w), signs = counts.inner, address = w.session.wallet.getPublicAccount().address;
+  const { network, chainIdentity } = w.session.wallet.getWriteProfile().transportBinding;
+  const nativeLane = nativeWalletLaneKey({ network, chainIdentity }, address), anchorLane = JSON.stringify([network, chainIdentity, address]);
+  const prepares = async request => typeof (await w.session.preparePaidWrite(request, FEE)).prepared === 'object';
+  const unchanged = async (step, name) => { const before = await records(w); await step(); assert.equal(await records(w), before, `${name}: no record was written`); };
+  await unchanged(async () => assert.ok(await prepares(w.request()) && await prepares(create)), 'empty lanes');
+  for (const stage of ['observed', 'failed']) {
+    await w.journal.put(nativeLane, { stage, hash: 'a'.repeat(64), nonce: 1 });
+    await unchanged(async () => assert.ok(await prepares(w.request()) && await prepares(create)), `a native ${stage} row`);
+  }
+  await w.journal.put(anchorLane, { lane: anchorLane, stage: 'broadcast-accepted', nonce: 1, hash: 'b'.repeat(64) });
+  await unchanged(async () => assert.ok(await prepares(create)), 'a CREATE broadcast-accepted row');
+  await w.journal.put(anchorLane, { lane: anchorLane, stage: 'broadcast-started', nonce: 1, hash: 'b'.repeat(64) });
+  await unchanged(() => assert.rejects(w.session.preparePaidWrite(create, FEE), hasCode('outcome_unknown')), 'a CREATE broadcast-started row');
+  await w.journal.put(nativeLane, { stage: 'broadcast-started', hash: 'a'.repeat(64), nonce: 1 });
+  await unchanged(() => assert.rejects(w.session.preparePaidWrite(w.request(), FEE), hasCode('outcome_unknown')), 'a native broadcast-started row');
+  assert.deepEqual({ signs: counts.inner, effects: w.effects().length }, { signs, effects: 0 });
+});
+
+test('a missing source or locked wallet refuses preview without a handle key call journal write or execute', async t => {
+  const w = await keystoreWorld(t, keystoreDir(t).file());
+  const counts = await buildCountingSigns(t, w);
+  const before = await records(w), request = w.request();
+  // The source transport is closed: the lane inspection refuses before any read.
+  await w.session.transport.close();
+  await assert.rejects(w.session.preparePaidWrite(request, FEE), hasCode('transport_closed'));
+  // A locked wallet is refused before any lane or node read.
+  w.session.wallet.lock();
+  await assert.rejects(w.session.preparePaidWrite(request, FEE), hasCode('locked'));
+  assert.deepEqual({ signs: counts.inner, effects: w.effects().length, reads: stateReads(w), records: await records(w) }, { signs: 0, effects: 0, reads: 0, records: before });
+  // A wallet locked while the preview reads the node is refused once the reads end, with no handle and nothing written.
+  const v = await keystoreWorld(t, keystoreDir(t).file());
+  await v.build();
+  const lockedRequest = v.request(), lockedBefore = await records(v);
+  v.node.intercept = row => { if (row.body?.params?.[0]?.message === 'getNetworkInfo') v.session.wallet.lock(); return null; };
+  await assert.rejects(v.session.preparePaidWrite(lockedRequest, FEE), hasCode('locked'));
+  assert.deepEqual({ effects: v.effects().length, records: await records(v) }, { effects: 0, records: lockedBefore });
 });

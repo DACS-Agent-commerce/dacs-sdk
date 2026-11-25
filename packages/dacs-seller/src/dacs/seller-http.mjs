@@ -8,13 +8,12 @@
 // attempt (by the rule of the route's row in seller-effect-routes.mjs, where it has one), and read routes reserve nowhere.
 // With `context`, the challenge (`context.challengeOnWire`) is on the wire too, before any Agreement and with no journal; so is the
 // context step when `context.handleContext` (from `createWireSellerContextRoute`) is given, and without it that path is not found.
-// On the client, supplying an authentication adapter enables signed peer requests and independently signed seller responses.
-// Only an authenticated definite refusal becomes SellerRefusedError in that mode; unsigned, malformed, interrupted or
-// ambiguous answers are unavailable.
+// The client never signs: it refuses an `authentication` adapter, and a buyer that signs its requests uses the client package.
 import { completeWireEffect, DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_HEADER, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, inspectWireOperation, isReadRoute, WireError } from '@kynesyslabs/dacs/wire';
 import { transportOutcome, UNCERTAIN } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
+import { OperationError } from '../operations.mjs';
 import { admitRawJson, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { SellerTransportError } from './seller-transport-auth.mjs';
 import { signedDiscovery } from './seller-wire-discovery.mjs';
@@ -28,9 +27,11 @@ const MAX_BODY = 64 * 1024;
 /** How many requests one handler serves at once unless its `maxConcurrent` says otherwise; the host bounds its live bootstrap scopes by it too. */
 export const SELLER_HTTP_MAX_CONCURRENT = 8;
 const MAX_RESPONSE_LIST = 256;
-// A refusal whose string `cause` names what the buyer can act on carries it in its answer.
+// A refusal whose string `cause` names what the buyer can act on carries it in its answer's message.
 const CAUSE_ANSWERED_REFUSALS = new Set(['context_challenge_failed', 'seller_stopped', 'seller_source_unavailable']);
-// The longest client deadline `boundedCall` accepts (Node's timers hold at most 2^31 - 1 ms).
+/** A refusal answer's `message`: `message`, then ` (cause: <cause>)` when there is a cause. The read-only role signs a refusal body of exactly `{ error, message }`. */
+export const refusalMessage = (message, cause) => (cause === undefined ? message : `${message} (cause: ${cause})`);
+// The longest client deadline a Node timer holds (2^31 - 1 ms).
 const MAX_CLIENT_TIMEOUT_MS = 2 ** 31 - 1;
 // How long a wire route waits for the agent's settlement-credit check before it withholds a signed 200.
 const SETTLEMENT_CREDIT_TIMEOUT_MS = 10000;
@@ -472,7 +473,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
       const refusal = !concluded && (error instanceof SellerTransportError || error instanceof WireError) && (beforeEffect || ['outgoing_body_rejected', 'seller_source_unavailable'].includes(error.code));
       // An attempt whose answer failed before it was written (a superseded attempt, a failed signer or credit check) never sends that
       // answer: its outcome is uncertain.
-      const outcome = concluded ? { status: 503, value: UNCERTAIN } : (refusal ? { status: error.status, value: { error: error.code, message: error.message, ...(CAUSE_ANSWERED_REFUSALS.has(error.code) && typeof error.cause === 'string' ? { cause: error.cause } : {}) } }
+      const outcome = concluded ? { status: 503, value: UNCERTAIN } : (refusal ? { status: error.status, value: { error: error.code, message: refusalMessage(error.message, CAUSE_ANSWERED_REFUSALS.has(error.code) && typeof error.cause === 'string' ? error.cause : undefined) } }
         : transportOutcome(req.url, { error }, { retained: retainedBy(agent, req.url, request?.jobId ?? body?.jobId) }));
       let { status, value: answer } = outcome;
       if (reservation?.disposition === 'perform' && !concluded) {
@@ -523,7 +524,6 @@ const TLS_CODES = new Set(['CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID', 'DEPTH_ZERO
 const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_SOCKET']);
 const TIMEOUT_CODES = new Set(['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
 function failureCause(error, phase, signal) {
-  if (phase === 'client-sign') return 'client-sign';
   if (signal?.aborted) return 'timeout';
   // Node fetch wraps TLS/socket errors in `cause`. Inspect only bounded
   // machine codes, never error messages, peer metadata or certificate bytes.
@@ -545,45 +545,27 @@ export class SellerRefusedError extends Error {
   }
 }
 
-/**
- * Waits for a response verification (an adapter's value or Promise) for at most `timeLeftMs` milliseconds (rounded up to a whole one), and returns its
- * result. Throws its rejection unchanged, or a `TimeoutError` at the deadline: a result that comes later releases nothing and is
- * never an unhandled rejection. With no time left (a response that arrived at or after the deadline) it throws that
- * `TimeoutError` without starting the verification. A synchronous adapter that throws is the same refusal as an asynchronous one.
- */
-function verifiedWithin(verify, timeLeftMs) {
-  if (timeLeftMs <= 0) return Promise.reject(new DOMException('the response arrived after the client deadline', 'TimeoutError'));
-  return boundedCall(verify, { timeoutMs: Math.ceil(timeLeftMs) });
-}
-
 export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, timeoutMs = 15000, authentication, commitOnSignature = false }) {
   assertKitOperationAdmitted('createSellerAgentClient');
+  if (authentication !== undefined) throw new OperationError('seller_client_signing_unsupported', 'the kit client sends unsigned requests only; a buyer that signs uses the client package');
   const base = new URL(String(url).replace(/\/$/, ''));
   if (!LOOPBACK_HOSTS.has(base.hostname) || !['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash) {
     throw new Error('seller agent endpoint must be loopback without credentials, query or fragment');
   }
-  // The deadline sizes the bounded verification wait, so it must be a duration that wait accepts.
+  // The deadline is a Node timer, so it must be a duration a timer holds.
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_CLIENT_TIMEOUT_MS) throw new TypeError('timeoutMs must be an integer from 1 to 2^31 - 1');
   const origin = base.origin;
   const prefix = base.pathname.replace(/\/$/, '');
-
-  if (authentication && prefix) throw new Error('authenticated seller transport uses the exact /dacs/v1 paths');
-  let lastFailureCause, lastFailureDispatched, hasDispatched = false;
+  let lastFailureCause;
 
   async function post(path, body) {
     lastFailureCause = undefined;
-    lastFailureDispatched = undefined;
     let phase = 'other', signal;
     try {
       const text = JSON.stringify(body);
       if (Buffer.byteLength(text) > MAX_BODY) throw new Error('request exceeds byte limit');
-      phase = 'client-sign';
-      const signed = authentication ? await authentication.request(path, body, text) : null;
-      phase = 'other';
       signal = AbortSignal.timeout(timeoutMs);
-      const deadline = performance.now() + timeoutMs;
-      hasDispatched = true;
-      const response = await fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', ...(signed ? { [DACS_SELLER_HTTP_HEADER]: signed.header } : {}) }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal });
+      const response = await fetchImpl(`${origin}${prefix}${path}`, { method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json' }, body: text, redirect: 'manual', credentials: 'omit', cache: 'no-store', signal });
       phase = 'response-auth';
       const declared = response.headers.get('content-length');
       if (declared !== null && Number(declared) > DACS_SELLER_HTTP_LIMITS.maxResponseBodyBytes) { await response.body?.cancel().catch(() => {}); throw new Error('response exceeds byte limit'); }
@@ -607,19 +589,13 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
         if(Array.isArray(member)&&member.length>MAX_RESPONSE_LIST)throw new Error('response collection exceeds item limit');
         if(member&&typeof member==='object')for(const value of Object.values(member))pending.push(value);
       }
-      const answerText = new TextDecoder('utf-8', { fatal: true }).decode(responseBytes);
-      // Unsigned 429/404/415/503 answers cannot authenticate their status.
-      // Verify first: these failures stay response-auth, including signer fallback 503.
-      // The verification is awaited, over the exact received bytes, within what is left of the client's deadline.
-      if (authentication) await verifiedWithin(() => authentication.verifyResponse(signed.payload, { header: response.headers.get(DACS_SELLER_HTTP_HEADER), status: response.status, text: answerText, responseBytes }), deadline - performance.now());
       if (response.status >= 500 && response.status <= 599) phase = 'status-5xx';
       if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(response.headers.get('content-type') ?? '')) throw new Error('response did not return JSON');
       if (!answer || typeof answer !== 'object' || Array.isArray(answer)) throw new Error('response JSON is not an object');
-      if (((response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status)) || (authentication && response.status === 503 && answer.error === 'peer_job_capacity')) && typeof answer.error === 'string') throw new SellerRefusedError(answer.error, typeof answer.message === 'string' ? answer.message.slice(0, 200) : answer.error, response.status);
+      if (response.status >= 400 && response.status < 500 && ![408, 429].includes(response.status) && typeof answer.error === 'string') throw new SellerRefusedError(answer.error, typeof answer.message === 'string' ? answer.message.slice(0, 200) : answer.error, response.status);
       if (!response.ok) throw new Error('seller did not return success');
       return answer;
     } catch (error) {
-      if (phase === 'client-sign' && preDispatchFailures.has(error)) { lastFailureCause = 'tls'; lastFailureDispatched = false; throw error; }
       if (error instanceof SellerRefusedError) throw error;
       lastFailureCause = failureCause(error, phase, signal);
       throw new SellerUnavailableError('seller agent response is unavailable or unauthenticated; the operation outcome may be unknown', lastFailureCause);
@@ -631,21 +607,17 @@ export function createSellerAgentClient({ url, fetchImpl = globalThis.fetch, tim
     // The durable Agreement coordinator retains only disposition/reason.
     // Its caller records the last failed HTTP call's bounded cause separately.
     get failureCause() { return lastFailureCause; },
-    // An Agreement coordinator can make several calls with this client. A
-    // refusal of its last call cannot hide an earlier dispatched proposal.
-    get failureDispatched() { return lastFailureDispatched === false && !hasDispatched ? false : undefined; },
-    propose: (body) => post('/dacs/v1/agreements/proposals', body),
-    agreementState: (transportIdentity) => post('/dacs/v1/agreements/state', { transportIdentity }),
-    // The existing authentication signs the complete serialized body, including
-    // this optional public CREATE. Omission preserves legacy fixture requests.
-    commit: (jobId, { signedProjection } = {}) => post('/dacs/v1/commitments', { jobId, ...(signedProjection === undefined ? {} : { signedProjection }) }),
-    ...(commitOnSignature ? { commitOnSignature: (jobId, agreement, signedProjection) => post('/dacs/v1/commitments/signature', { jobId, agreement, signedProjection }) } : {}),
-    submitPayment: (body) => post('/dacs/v1/payments', body),
-    bundleRequest: (jobId) => post('/dacs/v1/bundles/request', { jobId }),
-    countersign: (jobId, buyerSignature) => post('/dacs/v1/bundles/countersignature', { jobId, buyerSignature }),
-    confirmBuyerCopy: (jobId) => post('/dacs/v1/bundles/buyer-copy', { jobId }),
+    // Each method checks the kit operation guard when it is called, so a client built while admitted sends nothing after a re-hold.
+    propose: (body) => { assertKitOperationAdmitted('sellerAgentClient.propose'); return post('/dacs/v1/agreements/proposals', body); },
+    agreementState: (transportIdentity) => { assertKitOperationAdmitted('sellerAgentClient.agreementState'); return post('/dacs/v1/agreements/state', { transportIdentity }); },
+    commit: (jobId, { signedProjection } = {}) => { assertKitOperationAdmitted('sellerAgentClient.commit'); return post('/dacs/v1/commitments', { jobId, ...(signedProjection === undefined ? {} : { signedProjection }) }); },
+    ...(commitOnSignature ? { commitOnSignature: (jobId, agreement, signedProjection) => { assertKitOperationAdmitted('sellerAgentClient.commitOnSignature'); return post('/dacs/v1/commitments/signature', { jobId, agreement, signedProjection }); } } : {}),
+    submitPayment: (body) => { assertKitOperationAdmitted('sellerAgentClient.submitPayment'); return post('/dacs/v1/payments', body); },
+    bundleRequest: (jobId) => { assertKitOperationAdmitted('sellerAgentClient.bundleRequest'); return post('/dacs/v1/bundles/request', { jobId }); },
+    countersign: (jobId, buyerSignature) => { assertKitOperationAdmitted('sellerAgentClient.countersign'); return post('/dacs/v1/bundles/countersignature', { jobId, buyerSignature }); },
+    confirmBuyerCopy: (jobId) => { assertKitOperationAdmitted('sellerAgentClient.confirmBuyerCopy'); return post('/dacs/v1/bundles/buyer-copy', { jobId }); },
     // Only a seller that mounts the context route answers this (seller-context-route.mjs).
-    agreementContext: (body) => post(DACS_SELLER_HTTP_PATHS.context, body),
-    contextChallenge: (body) => post(DACS_SELLER_HTTP_PATHS.contextChallenge, body),
+    agreementContext: (body) => { assertKitOperationAdmitted('sellerAgentClient.agreementContext'); return post(DACS_SELLER_HTTP_PATHS.context, body); },
+    contextChallenge: (body) => { assertKitOperationAdmitted('sellerAgentClient.contextChallenge'); return post(DACS_SELLER_HTTP_PATHS.contextChallenge, body); },
   };
 }

@@ -9,6 +9,7 @@ import {
   listingTextLength,
 } from "../artifacts/validators.js";
 import type { ClaimRef, RevocationBinding } from "../artifacts/types.js";
+import { DacsError } from "../errors.js";
 import {
   isCanonicalClaimReference,
   parseCanonicalClaimReference,
@@ -315,7 +316,7 @@ function positiveConfigInt(
 ): number {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new TypeError(`${label} must be a positive safe integer`);
+    throw new DacsError(`${label} must be a positive safe integer`, { code: "catalog.config_invalid" });
   }
   return value;
 }
@@ -326,26 +327,27 @@ function normalizeEndpointUrl(
   allowInsecureHttp: boolean | undefined,
 ): URL {
   if (typeof value !== "string") {
-    throw new TypeError(`${label} must be an absolute URL string`);
+    throw new DacsError(`${label} must be an absolute URL string`, { code: "catalog.endpoint_invalid" });
   }
   let url: URL;
   try {
     url = new URL(value);
   } catch {
-    throw new TypeError(`${label} must be an absolute URL`);
+    throw new DacsError(`${label} must be an absolute URL`, { code: "catalog.endpoint_invalid" });
   }
   if (url.username || url.password) {
-    throw new TypeError(`${label} must not contain credentials`);
+    throw new DacsError(`${label} must not contain credentials`, { code: "catalog.endpoint_invalid" });
   }
   if (url.search || url.hash) {
-    throw new TypeError(`${label} must not contain a query or fragment`);
+    throw new DacsError(`${label} must not contain a query or fragment`, { code: "catalog.endpoint_invalid" });
   }
   if (
     url.protocol !== "https:" &&
     !(allowInsecureHttp === true && url.protocol === "http:")
   ) {
-    throw new TypeError(
+    throw new DacsError(
       `${label} must use HTTPS unless allowInsecureHttp is explicitly enabled`,
+      { code: "catalog.endpoint_insecure" },
     );
   }
   return url;
@@ -355,7 +357,7 @@ function normalizeClientConfig(
   config: ListingCatalogClientConfig,
 ): NormalizedClientConfig {
   if (!config || typeof config !== "object") {
-    throw new TypeError("catalog client configuration is required");
+    throw new DacsError("catalog client configuration is required", { code: "catalog.config_invalid" });
   }
   const catalogUrl = normalizeEndpointUrl(
     config.catalogUrl, "catalogUrl", config.allowInsecureHttp,
@@ -368,7 +370,7 @@ function normalizeClientConfig(
   );
   const fetchImpl = config.fetchImpl ?? globalThis.fetch;
   if (typeof fetchImpl !== "function") {
-    throw new TypeError("catalog client requires a fetch implementation");
+    throw new DacsError("catalog client requires a fetch implementation", { code: "catalog.config_invalid" });
   }
   return {
     catalogUrl,
@@ -389,7 +391,7 @@ function normalizeClientConfig(
 
 function queryString(value: unknown, label: string): string {
   if (!isCanonicalString(value)) {
-    throw new TypeError(`${label} must be a non-empty, trimmed NFC string`);
+    throw new DacsError(`${label} must be a non-empty, trimmed NFC string`, { code: "catalog.query_invalid" });
   }
   return value;
 }
@@ -404,7 +406,9 @@ function buildCatalogUrl(
     params.set("category", queryString(query.category, "category"));
   }
   if (query.tag !== undefined) {
-    if (!Array.isArray(query.tag)) throw new TypeError("tag must be an array");
+    if (!Array.isArray(query.tag)) {
+      throw new DacsError("tag must be an array", { code: "catalog.query_invalid" });
+    }
     for (const tag of query.tag) params.append("tag", queryString(tag, "tag"));
   }
   if (query.credential !== undefined) {
@@ -421,7 +425,7 @@ function buildCatalogUrl(
     try {
       canonicalizeDecimal(priceMax);
     } catch {
-      throw new TypeError("priceMax must be a plain non-negative decimal");
+      throw new DacsError("priceMax must be a plain non-negative decimal", { code: "catalog.query_invalid" });
     }
     params.set("priceMax", priceMax);
   }
@@ -431,13 +435,13 @@ function buildCatalogUrl(
       query.minCompletionRate < 0 ||
       query.minCompletionRate > 1
     ) {
-      throw new TypeError("minCompletionRate must be between 0 and 1");
+      throw new DacsError("minCompletionRate must be between 0 and 1", { code: "catalog.query_invalid" });
     }
     params.set("minCompletionRate", String(query.minCompletionRate));
   }
   if (query.minRating !== undefined) {
     if (!isFiniteNumber(query.minRating) || query.minRating < 0) {
-      throw new TypeError("minRating must be a non-negative finite number");
+      throw new DacsError("minRating must be a non-negative finite number", { code: "catalog.query_invalid" });
     }
     params.set("minRating", String(query.minRating));
   }
@@ -450,7 +454,7 @@ function buildCatalogUrl(
       query.limit < 1 ||
       query.limit > 200
     ) {
-      throw new TypeError("limit must be an integer between 1 and 200");
+      throw new DacsError("limit must be an integer between 1 and 200", { code: "catalog.query_invalid" });
     }
     params.set("limit", String(query.limit));
   }
@@ -754,6 +758,11 @@ async function queryCatalogPage(
  * An `ok` result means only that the catalog response was well formed. Every
  * returned summary remains untrusted candidate metadata until its anchor is
  * dereferenced and the signed Listing is validated.
+ *
+ * A configuration or filter value that fails validation throws a `DacsError`
+ * before any request is made, coded `catalog.config_invalid`,
+ * `catalog.endpoint_invalid`, `catalog.endpoint_insecure` or
+ * `catalog.query_invalid`.
  */
 export async function queryListingCatalog(
   config: ListingCatalogClientConfig,
@@ -789,11 +798,17 @@ function candidateBinding(
 function supportedKinds(config: CatalogBindingIndexConfig): Set<string> {
   const values = config.supportedAnchorKinds ?? ["storage-program"];
   if (!Array.isArray(values) || values.length === 0) {
-    throw new TypeError("supportedAnchorKinds must be a non-empty array");
+    throw new DacsError("supportedAnchorKinds must be a non-empty array", { code: "catalog.config_invalid" });
   }
   const result = new Set<string>();
   for (const value of values) {
-    result.add(queryString(value, "supportedAnchorKinds entry"));
+    if (!isCanonicalString(value)) {
+      throw new DacsError(
+        "supportedAnchorKinds entry must be a non-empty, trimmed NFC string",
+        { code: "catalog.config_invalid" },
+      );
+    }
+    result.add(value);
   }
   return result;
 }
@@ -825,6 +840,10 @@ function sameStableResolution(
  * transport failure, malformed pages, or incomplete pagination. The resulting
  * binding is still only a pointer: `Agent.readListing` must dereference it and
  * authenticate the anchored Listing before use (§6.3.6, Catalog client).
+ *
+ * A configuration value that fails validation throws a `DacsError` coded
+ * `catalog.config_invalid`, `catalog.endpoint_invalid` or
+ * `catalog.endpoint_insecure`.
  */
 export function createCatalogBindingIndex(
   config: CatalogBindingIndexConfig,
@@ -835,7 +854,9 @@ export function createCatalogBindingIndex(
     DEFAULT_PAGE_LIMIT,
     "pageLimit",
   );
-  if (pageLimit > 200) throw new TypeError("pageLimit must not exceed 200");
+  if (pageLimit > 200) {
+    throw new DacsError("pageLimit must not exceed 200", { code: "catalog.config_invalid" });
+  }
   const maxPages = positiveConfigInt(
     config.maxPages,
     DEFAULT_MAX_PAGES,

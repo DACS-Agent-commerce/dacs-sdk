@@ -170,7 +170,9 @@ export const DEMOS_CCI_RESPONSE_LIMITS = Object.freeze({
 });
 
 function cciLimitError(limit: keyof typeof DEMOS_CCI_RESPONSE_LIMITS): never {
-  throw new DacsError(`Demos GCR identity response exceeds ${limit}`);
+  throw new DacsError(`Demos GCR identity response exceeds ${limit}`, {
+    code: "identity.cci_response_limit_exceeded",
+  });
 }
 
 /**
@@ -178,6 +180,10 @@ function cciLimitError(limit: keyof typeof DEMOS_CCI_RESPONSE_LIMITS): never {
  * it. This cannot replace a transport byte ceiling, but it prevents an active
  * object, deep tree, or broad collection from making the SDK perform an
  * unbounded clone/traversal after JSON decoding.
+ *
+ * Throws `DacsError` with `identity.cci_response_limit_exceeded` when a size or
+ * depth limit is passed, and with `identity.cci_response_not_wire_json` when the
+ * value is not plain, stable wire JSON.
  */
 export function assertDemosCciResponseBounds(root: unknown): void {
   const stack: Array<{
@@ -228,19 +234,25 @@ export function assertDemosCciResponseBounds(root: unknown): void {
     }
     if (typeof value === "number") {
       if (!Number.isFinite(value) || Object.is(value, -0)) {
-        throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+        throw new DacsError("Demos GCR identity response must contain stable wire JSON", {
+          code: "identity.cci_response_not_wire_json",
+        });
       }
       addBytes(32);
       continue;
     }
     if (typeof value !== "object" || nodeTypes.isProxy(value) || ancestors.includes(value)) {
-      throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+      throw new DacsError("Demos GCR identity response must contain stable wire JSON", {
+        code: "identity.cci_response_not_wire_json",
+      });
     }
     const childAncestors = [...ancestors, value];
     const prototype = Object.getPrototypeOf(value);
     const ownKeys = Reflect.ownKeys(value);
     if (ownKeys.some((key) => typeof key !== "string")) {
-      throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+      throw new DacsError("Demos GCR identity response must contain stable wire JSON", {
+        code: "identity.cci_response_not_wire_json",
+      });
     }
 
     if (Array.isArray(value)) {
@@ -248,18 +260,24 @@ export function assertDemosCciResponseBounds(root: unknown): void {
         if (value.length > DEMOS_CCI_RESPONSE_LIMITS.maxArrayLength) {
           cciLimitError("maxArrayLength");
         }
-        throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+        throw new DacsError("Demos GCR identity response must contain stable wire JSON", {
+          code: "identity.cci_response_not_wire_json",
+        });
       }
       const keys = ownKeys.filter((key) => key !== "length") as string[];
       if (keys.length !== value.length || keys.some((key, index) => key !== String(index))) {
-        throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+        throw new DacsError("Demos GCR identity response must contain stable wire JSON", {
+          code: "identity.cci_response_not_wire_json",
+        });
       }
       const descriptors = Object.getOwnPropertyDescriptors(value);
       addBytes((keys.length * 2) + 2);
       for (const key of keys) {
         const descriptor = descriptors[key];
         if (!descriptor?.enumerable || !("value" in descriptor)) {
-          throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+          throw new DacsError("Demos GCR identity response must contain stable wire JSON", {
+            code: "identity.cci_response_not_wire_json",
+          });
         }
         schedule(descriptor.value, depth + 1, childAncestors);
       }
@@ -267,7 +285,9 @@ export function assertDemosCciResponseBounds(root: unknown): void {
     }
 
     if (prototype !== Object.prototype && prototype !== null) {
-      throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+      throw new DacsError("Demos GCR identity response must contain stable wire JSON", {
+        code: "identity.cci_response_not_wire_json",
+      });
     }
     if (ownKeys.length > DEMOS_CCI_RESPONSE_LIMITS.maxObjectKeys) {
       cciLimitError("maxObjectKeys");
@@ -284,7 +304,9 @@ export function assertDemosCciResponseBounds(root: unknown): void {
       const descriptor = descriptors[key];
       if (!descriptor?.enumerable || !("value" in descriptor) ||
           descriptor.value === undefined) {
-        throw new DacsError("Demos GCR identity response must contain stable wire JSON");
+        throw new DacsError("Demos GCR identity response must contain stable wire JSON", {
+          code: "identity.cci_response_not_wire_json",
+        });
       }
       schedule(descriptor.value, depth + 1, childAncestors);
     }
@@ -384,7 +406,9 @@ function dedupeByRef<T extends { ref: string }>(claims: T[]): T[] {
       continue;
     }
     if (prior.comparable !== comparable) {
-      throw new DacsError(`Demos GCR identity response contains conflicting claim ${claim.ref}`);
+      throw new DacsError(`Demos GCR identity response contains conflicting claim ${claim.ref}`, {
+        code: "identity.cci_claim_conflict",
+      });
     }
     // Semantically equivalent alternate source spellings (notably domain
     // case/Unicode forms) resolve deterministically rather than by RPC order.
@@ -757,7 +781,15 @@ function parseTlsn(payload: Record<string, unknown>): CciTlsnClaim[] {
   return dedupeByRef(claims);
 }
 
-/** Parse and own a raw Demos GCR identity response. */
+/**
+ * Parse and own a raw Demos GCR identity response.
+ *
+ * Throws `DacsError` with `identity.cci_response_limit_exceeded` or
+ * `identity.cci_response_not_wire_json` from the bounds check, and with
+ * `identity.cci_claim_conflict` when two claims with the same reference
+ * disagree. Input the bounds check accepts can still be refused by the generic
+ * wire snapshot, whose errors carry no code.
+ */
 export function parseCciRecord(primaryClaim: string, raw: unknown): CciRecord {
   assertDemosCciResponseBounds(raw);
   const ownedRaw = snapshotWireJsonRead(raw, "Demos GCR identity response");

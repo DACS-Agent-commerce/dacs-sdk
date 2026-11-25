@@ -4,6 +4,8 @@ import { agreementInput, contributionVerifier } from '../../src/dacs/purchase-pr
 import { anchorWriteMessage, fixtureWriteHash, FIXTURE_SUBSTRATE, FIXTURE_FINALITY } from '../../src/dacs/fixture-anchors.mjs';
 
 export const NOW = 1_780_000_000_000, JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0A';
+/** The receipt fee ceilings a native test seller declares: two distinct values, so a receipt that drops or repeats one is caught. */
+export const RECEIPT_FEE_CEILINGS = Object.freeze({ payFeeCeilingOs: '7000013', anchorFeeCeilingOs: '300007' });
 export function testWallet(tag) {
   const seed = new Uint8Array(32).fill(tag), privateKey = privateKeyFromSeed(seed), hex = Buffer.from(rawPublicKey(publicKeyFromSeed(seed))).toString('hex');
   return { claim: `did:demos:agent:${hex}`, address: `0x${hex}`, signBytes: bytes => Buffer.from(ed25519Sign(bytes, privateKey)) };
