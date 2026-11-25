@@ -308,7 +308,7 @@ describe("testnet wallet-spend authority service", () => {
     expect(next.authorizationValidBefore).toBe(validBefore + 1 + (LATEST_NUMBER - RELEASE_NUMBER) * 2 + 120);
   }
 
-  it("releases a hold that never began on a not-invoked claim once chain time passes its validBefore", async () => {
+  it("releases a hold that never began on a not-invoked claim once the release head's time passes its validBefore", async () => {
     const service = await running();
     const client = await service.client();
     const notInvoked = { disposition: "not-invoked", evidenceHash: "f".repeat(64) } as const;
@@ -317,12 +317,12 @@ describe("testnet wallet-spend authority service", () => {
     if (validBefore === undefined) throw new Error("the service binds validBefore");
     vi.setSystemTime(Date.now() + LEASE_MS + 1_000);
 
-    serveBlocks(service.stub.state, chainBlocks({ time: timeWithFinalAt(validBefore) }));
+    serveBlocks(service.stub.state, chainBlocks({ time: timeWithReleaseAt(validBefore) }));
     await expect(client.reconcile(testnetReservation(), notInvoked)).rejects.toMatchObject(rejected);
     await expect(client.reserve(testnetReservation("job-two"), WINDOW))
       .resolves.toEqual({ status: "denied", reason: "concurrency-limit" });
 
-    serveBlocks(service.stub.state, chainBlocks({ time: timeWithFinalAt(validBefore + 1) }));
+    serveBlocks(service.stub.state, chainBlocks({ time: timeWithReleaseAt(validBefore + 1) }));
     await expect(client.reconcile(testnetReservation(), notInvoked)).resolves.toBe("released");
     await expect(client.reconcile(testnetReservation(), notInvoked)).resolves.toBe("existing");
     expect((await client.inspect()).activeEffects).toBe(0);
