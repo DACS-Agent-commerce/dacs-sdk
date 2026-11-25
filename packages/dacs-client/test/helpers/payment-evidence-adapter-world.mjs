@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { ok } from './tp1-node-fixture.mjs';
 import { gateWorld } from './effect-gate-world.mjs';
 import { recordingApproval } from './payment-evidence-approval-double.mjs';
 
@@ -26,3 +27,33 @@ export const releasedIds = w => w.approval.settlements.filter(call => call.outco
 export const assertNothingSent = w => { assert.equal(w.node.confirms.length, 0, 'no confirmation'); assert.equal(w.node.broadcasts.length, 0, 'no broadcast'); };
 /** The seller's wallet address. */
 export const signerOf = w => w.session.wallet.getPublicAccount().address;
+
+/** The serving node's valid confirmation of `tx`, with `data` over its members. */
+export const successfulConfirmation = (tx, data = {}) => ok({ data: { valid: true, reference_block: 1, message: 'TEST-valid', gas_operation: null, transaction: tx, ...data },
+  signature: { type: 'ed25519', data: `0x${'5'.repeat(128)}` }, rpc_public_key: { type: 'ed25519', data: `0x${'6'.repeat(64)}` } });
+/** A JSON response carrying `answer`. */
+export const responseOf = answer => new Response(JSON.stringify(answer), { headers: { 'content-type': 'application/json' } });
+
+/**
+ * The adapter world with a scripted node that answers a confirmation and a broadcast the way the serving node does, with
+ * `w.reply(row)` as the hook that changes any one answer. A broadcast applies the transaction on the scripted chain.
+ */
+export async function replayWorld(t, options) {
+  const w = await adapterWorld(t, options);
+  w.reply = null;
+  w.node.intercept = async row => {
+    const call = row.body?.params[0];
+    if (!call) return undefined;
+    if (call.extra === 'confirmTx') w.node.confirms.push(structuredClone(call.data));
+    if (call.extra === 'broadcastTx') w.node.broadcasts.push(structuredClone(call.data.response.data.transaction));
+    const changed = await w.reply?.(row);
+    if (changed) return changed;
+    if (call.extra === 'confirmTx') return responseOf(successfulConfirmation(call.data));
+    if (call.extra === 'broadcastTx') {
+      const tx = call.data.response.data.transaction;
+      w.node.applied.set(tx.hash, structuredClone(tx)); w.node.nonce = tx.content.nonce;
+      return responseOf(ok({ hash: tx.hash }));
+    }
+  };
+  return w;
+}
