@@ -33,7 +33,8 @@ function deferred() {
 
 /** The node's signed envelope for the live request `data`; `change(unsigned)` edits the response before it is signed. */
 function signedAnswer(data, { entries, key = testOnlyNodeKey(), blockHash = CHAIN_BLOCK_HASH, change } = {}) {
-  const { version: _version, ...request } = data;
+  const { sellerClaim, participantClaim, listingPin, nonce } = data;
+  const request = { sellerClaim, participantClaim, listingPin, nonce };
   const unsigned = unsignedResponse({ request, observedBlock: { height: HEIGHT, blockHash } }, entries ?? [entryFor(request.participantClaim)]);
   change?.(unsigned);
   return successEnvelope(signResponse(unsigned, key));
@@ -357,7 +358,8 @@ test('a replayed old nonce refuses against the live request, and a valid signatu
 test("the main-entry reader requires the caller's own trust pin and a missing or mismatched pin admits nothing", async (t) => {
   assert.equal(fromMainEntry, openVerifiedEnrollmentReader);
   const { node, options } = world(t);
-  const { trustedNode: _pin, ...withoutPin } = options;
+  const withoutPin = { ...options };
+  delete withoutPin.trustedNode;
   const refusals = [[withoutPin, 'enrollment_invalid'], [{ ...options, trustedNode: { ...options.trustedNode, publicKey: 'TEST' } }, 'enrollment_invalid'],
     [{ ...options, trustedNode: { ...options.trustedNode, chainIdentity: sha256Hex('another chain') } }, 'enrollment_unverified']];
   for (const [given, code] of refusals) assert.throws(() => fromMainEntry(given), (error) => error instanceof OperationError && error.code === code, code);

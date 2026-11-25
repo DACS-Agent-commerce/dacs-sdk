@@ -23,7 +23,8 @@ test('a failed verified enrollment proof reaches admission as 503 with cause and
   const asked = [];
   node.intercept = ({ call }) => {
     if (call.message !== MESSAGE) return undefined;
-    const { version: _version, ...request } = call.data;
+    const { sellerClaim, participantClaim, listingPin: pin, nonce } = call.data;
+    const request = { sellerClaim, participantClaim, listingPin: pin, nonce };
     asked.push(request.participantClaim);
     const response = signResponse(unsignedResponse({ request, observedBlock: SELECTED_BLOCK }, [entryFor(request.participantClaim)]), testOnlyNodeKey('an unpinned node key'));
     return jsonResponse(JSON.stringify(successEnvelope(response)));
