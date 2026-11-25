@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged node wallet session after merging the base with the retained create reader into the send approval part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "43a13917efb88a9182425c9ff2a0f0a7dfcd691f",
+      "after": "43a13917efb88a9182425c9ff2a0f0a7dfcd691f"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-432eb2243618.json"
+  ],
+  "note": "Both sides of the merge recorded this file, so its newest records disagree; this record chooses the merged copy, which keeps this part's send approval changes together with the base's paid-write approval changes."
+}
