@@ -1,0 +1,27 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF give the retained native lane world the receipt limits and a matching seller receipt, and pick a recorded commit in the inventory test",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/helpers/retained-native-lane-world.mjs",
+      "before": "1c36d4fd393f2fd73a71720822e2999a44a8ec76",
+      "after": "ec828f273c1a149498dfd01de59c854bcc970c48"
+    },
+    {
+      "path": "packages/dacs-client/test/native-payment-lane-read.test.mjs",
+      "before": "696085a19380a2b21f8cd6443ab0234b0f1ebe7c",
+      "after": "130d83959cae47630594fa9dbcf0195a3bd3f29d"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/WF-74772ee6174e.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/scripts/delta-provenance.test.mjs",
+    "packages/dacs-client/test/helpers/retained-native-lane-world.mjs",
+    "packages/dacs-client/test/native-payment-lane-read.test.mjs"
+  ],
+  "note": "A composition with native payment now needs receipt fee ceilings and a mandate cap, and the read-only composition still has the receipt reservation reader, so the lane read world passes the same limits as the other composition worlds and seeds each purchase with a seller receipt that equals its price plus both ceilings. The read-only reader list gains that reader. The inventory test picks the last commit that has to have an inventory row, so a commit that changes only the README, which needs no row, is not chosen."
+}

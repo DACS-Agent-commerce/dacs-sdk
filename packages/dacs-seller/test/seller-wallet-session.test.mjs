@@ -13,7 +13,7 @@ import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { agreementRequest } from '../../dacs-client/test/helpers/tp1-node-fixture.mjs';
 import { ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, T0, api, finalization, jsonResponse, keyRecordBytes, ok, privateDataDirectory, replayNode, sellerPublications,
   setPurchaseAdmission, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
-import { allZero, createSellerWalletSession, portOptions, walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
+import { allZero, createSellerWalletSession, mnemonicSigner, portOptions, walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
 
 const guard = await import('../src/kit-operation-guard.mjs');
 const { createEffectBoundary, effectBoundaryBinding } = await import('../src/dacs/effect-boundary.mjs');
@@ -34,6 +34,8 @@ const PASS_WINDOW_MS = 10_000;
 const AUTHORITY_DEADLINE_MS = 10_000;
 const JOB_ID = '01M5YKPJG0248H248H248H248H';
 const OTHER_CHAIN = 'd'.repeat(64);
+// Public Demos testnet nodes serve their RPC over plain http.
+const PLAIN_ENDPOINT = 'http://rpc.example.invalid/';
 const SECOND_MNEMONIC = entropyToMnemonic(new Uint8Array(32).fill(4), wordlist);
 const BOUNDARY_CLOCK = Object.freeze({ now: () => 0, after: () => () => {} });
 // The only node reads the stage-one capability sends: the binding check's.
@@ -360,14 +362,43 @@ test('createSellerWalletSession refuses an unknown option and a missing or malfo
   assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
 });
 
-test('createSellerWalletSession refuses an endpoint that is not a canonical HTTPS root, a transport authority that is not a plain token and a fetchImpl that is not a function with transport_mismatch, at construction and before any node read', async () => {
+test('createSellerWalletSession refuses an endpoint that is not a canonical root, a transport authority that is not a plain token and a fetchImpl that is not a function with transport_mismatch, at construction and before any node read', async () => {
   const node = replayNode();
   let keyLoads = 0;
   const valid = await portOptions(node, async () => { keyLoads += 1; return keyRecordBytes(); });
-  for (const changes of [{ endpoint: 'http://rpc.example.invalid/' }, { endpoint: 'https://rpc.example.invalid/path' }, { transportAuthority: 'vector authority' }, { fetchImpl: 'x' }]) {
+  for (const changes of [{ endpoint: 'https://rpc.example.invalid/path' }, { endpoint: 'http://rpc.example.invalid/path' }, { endpoint: 'http://u:p@rpc.example.invalid/' },
+    { endpoint: 'http://rpc.example.invalid/?x=1' }, { endpoint: 'http://rpc.example.invalid/#f' }, { endpoint: 'http://rpc.example.invalid' },
+    { transportAuthority: 'vector authority' }, { fetchImpl: 'x' }]) {
     assert.throws(() => createSellerWalletSession({ ...valid, ...changes }), { code: 'transport_mismatch' }, JSON.stringify(changes));
   }
   assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
+});
+
+test('over a plain-http node root the production port binds the approved record through the host\'s stages, finalizes under the state lock, and a CREATE in a pass is confirmed and broadcast once on that endpoint', async (t) => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  const world = await walletSessionWorld(t, { options: { endpoint: PLAIN_ENDPOINT } });
+  assert.equal(world.stages.binding.local.endpoint, PLAIN_ENDPOINT);
+  const { session } = await world.finalize();
+  const wallet = session.walletFactory({ anchorJournal: session.artifactJournal });
+  const answer = await inSessionPass(session, wallet, await agreementRequest({ session: { wallet }, node: world.node }));
+  assert.equal(answer.success, true, JSON.stringify(answer));
+  assert.deepEqual(world.node.reads.filter((read) => read === 'confirmTx' || read === 'broadcastTx'), ['confirmTx', 'broadcastTx'], 'confirmed and broadcast once');
+  assert.equal(signatures.length, 1, 'signed once');
+  assert.ok(world.node.calls.every((row) => row.url.startsWith(PLAIN_ENDPOINT)), 'every node request went to the plain-http root');
+});
+
+test('a node over a plain-http root that reports another chain refuses the host\'s stages before the key is loaded, the signer is called or anything is signed or sent', async (t) => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  const node = replayNode();
+  node.reply = otherChain;
+  const signer = await mnemonicSigner();
+  let signerCalls = 0, keyLoads = 0;
+  const counted = { claim: signer.claim, sign: (bytes) => { signerCalls += 1; return signer.sign(bytes); } };
+  await assert.rejects(walletSessionWorld(t, { node, keyBytes: () => { keyLoads += 1; return keyRecordBytes(); }, options: { endpoint: PLAIN_ENDPOINT, signer: counted } }),
+    { code: 'tp1_connection_unverified' });
+  assert.ok(node.reads.includes('getBlockByNumber'), 'the binding asked the node for its chain');
+  assert.deepEqual({ signerCalls, keyLoads, signatures: signatures.length, effects: node.reads.filter((read) => read === 'confirmTx' || read === 'broadcastTx') },
+    { signerCalls: 0, keyLoads: 0, signatures: 0, effects: [] });
 });
 
 test('finalize refuses a binding whose authority is no longer current with tp1_connection_unverified, and one whose authority read stalls with tp1_authority_timeout at 10,000 ms but not at 9,999 ms, each before the key is loaded or an issuance journal opens', async (t) => {

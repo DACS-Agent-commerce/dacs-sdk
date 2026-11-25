@@ -84,9 +84,10 @@ const canonicalOrNull = value => { try { return strictPaidJson(value); } catch {
 const refusalEnvelope = error => ({ success: false, data: null, error: { code: error.code, message: error.message } });
 
 /**
- * createPaidApproval({session, transport, transactionTransport, relayOrigin, feeCeilingOs, projectPaidWrite, EmbeddedWalletError}) binds the keystore
- * composition's paid-write approval over its SDK wallet session, its raw Agreement transport, the wallet's transport descriptor and relay origin, the
- * session fee ceiling, and the wallet provider's `projectPaidWrite` planner and error class (which only the reviewed session module imports): the
+ * createPaidApproval({session, transport, transactionTransport, relayOrigin, nodeEndpoint, feeCeilingOs, projectPaidWrite, EmbeddedWalletError}) binds
+ * the keystore composition's paid-write approval over its SDK wallet session, its raw Agreement transport, the wallet's transport descriptor, relay origin
+ * and the node endpoint rule the session admitted it under (https only when absent), the session fee ceiling, and the wallet provider's
+ * `projectPaidWrite` planner and error class (which only the reviewed session module imports): the
  * provider passes on only its own errors' codes. Returns `{viewFor, approvalCheck, signedContentCheck}`.
  *
  * `viewFor(anchorJournal, send)` returns one wallet view's `{preparePaidWrite, authorizePaidWrite, request}`, where `send(request)` is the view's own
@@ -109,7 +110,7 @@ const refusalEnvelope = error => ({ success: false, data: null, error: { code: e
  * `requiredCeilingOs` when `content` is exactly the prepared Demos content and the callback consumed this request's permit, and throws
  * EmbeddedWalletError(paid_approval_mismatch, the cause kept) otherwise, or (paid_approval_required) outside an entered request.
  */
-export function createPaidApproval({ session, transport, transactionTransport, relayOrigin, feeCeilingOs: sessionCeilingOs, projectPaidWrite, EmbeddedWalletError }) {
+export function createPaidApproval({ session, transport, transactionTransport, relayOrigin, nodeEndpoint, feeCeilingOs: sessionCeilingOs, projectPaidWrite, EmbeddedWalletError }) {
   // The records a later one-use approval checks against, keyed by the handle; the composition's own identity and each view's token bind them.
   // A record moves prepared → authorized → inFlight → consumed, and never back; `permits` maps each minted permit to its record.
   const ownerSession = Object.freeze({}), preparedRecords = new WeakMap(), permits = new WeakMap(), requestScope = new AsyncLocalStorage();
@@ -125,7 +126,7 @@ export function createPaidApproval({ session, transport, transactionTransport, r
     const chainNonce = await nodeValue(transport, 'getAddressNonce', { address }, value => Number.isSafeInteger(value) && value >= 0) + 1;
     const fee = await nodeValue(transport, 'getNetworkParameters', {}, value => typeof value?.networkFee === 'number' && typeof value?.rpcFee === 'number');
     const postFork = (await nodeValue(transport, 'getNetworkInfo', {}, value => typeof value?.forks?.osDenomination?.activated === 'boolean')).forks.osDenomination.activated;
-    const projection = await projectPaidWrite({ request: copy, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, scopedPaidWrite: true });
+    const projection = await projectPaidWrite({ request: copy, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, nodeEndpoint, scopedPaidWrite: true });
     if (session.getPublicAccount()?.address !== address) fail('locked', 'the wallet was locked or replaced while the paid write was prepared');
     const callbackCanonical = strictPaidJson(withCeiling(projection.callback, feeCeilingOs));
     const signedCanonical = strictPaidJson(projection.signedContent), prepared = Object.freeze({});

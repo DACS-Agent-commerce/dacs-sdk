@@ -16,9 +16,10 @@ const signed = (signer, domain, value) => signer.sign(Buffer.from(`${domain}${co
 /**
  * Returns the Listing, its pin, the two-party Agreement, the commitment's
  * anchored tuple and the verified summary a purchase row keeps, for `jobId`.
- * The buyer and seller are the fixture's parties 1 and 2.
+ * The buyer and seller are the fixture's parties 1 and 2. `price` is the
+ * Listing's DEM price text, which the Agreement binds.
  */
-export async function committedPurchase({ jobId, publicEndpoint, listingId = 'committed-listing', validity = { notBefore: T0 - 3600000, notAfter: T0 + 3600000 }, generatedAt = T0 - 5000, committedAt = T0 - 1000 }) {
+export async function committedPurchase({ jobId, publicEndpoint, listingId = 'committed-listing', validity = { notBefore: T0 - 3600000, notAfter: T0 + 3600000 }, generatedAt = T0 - 5000, committedAt = T0 - 1000, price = '1' }) {
   const buyer = party(1), seller = party(2);
   const unsigned = {
     dacsVersion: '1', listingVersion: 1, listingId,
@@ -26,7 +27,7 @@ export async function committedPurchase({ jobId, publicEndpoint, listingId = 'co
     offering: { title: 'Report', description: 'A fixed-text report', category: 'data.test', tags: ['report'], deliverable: { kind: 'storage-program' } },
     buyerRequirement: { requirementVersion: '1', required: [] },
     pipeline: [{ kind: 'negotiate-fixed-price' }, { kind: 'commit-payee-bound-agreement' }, { kind: 'pay-dem', parameters: { rail: RAIL.railId } }, { kind: 'deliver-storage-program' }],
-    pricing: { kind: 'fixed', price: { amount: '1', currency: 'DEM' } }, acceptedRails: [RAIL], terms: { deadlineSecAfterCommit: 600 }, validity,
+    pricing: { kind: 'fixed', price: { amount: price, currency: 'DEM' } }, acceptedRails: [RAIL], terms: { deadlineSecAfterCommit: 600 }, validity,
   };
   const listing = { ...unsigned, signature: { algorithm: 'ed25519', signer: seller.claim, value: signed(seller, 'dacs-listing:v1:', unsigned) } };
   const pin = { listingId, version: 1, contentHash: contentHash(unsigned) };
