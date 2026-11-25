@@ -19,7 +19,10 @@ import type { SettleRequest } from "../../src/rails/settlementTypes.js";
 // pay-dem purchase after a restart") through each crash point. The rail, the
 // bridge and the settlement store are the real ones; only the Demos node is
 // simulated. The prepared-transfer journal, the settlement log and the node
-// survive a restart. Everything else is rebuilt.
+// survive a restart. Everything else is rebuilt. The node holds transaction
+// records only; it models no balances. The tests show that a confirmed record
+// is recovered once and that nothing is signed or broadcast again, not that
+// value moved once.
 
 const PAYER = `0x${"ab".repeat(32)}`;
 const PAYEE = `0x${"cd".repeat(32)}`;
@@ -72,6 +75,7 @@ let broadcastCalls: number;
 let rpcCounter = 0;
 
 const hashOf = (ordinal: number) => ordinal.toString(16).padStart(2, "0").repeat(32);
+/** Confirmed records the node holds. No balances are modelled, so this counts records, not value moved. */
 const executedTransfers = () =>
   [...node.values()].filter((record) => record.status === "confirmed").length;
 
@@ -157,15 +161,18 @@ interface FirstProcess {
  * journal's record, then read the node's record for that hash. It throws if the
  * record's nonce is not the journaled one, and otherwise reports the payer,
  * payee and amount the record itself carries, so the bridge compares them with
- * the request. It returns `null` for anything else it cannot prove, including a
- * call that carries no hash.
+ * the request. It throws whenever it cannot prove an outcome: a call that
+ * carries no hash, a hash with no journal entry, or a record still pending.
+ * It returns `null` only when the node holds no record for the journaled hash.
  */
 const reconcileFromJournalAndNode = async (context: Readonly<PayDemSettlementRecoveryContext>) => {
+  if (context.txHash === undefined) throw new Error("no transaction hash to reconcile");
   const prepared = journal.find((entry) =>
     entry.recovery?.settlementKey === context.settlementKey && entry.txHash === context.txHash);
-  if (prepared === undefined) return null;
+  if (prepared === undefined) throw new Error(`no journal entry for ${context.txHash}`);
   const record = node.get(prepared.txHash);
-  if (record?.status !== "confirmed") return null;
+  if (record === undefined) return null;
+  if (record.status !== "confirmed") throw new Error(`transfer is still ${record.status} at the node`);
   const content = record.transaction.content as {
     nonce: number; from: string; to: string; amount: string;
   };
@@ -218,7 +225,7 @@ async function crashFirstProcess(request: SettleRequest, options: FirstProcess) 
 }
 
 describe("recovering a pay-dem purchase after a restart", () => {
-  it("completes a transfer that was included before the outcome was recorded, with one payment", async () => {
+  it("recovers the confirmed record of a transfer included before the outcome was recorded, without signing or sending again", async () => {
     const request = requestFor("restart-included");
     await crashFirstProcess(request, { loseOutcome: true });
     expect(journal).toHaveLength(1);
@@ -231,7 +238,7 @@ describe("recovering a pay-dem purchase after a restart", () => {
     expect(broadcastCalls).toBe(1);
   });
 
-  it("returns the same payment when the recipe runs again after another restart", async () => {
+  it("returns the same settlement when the recipe runs again after another restart", async () => {
     const request = requestFor("restart-repeat");
     await crashFirstProcess(request, { loseOutcome: true });
 
@@ -241,13 +248,14 @@ describe("recovering a pay-dem purchase after a restart", () => {
     expect(broadcastCalls).toBe(1);
   });
 
-  it("refuses a purchase with no journal record, sends nothing, and lets a new job id pay once", async () => {
+  it("refuses a purchase with no journal record, sends nothing, and lets a new job id settle", async () => {
     const request = requestFor("restart-no-record");
     demosSdk.transfer.mockRejectedValueOnce(new Error("process died before signing"));
     await crashFirstProcess(request, {});
     expect(journal).toHaveLength(0);
 
-    await expect(recoverAfterRestart(request, 1)).rejects.toThrow(/operator action required/);
+    await expect(recoverAfterRestart(request, 1)).rejects.toThrow(/no transaction hash to reconcile/);
+    expect(signed).toBe(0);
     expect(broadcastCalls).toBe(0);
     expect(executedTransfers()).toBe(0);
 
@@ -271,7 +279,7 @@ describe("recovering a pay-dem purchase after a restart", () => {
     expect(executedTransfers()).toBe(0);
   });
 
-  it("refuses while the transfer is pending at the node, then completes it with one payment once included", async () => {
+  it("refuses while the transfer is pending at the node, then completes it once, without signing or sending again, when the node confirms it", async () => {
     const request = requestFor("restart-pending");
     // The node accepts the broadcast and holds the transfer pending, so the first
     // process never sees it included and stops watching.
@@ -288,8 +296,10 @@ describe("recovering a pay-dem purchase after a restart", () => {
     expect(broadcastCalls).toBe(1);
     expect(node.get(journal[0]?.txHash ?? "")?.status).toBe("pending");
 
-    await expect(recoverAfterRestart(request, 1)).rejects.toThrow(/proof of absence/);
+    await expect(recoverAfterRestart(request, 1)).rejects.toThrow(/still pending at the node/);
     expect(executedTransfers()).toBe(0);
+    expect(signed).toBe(1);
+    expect(broadcastCalls).toBe(1);
 
     const pending = node.get(journal[0]?.txHash ?? "");
     if (pending !== undefined) pending.status = "confirmed";
@@ -328,7 +338,7 @@ describe("recovering a pay-dem purchase after a restart", () => {
     expect(broadcastCalls).toBe(1);
   });
 
-  it("never finishes a purchase whose nonce was used by another transaction, and a new job id pays once", async () => {
+  it("never finishes a purchase whose nonce was used by another transaction, and a new job id settles", async () => {
     const request = requestFor("restart-nonce-taken");
     await crashFirstProcess(request, {
       afterJournal: () => { throw new Error("process died before broadcast"); },
@@ -352,7 +362,7 @@ describe("recovering a pay-dem purchase after a restart", () => {
     expect(journal).toHaveLength(0);
     expect(executedTransfers()).toBe(1);
 
-    await expect(recoverAfterRestart(request, 1)).rejects.toThrow(/operator action required/);
+    await expect(recoverAfterRestart(request, 1)).rejects.toThrow(/no transaction hash to reconcile/);
     expect(signed).toBe(1);
     expect(broadcastCalls).toBe(1);
     expect(executedTransfers()).toBe(1);
