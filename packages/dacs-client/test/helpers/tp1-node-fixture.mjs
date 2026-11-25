@@ -96,14 +96,14 @@ export async function world(t, { held = false, journalWrap = x => x, ownerWrap =
     restart: async () => { await session.close(); journal.close(); return start(); } };
 }
 // With `complete`, the Agreement also carries the members the bridge's own planning requires.
-export async function agreementRequest(w, { complete = false } = {}) {
+export async function agreementRequest(w, { complete = false, jobId = '01M5YKPJG0248H248H248H248H' } = {}) {
   const { canonicalize, sha256Hex } = await import('@kynesyslabs/dacs');
   const { createPrivateKey, createPublicKey, sign } = await import('node:crypto');
   const { deriveStorageAddress } = await import('../../src/dacs/wallet-transactions.mjs');
   const privateKey = createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420','hex'), Buffer.alloc(32,2)]), format:'der', type:'pkcs8' });
   const seller = 'did:demos:agent:' + Buffer.from(createPublicKey(privateKey).export({format:'jwk'}).x,'base64url').toString('hex');
   const address = w.session.wallet.getPublicAccount().address, owner = 'did:demos:agent:' + address.slice(2);
-  const jobId = '01M5YKPJG0248H248H248H248H', logicalAddress = 'dacs3:agreement:' + jobId;
+  const logicalAddress = 'dacs3:agreement:' + jobId;
   const scope = { payeeBoundAgreementVersion:'1', derivedFromPattern:'fixed-price', jobId,
     parties:[{role:'buyer',primaryClaim:owner},{role:'seller',primaryClaim:seller}],
     terms:{price:{currency:'DEM',amount:'1'},rail:{railId:'demos-native:DEM',railVersion:1},payoutBindings:[{payeeAddress:'0x'+seller.slice('did:demos:agent:'.length),phaseIndex:2,railId:'demos-native:DEM'}]} };
