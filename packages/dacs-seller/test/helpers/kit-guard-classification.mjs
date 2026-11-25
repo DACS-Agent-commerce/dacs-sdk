@@ -33,6 +33,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/devnet-source.mjs': { effect: {  }, pure: ['isDevnetAgreementTransport', 'isDevnetDemoTransport', 'isDevnetSettlementTransport'] },
   'src/dacs/effect-boundary.mjs': { effect: { createEffectBoundary: ['effectBoundary'] }, pure: ['effectBoundaryBinding', 'effectPassRemainingMs', 'jobPassContext'] },
   'src/dacs/effect-history.mjs': { effect: {  }, pure: ['createEffectHistory', 'initHistory'] },
+  'src/dacs/enrollment-proof.mjs': { effect: {}, pure: ['parseTrustedNodePin', 'verifyEnrollmentAnswer'] },
   'src/dacs/fixture-anchors.mjs':{ effect: { signAnchorWrite: ['signAnchorWrite'] }, pure: ['anchorWriteMessage', 'canonicalSignature', 'fixtureRef', 'fixtureTxRef', 'fixtureWriteHash', 'verifyFixtureReceipt', 'verifyFixtureRecord'] },
   'src/dacs/fixture-settlement.mjs': { effect: {  }, pure: ['createFixtureSettlement'] },
   'src/dacs/host-stages.mjs': { effect: {}, pure: ['openSellerStages'] },

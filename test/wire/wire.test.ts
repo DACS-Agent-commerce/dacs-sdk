@@ -326,7 +326,7 @@ describe("package export", () => {
   it("adds ./wire and leaves every existing export as it was", () => {
     const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
     expect(pkg.exports["./wire"]).toEqual({ types: "./dist/wire/index.d.ts", import: "./dist/wire/index.js" });
-    expect(Object.keys(pkg.exports)).toEqual([".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire"]);
+    expect(Object.keys(pkg.exports)).toEqual([".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire", "./write-attempt-guard"]);
   });
 
   it("ships no approval injection: approval.ts holds only the frozen approval list, and only profile.ts reads it", () => {

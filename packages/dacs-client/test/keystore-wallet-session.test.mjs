@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { agreementRequest, api, mnemonicBytes } from './helpers/tp1-node-fixture.mjs';
+import { agreementRequest, api, mnemonicBytes, setPurchaseAdmission } from './helpers/tp1-node-fixture.mjs';
 import { finalizedWorld } from './helpers/finalized-node-world.mjs';
 import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
 import { confirmThroughFacade, sha, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
@@ -356,4 +356,51 @@ test('a missing source or locked wallet refuses preview without a handle key cal
   v.node.intercept = row => { if (row.body?.params?.[0]?.message === 'getNetworkInfo') v.session.wallet.lock(); return null; };
   await assert.rejects(v.session.preparePaidWrite(lockedRequest, FEE), hasCode('locked'));
   assert.deepEqual({ effects: v.effects().length, records: await records(v) }, { effects: 0, records: lockedBefore });
+});
+
+test('a real keystore session refuses changed approved paid content before any key signature or execute call', async t => {
+  const w = await keystoreWorld(t, keystoreDir(t).file());
+  const counts = await buildCountingSigns(t, w);
+  const create = await agreementRequest(w), signs = counts.inner;
+  const changes = [['the total debit', content => { content.content.debit.totalOs = '1'; }], ['the fee ceiling', content => { content.content.feeCeilingOs = '1'; }],
+    ['the nonce', content => { content.content.nonce += 1; }], ['the wallet address', content => { content.address = OTHER_ADDRESS; }],
+    ['the recipient', content => { if ('to' in content.content) content.content.to = OTHER_ADDRESS; else content.content.storageAddress = 'stor-' + '0'.repeat(40); }]];
+  for (const request of [w.request(), create]) {
+    const { prepared, content } = await w.session.preparePaidWrite(request, FEE);
+    for (const [name, change] of changes) {
+      const changed = structuredClone(content);
+      change(changed);
+      await assert.rejects(w.session.authorizePaidWrite(prepared, changed), hasCode('paid_approval_mismatch'), name);
+    }
+    // No permit was minted: the unchanged content is still the handle's first authorization.
+    assert.equal(typeof await w.session.authorizePaidWrite(prepared, content), 'object');
+  }
+  assert.deepEqual({ signs: counts.inner, effects: w.effects().length }, { signs, effects: 0 });
+});
+
+test('a real keystore session refuses a missing reused or foreign paid permit before any key signature', async t => {
+  const files = keystoreDir(t), w = await keystoreWorld(t, files.file());
+  const counts = await buildCountingSigns(t, w);
+  const v = await keystoreWorld(t, files.file());
+  await v.build();
+  const request = { ...w.request(), memo: 'café' }, { prepared, content } = await w.session.preparePaidWrite(request, FEE);
+  // While the profile is held, authorization is refused and mints nothing.
+  setPurchaseAdmission('held');
+  await assert.rejects(w.session.authorizePaidWrite(prepared, content), hasCode('profile_not_admitted'));
+  setPurchaseAdmission('testnet-tp1');
+  const permit = await w.session.authorizePaidWrite(prepared, content), foreignPreview = await v.session.preparePaidWrite(v.request(), FEE);
+  const foreign = await v.session.authorizePaidWrite(foreignPreview.prepared, foreignPreview.content);
+  const outside = { ...request, id: 1 }, inside = structuredClone(request), decomposed = { ...request, memo: 'café' };
+  inside.params[0].content.timestamp += 1;
+  const refusals = [['no permit', request, undefined, 'paid_approval_required'], ['a foreign permit', request, { paidApproval: foreign }, 'paid_approval_required'],
+    ['a request changed outside its transaction', outside, { paidApproval: permit }, 'paid_approval_mismatch'],
+    ['a transaction field the approval does not show', inside, { paidApproval: permit }, 'paid_approval_mismatch'],
+    ['a spelling changed only by normalization', decomposed, { paidApproval: permit }, 'invalid_params']];
+  const send = (sent, option) => inPlainPass(w, () => w.session.wallet.request(sent, option));
+  for (const [name, sent, option, code] of refusals) assert.equal((await send(sent, option)).error?.code, code, name);
+  // Refused at entry: no source or RPC authentication signature, no transaction signature, no execute call.
+  assert.deepEqual({ signs: counts.inner, effects: w.effects().length }, { signs: 0, effects: 0 });
+  assert.equal((await send(request, { paidApproval: permit })).success, true);
+  assert.equal((await send(request, { paidApproval: permit })).error?.code, 'paid_approval_used');
+  assert.deepEqual({ broadcasts: w.node.broadcasts.length, otherEffects: v.effects().length }, { broadcasts: 1, otherEffects: 0 });
 });

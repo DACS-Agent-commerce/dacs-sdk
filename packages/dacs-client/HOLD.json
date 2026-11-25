@@ -1025,7 +1025,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "47a1f581ce59d05e14394892e71f4807f2bda4fc"
+        "blob": "3a31d33fe752e8ef942c614981b41864d55b1890"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "86f7088926df09a4d0404ef2d86e198ac87f3438"
@@ -1070,7 +1070,7 @@
         "blob": "45ddb453813ffd74d2d25eb6844beddbfc4c8c41"
       },
       "scripts/delta-provenance.test.mjs": {
-        "blob": "6495ddfa75ebb6d16cf50bbb42ed1ef0eae58dd5"
+        "blob": "4decdd9220b07f9616101c75b94cd6600a4a9218"
       },
       "scripts/delta-record.mjs": {
         "blob": "9140a45b90341c4c8a2e78ee5dea0e7409610f78"
