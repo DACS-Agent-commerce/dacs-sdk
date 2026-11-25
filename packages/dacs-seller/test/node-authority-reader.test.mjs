@@ -177,7 +177,7 @@ test('the staged seller reader admits a known participant with current host enro
   assert.equal(world.source.reads, 1);
 });
 
-test('on the plain production `openSellerStages` job path, `createSellerAuthorityReader` exposes frozen `readParticipantEvidence({ claim, sessionId, signal })`; the staged wire read calls that method with the signed job\'s buyer, exact session ID and a live AbortSignal, and the host `entriesFor` sees that session ID and signal; removing the method or bypassing it fails the test', async (t) => {
+test('on the plain production `openSellerStages` job path, `createSellerAuthorityReader` exposes frozen `readParticipantEvidence({ claim, sessionId, signal })`; the staged wire read calls that method with the signed job\'s buyer, exact session ID and a live AbortSignal, and the host `entriesFor` sees that session ID and signal; removing the method or calling around it fails the test', async (t) => {
   const world = await stagedPort(t, { source: recordingEnrollment() });
   const reader = world.reader();
   assert.ok(Object.isFrozen(reader) && Object.isFrozen(reader.readParticipantEvidence) && typeof reader.readParticipantEvidence === 'function');
