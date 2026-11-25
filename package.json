@@ -83,6 +83,10 @@
     "./wire": {
       "types": "./dist/wire/index.d.ts",
       "import": "./dist/wire/index.js"
+    },
+    "./write-attempt-guard": {
+      "types": "./dist/substrate/writeAttemptGuard.d.ts",
+      "import": "./dist/substrate/writeAttemptGuard.js"
     }
   },
   "bin": {

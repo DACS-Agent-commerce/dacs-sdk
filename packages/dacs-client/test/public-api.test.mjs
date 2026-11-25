@@ -251,7 +251,7 @@ test('the complete public protocol method set refuses actions before host effect
   assert.equal(effects, 0);
 });
 
-const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'readRetainedNativePaymentLane']);
+const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'assertSellerReceiptReservation', 'readRetainedNativePaymentLane']);
 const PASSIVE_SERVICE_METHODS = new Set(['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning', 'nativePaymentLaneRead']);
 const refusesAsPromise = (member, name) => {
   const result = member({});
@@ -290,6 +290,8 @@ test('every active method returns a Promise and every passive method keeps its s
     await refusesAsPromise(member, name);
   }
   assert.deepEqual(passiveSeen.sort(), [...PASSIVE_PROTOCOL_METHODS].sort());
+  // The receipt check answers synchronously, held or not: a composition without native payment refuses every operation.
+  assert.throws(() => protocol.assertSellerReceiptReservation({ terms: {}, state: { protocol: {} } }), error => error instanceof client.OperationError && error.code === 'seller_receipt_reservation_insufficient');
   assert.deepEqual(Object.keys(service).filter(name => typeof service[name] === 'function' && PASSIVE_SERVICE_METHODS.has(name)).sort(), [...PASSIVE_SERVICE_METHODS].sort());
   assert.deepEqual(Object.keys(verifier).filter(name => typeof verifier[name] === 'function'), ['verify']);
   await refusesAsPromise(verifier.verify, 'verify');

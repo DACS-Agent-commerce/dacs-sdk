@@ -35,6 +35,8 @@ export const HANDOFF_TTL_MS = 24 * 60 * 60 * 1000;
 const APPROVAL_ORIGIN = 'https://portal.example.invalid';
 const APPROVAL_PURPOSE = 'approve-purchase';
 const CHALLENGE_TTL_MS = 300_000;
+// The explicit seller receipt inputs the native composition needs; no test here reaches a payment gate with a receipt.
+const RECEIPT_LIMITS = { receiptFeeCeilings: { payFeeCeilingOs: '1000', anchorFeeCeilingOs: '2000' }, buyerMandateCapOs: '100000000000' };
 
 // A fresh database with only the package schema.
 function freshDatabase() {
@@ -118,7 +120,7 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
     expected: { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: native.source.pins.endpoint, transportAuthority: 'TEST-owner' },
     transportOwner: { getContext: unused('evidence context'), acquireConnectionFence: unused('evidence fence') } });
   const compose = ({ ops, accounts, challenges }, now) => {
-    const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, stopped, chain, feeCeilingOs, ...(passiveOnly ? { passiveOnly } : {}), now, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
+    const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, stopped, chain, feeCeilingOs, ...(passiveOnly ? { passiveOnly } : {}), now, buyerAccess: { assertWallet() { counters.buyerAccess++; } }, ...RECEIPT_LIMITS,
       dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
         nativeSellerCommitment: commitment,
         ...(unpaid ? {} : { nativeAgreementPayment: native.source, sellerTransport,
