@@ -79,7 +79,8 @@ test("the facade's member inventory equals the separately documented complete in
   t.after(() => raw.close());
   const expected = [...ACTIVE, ...PASSIVE, 'binding'].sort();
   assert.equal(new Set(expected).size, expected.length);
-  assert.deepEqual(Object.keys(raw).sort(), expected);
+  // The nonce-lane inspection is the composition's own: the raw transport has it and the facade drops it.
+  assert.deepEqual(Object.keys(raw).sort(), [...expected, 'inspectWalletNonceLane'].sort());
   assert.deepEqual(Object.keys(w.session.transport).sort(), expected);
   const doc = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
   for (const [category, names] of [['Active', ACTIVE], ['Passive', PASSIVE]]) {
