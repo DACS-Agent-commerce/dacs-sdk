@@ -198,7 +198,10 @@ describe("independent TP-1 authorization context", () => {
   // The actor's own connection, before any authority read or signature: an https-only endpoint with no
   // credentials, query or fragment, given exactly as its normalized href, and identifier-shaped transport and connection.
   it.each([
-    ["an http endpoint", { endpoint: "http://unverified.example/" }],
+    ["an http root endpoint, even under the approved record", { endpoint: "http://unverified.example/" }],
+    ["an http endpoint with a path", { endpoint: "http://unverified.example/rpc" }],
+    ["an http endpoint with a query", { endpoint: "http://unverified.example/?q" }],
+    ["a path", { endpoint: "https://unverified.example/rpc" }],
     ["user and password", { endpoint: "https://u:p@unverified.example/" }],
     ["a user only", { endpoint: "https://u@unverified.example/" }],
     ["a password only", { endpoint: "https://:p@unverified.example/" }],
@@ -222,6 +225,20 @@ describe("independent TP-1 authorization context", () => {
     await expect(Promise.resolve().then(async () => (await wire.assertTp1Binding(x.binding, invalid)))).rejects.toThrowError(expect.objectContaining({ code: "tp1_local_binding_invalid" }));
     await expect(Promise.resolve().then(() => wire.signSellerSessionDelegation(entries.delegationPayload, x.buyer, x.binding, invalid))).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
     await expect(Promise.resolve().then(() => wire.signWireEnvelope(x.request, { ...entries.signing, local: invalid }))).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    expect(x.buyer.calls + x.seller.calls).toBe(0);
+  });
+  it("refuses an http root endpoint under the approved record even after the reader authenticates that connection, and signs nothing on it", async () => {
+    const x = (await world()), entries = await boundaries(x);
+    const plain = { ...local, endpoint: "http://unverified.example/", connectionId: "generation-2" };
+    x.attestConnection(plain);
+    let reads = 0;
+    const readAuthority = (scope: wire.Tp1AuthorityScope) => { reads++; return x.options.readAuthority(scope); };
+    await expect(wire.bindTp1Profile({ ...x.options, local: plain, readAuthority })).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    expect(reads).toBe(0);
+    await expect(wire.assertTp1Binding(x.binding, plain)).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    await expect(wire.assertTp1Authority(x.binding, plain, [], null)).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    await expect(wire.signWireResponse(x.request, 200, "{}", { signer: x.seller, binding: x.binding, local: plain, now, purchaseProfile: x.binding.profile })).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
+    await expect(wire.signSellerSessionDelegation(entries.delegationPayload, x.buyer, x.binding, plain)).rejects.toMatchObject({ code: "tp1_local_binding_invalid" });
     expect(x.buyer.calls + x.seller.calls).toBe(0);
   });
   it.each((["request", "response", "delegation", "discovery"] as const).flatMap(kind =>
@@ -300,5 +317,29 @@ describe("the trusted reader is asked about participants only after a signature 
       readListingEligibility: (scope) => { eligibilityReads++; return readFixtureListingEligibility(scope); } })))).rejects
       .toThrowError(expect.objectContaining({ code: "discovery_signature_invalid" }));
     expect([g.participantReads.length, eligibilityReads]).toEqual([0, 0]);
+  });
+});
+
+describe("canonicalNodeEndpoint", () => {
+  const approved = { chainIdentity: wire.TP1_APPROVED_IDENTITY_RECORD.chainIdentity };
+  it("accepts plain http only under the approved TP-1 chain identity", () => {
+    expect(wire.canonicalNodeEndpoint("http://h/", approved)).toBe("http://h/");
+    expect(wire.canonicalNodeEndpoint("http://203.0.113.7:53550/", approved)).toBe("http://203.0.113.7:53550/");
+    for (const chainIdentity of ["d".repeat(64), `0x${approved.chainIdentity}`, approved.chainIdentity.toUpperCase(), "demos-testnet", null, undefined]) {
+      expect(wire.canonicalNodeEndpoint("http://h/", { chainIdentity })).toBeNull();
+    }
+    expect(wire.canonicalNodeEndpoint("http://h/")).toBeNull();
+    expect(wire.canonicalNodeEndpoint("http://localhost:53550/")).toBeNull();
+  });
+  it("accepts an https root with or without a chain identity", () => {
+    for (const options of [undefined, {}, approved, { chainIdentity: "d".repeat(64) }]) expect(wire.canonicalNodeEndpoint("https://h/", options)).toBe("https://h/");
+  });
+  it("refuses every endpoint that is not a canonical root, over either scheme, even with the approved identity", () => {
+    for (const scheme of ["http", "https"]) {
+      for (const endpoint of [`${scheme}://h/rpc`, `${scheme}://u:p@h/`, `${scheme}://u@h/`, `${scheme}://h/?x=1`, `${scheme}://h/#f`, `${scheme}://h`, `${scheme}://H/`, `${scheme}://h/?`, `${scheme}://h/#`, `${scheme}://h:/`]) {
+        expect(wire.canonicalNodeEndpoint(endpoint, approved), endpoint).toBeNull();
+      }
+    }
+    for (const endpoint of ["ws://h/", "file:///", "h", "", 443, null, undefined, new URL("https://h/")]) expect(wire.canonicalNodeEndpoint(endpoint, approved)).toBeNull();
   });
 });

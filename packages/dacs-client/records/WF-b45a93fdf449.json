@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF build the fixture-only receipt composition without unused bindings",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/seller-receipt-reservation.test.mjs",
+      "before": "62e33117a881729986a554bf83e0c9c97a05eb35",
+      "after": "279d0d1324b22927442fc22349d2ee3bd7ea318b"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-b45a93fdf449.json",
+    "packages/dacs-client/test/seller-receipt-reservation.test.mjs"
+  ]
+}

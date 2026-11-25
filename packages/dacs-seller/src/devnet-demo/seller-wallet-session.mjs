@@ -72,6 +72,8 @@ function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, bind
  *   frozen session `{ effectPass, runInEffectPass, walletFactory, transport, acquireConnectionFence, address, observer, artifactJournal,
  *   paymentEvidence, readBalance, close }`. The session's `close()` closes the handle and the wallet; the port keeps its owner.
  * - `close()` closes a live session, then the owner, once.
+ * `endpoint` is a canonical root URL over https: the session signs and sends, and plain http carries no authentication.
+ * Binding refuses a node whose live chain is not the approved one before any key load or signature.
  * Throws KitOperationGuardError, TypeError naming a malformed option, or the client's transport_mismatch. `finalize` rejects with
  * KitOperationGuardError, wallet_session_finalize_once, wallet_session_closed (the wallet build's refusal as `cause` when it failed),
  * wallet_session_boundary_mismatch, the wire's tp1_* refusal, SellerKeyError(seller_key_format_invalid) for a key value that is not a

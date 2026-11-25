@@ -10,6 +10,7 @@ import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { TP1_APPROVED_IDENTITY_RECORD_DIGESTS, TP1_REFUSED_CHAIN_IDENTITIES } from "./approval.js";
+import { canonicalNodeEndpoint, TP1_APPROVED_CHAIN_IDENTITY } from "./node-endpoint.js";
 import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_V1 } from "./routes.js";
 import { fail, hasKeys, HASH, isClaim, isRecord, ownedArtifact, ownedConfig, ownedFields, ownedOrNothing, uncurry } from "./validate.js";
 import { deepFreeze } from "../internal/deepFreeze.js";
@@ -64,7 +65,7 @@ export const TP1_APPROVED_IDENTITY_RECORD = deepFreeze({
   format: "dacs-testnet-identity-record/v1",
   recordId: "dacs-demos-testnet-identity/2026-10-21",
   network: "demos-testnet",
-  chainIdentity: "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc",
+  chainIdentity: TP1_APPROVED_CHAIN_IDENTITY,
   pinVersion: "dacs-demos-testnet-identity/2026-10-21",
   provenance: {
     approvedBy: "the owner",
@@ -227,17 +228,16 @@ const connectionDigest = (decision: Tp1AuthorityDecision) => sha256Hex(canonical
   local: decision.local, chainIdentity: decision.chainIdentity, provenance: decision.provenance,
 }));
 
+// One actor's connection. A connection that authorizes signing must be a canonical https root: plain http carries no
+// authentication, so no chain identity admits it here.
 function localBinding(supplied: unknown): LocalNetworkBinding {
   const local = ownedConfig(supplied, "tp1_local_binding_invalid");
   if (!hasKeys(local, ["endpoint", "transportAuthority", "connectionId"])) return fail("tp1_local_binding_invalid", 500);
-  let url: URL | null = null;
-  try { url = new URL(String(local.endpoint)); } catch { /* refused below */ }
-  if (typeof local.endpoint !== "string" || url === null || url.href !== local.endpoint || url.protocol !== "https:" ||
-      url.username || url.password || url.search || url.hash ||
-      !isIdentifier(local.transportAuthority) || !isIdentifier(local.connectionId)) {
+  const endpoint = canonicalNodeEndpoint(local.endpoint);
+  if (endpoint === null || !isIdentifier(local.transportAuthority) || !isIdentifier(local.connectionId)) {
     return fail("tp1_local_binding_invalid", 500);
   }
-  return { endpoint: local.endpoint, transportAuthority: local.transportAuthority, connectionId: local.connectionId };
+  return { endpoint, transportAuthority: local.transportAuthority, connectionId: local.connectionId };
 }
 
 /**

@@ -34,6 +34,8 @@ const PASS_WINDOW_MS = 10_000;
 const AUTHORITY_DEADLINE_MS = 10_000;
 const JOB_ID = '01M5YKPJG0248H248H248H248H';
 const OTHER_CHAIN = 'd'.repeat(64);
+// Plain http carries no authentication, so a signing session refuses it.
+const PLAIN_ENDPOINT = 'http://rpc.example.invalid/';
 const SECOND_MNEMONIC = entropyToMnemonic(new Uint8Array(32).fill(4), wordlist);
 const BOUNDARY_CLOCK = Object.freeze({ now: () => 0, after: () => () => {} });
 // The only node reads the stage-one capability sends: the binding check's.
@@ -360,13 +362,23 @@ test('createSellerWalletSession refuses an unknown option and a missing or malfo
   assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
 });
 
-test('createSellerWalletSession refuses an endpoint that is not a canonical HTTPS root, a transport authority that is not a plain token and a fetchImpl that is not a function with transport_mismatch, at construction and before any node read', async () => {
+test('createSellerWalletSession refuses an endpoint that is not a canonical root, a transport authority that is not a plain token and a fetchImpl that is not a function with transport_mismatch, at construction and before any node read', async () => {
   const node = replayNode();
   let keyLoads = 0;
   const valid = await portOptions(node, async () => { keyLoads += 1; return keyRecordBytes(); });
-  for (const changes of [{ endpoint: 'http://rpc.example.invalid/' }, { endpoint: 'https://rpc.example.invalid/path' }, { transportAuthority: 'vector authority' }, { fetchImpl: 'x' }]) {
+  for (const changes of [{ endpoint: 'https://rpc.example.invalid/path' }, { endpoint: 'http://rpc.example.invalid/path' }, { endpoint: 'http://u:p@rpc.example.invalid/' },
+    { endpoint: 'http://rpc.example.invalid/?x=1' }, { endpoint: 'http://rpc.example.invalid/#f' }, { endpoint: 'http://rpc.example.invalid' },
+    { transportAuthority: 'vector authority' }, { fetchImpl: 'x' }]) {
     assert.throws(() => createSellerWalletSession({ ...valid, ...changes }), { code: 'transport_mismatch' }, JSON.stringify(changes));
   }
+  assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
+});
+
+test('a plain-http node root, even under the approved chain, is refused at construction with transport_mismatch before any node read or key load', async () => {
+  const node = replayNode();
+  let keyLoads = 0;
+  const valid = await portOptions(node, async () => { keyLoads += 1; return keyRecordBytes(); });
+  assert.throws(() => createSellerWalletSession({ ...valid, endpoint: PLAIN_ENDPOINT }), { code: 'transport_mismatch' });
   assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
 });
 

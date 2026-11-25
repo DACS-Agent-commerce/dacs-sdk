@@ -84,6 +84,10 @@
       "types": "./dist/wire/index.d.ts",
       "import": "./dist/wire/index.js"
     },
+    "./wire/node-endpoint": {
+      "types": "./dist/wire/node-endpoint.d.ts",
+      "import": "./dist/wire/node-endpoint.js"
+    },
     "./listing/read-only": {
       "types": "./dist/listing/read-only.d.ts",
       "import": "./dist/listing/read-only.js"
@@ -91,6 +95,10 @@
     "./seller/pay-dem-observer": {
       "types": "./dist/seller/payDemObserverReadOnly.d.ts",
       "import": "./dist/seller/payDemObserverReadOnly.js"
+    },
+    "./write-attempt-guard": {
+      "types": "./dist/substrate/writeAttemptGuard.d.ts",
+      "import": "./dist/substrate/writeAttemptGuard.js"
     }
   },
   "bin": {
