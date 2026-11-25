@@ -338,15 +338,31 @@ test('a confirmation the seller policy refuses is refused after the node acknowl
   assert.deepEqual(w.node.broadcasts, []);
 });
 
-test('a transfer above the fee ceiling is refused at confirmation before the node sees it, and one at the ceiling is confirmed', async t => {
+// A signed TEST transfer pays a 1 DEM network fee and a 1 DEM rpc fee, whatever its amount.
+const SIGNED_FEES_OS = 2_000_000_000n;
+
+test('a transfer whose signed fees are above the fee ceiling is refused at confirmation before the node sees it, and one at the ceiling is confirmed', async t => {
+  const over = world(t, { bound: await bindFixture() });
+  over.feeCeilingOs = String(SIGNED_FEES_OS - 1n);
+  over.open({});
+  await over.lease();
+  const refused = over.signedTransfer(1);
+  await assert.rejects(over.confirm(refused), { code: 'write-fee-cap' });
+  assert.equal(over.node.confirms, 0);
+  assert.deepEqual(await over.records(refused), []);
+  const at = world(t, { bound: await bindFixture() });
+  at.feeCeilingOs = String(SIGNED_FEES_OS);
+  at.open({});
+  await at.lease();
+  assert.equal((await at.confirm(at.signedTransfer(1))).response.data.valid, true);
+  assert.equal(at.node.confirms, 1);
+});
+
+test('a transfer whose amount is above the fee ceiling is confirmed when its signed fees are within it', async t => {
   const w = world(t, { bound: await bindFixture() });
   w.open({});
   await w.lease();
-  const over = w.signedTransfer(1, '50000000001');
-  await assert.rejects(w.confirm(over), { code: 'write-fee-cap' });
-  assert.equal(w.node.confirms, 0);
-  assert.deepEqual(await w.records(over), []);
-  assert.equal((await w.confirm(w.signedTransfer(1, '50000000000'))).response.data.valid, true);
+  assert.equal((await w.confirm(w.signedTransfer(1, '50000000001'))).response.data.valid, true);
   assert.equal(w.node.confirms, 1);
 });
 
@@ -436,7 +452,7 @@ test('the connection changing at fence acquisition, the final authority read and
   assert.equal(w.node.confirms, 1);
 });
 
-test('no host ceiling refuses fee_ceiling_required; a 50 DEM debit passes; 50 DEM plus 1 OS refuses before signing; a signed debit above the ceiling, or a node fee view other than the signed fees, refuses before broadcast', async t => {
+test('no host ceiling refuses fee_ceiling_required; a send whose fees are within the ceiling passes; a node fee view other than the signed fees refuses before broadcast', async t => {
   const none = world(t, { bound: await bindFixture() });
   none.feeCeilingOs = undefined;
   none.open({});
@@ -450,20 +466,19 @@ test('no host ceiling refuses fee_ceiling_required; a 50 DEM debit passes; 50 DE
   const lease = await w.lease(), edge = w.signedTransfer(1, '48000000000');
   const confirmation = await w.confirm(edge);
   await w.prepareBroadcast(lease.leaseId, edge.hash);
-  assert.equal((await w.broadcast(confirmation)).result, 200, 'a confirmed debit of exactly 50 DEM passes');
+  assert.equal((await w.broadcast(confirmation)).result, 200, 'a confirmed send with fees within the ceiling passes');
 
-  for (const [amountOs, gas, code, label] of [['48000000001', fees('1000000000', '1000000000', '0'), 'write-fee-cap', 'a signed debit one OS above'],
-    ['48000000000', fees('1000000000', '1000000000', '1'), 'fee_view_mismatch', 'a fee view one OS above the signed fees'], ['48000000000', fees('1000000000', 1000000000, '0'), 'fee_view_mismatch', 'a fee that is not a decimal string'],
-    ['48000000000', fees('1000000000', '1000000000', undefined), 'fee_view_mismatch', 'a missing fee']]) {
+  for (const [gas, label] of [[fees('1000000000', '1000000000', '1'), 'a fee view one OS above the signed fees'], [fees('1000000000', 1000000000, '0'), 'a fee that is not a decimal string'],
+    [fees('1000000000', '1000000000', undefined), 'a missing fee']]) {
     const retry = world(t, { bound: await bindFixture() });
     retry.open({});
     retry.node.gas = gas;
-    const own = await retry.lease(), tx = retry.signedTransfer(1, amountOs), answer = await retry.confirm(tx);
+    const own = await retry.lease(), tx = retry.signedTransfer(1, '48000000000'), answer = await retry.confirm(tx);
     await retry.prepareBroadcast(own.leaseId, tx.hash);
-    await assert.rejects(retry.broadcast(answer), { code }, label);
+    await assert.rejects(retry.broadcast(answer), { code: 'fee_view_mismatch' }, label);
     assert.deepEqual(retry.node.broadcasts, [], label);
-    // The ceiling withholds the dispatch it started; a fee view other than the signed fees is refused before one starts.
-    assert.deepEqual(states(await retry.records(tx)).slice(-2), code === 'write-fee-cap' ? ['dispatch-started', 'dispatch-withheld'] : ['confirm-started', 'confirm-acknowledged'], label);
+    // A fee view other than the signed fees is refused before a dispatch starts.
+    assert.deepEqual(states(await retry.records(tx)).slice(-2), ['confirm-started', 'confirm-acknowledged'], label);
     assert.equal((await retry.journalEntries()).some(([key]) => key.startsWith(LANE_PREFIX)), false, `${label}: no lane row is written`);
   }
 });
