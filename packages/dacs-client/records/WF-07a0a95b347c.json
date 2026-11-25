@@ -1,0 +1,32 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client files after carrying the base into the keyless Agreement transport",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "9d6fe39a1a447e09b4b460cdf5863d7d358d6135",
+      "after": "9d6fe39a1a447e09b4b460cdf5863d7d358d6135"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "7102245d58cfe0449e9933fe0d721c93621fe767",
+      "after": "7102245d58cfe0449e9933fe0d721c93621fe767"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "629e2ce3530a6dca7224909ebc8b6320e6330c8e",
+      "after": "629e2ce3530a6dca7224909ebc8b6320e6330c8e"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "3fcc3933f88cb0f1f6536680fa95af894ca62226",
+      "after": "3fcc3933f88cb0f1f6536680fa95af894ca62226"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-07a0a95b347c.json"
+  ],
+  "note": "Both sides of the merge of the base recorded these files, so their newest records disagree; this record chooses the merged copies. The manifest lists the approval and keyless transport source files, the transport exposes the wallet nonce lane inspection beside the publication policies, and Git merged the wallet session and the public API test without a conflict. No file other than this record changes."
+}
