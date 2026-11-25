@@ -124,7 +124,7 @@ Passive: `origin` (a string)
 - The capability constructors `createDemDeliveryContext`, `createNativeDemDeliveryCapability`, `createNativePaymentEvidenceConsumer`, `createSourceDemoSellerTransport` and `createDevnetNativeCommitmentCapability` return a frozen opaque capability and throw `TypeError` for a missing or malformed input. All but `createNativePaymentEvidenceConsumer` take an `authority` that is a `TEST-` label (a `TEST-RUN-` label for the commitment capability) or an authority token, and, with a token, the `binding` it was admitted for (see "Authority tokens and labels" below).
 - `createDemDeliveryContextRouteCaller({ authority, binding })` returns the same opaque capability as `createDemDeliveryContext`, for the buyer only. It takes no URL, fetch, signer or verifier, and reads, sends and signs nothing when it is built. Pass it as the buyer's DEM delivery context:
 
-  ```js
+  ```javascript
   const demDeliveryContext = createDemDeliveryContextRouteCaller({ authority: 'TEST-buyer-context' });
   const purchases = createProtocolPurchases({ ...options, dacsProtocol: { ...dacsProtocol, demDeliveryContext } });
   ```

@@ -325,7 +325,8 @@ test('an unknown context dispatch reuses its retained body after restart', async
 });
 
 test('a buyer route capability cannot configure the shipped seller context host', () => {
-  assert.throws(() => sellerContext.demDeliveryContextConfig(createDemDeliveryContextRouteCaller({ authority: AUTHORITY })), { name: 'TypeError' });
+  const capability = createDemDeliveryContextRouteCaller({ authority: AUTHORITY });
+  assert.throws(() => sellerContext.demDeliveryContextConfig(capability), { name: 'TypeError', message: 'demDeliveryContext requires a constructed application capability' });
 });
 
 test('a route caller without the protocol route refuses before any effect', async () => {
