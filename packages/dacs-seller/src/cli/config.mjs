@@ -1,7 +1,7 @@
 import { isAbsolute, join, normalize } from 'node:path';
 import { types as nodeTypes } from 'node:util';
 import { admitRawJson, canonicalize } from '@kynesyslabs/dacs';
-import { isPublicEndpoint } from '@kynesyslabs/dacs/wire';
+import { canonicalNodeEndpoint, isPublicEndpoint } from '@kynesyslabs/dacs/wire';
 import { buildListingDraft, normalizeDemAmount } from '../dacs/listing.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from '../dacs/seller-capacity-defaults.mjs';
 import { sellerApprovalSettings, SELLER_POLICY_DEFAULTS } from '../devnet-demo/operator-approval.mjs';
@@ -160,7 +160,8 @@ export function parseSellerConfig(bytes) {
   absolutePath(config.dataDirectory, 'dataDirectory');
   absolutePath(config.keyPath, 'keyPath');
   requireValue(config.keyPath === join(config.dataDirectory, SELLER_KEY_FILE), 'keyPath');
-  if (config.rpcUrl !== null) httpsUrl(config.rpcUrl, 'rpcUrl');
+  // seller.json pins no chain identity, so canonicalNodeEndpoint admits an https root only.
+  if (config.rpcUrl !== null) requireValue(canonicalNodeEndpoint(config.rpcUrl) !== null, 'rpcUrl');
   for (const key of ['publicOrigin', 'directoryOrigin']) if (config[key] !== null) origin(config[key], key);
   if (config.listener !== null) listenerConfig(config.listener);
   if (config.listing !== null) listingConfig(config.listing);

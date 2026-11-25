@@ -1,0 +1,25 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF restrict the retained CREATE reader to the signed CREATEs of one delivery",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/passive-evidence-recorder.mjs",
+      "before": "a35afdfff4cdc4ce7292e6faa3196b0b3134d92b",
+      "after": "ae5dd5a5cc9533cd97c165cf37b11763d419febb"
+    },
+    {
+      "path": "packages/dacs-client/test/passive-evidence-recorder.test.mjs",
+      "before": "c86b11451cf02489469707e104311ab47d9711f6",
+      "after": "3cdc0c0083deb2f7d11ccec10480147a35b73bba"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-4fab1f4c63c0.json",
+    "packages/dacs-client/src/passive-evidence-recorder.mjs",
+    "packages/dacs-client/test/passive-evidence-recorder.test.mjs"
+  ],
+  "note": "openRetainedCreateJournal now takes exactly { deliveryId } and refuses any other member, including laneKey, with reader_input_invalid before reading the journal. It returns { deliveryId, records } holding only the retained signed CREATE_STORAGE_PROGRAM transactions whose signed delivery fields name that delivery, whatever their journal key. Other recorder members are unchanged. No core file changes, so the hold pins are unchanged."
+}

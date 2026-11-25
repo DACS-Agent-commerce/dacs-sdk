@@ -72,6 +72,8 @@ function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, bind
  *   frozen session `{ effectPass, runInEffectPass, walletFactory, transport, acquireConnectionFence, address, observer, artifactJournal,
  *   paymentEvidence, readBalance, close }`. The session's `close()` closes the handle and the wallet; the port keeps its owner.
  * - `close()` closes a live session, then the owner, once.
+ * `endpoint` is a canonical root URL over https, or over plain http (public Demos testnet nodes serve no https), judged under the
+ * approved TP-1 chain identity; binding then refuses a node whose live chain is another before any key load or signature.
  * Throws KitOperationGuardError, TypeError naming a malformed option, or the client's transport_mismatch. `finalize` rejects with
  * KitOperationGuardError, wallet_session_finalize_once, wallet_session_closed (the wallet build's refusal as `cause` when it failed),
  * wallet_session_boundary_mismatch, the wire's tp1_* refusal, SellerKeyError(seller_key_format_invalid) for a key value that is not a
@@ -82,7 +84,8 @@ export function createSellerWalletSession(options) {
   checkOptions(options);
   const { endpoint, transportAuthority, fetchImpl, signer, loadKeyRecord, approve, approvalMode, journalMode, publications, diagnostics,
     clock = { now: () => Date.now() }, buyerAccess = null } = options;
-  const owner = createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl });
+  // The port binds only the approved TP-1 record, so its chain identity is the one the owner's endpoint is judged under.
+  const owner = createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl, chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
   let finalizeCalled = false, closed = false, closing = null, session = null, anchor = null, finalizedRunCreate = null;
   const authority = createNodeAuthorityCapability({ owner, claim: () => {
     if (closed) throw sessionClosed();

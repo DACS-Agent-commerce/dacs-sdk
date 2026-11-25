@@ -20,6 +20,7 @@ interface Edit { type: string; operation: string; isRollback?: boolean; account:
 interface RecordShape {
   hash: string;
   status: string;
+  blockNumber: number;
   content: {
     type: string;
     from: unknown;
@@ -34,7 +35,10 @@ interface RecordShape {
 const recordOf = (hash: string): RecordShape =>
   structuredClone(node2.getTxByHash[hash]!.response) as unknown as RecordShape;
 
-const SLOT = Object.freeze({ txHash: CONFIRMED_HASH, nonce: 28, payer: PAYER, payee: PAYEE });
+const CONFIRMED_BLOCK = recordOf(CONFIRMED_HASH).blockNumber;
+const SLOT = Object.freeze({
+  txHash: CONFIRMED_HASH, nonce: 28, blockNumber: CONFIRMED_BLOCK, payer: PAYER, payee: PAYEE,
+});
 
 /** The confirmed record rewritten as a 1 DEM transfer from the payer to itself. */
 function selfTransfer(): RecordShape {
@@ -70,7 +74,9 @@ describe("the confirmed transaction that took a pay-dem nonce", () => {
     const failed = recordOf(FAILED_HASH);
     expect(payDemConfirmedNonceSlot(failed, { ...SLOT, txHash: FAILED_HASH, nonce: 9 })).toBeNull();
 
-    for (const change of [{ txHash: "11".repeat(32) }, { nonce: 29 }, { payer: SELLER }]) {
+    for (const change of [
+      { txHash: "11".repeat(32) }, { nonce: 29 }, { payer: SELLER }, { blockNumber: CONFIRMED_BLOCK + 1 },
+    ]) {
       expect(payDemConfirmedNonceSlot(recordOf(CONFIRMED_HASH), { ...SLOT, ...change })).toBeNull();
     }
 
@@ -82,6 +88,8 @@ describe("the confirmed transaction that took a pay-dem nonce", () => {
         delete content.from_ed25519_address;
       },
       (record) => { record.status = "pending"; },
+      (record) => { delete (record as Partial<RecordShape>).blockNumber; },
+      (record) => { (record as { blockNumber: unknown }).blockNumber = String(record.blockNumber + 1); },
       (record) => { record.content.data[1].args[0] = 42; },
       (record) => { record.content.gcr_edits[0]!.account = "not-an-account"; },
       (record) => {

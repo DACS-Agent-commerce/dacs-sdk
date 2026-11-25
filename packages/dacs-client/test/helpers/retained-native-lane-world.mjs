@@ -16,7 +16,7 @@ import { SELLER_SR2_PUBLIC_PROJECTION } from '../../src/dacs/seller-sr2-agreemen
 import { openDurableWalletJournal } from '../../src/wallet/durable-journal.mjs';
 import { walletLane, walletLaneKey } from '../../src/wallet/wallet-lane.mjs';
 import { passiveNativeWorld, IDENTITY, NOW } from './passive-native-world.mjs';
-import { setPurchaseAdmission } from './wire-client-fixture.mjs';
+import { FIXTURE_RECEIPT_LIMITS as RECEIPT_LIMITS, setPurchaseAdmission } from './wire-client-fixture.mjs';
 import { createEphemeralWallet } from '../fixtures/wallet.mjs';
 import { bindFixture, createAuthorityFixture } from '../fixtures/tp1-authority-reader.mjs';
 
@@ -89,7 +89,7 @@ export async function retainedLaneWorld(t, standIns, { handoffTtlMs = DAY_MS } =
     challenges, purposes: { APPROVE_PURCHASE: APPROVAL_PURPOSE }, config: { demAmountEncoding: 'os-string', publicOrigin: APPROVAL_ORIGIN } });
   // Both public factories over these stores; `passiveOnly` omits the fee ceiling and the protocol's chain.
   world.compose = ({ passiveOnly = false, withStop = true } = {}) => {
-    const protocol = client.createProtocolPurchases({ ...factoryOptions({ passiveOnly, withStop }), ...(passiveOnly ? {} : { chain }), buyerAccess: { assertWallet() { counters.buyerAccess++; } },
+    const protocol = client.createProtocolPurchases({ ...factoryOptions({ passiveOnly, withStop }), ...(passiveOnly ? {} : { chain }), ...RECEIPT_LIMITS, buyerAccess: { assertWallet() { counters.buyerAccess++; } },
       dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal, bridgeFor: () => ({}) },
         nativeSellerCommitment: commitment, nativeAgreementPayment: native.source, sellerEndpoint: () => { counters.sellerLookups++; return SELLER_ENDPOINT; } } });
     return { protocol, service: world.serviceWith(protocol, { passiveOnly, withStop }) };
@@ -109,7 +109,8 @@ export async function retainedLaneWorld(t, standIns, { handoffTtlMs = DAY_MS } =
     const agreement = { artifact: { jobId }, hash: receipt.contentHash, ref: { anchor: { kind: 'storage-program', locator: logicalAddress }, contentHash: receipt.contentHash },
       anchorReceipt: receipt, signedProjection: { hash: txHash }, terms: { payee: seller.address, price: { amountOs: PRICE.amountOs } } };
     const state = { preparedVerification: { evidence: { chainMode: 'public-chain-read' } },
-      protocol: { stage: 'seller-committed', agreement, commitment: sellerCommitment, chainReadback: { [commitmentAddress]: { hash: sha256Hex(`TEST-commit-create:${key}`) } } } };
+      protocol: { stage: 'seller-committed', agreement, commitment: sellerCommitment, chainReadback: { [commitmentAddress]: { hash: sha256Hex(`TEST-commit-create:${key}`) } },
+      sellerReceipt: { agreementHash: receipt.contentHash, reservedMaximumOs: String(BigInt(PRICE.amountOs) + BigInt(RECEIPT_LIMITS.receiptFeeCeilings.payFeeCeilingOs) + BigInt(RECEIPT_LIMITS.receiptFeeCeilings.anchorFeeCeilingOs)) } } };
     const { operation } = ops.createIdempotent({ accountId: world.accountId, kind: 'purchase', idempotencyKey: key, request: { key }, status, terms, termsHash: sha256Hex(`TEST-terms:${key}`), state, expiresAt, jobId });
     standIns.agreements.set(logicalAddress, receipt);
     standIns.commitments.set(jobId, { contentHash: sellerCommitment.contentHash, signer: sellerCommitment.signer, committedAt: sellerCommitment.committedAt });

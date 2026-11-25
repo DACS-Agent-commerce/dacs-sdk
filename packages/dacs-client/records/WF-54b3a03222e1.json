@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test that a paid write whose broadcast acknowledgement is lost spends its permit and is not sent again",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/node-wallet-paid-approval.test.mjs",
+      "before": "1a348b8b4ddee753c634492e8309ece8602c74cc",
+      "after": "82ed3a498fef302446d0f91c05f4b6610ff7f69f"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-54b3a03222e1.json",
+    "packages/dacs-client/test/node-wallet-paid-approval.test.mjs"
+  ]
+}
