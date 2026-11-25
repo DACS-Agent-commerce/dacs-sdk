@@ -138,6 +138,26 @@ describe("Demos reader for the testnet wallet-spend authority", () => {
     expect(node.calls.length).toBe(before);
   });
 
+  it("reads the account nonce as the node's number or its { nonce } and plans the next one", async () => {
+    const node = await demosNodeStub(recordedDemosState(APPROVED));
+    const reader = readerFor(node.url);
+    for (const answer of [7, "7", { nonce: 7 }, { nonce: "7" }, { nonce: 7, other: true }]) {
+      node.state.accountNonce = answer;
+      await expect(reader.readAccountNonce()).resolves.toBe(7);
+      await expect(reader.plannedTransferNonce()).resolves.toBe(8);
+    }
+    expect(node.calls.find((call) => call.message === "getAddressNonce")?.data).toEqual({ address: DEMOS_WALLET });
+
+    for (const answer of [
+      undefined, null, "", "07", "-1", -1, 1.5, 2 ** 53, {}, { nonce: undefined }, { nonce: null }, { nonce: -1 },
+      { nonce: 1.5 }, { nonce: 2 ** 53 }, { nonce: "07" }, { nonce: { nonce: 7 } }, { balance: 7 }, [7], [{ nonce: 7 }],
+    ]) {
+      node.state.accountNonce = answer;
+      expect((await refusal(reader.readAccountNonce())).message).toBe("wallet-spend-demos-rpc-response-invalid");
+      expect((await refusal(reader.plannedTransferNonce())).message).toBe("wallet-spend-demos-rpc-response-invalid");
+    }
+  });
+
   it("bounds every node call", async () => {
     const oversized = (declaredLength: boolean): DemosNodeAnswer => ({
       status: 200,
