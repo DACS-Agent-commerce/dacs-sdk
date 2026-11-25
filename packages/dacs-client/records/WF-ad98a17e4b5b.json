@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client files after carrying base/main up into the payment part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "27d944808b12f4c910de613f84cf3c4009cccf14",
+      "after": "27d944808b12f4c910de613f84cf3c4009cccf14"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "720bb9288fa9d97d3d56d922040bc3efa95dd3bc",
+      "after": "720bb9288fa9d97d3d56d922040bc3efa95dd3bc"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-ad98a17e4b5b.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's changes together with those of the base."
+}

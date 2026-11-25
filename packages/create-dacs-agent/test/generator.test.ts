@@ -717,6 +717,17 @@ const NEW_AUTHORITY_SETTINGS = Object.freeze([
   "DACS_WALLET_AUTHORITY_DATA_DIRECTORY",
   "DACS_WALLET_AUTHORITY_POLICY_FILE",
 ]);
+/** The DEM lane's own settings the generator adds; the lane also reads DACS_DEMOS_RPC_URL. */
+const DEM_AUTHORITY_SETTINGS = Object.freeze([
+  "DACS_PAY_DEM_WALLET_AUTHORITY_DATA_DIRECTORY",
+  "DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE",
+]);
+/** Settings only the x402 lane reads. */
+const X402_ONLY_AUTHORITY_SETTINGS = Object.freeze([
+  "DACS_WALLET_AUTHORITY_DATA_DIRECTORY",
+  "DACS_WALLET_AUTHORITY_POLICY_FILE",
+  "DACS_EVM_RPC_URL",
+]);
 const NODE_SOURCE = new URL("../../dacs-node/src/", import.meta.url);
 
 /** Reads one export of a node package source module; the core package must be built for its imports. */
@@ -765,50 +776,54 @@ function composeEnvironment(compose: string, service: "buyer" | "seller"): strin
 
 // The first import of the node package source transforms it, which takes several seconds.
 describe("generated testnet wallet-spend authority wiring", { timeout: 60_000 }, () => {
-  test("x402 projects get the authority scripts, settings and README", async () => {
-    const settingNames = await nodeSourceExport<readonly string[]>(
-      "walletSpendTestnetSettings.ts", "DACS_WALLET_SPEND_TESTNET_AUTHORITY_SETTING_NAMES",
-    );
-    expect(settingNames).toHaveLength(10);
-    for (const rails of ["x402", "both"] as const) {
+  test("generated projects get the authority scripts, settings and README for their rails", async () => {
+    const settingNames = (name: string) => nodeSourceExport<readonly string[]>("walletSpendTestnetSettings.ts", name);
+    const x402Names = await settingNames("DACS_WALLET_SPEND_TESTNET_AUTHORITY_SETTING_NAMES");
+    const commonNames = await settingNames("DACS_WALLET_SPEND_TESTNET_AUTHORITY_COMMON_SETTING_NAMES");
+    const demNames = await settingNames("DACS_WALLET_SPEND_TESTNET_AUTHORITY_PAY_DEM_SETTING_NAMES");
+    expect([x402Names.length, commonNames.length, demNames.length]).toEqual([10, 6, 3]);
+    for (const rails of ["x402", "pay-dem", "both"] as const) {
+      const x402 = rails !== "pay-dem";
+      const payDem = rails !== "x402";
       const target = await generatedLiveProject(rails);
       const manifest = JSON.parse(await readFile(join(target, "package.json"), "utf8")) as {
         scripts: Record<string, string>;
       };
       expect(manifest.scripts, rails).toMatchObject(AUTHORITY_SCRIPTS);
+
       const environment = environmentLines(await readFile(join(target, ".env.example"), "utf8"));
-      for (const name of settingNames) expect(environment.has(name), `${rails} ${name}`).toBe(true);
-      for (const name of NEW_AUTHORITY_SETTINGS) expect(environment.get(name), `${rails} ${name}`).toBe("");
-      const readme = await readFile(join(target, "secrets", "README.md"), "utf8");
+      const listed = [...commonNames, ...(x402 ? x402Names : []), ...(payDem ? demNames : [])];
+      expect(new Set(listed).size, rails).toBe({ x402: 10, "pay-dem": 9, both: 13 }[rails]);
+      for (const name of listed) expect(environment.has(name), `${rails} ${name}`).toBe(true);
+      const added = [
+        "DACS_WALLET_AUTHORITY_WITNESS_SEED_FILE",
+        ...(x402 ? NEW_AUTHORITY_SETTINGS : []),
+        ...(payDem ? DEM_AUTHORITY_SETTINGS : []),
+      ];
+      for (const name of added) expect(environment.get(name), `${rails} ${name}`).toBe("");
+      const otherRail = [...(x402 ? [] : X402_ONLY_AUTHORITY_SETTINGS), ...(payDem ? [] : DEM_AUTHORITY_SETTINGS)];
+      for (const name of otherRail) expect(environment.has(name), `${rails} ${name}`).toBe(false);
+
+      const readme = (await readFile(join(target, "secrets", "README.md"), "utf8")).replace(/\s+/g, " ");
       for (const expected of [
         ...Object.keys(AUTHORITY_SCRIPTS),
-        ...settingNames,
-        "eip155:84532",
+        ...commonNames,
         "npm run dacs:authority -- --print-witness-public-key",
         "npm run dacs:doctor -- --phase post-start --for buy",
         "hold-needs-operator",
-        "wallet-spend-chain-nonce-used-unmatched",
+        ...(x402 ? [...x402Names, "eip155:84532", "x402.service-limit", "wallet-spend-chain-nonce-used-unmatched"] : []),
+        ...(payDem ? [
+          ...demNames, "(`demos`)", "pay-dem.service-limit", "wallet-spend-testnet-authority-demos-network-mismatch",
+          "wallet-spend-dem-",
+        ] : []),
+        ...(rails === "both" ? ["--rail x402", "--rail pay-dem"] : []),
       ]) {
         expect(readme, `${rails} ${expected}`).toContain(expected);
       }
-      for (const bothOnly of ["--rail pay-dem", "pay-dem.service-limit"]) {
-        if (rails === "both") expect(readme).toContain(bothOnly);
-        else expect(readme).not.toContain(bothOnly);
+      for (const absent of [...otherRail, ...(x402 ? [] : ["eip155:84532"]), "refuses the `pay-dem` policy"]) {
+        expect(readme, `${rails} ${absent}`).not.toContain(absent);
       }
     }
-    const payDem = await generatedLiveProject("pay-dem");
-    const payDemManifest = await readFile(join(payDem, "package.json"), "utf8");
-    const payDemReadme = await readFile(join(payDem, "secrets", "README.md"), "utf8");
-    const payDemEnvironment = await readFile(join(payDem, ".env.example"), "utf8");
-    for (const script of Object.keys(AUTHORITY_SCRIPTS)) {
-      expect(payDemManifest).not.toContain(`"${script}"`);
-      expect(payDemReadme).not.toContain(script);
-    }
-    for (const name of NEW_AUTHORITY_SETTINGS) {
-      expect(payDemEnvironment).not.toContain(name);
-      expect(payDemReadme).not.toContain(name);
-    }
-    expect(payDemReadme).not.toContain("hold-needs-operator");
   });
 
   test("generation writes no secret", async () => {
@@ -869,19 +884,29 @@ describe("generated testnet wallet-spend authority wiring", { timeout: 60_000 },
     for (const window of windows) expect(window).toBeLessThanOrEqual(bound);
   });
 
-  test("x402-capable buyer containers receive every wallet limit the x402 policy reads", async () => {
-    const limitNames: string[] = [];
-    for (const rails of ["x402", "both"] as const) {
+  test("buyer containers receive every wallet limit their rails' policies read", async () => {
+    for (const rails of ["x402", "pay-dem", "both"] as const) {
       const target = await generatedLiveProject(rails);
       const config = await readFile(join(target, "src", "config.ts"), "utf8");
-      const start = config.indexOf("function walletPolicyLimits");
-      const end = config.indexOf("export function configuredPayDemWalletSpendPolicy");
-      expect(start, rails).toBeGreaterThan(0);
-      expect(end, rails).toBeGreaterThan(start);
-      const limits = [...config.slice(start, end).matchAll(
-        /(?:positiveIntegerEnvironment\(\s*"([A-Z0-9_]+)",\s*(\d+)|decimalEnvironment\(\s*"([A-Z0-9_]+)",\s*"([^"]+)")/g,
-      )].map((match) => ({ name: match[1] ?? match[3] ?? "", fallback: match[2] ?? match[4] ?? "" }));
-      expect(limits, rails).toHaveLength(8);
+      // The limit settings read between two declarations of the generated config, with their fallbacks.
+      const limitsBetween = (from: string, to: string) => {
+        const start = config.indexOf(from);
+        const end = config.indexOf(to);
+        expect(start, `${rails} ${from}`).toBeGreaterThan(0);
+        expect(end, `${rails} ${to}`).toBeGreaterThan(start);
+        return [...config.slice(start, end).matchAll(
+          /(?:positiveIntegerEnvironment\(\s*"([A-Z0-9_]+)",\s*(\d+)|decimalEnvironment\(\s*"([A-Z0-9_]+)",\s*"([^"]+)")/g,
+        )].map((match) => ({ name: match[1] ?? match[3] ?? "", fallback: match[2] ?? match[4] ?? "" }));
+      };
+      const shared = limitsBetween("function walletPolicyLimits", "export function configuredX402WalletSpendPolicy");
+      const x402 = limitsBetween(
+        "export function configuredX402WalletSpendPolicy", "export function configuredPayDemWalletSpendPolicy",
+      );
+      const payDem = limitsBetween(
+        "export function configuredPayDemWalletSpendPolicy", "export function configuredFundedDoctorAuthority",
+      );
+      expect([shared.length, x402.length, payDem.length], rails).toEqual([4, 4, 4]);
+      const limits = [...shared, ...(rails === "pay-dem" ? [] : x402), ...(rails === "x402" ? [] : payDem)];
       const compose = await readFile(join(target, "compose.yaml"), "utf8");
       const buyer = composeEnvironment(compose, "buyer");
       const seller = composeEnvironment(compose, "seller").join("\n");
@@ -891,20 +916,29 @@ describe("generated testnet wallet-spend authority wiring", { timeout: 60_000 },
         expect(seller, `${rails} ${name}`).not.toContain(name);
         expect(environment.get(name), `${rails} ${name}`).toBe(fallback);
       }
-      limitNames.splice(0, limitNames.length, ...limits.map(({ name }) => name));
+      if (rails === "x402") expect(buyer.join("\n")).not.toContain("DACS_PAY_DEM_WALLET_");
+      if (rails === "pay-dem") expect(buyer.join("\n")).not.toContain("DACS_X402_WALLET_");
     }
-    const payDemCompose = await readFile(join(await generatedLiveProject("pay-dem"), "compose.yaml"), "utf8");
-    for (const name of limitNames) expect(payDemCompose).not.toContain(name);
   });
 
   test("the docs list the testnet service's commands, settings and named codes", async () => {
     const settingNames = await nodeSourceExport<readonly string[]>(
       "walletSpendTestnetSettings.ts", "DACS_WALLET_SPEND_TESTNET_AUTHORITY_SETTING_NAMES",
     );
+    const demSettingNames = await nodeSourceExport<readonly string[]>(
+      "walletSpendTestnetSettings.ts", "DACS_WALLET_SPEND_TESTNET_AUTHORITY_PAY_DEM_SETTING_NAMES",
+    );
     const docs = await readFile(new URL("../../../docs/wallet-spend-authority.md", import.meta.url), "utf8");
     for (const expected of [
       ...settingNames,
+      ...demSettingNames,
       "eip155:84532",
+      "`demos`",
+      "wallet-spend-testnet-authority-network-missing",
+      "wallet-spend-testnet-authority-demos-network-mismatch",
+      "wallet-spend-testnet-authority-demos-node-unavailable",
+      "wallet-spend-testnet-authority-demos-rpc-url-refused",
+      "wallet-spend-dem-absence-refused",
       "npm run dacs:authority",
       "npm run dacs:authority:policy",
       "npm run dacs:authority -- --print-witness-public-key",

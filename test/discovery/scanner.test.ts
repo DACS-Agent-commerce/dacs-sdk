@@ -147,6 +147,21 @@ describe("scanAnchorPage (#54 paged discovery)", () => {
     });
   });
 
+  test.each([
+    ["a next cursor that is not a string", { entries: [], nextCursor: 1 }, "history page nextCursor must be a string or null"],
+    ["an entry that is not an object", { entries: ["x"], nextCursor: null }, "history entry 0 must be an object"],
+    ["an entry without a native address", { entries: [{}], nextCursor: null }, "history entry 0 has no native address"],
+    ["an entry with invalid logical metadata", { entries: [{ nativeAddress: "a", logicalAddress: 1 }], nextCursor: null }, "history entry 0 has invalid logical metadata"],
+    ["an entry with an invalid owner", { entries: [{ nativeAddress: "a", owner: " " }], nextCursor: null }, "history entry 0 has an invalid owner"],
+  ])("%s comes back as an indeterminate page at the same cursor", async (_name, page, message) => {
+    const result = await scanAnchorPage(async () => page as never, "cursor-2");
+    expect(result).toEqual({
+      status: "indeterminate",
+      reason: `page fetch failed: ${message}`,
+      cursor: "cursor-2",
+    });
+  });
+
   test("invalid page limits are indeterminate and never call the RPC seam", async () => {
     const fetch = vi.fn(async (): Promise<RawScanPage> => ({
       entries: [],

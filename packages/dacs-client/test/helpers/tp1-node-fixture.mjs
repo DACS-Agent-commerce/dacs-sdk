@@ -15,7 +15,7 @@ const { openDurableWalletJournal } = await import('../../src/wallet/durable-jour
 const { buildNativeTransferPayload } = await import('../../src/dacs/wallet-transactions.mjs');
 export const T0 = 1793102400000;
 /** The stop check and fee ceiling every session construction needs. */
-export const finalization = Object.freeze({ stopped: async () => false, feeCeilingOs: '50000000000' });
+export const finalization = Object.freeze({ stopped: () => false, feeCeilingOs: '50000000000' });
 export const mnemonicBytes = () => new TextEncoder().encode(entropyToMnemonic(new Uint8Array(32).fill(3), wordlist));
 export const ok = response => ({ result: 200, response, require_reply: false, extra: null });
 export function scriptedNode() {
