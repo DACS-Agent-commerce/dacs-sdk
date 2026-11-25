@@ -8,6 +8,8 @@ const RESULT_STATES = ['submitted', 'rejected', 'unknown'];
 const REPORT_MEMBERS = 'deliveryId,hash,nonce,state';
 const JOURNAL_MEMBERS = ['get', 'entries', 'withWalletLock', 'appendUnderLock'];
 const HASH = /^[0-9a-f]{64}$/;
+const STORAGE_PROGRAM_MARKER = 'storageProgram';
+const CREATE_OPERATION = 'CREATE_STORAGE_PROGRAM';
 
 const laneFor = (deliveryId) => `purchase-evidence/${deliveryId}`;
 const keyFor = (deliveryId, seq) => `${laneFor(deliveryId)}/result/${seq}`;
@@ -47,9 +49,16 @@ async function readReports(journal, deliveryId) {
   return reports;
 }
 
-function namesDelivery(value, deliveryId) {
-  const content = value?.signedTransaction?.content?.data?.[1];
-  return content?.data?.jobId === deliveryId || content?.metadata?.artifactBinding?.jobId === deliveryId;
+// True for a retained signed CREATE whose signed delivery fields name `deliveryId`. This is a structural selection of what the journal holds:
+// it neither verifies the signature nor confirms anything on chain.
+function isSignedCreateFor(value, deliveryId) {
+  const { signature, content } = value?.signedTransaction ?? {};
+  if (signature?.type !== 'ed25519' || typeof signature.data !== 'string' || signature.data === '') return false;
+  if (content?.type !== 'storageProgram' || content.data?.[0] !== STORAGE_PROGRAM_MARKER) return false;
+  const program = content.data[1];
+  if (program?.operation !== CREATE_OPERATION) return false;
+  const named = [program.data?.jobId, program.metadata?.artifactBinding?.jobId].filter((id) => id !== undefined);
+  return named.length > 0 && named.every((id) => id === deliveryId);
 }
 
 /**
@@ -61,8 +70,10 @@ function namesDelivery(value, deliveryId) {
  *   {status: 'recorded' | 'repeat' | 'evidence_limit', count} or {status: 'invalid_report'}. At most eight distinct reports are kept per delivery;
  *   an identical repeat uses no slot. Journal errors pass through unchanged; OperationError(evidence_record_invalid) refuses a malformed stored report.
  * - resultHistory(deliveryId) resolves the frozen reports in acceptance order, each with `verified: false`. It throws TypeError(delivery_id_invalid).
- * - openRetainedCreateJournal({deliveryId, laneKey}) resolves a frozen copy of the journal records under `laneKey` and the retained CREATEs that
- *   name `deliveryId`. It reads with get and entries only. It throws TypeError(delivery_id_invalid | lane_key_invalid).
+ * - openRetainedCreateJournal({deliveryId}) resolves {deliveryId, records}, a frozen copy of the journal entries that are signed CREATEs naming
+ *   `deliveryId`, in journal order, whatever their key. The caller authenticates the delivery first. It reads `entries` once and writes nothing.
+ *   It throws TypeError(reader_input_invalid) for any input but an object whose only key is `deliveryId`, before any read, and
+ *   TypeError(delivery_id_invalid) for a malformed ID.
  * A report is a pointer the wallet gave, never proof that anything settled. The recorder signs, sends and continues nothing.
  */
 export function createPurchaseEvidenceRecorder(options) {
@@ -92,11 +103,12 @@ export function createPurchaseEvidenceRecorder(options) {
     return deepFreeze(reports.map((report, index) => ({ ...report, seq: index + 1, verified: false })));
   }
 
-  async function openRetainedCreateJournal({ deliveryId, laneKey }) {
+  async function openRetainedCreateJournal(input) {
+    if (input === null || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).join() !== 'deliveryId') throw new TypeError('reader_input_invalid');
+    const { deliveryId } = input;
     assertDeliveryId(deliveryId);
-    if (typeof laneKey !== 'string' || laneKey === '') throw new TypeError('lane_key_invalid');
-    const records = (await journal.entries()).filter(([key, value]) => key === laneKey || key.startsWith(`${laneKey}/`) || namesDelivery(value, deliveryId));
-    return deepFreeze(structuredClone({ deliveryId, laneKey, records }));
+    const records = (await journal.entries()).filter(([, value]) => isSignedCreateFor(value, deliveryId));
+    return deepFreeze(structuredClone({ deliveryId, records }));
   }
 
   return Object.freeze({ recordWalletResult, resultHistory, openRetainedCreateJournal });
