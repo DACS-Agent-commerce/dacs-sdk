@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged node wallet session with the node endpoint rule and the shared approved-record pins",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "f3c0079cfc99e596409e691f16a5d8edfc20feea",
+      "after": "f3c0079cfc99e596409e691f16a5d8edfc20feea"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-e6ac7556f4b0.json"
+  ],
+  "note": "Both sides of the merge of the base recorded this file, so their newest records disagree; this record chooses the merged copy. The merged file keeps the node endpoint rule from canonicalNodeEndpoint and the single in-pass approval signing, and keeps the approved-record helpers in approved-record-pins.mjs. Git merged it with one import conflict. No file other than this record changes."
+}
