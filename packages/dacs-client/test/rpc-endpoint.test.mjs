@@ -114,8 +114,8 @@ test('HTTP admission fails when its reviewed identity comparison is removed', ()
   assertRefused({ rpcUrl: 'http://h/', network: 'mainnet', chainIdentity: APPROVED }, 'the approved pin under another label');
 });
 
-// A binder reader that reads block zero through the owner's fetch; the node answers with `live.identity`.
-function ownerReader(owner, live) {
+// A binder reader that reads block zero through the owner's fetch.
+function ownerReader(owner) {
   return { getContext: () => owner.getContext(),
     async getBlockByNumber(height, policy) {
       const answer = await owner.fetchImpl(owner.local.endpoint, { method: 'POST', body: JSON.stringify({ height }), ...policy });
@@ -141,7 +141,7 @@ test('HTTP owner and network binder keep fresh identity and zero effects on mism
 
   const expected = { network: TP1_APPROVED_IDENTITY_RECORD.network, chainIdentity: APPROVED, pinVersion: TP1_APPROVED_IDENTITY_RECORD.pinVersion,
     endpoint: 'http://h/', transportAuthority: AUTHORITY };
-  const binder = createDemosNetworkBinder({ expected, reader: ownerReader(owner, live), now: () => NOW });
+  const binder = createDemosNetworkBinder({ expected, reader: ownerReader(owner), now: () => NOW });
   assert.deepEqual(requests, [], 'constructing the binder reads nothing');
   const saved = await binder.bind();
   assert.deepEqual([saved.endpoint, saved.chainIdentity], ['http://h/', APPROVED]);
