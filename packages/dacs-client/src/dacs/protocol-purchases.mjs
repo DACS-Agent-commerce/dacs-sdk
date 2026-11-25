@@ -57,7 +57,7 @@ import { NATIVE_AGREEMENT_PAYMENT, usesNativeAgreementPayment, nativeAgreementPa
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, usesNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
 import { assertRetainedProofUnchanged, readRetainedNativeLaneProof } from './retained-native-lane-proof.mjs';
 import { sourceDemoSellerTransportConfig } from './source-demo-seller-transport.mjs';
-import { verifySellerSessionDelegation, sellerSessionDelegationSigningBytes, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_ROUTES } from '@kynesyslabs/dacs/wire';
+import { verifySellerSessionDelegation, sellerSessionDelegationSigningBytes, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_PATHS, DACS_SELLER_HTTP_ROUTES } from '@kynesyslabs/dacs/wire';
 import { SELLER_ANSWER_CLASS } from './seller-response-class.mjs';
 import { createSellerWireAuthentication } from './seller-wire-authentication.mjs';
 import { anchoredTupleMembers, createContinuationEvidence, keepCommitmentTuple, matchesCommitmentSummary } from './continuation-evidence.mjs';
@@ -1108,8 +1108,10 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       return Date.parse(current.expiresAt) > now() || 'the purchase approval window elapsed';
     };
     if (!usesAgreementContext(operation)) return savePlan(operation, buyerBundle, planAgreement({ jobId: operation.terms.protocol.jobId, listing: p.listing, buyerBundle, generatedAt }));
+    // A route capability's context request, through this plan step's own seller session: its request records advance `operation`.
+    const route = (body) => sellerFor({ get: () => operation, set: (next) => { operation = next; } }).request(DACS_SELLER_HTTP_PATHS.context, body);
     const resolved = usesDemDeliveryContext(operation)
-      ? await resolveDemDeliveryBuyerContext(demDeliveryContext, { operation, listing: p.listing, buyerBundle, generatedAt, writable })
+      ? await resolveDemDeliveryBuyerContext(demDeliveryContext, { operation, listing: p.listing, buyerBundle, generatedAt, writable, route })
       : await resolveAgreementContext(agreementContext, { operation, listing: p.listing, buyerBundle, generatedAt });
     // Re-read after the await: an exact plan saved meanwhile is never replaced.
     const current = ops.get(operation.accountId, operation.id);
