@@ -23,6 +23,12 @@ export type FaultCategory = "transient" | "permanent" | "counterparty" | "substr
  * - `DemosChainIdentityError`: one of the network identity codes, such as `chain_identity_mismatch`, chosen at each throw.
  */
 const codeCategory = {
+  "anchor.native_address_empty": "substrate",
+  "anchor.owner_address_empty": "substrate",
+  "binding.anchor_metadata_invalid": "permanent",
+  "binding.artifact_invalid": "permanent",
+  "binding.logical_address_invalid": "permanent",
+  "binding.storage_name_invalid": "permanent",
   "canonical.container_not_plain": "permanent",
   "canonical.decimal_invalid": "permanent",
   "canonical.nesting_too_deep": "permanent",
@@ -32,6 +38,10 @@ const codeCategory = {
   "canonical.token_decimals_invalid": "permanent",
   "canonical.type_unsupported": "permanent",
   "canonical.unicode_invalid": "permanent",
+  "catalog.config_invalid": "permanent",
+  "catalog.endpoint_insecure": "permanent",
+  "catalog.endpoint_invalid": "permanent",
+  "catalog.query_invalid": "permanent",
   "identity.agent_public_key_invalid": "permanent",
   "identity.cci_claim_conflict": "permanent",
   "identity.cci_evaluation_predates_resolution": "permanent",

@@ -13,6 +13,7 @@ import {
   queryListingCatalog,
   type CatalogListingSummary,
 } from "../../src/discovery/index.js";
+import { DacsError } from "../../src/errors.js";
 
 const OWNER = "ab".repeat(32);
 const SELLER = `did:demos:agent:${OWNER}`;
@@ -576,7 +577,7 @@ describe("Directory rate-filter negotiation (#591)", () => {
   test.each([{ ...rates, limit: 0 }, { minRating: NaN }, { minCompletionRate: 2 }])(
     "validates the complete query before network I/O: %j", async query => {
       const fetchImpl = vi.fn(async () => jsonResponse(directoryManifest("v1")));
-      await expect(queryListingCatalog(catalogConfig(fetchImpl), query)).rejects.toThrow(TypeError);
+      await expect(queryListingCatalog(catalogConfig(fetchImpl), query)).rejects.toThrow(DacsError);
       expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
@@ -586,7 +587,7 @@ describe("Directory rate-filter negotiation (#591)", () => {
       const fetchImpl = vi.fn(async () => jsonResponse(page));
       await expect(queryListingCatalog({
         ...catalogConfig(fetchImpl), directoryManifestUrl,
-      }, rates)).rejects.toThrow(TypeError);
+      }, rates)).rejects.toThrow(DacsError);
       expect(fetchImpl).not.toHaveBeenCalled();
     },
   );
@@ -956,5 +957,87 @@ describe("catalog summary text bounds count NFC scalar values (DACS-1 §6.3.4)",
       status: "indeterminate",
       reason: expect.stringContaining("malformed"),
     });
+  });
+});
+
+describe("catalog argument errors carry a catalog code", () => {
+  const url = "https://directory.example/api/dacs/listings";
+  const rows: readonly [
+    string,
+    "query" | "index",
+    Record<string, unknown> | null,
+    Record<string, unknown>,
+    string,
+    string,
+  ][] = [
+    ["timeoutMs: 0", "query", { timeoutMs: 0 }, {}, "catalog.config_invalid", "timeoutMs must be a positive safe integer"],
+    ["pageLimit: 201", "index", { pageLimit: 201 }, {}, "catalog.config_invalid", "pageLimit must not exceed 200"],
+    ["catalogUrl: 42", "query", { catalogUrl: 42 }, {}, "catalog.endpoint_invalid", "catalogUrl must be an absolute URL string"],
+    ["catalogUrl: /listings", "query", { catalogUrl: "/listings" }, {}, "catalog.endpoint_invalid", "catalogUrl must be an absolute URL"],
+    ["catalogUrl with credentials", "query", { catalogUrl: "https://user:pass@directory.example/listings" }, {}, "catalog.endpoint_invalid", "catalogUrl must not contain credentials"],
+    ["catalogUrl with a query", "query", { catalogUrl: `${url}?q=1` }, {}, "catalog.endpoint_invalid", "catalogUrl must not contain a query or fragment"],
+    ["catalogUrl over http", "query", { catalogUrl: "http://directory.example/listings" }, {}, "catalog.endpoint_insecure", "catalogUrl must use HTTPS unless allowInsecureHttp is explicitly enabled"],
+    ["null configuration", "query", null, {}, "catalog.config_invalid", "catalog client configuration is required"],
+    ["fetchImpl: x", "query", { fetchImpl: "x" }, {}, "catalog.config_invalid", "catalog client requires a fetch implementation"],
+    ["supportedAnchorKinds: []", "index", { supportedAnchorKinds: [] }, {}, "catalog.config_invalid", "supportedAnchorKinds must be a non-empty array"],
+    ["supportedAnchorKinds: [ x]", "index", { supportedAnchorKinds: [" x"] }, {}, "catalog.config_invalid", "supportedAnchorKinds entry must be a non-empty, trimmed NFC string"],
+    ["category: ' x'", "query", {}, { category: " x" }, "catalog.query_invalid", "category must be a non-empty, trimmed NFC string"],
+    ["tag: x", "query", {}, { tag: "x" }, "catalog.query_invalid", "tag must be an array"],
+    ["priceMax: -1", "query", {}, { priceMax: "-1" }, "catalog.query_invalid", "priceMax must be a plain non-negative decimal"],
+    ["minCompletionRate: 2", "query", {}, { minCompletionRate: 2 }, "catalog.query_invalid", "minCompletionRate must be between 0 and 1"],
+    ["minRating: -1", "query", {}, { minRating: -1 }, "catalog.query_invalid", "minRating must be a non-negative finite number"],
+    ["limit: 0", "query", {}, { limit: 0 }, "catalog.query_invalid", "limit must be an integer between 1 and 200"],
+  ];
+
+  test.each(rows)(
+    "%s", async (_name, entry, config, query, code, message) => {
+      const fetchImpl = vi.fn(async () => jsonResponse({ listings: [] }));
+      const full = config === null ? null : { catalogUrl: url, fetchImpl, ...config };
+      const run = async () => entry === "query"
+        ? queryListingCatalog(full as never, query)
+        : createCatalogBindingIndex(full as never);
+      const error: unknown = await run().then(() => undefined, (e: unknown) => e);
+      expect(error).toBeInstanceOf(DacsError);
+      expect(error).toMatchObject({ code, category: "permanent", message });
+      expect(Object.keys(error as object).sort()).toEqual(["category", "code", "name"]);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("catalog request failures come back as results", () => {
+  const manifestUrlPath = "/.well-known/dacs-directory.json";
+  const rates = { minRating: 4 };
+  const v1Manifest = directoryManifest("v1");
+
+  async function failedReason(
+    respond: (url: URL) => Response,
+    query: Record<string, unknown> = {},
+  ): Promise<unknown> {
+    const fetchImpl: typeof fetch = async (input) => respond(new URL(String(input)));
+    const result = await queryListingCatalog(catalogConfig(fetchImpl), query);
+    expect(result.status).toBe("indeterminate");
+    return (result as { reason: string }).reason;
+  }
+
+  const jsonHeaders = { "content-type": "application/json" };
+  test.each([
+    ["a response with no body", () => new Response(null, { headers: jsonHeaders }), "catalog response has no body"],
+    ["a body that is not JSON", () => new Response("not json", { headers: jsonHeaders }), "catalog response is not valid UTF-8 JSON"],
+  ] as const)("listing page: %s", async (_name, make, message) => {
+    expect(await failedReason(make)).toBe(`catalog request failed: ${message}`);
+  });
+
+  test.each([
+    ["an HTTP error", () => jsonResponse({}, { status: 500 }), "Directory manifest returned HTTP 500"],
+    ["an unsupported shape", () => jsonResponse({}), "Directory manifest is malformed or has an unsupported version"],
+    ["a catalog that is not an absolute URL", () => jsonResponse({ ...v1Manifest, catalog: "/listings" }), "Directory manifest catalog must be an absolute URL"],
+    ["a catalog for another URL", () => jsonResponse({ ...v1Manifest, catalog: "https://other.example/listings" }), "Directory manifest catalog does not match catalogUrl"],
+  ] as const)("Directory manifest: %s", async (_name, make, message) => {
+    const reason = await failedReason(
+      (url) => (url.pathname === manifestUrlPath ? make() : jsonResponse({ listings: [] })),
+      rates,
+    );
+    expect(reason).toBe(`catalog request failed: ${message}`);
   });
 });
