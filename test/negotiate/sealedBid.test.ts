@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import { canonicalize } from "../../src/canonical/jcs.js";
 import { sha256Hex } from "../../src/canonical/hash.js";
+import { DacsError } from "../../src/errors.js";
 import {
   computeBidHash,
   generateSalt,
@@ -292,6 +293,52 @@ describe("selectSealedWinner (§8.4.3 step 5)", () => {
 });
 
 // Small helper mirroring compareDecimal for the acceptance-predicate test.
+describe("sealed-bid errors carry catalog codes", () => {
+  const NOW = 1_000_000_000_000;
+  const params = (over: Partial<SealedEnvelopeParams> = {}): SealedEnvelopeParams => ({
+    commitDeadline: NOW + 120_000,
+    revealWindow: 120,
+    selectionRule: "lowest-price",
+    ...over,
+  });
+
+  test.each([
+    {
+      name: "a low-entropy salt",
+      call: () => makeCommitment(bid("100"), Buffer.alloc(16, 7).toString("base64url")),
+      code: "sealed.salt_entropy_low",
+      text: "sealed-bid salt must be ≥32 bytes of entropy (SE-7)",
+    },
+    {
+      name: "a commit deadline that is too soon",
+      call: () => validateSealedParams(params({ commitDeadline: NOW + 30_000 }), NOW),
+      code: "sealed.commit_deadline_too_soon",
+      text: "commitDeadline MUST be at least 60s in the future at session start (SE-1)",
+    },
+    {
+      name: "a reveal window that is too short",
+      call: () => validateSealedParams(params({ revealWindow: 30 }), NOW),
+      code: "sealed.reveal_window_too_short",
+      text: "revealWindow MUST be ≥ 60 seconds (§8.4.3)",
+    },
+  ])("$name is refused with its code", ({ call, code, text }) => {
+    let thrown: unknown;
+    try {
+      call();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(DacsError);
+    expect(thrown).toMatchObject({
+      code,
+      category: "permanent",
+      message: text,
+      name: "DacsError",
+    });
+    expect(Object.keys(thrown as object).sort()).toEqual(["category", "code", "name"]);
+  });
+});
+
 function compareDecimalLte(a: string, b: string): boolean {
   return compareDecimal(a, b) <= 0;
 }

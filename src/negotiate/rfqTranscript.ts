@@ -272,7 +272,9 @@ export async function prepareRfqTranscript<TSignature = unknown>(
       if (!final) {
         const expectedType = index === 0 ? "offer" : "counter";
         if (message.type !== expectedType) {
-          throw new DacsError("RFQ transcript proposal type is invalid");
+          throw new DacsError("RFQ transcript proposal type is invalid", {
+            code: "rfq.transcript_invalid",
+          });
         }
         const body = message.body as unknown as DataRecord;
         if (
@@ -281,7 +283,9 @@ export async function prepareRfqTranscript<TSignature = unknown>(
           body.rfqBodyVersion !== "1" ||
           Object.keys(body).length !== 2
         ) {
-          throw new DacsError("RFQ transcript proposal body is malformed");
+          throw new DacsError("RFQ transcript proposal body is malformed", {
+            code: "rfq.transcript_invalid",
+          });
         }
         const proposal = validateRfqProposal(body.proposal, session.pricing);
         standingSequence = message.sequence;
@@ -295,7 +299,9 @@ export async function prepareRfqTranscript<TSignature = unknown>(
         standingSequence === undefined ||
         acceptSequence(message.body) !== standingSequence
       ) {
-        throw new DacsError("RFQ transcript acceptance is not exact");
+        throw new DacsError("RFQ transcript acceptance is not exact", {
+          code: "rfq.transcript_invalid",
+        });
       }
     } catch (cause) {
       return {

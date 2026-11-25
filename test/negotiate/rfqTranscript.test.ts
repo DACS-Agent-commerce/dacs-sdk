@@ -268,6 +268,47 @@ describe("RFQ private transcript verification", () => {
       ),
     ).resolves.toMatchObject({ decision: "indeterminate" });
   });
+
+  test("reports why a transcript turn is not an exact proposal or acceptance", async () => {
+    const value = await fixture();
+    const [offer, accept] = value.messages as [
+      ChannelMessage<RfqTurnBody, string>,
+      ChannelMessage<RfqTurnBody, string>,
+    ];
+    const cases = [
+      {
+        messages: [{ ...offer, type: "counter" as const }, accept],
+        reason: "RFQ transcript proposal type is invalid",
+      },
+      {
+        messages: [
+          { ...offer, body: { ...offer.body, extra: "1" } as unknown as RfqTurnBody },
+          accept,
+        ],
+        reason: "RFQ transcript proposal body is malformed",
+      },
+      {
+        messages: [
+          offer,
+          { ...accept, body: { rfqBodyVersion: "1", acceptedSequence: 2 } as RfqTurnBody },
+        ],
+        reason: "RFQ transcript acceptance is not exact",
+      },
+    ];
+    for (const { messages, reason } of cases) {
+      await expect(
+        prepareRfqTranscript(
+          {
+            session: value.session,
+            agreement: value.agreement,
+            messages,
+            generatedAt: NOW + 4,
+          },
+          () => "pass",
+        ),
+      ).resolves.toEqual({ decision: "fail", reason });
+    }
+  });
 });
 
 describe("RFQ transcript disclosure policy", () => {
