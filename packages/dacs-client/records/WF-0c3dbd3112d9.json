@@ -1,0 +1,101 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add the read-only Listing verifier entry with fixed request, time and byte limits and a fresh pinned chain read on every call",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "dec1e2fef5a09595e5b3ee88b82a37072f795d8c",
+      "after": "bb013a7fc91ae0d2bfdffb0619a21e5062fd5d82"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/chain.mjs",
+      "before": "b45673f05259eb69d79885144c3de87f2194c3d8",
+      "after": "923c2d56568ef821fd797b98e1aef4232735f72e"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/directory.mjs",
+      "before": "93d6dd312f43ed061edd4a063c058ed82f773fb0",
+      "after": "17010261fb9571a1ef78c976eb874be447fe6c3a"
+    },
+    {
+      "path": "packages/dacs-client/src/listing/read-only-limits.mjs",
+      "before": null,
+      "after": "f571393a03327464124aedee38f5d7d12e88be5d"
+    },
+    {
+      "path": "packages/dacs-client/src/listing/read-only-verifier.mjs",
+      "before": null,
+      "after": "87c154ad29dd2220778adc3abfd81004e4dfbf9b"
+    },
+    {
+      "path": "packages/dacs-client/src/substrate/demos.mjs",
+      "before": "1210a631918cb1b11824b80770e1497c52738180",
+      "after": "6b10cecae734836c12ae96cdf9cee2a08012160c"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+      "before": "61708f9f988302ebb41e5f78542b234704a5316e",
+      "after": "929fcebf83bbf312c337577ff849673265c77f1b"
+    },
+    {
+      "path": "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+      "before": "750d8e40be5cb42372348bb121e0e50607187e42",
+      "after": "bbcb50fab246b4617bcfc61c7825969ceb588e9e"
+    },
+    {
+      "path": "packages/dacs-client/test/package-contents.test.mjs",
+      "before": "30cfe566d9e17bbf3cefaa1dd75bd5a7d2ac7b38",
+      "after": "5e56297fac2dd109ebf00394a4716fb1f790df09"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "73a076c50c851ff862dd31b738d21c1e5b20d973",
+      "after": "b4ba537d69d7de395fa0658426e77bd22057879d"
+    },
+    {
+      "path": "packages/dacs-client/test/read-only-listing-graph.test.mjs",
+      "before": "73e2e9d1cc6bc5b1943ff92f6107b1d7535c64be",
+      "after": "fb8221b93c8af86d9a16ebfabc83dcbc89fe038f"
+    },
+    {
+      "path": "packages/dacs-client/test/read-only-listing-packed.test.mjs",
+      "before": null,
+      "after": "76957d62da74942a526983c88aa66d43d742bddc"
+    },
+    {
+      "path": "packages/dacs-client/test/read-only-listing-verifier.test.mjs",
+      "before": null,
+      "after": "53a245fbfc0c980a23958f704e5f345e99104f41"
+    },
+    {
+      "path": "packages/dacs-client/test/runtime-floor.test.mjs",
+      "before": "8303abcba2188f15012d7c355214263e898a03d2",
+      "after": "a73791d473feeb6094830a19efc74d91cf131e92"
+    }
+  ],
+  "commitFiles": [
+    ".github/workflows/ci.yml",
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-0c3dbd3112d9.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/src/dacs/chain.mjs",
+    "packages/dacs-client/src/dacs/directory.mjs",
+    "packages/dacs-client/src/listing/read-only-limits.mjs",
+    "packages/dacs-client/src/listing/read-only-verifier.mjs",
+    "packages/dacs-client/src/substrate/demos.mjs",
+    "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+    "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+    "packages/dacs-client/test/package-contents.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "packages/dacs-client/test/read-only-listing-graph.test.mjs",
+    "packages/dacs-client/test/read-only-listing-packed.test.mjs",
+    "packages/dacs-client/test/read-only-listing-verifier.test.mjs",
+    "packages/dacs-client/test/runtime-floor.test.mjs",
+    "scripts/release-policy.json"
+  ],
+  "note": "New export ./listing/read-only (src/listing/read-only-verifier.mjs, with its limits in src/listing/read-only-limits.mjs): createReadOnlyListingVerifier checks one exact Listing for display through its own Directory client and pinned testnet chain reader per call, with at most nine requests, a 15 s call deadline, 2 s per request and byte caps half the reader defaults, and refuses with ReadOnlyListingError (code listing_read_unavailable and one fixed reason, no cause). The Directory client gains a detailMaxBytes option, and the chain reader identityMaxBytes and storageMaxBytes options, forwarded by createDemosPublicChainReader; their defaults are unchanged. The manifest export changes the gate's pinned manifest, so the hold pair is re-pinned."
+}

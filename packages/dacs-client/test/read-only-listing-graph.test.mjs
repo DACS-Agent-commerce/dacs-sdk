@@ -1,5 +1,6 @@
-// The core Listing validation entry, the client's pure Listing validation and
-// the public pinned chain reader load from packed archives with no wallet,
+// The core Listing validation entry, the client's pure Listing validation, the
+// read-only Listing verifier entry and the public pinned chain reader load
+// from packed archives with no wallet,
 // purchase, sqlite or signing module anywhere in their import graph. With
 // DACS_READ_ONLY_NODE20=1 (the CI Node 20.19.0 step) the test and its child
 // must run on exactly v20.19.0.
@@ -76,19 +77,34 @@ const reader = substrate.createDemosPublicChainReader({ rpcUrl: 'https://rpc.inv
 console.log(JSON.stringify({ version: process.version, core: Object.keys(core).sort(), pure: Object.keys(pure).sort(), pinned: reader.pinnedIdentity }));
 `;
 
+// Fails when the import graph from `entries` misses a REQUIRED module or reaches a forbidden, signing or sqlite module.
+function assertReadOnlyClosure(modules, entries, required) {
+  const closure = importClosure(modules, entries);
+  for (const path of required) assert.ok(closure.has(path), `${path} is missing from the read-only import graph`);
+  for (const [path, source] of closure) {
+    assert.ok(!FORBIDDEN.some((forbidden) => path.startsWith(forbidden)), `${path} is in the read-only import graph`);
+    assert.doesNotMatch(source, SIGNING, `${path} in the read-only import graph can sign`);
+    assert.doesNotMatch(source, /['"]node:sqlite['"]/, `${path} in the read-only import graph opens sqlite`);
+  }
+}
+
+test('read-only Listing and pinned reader import graphs contain no purchase wallet signing or sqlite module', (t) => {
+  if (NODE20) assert.equal(process.version, NODE20_VERSION);
+  const { app } = installPackedPair(t);
+  const modules = join(app, 'node_modules');
+  const verifierEntry = resolveImport(modules, join(app, 'index.mjs'), `${CLIENT}listing/read-only`);
+  assert.equal(relative(modules, verifierEntry), `${CLIENT}src/listing/read-only-verifier.mjs`);
+  assertReadOnlyClosure(modules, [verifierEntry], [...REQUIRED, `${CLIENT}src/listing/read-only-verifier.mjs`, `${CLIENT}src/listing/read-only-limits.mjs`]);
+  assertReadOnlyClosure(modules, [resolveImport(modules, join(app, 'index.mjs'), `${CLIENT}substrate/demos`)], [`${CLIENT}src/substrate/demos.mjs`, `${CLIENT}src/dacs/chain.mjs`]);
+});
+
 test('pure Listing validation and pinned reader load on Node 20.19 without signing modules', (t) => {
   if (NODE20) assert.equal(process.version, NODE20_VERSION);
   const { app } = installPackedPair(t);
   const modules = join(app, 'node_modules');
 
   const entries = [join(modules, CORE, 'dist/listing/read-only.js'), join(modules, CLIENT, 'src/substrate/demos.mjs'), join(modules, CLIENT_PURE)];
-  const closure = importClosure(modules, entries);
-  for (const path of REQUIRED) assert.ok(closure.has(path), `${path} is missing from the read-only import graph`);
-  for (const [path, source] of closure) {
-    assert.ok(!FORBIDDEN.some((forbidden) => path.startsWith(forbidden)), `${path} is in the read-only import graph`);
-    assert.doesNotMatch(source, SIGNING, `${path} in the read-only import graph can sign`);
-    assert.doesNotMatch(source, /['"]node:sqlite['"]/, `${path} in the read-only import graph opens sqlite`);
-  }
+  assertReadOnlyClosure(modules, entries, REQUIRED);
 
   writeFileSync(join(app, 'load-read-only.mjs'), CHILD);
   const env = { ...process.env };
