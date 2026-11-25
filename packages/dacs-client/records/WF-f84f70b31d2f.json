@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest after carrying the base up into the read-only listing part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "dec1e2fef5a09595e5b3ee88b82a37072f795d8c",
+      "after": "dec1e2fef5a09595e5b3ee88b82a37072f795d8c"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-f84f70b31d2f.json"
+  ],
+  "note": "Both sides of the merge of the base recorded the manifest, so their newest records disagree; this record chooses the merged copy, which lists the read-only listing modules and keeps the base changes. No file other than this record changes."
+}
