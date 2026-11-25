@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
-import { purchaseActionsAdmitted } from '../public-admission.mjs';
+import { purchaseActionsAdmitted, assertWriteWithinFeeCeiling, CREATE_STORAGE_RESERVE_OS } from '../public-admission.mjs';
 import { bindHostStop, createHostStop, isHostStopRefusal } from '../host-stop.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
@@ -55,6 +55,7 @@ import { DEM_DELIVERY_CONTEXT_SOURCE, demDeliveryContextConfig, readBackDemDeliv
 import { SELLER_SR2_PUBLIC_PROJECTION } from './seller-sr2-agreement-consumer.mjs';
 import { NATIVE_AGREEMENT_PAYMENT, usesNativeAgreementPayment, nativeAgreementPaymentConfig } from './native-agreement-payment-consumer.mjs';
 import { NATIVE_PAYMENT_EVIDENCE, nativePaymentEvidenceConfig, usesNativePaymentEvidence } from './native-payment-evidence-consumer.mjs';
+import { assertRetainedProofUnchanged, readRetainedNativeLaneProof } from './retained-native-lane-proof.mjs';
 import { sourceDemoSellerTransportConfig } from './source-demo-seller-transport.mjs';
 import { verifySellerSessionDelegation, sellerSessionDelegationSigningBytes, DACS_SELLER_HTTP_LIMITS, DACS_SELLER_HTTP_ROUTES } from '@kynesyslabs/dacs/wire';
 import { SELLER_ANSWER_CLASS } from './seller-response-class.mjs';
@@ -472,7 +473,9 @@ const EFFECT_ROUTE_PATHS = new Set(DACS_SELLER_HTTP_ROUTES.filter(route => route
 // that need one refuse with buyer_access_closed).
 // `stopped` is the host's synchronous stop check (host-stop.mjs): every place that reads the hold also reads it, so
 // while it answers stopped no request is signed with the session key and none is sent.
-export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, stopped }) {
+// `feeCeilingOs` is the host's per-write fee ceiling and `chain.getTransactionFees()` reads the fee it is compared with;
+// a missing ceiling or fee refuses the buyer's Agreement write.
+export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fetchImpl = globalThis.fetch, now = () => Date.now(), deliveryDeadlineWatch = null, readbackCache = null, store, buyerAccess = null, admission, stopped, chain, feeCeilingOs }) {
   const hostStop = createHostStop(stopped);
   const assertPurchaseOpen = () => { assertPurchaseActionsAdmitted(); hostStop.assert(); };
   const { transaction } = purchaseStore(store);
@@ -1212,6 +1215,9 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   async function submitAgreementCore(operation, { agreementSignature, anchorSignature } = {}) {
     if (!available) throw unavailable();
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
+    // Until a CREATE intent is retained this submission can issue the buyer's Agreement CREATE, a paid write whose debit
+    // is its network fee plus the storage reserve. A retained intent is only read back through the bridge's resume.
+    if (!operation.state.protocol.walletAnchor) await assertWriteWithinFeeCeiling(feeCeilingOs, CREATE_STORAGE_RESERVE_OS, chain);
     let current = operation;
     const p = current.state.protocol;
     if (agreementSignature || anchorSignature) {
@@ -1852,6 +1858,19 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
         save(current, { nativePaymentLaneIssued: true }, { event: 'protocol_native_wallet_guard_issued', data: { createHash: record.hash, createNonce: record.nonce } });
         return record;
       }));
+    },
+    // Passive readback of the lane whose guard was already issued: the retained proof is re-read from the stores and
+    // checked against this source's own pins, before and after the one journal read. No recheck, lock, stop or write.
+    readRetainedNativePaymentLane: async (operation, key) => {
+      if (!nativePayment || !sourceCapability) throw unavailable();
+      const sourcePins = { network: sourceCapability.pins.network, chainIdentity: sourceCapability.pins.chainIdentity, transportBinding: sourceCapability.transportBinding };
+      const read = () => readRetainedNativeLaneProof({ approvalFor: (id) => db.prepare('SELECT * FROM approvals WHERE operation_id = ?').get(id), ops, coordinates,
+        assertBuyerAccess, accountId: operation.accountId, id: operation.id, sourcePins });
+      const before = read();
+      if (canonicalize(before.operation) !== canonicalize(operation)) throw new OperationError('native_payment_lane_unverified', 'the purchase given differs from the stored purchase; nothing was read');
+      const record = await nativePayment.readRetainedLane(before.operation, key);
+      assertRetainedProofUnchanged(read, before);
+      return record;
     },
     checkDelivery: endIfStale(checkDelivery),
     recheck: endIfStale(recheck),

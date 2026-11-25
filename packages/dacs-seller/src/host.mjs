@@ -75,7 +75,7 @@ import { PASSIVE_RETAINED_READ, isDeadRefusedCreate, isProvenUnsignedAbsence } f
 import { isPaymentEvidenceWalletJournalPair } from './dacs/payment-evidence-wallet-journal.mjs';
 import { listingPin } from './dacs/purchase-protocol.mjs';
 import { createContextAdmissionTransaction } from './dacs/seller-admission-transaction.mjs';
-import { createSellerAgent } from './dacs/seller-agent.mjs';
+import { createSellerAgent, receiptFeeCeilingsConfig } from './dacs/seller-agent.mjs';
 import { createClosedBootstrapGate } from './dacs/closed-bootstrap-gate.mjs';
 import { DEFAULT_SELLER_MAX_JOBS } from './dacs/seller-capacity-defaults.mjs';
 import { completedContextOutcome, contextOperationView, createSellerContextRecords, createSellerContextRoute, createWireSellerContextRoute } from './dacs/seller-context-route.mjs';
@@ -97,7 +97,7 @@ import { isPrivateDirectory } from './private-directory.mjs';
  * variable, Listing member or request field selects another. */
 export const KIT_TP1_VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
 const REQUIRED = Object.freeze(['signer', 'listing', 'listener', 'dataDirectory', 'buyerAccess', 'agreementAnchor', 'artifactAnchor', 'deliverableProducer',
-  'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'walletSession', 'participantImplementations', 'readCommitmentReceipt']);
+  'nativePaymentEvidence', 'reconcilePaymentEvidence', 'demDeliveryContext', 'nativeDemDelivery', 'railAuthority', 'sessionAdmission', 'walletSession', 'participantImplementations', 'readCommitmentReceipt', 'receiptFeeCeilings']);
 const OPTIONAL = Object.freeze(['observeDemosTransfer', 'resumeDeliverableCreate', 'deliveryEvidenceEnabled', 'deliverySchemaVerifier', 'maxJobs', 'maxRecords', 'maxReservationUnits', 'now', 'contextSessionState']);
 // One journal for every seller route; its lease must exceed the 240 s context step.
 const KIT_JOURNAL_LEASE_MS = 300000;
@@ -315,6 +315,8 @@ export async function startSellerHost(options) {
     throw new TypeError('signer must be the seller key\'s signing roles (sign, integritySigner and readOnlyAnswerSigner)');
   }
   if (typeof readCommitmentReceipt !== 'function') throw new TypeError('readCommitmentReceipt must be a function');
+  // The ceilings every committed answer's seller receipt adds to the Agreement price; there is no default.
+  const receiptFeeCeilings = receiptFeeCeilingsConfig(options.receiptFeeCeilings);
   if (contextSessionState !== null && typeof contextSessionState !== 'function') throw new TypeError('contextSessionState must be a function');
   // The wire accepts the Listing of a continuing request only as its own admission returned it: admitted once per start.
   const signedListing = admitWireArtifact(Buffer.from(JSON.stringify(listing), 'utf8'));
@@ -390,7 +392,7 @@ export async function startSellerHost(options) {
     const closedBootstrapGate = createClosedBootstrapGate({ admission: (jobId) => admission.admissionRecord(jobId), purchaseProfile: (jobId) => store.purchaseProfile(jobId), profile: binding.profile });
     const agent = await createSellerAgent({ effectSigner: signer, integritySigner: signer.integritySigner, readOnlyAnswerSigner: signer.readOnlyAnswerSigner, effectBoundary, listing, observeDemosTransfer, now, durableDirectory: join(dataDirectory, 'seller'), jobSlotReleased: store.jobSlotReleased, closedBootstrapGate,
       agreementAnchor, nativeArtifactAnchor: artifact.anchor, deliverableProducer, buyerAccess, nativePaymentEvidence, demDeliveryContext, nativeDemDelivery, railAuthority, sessionAdmission, challengeLedger: store.challenges, reconcilePaymentEvidence, resumeDeliverableCreate, deliveryEvidenceEnabled, deliverySchemaVerifier, maxJobs, vetMode: KIT_TP1_VET_MODE,
-      contextRequest: records.exactRequest });
+      contextRequest: records.exactRequest, receiptFeeCeilings });
     opened.push(() => agent.close());
     // This host holds the state lock, so a job lock row left by an earlier process has no holder: release it.
     for (const { job, reason } of agent.releaseStaleLocks()) {

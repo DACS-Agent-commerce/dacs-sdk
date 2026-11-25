@@ -6,7 +6,8 @@
     ".": "./src/index.mjs",
     "./wallet/durable-journal": "./src/wallet/durable-journal.mjs",
     "./node-wallet": "./src/wallet/node-wallet-session.mjs",
-    "./substrate/demos": "./src/substrate/demos.mjs"
+    "./substrate/demos": "./src/substrate/demos.mjs",
+    "./purchase/evidence-recorder": "./src/passive-evidence-recorder.mjs"
   },
   "scripts": {
     "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
@@ -24,7 +25,7 @@
     "src/dacs/directory.mjs", "src/dacs/listing.mjs",
     "src/dacs/native-agreement-payment-consumer.mjs", "src/dacs/native-dem-delivery-consumer.mjs",
     "src/dacs/native-payment-evidence-consumer.mjs", "src/dacs/network-binding.mjs",
-    "src/dacs/protocol-purchases.mjs", "src/dacs/purchase-admission-state.mjs", "src/dacs/purchase-protocol.mjs",
+    "src/dacs/protocol-purchases.mjs", "src/dacs/purchase-admission-state.mjs", "src/dacs/purchase-protocol.mjs", "src/dacs/retained-native-lane-proof.mjs",
     "src/dacs/seller-http.mjs", "src/dacs/seller-https-connector.mjs", "src/dacs/seller-response-class.mjs",
     "src/dacs/seller-session-keys.mjs", "src/dacs/seller-session-lifecycle.mjs",
     "src/dacs/seller-sr2-agreement-consumer.mjs", "src/dacs/seller-wire-authentication.mjs",
@@ -33,7 +34,7 @@
     "src/devnet-demo/deliverable.mjs", "src/devnet-demo/issued-readback.mjs",
     "src/devnet-demo/operator-approval.mjs", "src/devnet-demo/stop-request.mjs",
     "src/devnet-demo/storage-write-recovery.mjs", "src/diagnostic-projection.mjs",
-    "src/index.mjs", "src/portal-capability.mjs", "src/purchase-limits.mjs",
+    "src/index.mjs", "src/passive-evidence-recorder.mjs", "src/portal-capability.mjs", "src/purchase-limits.mjs",
     "src/purchase-state-schema.mjs", "src/purchases.mjs",
     "src/seams/purchase-store-not-wired.mjs", "src/seams/seller-integration-not-wired.mjs",
     "src/seams/wallet-actions-not-wired.mjs", "src/signatures.mjs",

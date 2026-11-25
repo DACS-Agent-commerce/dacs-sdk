@@ -7,6 +7,7 @@ import * as wire from '@kynesyslabs/dacs/wire';
 import { createSellerContextRoute } from '../../../dacs-seller/src/dacs/seller-context-route.mjs';
 import { createSellerHttpHandler } from '../../../dacs-seller/src/dacs/seller-http.mjs';
 import { createWireContext } from '../../../dacs-seller/src/dacs/seller-wire-requests.mjs';
+import { testEffectBoundary } from '../../../dacs-seller/test/helpers/agent-signing.mjs';
 import { createSellerTransportStore } from '../../../dacs-seller/test/helpers/bound-transport-store.mjs';
 import { exchange } from '../../../dacs-seller/test/helpers/d5-http-fixture.mjs';
 import { TEST_CONNECTION, authorityReader } from '../../../dacs-seller/test/helpers/wire-authority-fixture.mjs';
@@ -23,7 +24,8 @@ export function challengeHostFor(t) {
     const agent = { claim: signer.claim, listingPin, transportAgreementOf: () => null, continuationEvidenceOf: () => null, retainsPaymentWork: () => true, assertSettlementCredit() {} };
     const journal = new Proxy({}, { get() { throw new Error('TEST the challenge route must not access an effect journal'); } });
     const context = createSellerContextRoute({ listing, now, assertBuyerAccess: async () => {}, knownJob: async () => true });
-    const transport = createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, store, journal,
+    const { effectBoundary } = testEffectBoundary({ binding });
+    const transport = createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary, store, journal,
       ready: () => true, stopped: () => false, now, agent, requireDelegation: true, readCommitmentReceipt: async () => 'valid' });
     const handler = createSellerHttpHandler(agent, { context, wire: transport });
     return { listingPin, url: listing.seller.publicEndpoint, close: async () => {}, async fetch(url, init) {

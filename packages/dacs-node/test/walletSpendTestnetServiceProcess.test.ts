@@ -2,14 +2,29 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { connect, createServer, type AddressInfo } from "node:net";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { sha256Hex } from "@kynesyslabs/dacs/canonical";
+import { TP1_APPROVED_IDENTITY_RECORD } from "@kynesyslabs/dacs/wire";
 
+import { dacsWalletSpendLineageKeyV1, dacsWalletSpendPolicyHashV1 } from "../src/walletSpendPostgres.js";
 import { createDacsRemoteWalletSpendAuthorityV2 } from "../src/walletSpendRemote.js";
-import { witnessReceipts } from "./helpers/walletSpendFileAuthorityStores.js";
+import {
+  DEMOS_NODE_URL,
+  DEMOS_WALLET,
+  closeDemosNodeStubs,
+  closedPortUrl,
+  demosAuthorityClient,
+  demosHold,
+  demosLaneSettings,
+  demosNodeStub,
+  demosPolicy,
+  recordedDemosState,
+  withoutX402Lane,
+} from "./helpers/walletSpendDemosNode.js";
+import { headStateFile, witnessReceipts } from "./helpers/walletSpendFileAuthorityStores.js";
 import {
   TESTNET_TOKEN,
   chainStub,
@@ -36,6 +51,7 @@ afterEach(async () => {
   for (const child of children.splice(0)) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
   for (const cleanup of cleanups.splice(0)) await cleanup();
   await closeChainStubs();
+  await closeDemosNodeStubs();
 });
 
 interface Run {
@@ -47,8 +63,12 @@ interface Run {
   stdout(): string;
 }
 
-function run(environment: Record<string, string | undefined>, args: readonly string[] = []): Run {
-  const child = spawn(process.execPath, [BIN, ...args], {
+function run(
+  environment: Record<string, string | undefined>,
+  args: readonly string[] = [],
+  nodeArguments: readonly string[] = [],
+): Run {
+  const child = spawn(process.execPath, [...nodeArguments, BIN, ...args], {
     env: { PATH: process.env.PATH, ...environment },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -126,6 +146,15 @@ const lookup = (url: string, operationId: string, body: string) => {
 };
 
 describe("testnet wallet-spend authority process", { timeout: 60_000 }, () => {
+  it("a stop requested the moment the listening line is printed still exits cleanly", async () => {
+    const { settings } = await fixture();
+    const service = run(settings.environment, [], [
+      "--import", pathToFileURL(join(PACKAGE_DIRECTORY, "test/helpers/stopOnListening.mjs")).href,
+    ]);
+    await expect(service.exited).resolves.toBe(0);
+    expect(service.stdout()).toContain("\"status\":\"listening\"");
+  });
+
   it("a real restart answers held for the recorded hold", async () => {
     const { settings, sent, client } = await fixture();
     const first = run(settings.environment);
@@ -236,6 +265,101 @@ describe("testnet wallet-spend authority process", { timeout: 60_000 }, () => {
     const signed = text.indexOf("\"stateHash\":\"") + "\"stateHash\":\"".length;
     writeFileSync(head, `${text.slice(0, signed)}${text[signed] === "0" ? "1" : "0"}${text.slice(signed + 1)}`);
     await refusedWith(environment, "wallet-spend-file-witness-record-damaged");
+  });
+
+  /** A DEM-only service's settings over an approved-identity node stub, with the node routed in the child. */
+  async function demFixture(stubOptions: Parameters<typeof demosNodeStub>[1] = {}) {
+    const node = await demosNodeStub(recordedDemosState(TP1_APPROVED_IDENTITY_RECORD.chainIdentity), stubOptions);
+    const settings = await serviceSettings({ rpcUrl: "https://base-sepolia.unused.example/" });
+    cleanups.push(() => settings.remove());
+    const lane = await demosLaneSettings({ root: settings.root, rpcUrl: DEMOS_NODE_URL });
+    const port = await freePort();
+    const environment = {
+      ...withoutX402Lane(settings.environment), ...lane.environment, DACS_WALLET_AUTHORITY_URL: `http://127.0.0.1:${port}`,
+      DACS_TEST_DEMOS_NODE_TARGET: node.url,
+    };
+    const start = (changed: Record<string, string> = {}) => run({ ...environment, ...changed }, [], [
+      "--import", pathToFileURL(join(PACKAGE_DIRECTORY, "test/helpers/routeDemosNodeFetch.mjs")).href,
+    ]);
+    return { settings, dataDirectory: lane.dataDirectory, port, start };
+  }
+
+  it("the bin starts a DEM lane only against the approved testnet", async () => {
+    const { settings, port, start } = await demFixture();
+    const service = start();
+    const started = await service.started;
+    expect(started, service.stderr()).toMatchObject({
+      status: "listening",
+      payDemLineageKey: dacsWalletSpendLineageKeyV1(DEMOS_WALLET, "demos"),
+      payDemPolicyHash: dacsWalletSpendPolicyHashV1(demosPolicy()),
+    });
+    expect(started).not.toHaveProperty("lineageKey");
+    expect(started).not.toHaveProperty("policyHash");
+    service.child.kill("SIGTERM");
+    await expect(service.exited).resolves.toBe(0);
+
+    const otherNetwork = await demosNodeStub(recordedDemosState("ab".repeat(32)));
+    const baseSepoliaPolicy = join(settings.root, "dem-policy-base-sepolia.json");
+    writeFileSync(baseSepoliaPolicy, JSON.stringify(demosPolicy({ chainId: "eip155:84532" })), { mode: 0o644 });
+    const refusals: readonly (readonly [Record<string, string>, string])[] = [
+      [{ DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE: baseSepoliaPolicy }, "wallet-spend-testnet-authority-network-refused"],
+      [{ DACS_TEST_DEMOS_NODE_TARGET: otherNetwork.url }, "wallet-spend-testnet-authority-demos-network-mismatch"],
+      [{ DACS_TEST_DEMOS_NODE_TARGET: await closedPortUrl() }, "wallet-spend-testnet-authority-demos-node-unavailable"],
+    ];
+    for (const [changed, reasonCode] of refusals) {
+      const refused = start(changed);
+      expect(await refused.exited, `${reasonCode}: ${refused.stdout()}${refused.stderr()}`).toBe(1);
+      expect(JSON.parse(refused.stderr().trim())).toMatchObject({ status: "refused", reasonCode });
+      expect(await portRefused(port)).toBe(true);
+    }
+  });
+
+  it("a kill between recording a DEM hold and answering never yields a second authorization", async () => {
+    let balanceReads = 0;
+    let release = (): void => undefined;
+    let reached = (): void => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const recorded = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    // The reserve reads the balance before it records the hold; the second read builds the answer.
+    const { settings, dataDirectory, start } = await demFixture({
+      hold: (call) => {
+        if (call.message !== "getAddressInfo" || ++balanceReads !== 2) return undefined;
+        reached();
+        return held;
+      },
+    });
+    const sent: { body: string; operationId: string }[] = [];
+    const client = (url: string) => demosAuthorityClient({
+      authority: { url, authorityId: "testnet-authority", epoch: "epoch-one", witnessVerificationKey: witnessPublicKey() },
+      tokenFile: settings.tokenFile,
+      fetch: async (input, init) => {
+        if (init?.method === "POST" && typeof init.body === "string") {
+          sent.push({ body: init.body, operationId: (JSON.parse(init.body) as { operationId: string }).operationId });
+        }
+        return fetch(input, init);
+      },
+    });
+
+    const first = start();
+    const reserving = (await client(await listening(first))).reserve(demosHold()).catch(() => "unanswered");
+    await recorded;
+    first.child.kill("SIGKILL");
+    await first.exited;
+    release();
+    await expect(reserving).resolves.toBe("unanswered");
+    const [reserve] = sent.filter((request) => request.body.includes("\"operation\":\"reserve\""));
+    if (reserve === undefined) throw new Error("expected a reserve request");
+
+    const second = start();
+    const repeated = await (await post(await listening(second), reserve.body)).json() as { result: unknown };
+    expect(repeated.result).toMatchObject({ status: "held", stage: "reserved" });
+    expect(headStateFile(dataDirectory).reservations).toHaveLength(1);
+    expect(witnessReceipts(dataDirectory).filter((receipt) => receipt.operationId === reserve.operationId))
+      .toHaveLength(1);
   });
 
   it("prints the witness public key from the seed file alone", async () => {

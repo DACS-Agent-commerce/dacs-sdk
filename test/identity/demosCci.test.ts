@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 
 import type { IdentityBundle } from "../../src/artifacts/types.js";
+import { DacsError } from "../../src/errors.js";
 import {
   authenticateDemosCciRecord,
   classifyCciTlsnProof,
@@ -540,6 +541,76 @@ describe("authenticated CCI reputation projection", () => {
       reason: "CCI resolution authentication is malformed or misbound",
     });
   });
+
+  const VALID_POLICY = {
+    evaluatedAt: 1_700_000_050_000,
+    maxAgeSec: { nomis: 60, humanPassport: 60, ethos: 60 },
+  };
+
+  function thrownBy(call: () => unknown): unknown {
+    try {
+      call();
+    } catch (error) {
+      return error;
+    }
+    return undefined;
+  }
+
+  function expectCoded(thrown: unknown, code: string, message: string): void {
+    expect(thrown).toBeInstanceOf(DacsError);
+    expect(thrown).toMatchObject({ code, category: "permanent", message });
+    expect(Object.keys(thrown as object).sort()).toEqual(["category", "code", "name"]);
+  }
+
+  test("a record that was not authenticated carries its catalog code", () => {
+    const plain = parseCciRecord(PRIMARY, GCR);
+    expectCoded(
+      thrownBy(() => projectCciSupplementarySignals(plain as AuthenticatedCciRecord, VALID_POLICY)),
+      "identity.cci_record_unauthenticated",
+      "CCI supplementary signals require an authenticated GCR record",
+    );
+  });
+
+  test.each([
+    [
+      "a policy that cannot be captured",
+      { ...VALID_POLICY, evaluatedAt: 1n },
+      "identity.cci_freshness_policy_invalid",
+      "CCI supplementary freshness policy is malformed",
+    ],
+    [
+      "a policy with an extra key",
+      { ...VALID_POLICY, extra: 1 },
+      "identity.cci_freshness_policy_invalid",
+      "CCI supplementary freshness policy is malformed",
+    ],
+    [
+      "a negative evaluatedAt",
+      { ...VALID_POLICY, evaluatedAt: -1 },
+      "identity.cci_freshness_policy_invalid",
+      "CCI signal evaluatedAt must be a non-negative safe integer",
+    ],
+    [
+      "a negative maximum age",
+      { ...VALID_POLICY, maxAgeSec: { ...VALID_POLICY.maxAgeSec, ethos: -1 } },
+      "identity.cci_freshness_policy_invalid",
+      "Ethos maxAgeSec must be a non-negative safe integer",
+    ],
+    [
+      "an evaluatedAt before the authenticated read",
+      { ...VALID_POLICY, evaluatedAt: 1_700_000_039_999 },
+      "identity.cci_evaluation_predates_resolution",
+      "CCI signal evaluation predates the authenticated GCR read",
+    ],
+  ])("%s carries its catalog code", async (_name, policy, code, message) => {
+    const result = await authenticated();
+    if (result.status !== "authenticated") throw new Error("authentication failed");
+    expectCoded(
+      thrownBy(() => projectCciSupplementarySignals(result.record, policy as never)),
+      code,
+      message,
+    );
+  });
 });
 
 describe("native CCI TLSN disposition", () => {
@@ -701,5 +772,77 @@ describe("native CCI TLSN disposition", () => {
       status: "invalid",
       reason: "CCI TLSN request is malformed",
     });
+  });
+
+  test("malformed sessions and verifiers are returned as results, not thrown", async () => {
+    const result = await authenticateDemosCciRecord(PRIMARY, GCR, {
+      authenticateResolution: () => ({
+        status: "authenticated",
+        subject: PRIMARY,
+        observedAt: 1_700_000_040_000,
+        authority: "demos-testnet:validator-set:42",
+      }),
+    });
+    if (result.status !== "authenticated") throw new Error("authentication failed");
+    const bundle: IdentityBundle = {
+      bundleVersion: "1",
+      presentedBy: PRIMARY,
+      presentedAt: 1_700_000_050_000,
+      sessionNonce: SESSION_NONCE,
+      claims: [{ ref: PRIMARY }, { ref: `cci-tlsn:${PROOF_HASH}` }],
+      presentation: {
+        kind: "per-claim",
+        signatures: [{ ref: PRIMARY, signature: "test-signature" }],
+      },
+    };
+    const context = {
+      jobId: JOB_ID,
+      expectedPresenter: PRIMARY,
+      sessionNonce: SESSION_NONCE,
+      expectedServer: "github.com",
+      evaluatedAt: 1_700_000_050_000,
+      maxResolutionAgeSec: 60,
+      maxProofAgeSec: 60,
+      maxPresentationAgeSec: 60,
+    };
+    const verifiers = {
+      verifyIdentityPresentation: () => true,
+      verifyNativeTlsn: () => {
+        throw new Error("the verifier must not run");
+      },
+    };
+    const malformed = { status: "invalid", reason: "CCI TLSN request is malformed" };
+
+    await expect(classifyCciTlsnProof(
+      result.record,
+      bundle,
+      PROOF_HASH,
+      { ...context, sessionNonce: "" },
+      verifiers,
+    )).resolves.toEqual(malformed);
+    for (const badVerifiers of [{}, []]) {
+      await expect(classifyCciTlsnProof(
+        result.record,
+        bundle,
+        PROOF_HASH,
+        context,
+        badVerifiers as never,
+      )).resolves.toEqual(malformed);
+    }
+  });
+
+  test("malformed authenticator dependencies are returned as results, not thrown", async () => {
+    const unavailable = {
+      status: "error",
+      reason: "CCI resolution authenticator is unavailable",
+    };
+    for (const deps of [
+      [],
+      { authenticateResolution: () => undefined, unknownDependency: true },
+      { authenticateResolution: 1 },
+    ]) {
+      await expect(authenticateDemosCciRecord(PRIMARY, GCR, deps as never))
+        .resolves.toEqual(unavailable);
+    }
   });
 });
