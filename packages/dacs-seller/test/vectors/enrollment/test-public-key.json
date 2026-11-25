@@ -1,0 +1,7 @@
+{
+  "seedLabel": "dacs-sdk/enrollment-proof-test-only/v1",
+  "trustedNode": {
+    "chainIdentity": "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc",
+    "publicKey": "m78_DSpXiR8SsPYiU0-yEUVtJkyctSAeZKbujN2pKv8"
+  }
+}

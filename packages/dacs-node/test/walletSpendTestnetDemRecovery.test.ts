@@ -510,6 +510,10 @@ describe("DEM chain rule for the testnet wallet-spend authority", () => {
       (node) => { node.history = [ownAt(PLANNED, SELF_AT_PLANNED), ownAt(PLANNED + 1, SELF_AFTER_PLANNED)]; },
       (node) => { (node.history[1] as { content: Record<string, unknown> }).content = { from: "unreadable", nonce: "3" }; },
       (node) => { (node.records.get(SELF_AT_PLANNED) as Record<string, unknown>).status = "failed"; },
+      // The record has no block number, or another block than the history row names.
+      (node) => { delete (node.records.get(SELF_AT_PLANNED) as Record<string, unknown>).blockNumber; },
+      (node) => { (node.records.get(SELF_AT_PLANNED) as { blockNumber: number }).blockNumber += 1; },
+      (node) => { (node.history[2] as { blockNumber: number }).blockNumber += 1; },
       (node) => {
         const content = (node.records.get(SELF_AT_PLANNED) as { content: Record<string, unknown> }).content;
         content.from_ed25519_address = `0x${"ef".repeat(32)}`;
