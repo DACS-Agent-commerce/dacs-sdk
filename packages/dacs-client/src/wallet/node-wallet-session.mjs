@@ -774,7 +774,7 @@ async function buildNodeComposition(options, seller, requirePass = false) {
       await evidenceDemos.connectWallet(normalizeMnemonic(mnemonic), { algorithm: 'ed25519' });
     }
     const paymentEvidenceAdapter = seller ? createHeldAdapter(admission, createPaymentEvidenceCreateAdapter({ reservations, approval: paymentEvidenceApproval,
-      demos: evidenceDemos, observer, journal, pins: expected, clock, rpcUrl: transactionTransport.rpcUrl, isWalletLocked: () => session.isLocked(),
+      demos: evidenceDemos, observer, journal, pins: expected, transportBinding: transport.transportBinding, clock, rpcUrl: transactionTransport.rpcUrl, isWalletLocked: () => session.isLocked(),
       owner, fetchImpl, stamps, stopped, recordCause })) : null;
     const wallet = walletFactory();
     const composition = Object.freeze({ wallet, walletFactory, ...(paidApproval ? { preparePaidWrite: (...args) => wallet.preparePaidWrite(...args) } : {}), internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass, effectBoundary,
