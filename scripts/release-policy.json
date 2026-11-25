@@ -3,7 +3,7 @@
   "packages": [
     {
       "name": "@kynesyslabs/dacs", "directory": ".",
-      "requiredExports": [".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire", "./listing/read-only", "./seller/pay-dem-observer"],
+      "requiredExports": [".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire", "./listing/read-only", "./seller/pay-dem-observer", "./write-attempt-guard"],
       "allow": [
         "package.json", "README.md", "LICENSE", "SECURITY.md",
         "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map",

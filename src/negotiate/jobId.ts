@@ -14,7 +14,9 @@ export function isCanonicalJobId(value: unknown): value is string {
 /** Reject alternate spellings instead of silently changing an idempotency key. */
 export function requireCanonicalJobId(value: unknown, label = "jobId"): string {
   if (!isCanonicalJobId(value)) {
-    throw new DacsError(`${label} must be a canonical uppercase ULID`);
+    throw new DacsError(`${label} must be a canonical uppercase ULID`, {
+      code: "job.id_noncanonical",
+    });
   }
   return value;
 }
@@ -36,11 +38,15 @@ export function generateCanonicalJobId(
     timestamp < 0 ||
     timestamp > MAX_ULID_TIME
   ) {
-    throw new DacsError("ULID timestamp must be a 48-bit unix-ms integer");
+    throw new DacsError("ULID timestamp must be a 48-bit unix-ms integer", {
+      code: "job.id_timestamp_invalid",
+    });
   }
   const entropy = options.entropy ?? randomBytes(10);
   if (!(entropy instanceof Uint8Array) || entropy.byteLength !== 10) {
-    throw new DacsError("ULID entropy must contain exactly 10 bytes");
+    throw new DacsError("ULID entropy must contain exactly 10 bytes", {
+      code: "job.id_entropy_invalid",
+    });
   }
 
   let randomness = 0n;
