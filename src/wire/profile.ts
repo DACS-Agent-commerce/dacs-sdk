@@ -10,6 +10,7 @@ import { canonicalize } from "../canonical/jcs.js";
 import { sha256Hex } from "../canonical/hash.js";
 import { isCanonicalJobId } from "../negotiate/jobId.js";
 import { TP1_APPROVED_IDENTITY_RECORD_DIGESTS, TP1_REFUSED_CHAIN_IDENTITIES } from "./approval.js";
+import { canonicalNodeEndpoint, TP1_APPROVED_CHAIN_IDENTITY } from "./node-endpoint.js";
 import { DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_V1 } from "./routes.js";
 import { fail, hasKeys, HASH, isClaim, isRecord, ownedArtifact, ownedConfig, ownedFields, ownedOrNothing, uncurry } from "./validate.js";
 import { deepFreeze } from "../internal/deepFreeze.js";
@@ -64,7 +65,7 @@ export const TP1_APPROVED_IDENTITY_RECORD = deepFreeze({
   format: "dacs-testnet-identity-record/v1",
   recordId: "dacs-demos-testnet-identity/2026-10-21",
   network: "demos-testnet",
-  chainIdentity: "d59b54c2f70305e03d3a7e4d469f38295ffe4e4a62cb59b9f887057d0e5ca4bc",
+  chainIdentity: TP1_APPROVED_CHAIN_IDENTITY,
   pinVersion: "dacs-demos-testnet-identity/2026-10-21",
   provenance: {
     approvedBy: "the owner",
@@ -227,17 +228,15 @@ const connectionDigest = (decision: Tp1AuthorityDecision) => sha256Hex(canonical
   local: decision.local, chainIdentity: decision.chainIdentity, provenance: decision.provenance,
 }));
 
-function localBinding(supplied: unknown): LocalNetworkBinding {
+// One actor's connection, its endpoint checked by canonicalNodeEndpoint under the pinned `chainIdentity`.
+function localBinding(supplied: unknown, chainIdentity: string): LocalNetworkBinding {
   const local = ownedConfig(supplied, "tp1_local_binding_invalid");
   if (!hasKeys(local, ["endpoint", "transportAuthority", "connectionId"])) return fail("tp1_local_binding_invalid", 500);
-  let url: URL | null = null;
-  try { url = new URL(String(local.endpoint)); } catch { /* refused below */ }
-  if (typeof local.endpoint !== "string" || url === null || url.href !== local.endpoint || url.protocol !== "https:" ||
-      url.username || url.password || url.search || url.hash ||
-      !isIdentifier(local.transportAuthority) || !isIdentifier(local.connectionId)) {
+  const endpoint = canonicalNodeEndpoint(local.endpoint, { chainIdentity });
+  if (endpoint === null || !isIdentifier(local.transportAuthority) || !isIdentifier(local.connectionId)) {
     return fail("tp1_local_binding_invalid", 500);
   }
-  return { endpoint: local.endpoint, transportAuthority: local.transportAuthority, connectionId: local.connectionId };
+  return { endpoint, transportAuthority: local.transportAuthority, connectionId: local.connectionId };
 }
 
 /**
@@ -275,7 +274,7 @@ export async function bindTp1Profile(options: BindTp1Options): Promise<Tp1Bindin
   }
   const recordDigest = sha256Hex(canonicalize(record));
   if (!listHas(TP1_APPROVED_IDENTITY_RECORD_DIGESTS, recordDigest)) return fail("tp1_identity_unapproved", 500);
-  const local = localBinding(suppliedLocal);
+  const local = localBinding(suppliedLocal, record.chainIdentity as string);
   if (typeof readAuthority !== "function") fail("tp1_authority_required", 500);
   const reader = readAuthority as Tp1AuthorityReader;
   const decision = await readAuthorityDecision(reader, local, record.chainIdentity as string, null, []);
@@ -302,7 +301,7 @@ const isTp1Binding = (binding: unknown): binding is Tp1Binding =>
  */
 export async function assertTp1Binding(binding: unknown, currentLocal: unknown): Promise<void> {
   if (!isTp1Binding(binding)) fail("tp1_binding_required", 500);
-  const local = localBinding(currentLocal);
+  const local = localBinding(currentLocal, binding.profile.chainIdentity);
   if (sha256Hex(canonicalize(local)) !== binding.localDigest) fail("tp1_local_binding_changed", 500);
   await assertTp1Authority(binding, local, [], null);
 }
@@ -310,7 +309,7 @@ export async function assertTp1Binding(binding: unknown, currentLocal: unknown):
 /** Await fresh connection and participant/session authority; rejects on refusal or the reader's original error. */
 export async function assertTp1Authority(binding: Tp1Binding, local: unknown, suppliedParticipants: readonly string[], sessionId: string | null): Promise<void> {
   if (!isTp1Binding(binding)) fail("tp1_binding_required", 500);
-  const current = localBinding(local);
+  const current = localBinding(local, binding.profile.chainIdentity);
   if (sha256Hex(canonicalize(current)) !== binding.localDigest) fail("tp1_local_binding_changed", 500);
   const participants = ownedConfig(suppliedParticipants, "tp1_participant_profile_mismatch") as string[];
   const expectedCount = sessionId === null ? 0 : sessionId === "dacs-seller-discovery/v1" ? 1 : 2;

@@ -312,7 +312,7 @@ describe("import closure", () => {
     // runs, and the pure modules it loads: its pricing, RFQ and pay-alternative (APR-3) checks. None does I/O; the
     // built-in list above is unchanged.
     const modules = [...seen].map((href) => href.replace(/^.*\/src\//, ""));
-    const allowed = /^(?:artifacts|canonical|crypto|identity|wire)\/[A-Za-z0-9]+\.ts$|^internal\/(?:deepFreeze|arrayBufferView|isRecord)\.ts$|^negotiate\/(?:jobId|commitment|fixedPrice|rfq|channel)\.ts$|^rails\/payAlternative\.ts$|^errors\.ts$/;
+    const allowed = /^(?:artifacts|canonical|crypto|identity|wire)\/[A-Za-z0-9]+\.ts$|^wire\/node-endpoint\.ts$|^internal\/(?:deepFreeze|arrayBufferView|isRecord)\.ts$|^negotiate\/(?:jobId|commitment|fixedPrice|rfq|channel)\.ts$|^rails\/payAlternative\.ts$|^errors\.ts$/;
     expect(modules.filter((module) => !allowed.test(module))).toEqual([]);
     for (const module of ["wire/index.ts", "wire/journal.ts", "wire/commitment.ts", "canonical/rawJson.ts", "artifacts/validators.ts", "negotiate/jobId.ts", "negotiate/commitment.ts"]) {
       expect(modules, module).toContain(module);
@@ -323,10 +323,11 @@ describe("import closure", () => {
 });
 
 describe("package export", () => {
-  it("adds ./wire and leaves every existing export as it was", () => {
+  it("adds ./wire and ./wire/node-endpoint and leaves every existing export as it was", () => {
     const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
     expect(pkg.exports["./wire"]).toEqual({ types: "./dist/wire/index.d.ts", import: "./dist/wire/index.js" });
-    expect(Object.keys(pkg.exports)).toEqual([".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire", "./listing/read-only", "./seller/pay-dem-observer", "./write-attempt-guard"]);
+    expect(pkg.exports["./wire/node-endpoint"]).toEqual({ types: "./dist/wire/node-endpoint.d.ts", import: "./dist/wire/node-endpoint.js" });
+    expect(Object.keys(pkg.exports)).toEqual([".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire", "./wire/node-endpoint", "./listing/read-only", "./seller/pay-dem-observer", "./write-attempt-guard"]);
   });
 
   it("ships no approval injection: approval.ts holds only the frozen approval list, and only profile.ts reads it", () => {
@@ -339,9 +340,10 @@ describe("package export", () => {
       if (typeof value === "function") expect((wireExports as Record<string, unknown>)[name], name).toBe(value);
     }
     const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+    // The only wire modules with a package path are the entry point and the import-free endpoint leaf.
     for (const [key, target] of Object.entries(pkg.exports)) {
       expect(key).not.toContain("*");
-      expect(JSON.stringify(target)).not.toMatch(/dist\/wire\/(?!index\.)/);
+      expect(JSON.stringify(target)).not.toMatch(/dist\/wire\/(?!index\.|node-endpoint\.)/);
     }
     // Shipped code and the packages that will consume ./wire (src/, packages/)
     // and the scripts: only profile.ts imports the approval module, and nothing
