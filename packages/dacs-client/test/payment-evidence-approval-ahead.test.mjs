@@ -445,6 +445,24 @@ test("a replacement approval for kept bytes whose authorization the ledger relea
   assert.equal(w.signsInsideSign, 1, 'no second signature');
 });
 
+test("after a restart ended the operator's grant, a manual replacement that takes 30000 ms on the session clock is asked before the broadcast pass, and the kept bytes are then sent once inside a pass that meets its deadline", async t => {
+  const w = await replayWorld(t, { approval: recordingApproval({ manual: true }) }), signed = await keptBytes(w);
+  const [first] = w.approval.grants;
+  // The kit keeps a manual grant only in the memory of the process that holds it, so the process going ends it.
+  w.approval.closeUncounted({ ledgerId: null, requestText: first.requestText, token: first.token });
+  await w.restart();
+  let now = T0;
+  w.clock.now = () => now;
+  w.approval.script.push(async () => { now += 30_000; });
+  const { approval: hold } = await w.adapter.approveSendAhead(signed);
+  assert.equal(w.approval.decisions, 2, 'the operator is asked once more, before the pass');
+  assert.equal(hold.requestText, first.requestText, 'for the same request'); assertNothingSent(w);
+  assert.deepEqual(await broadcastWith(w, signed, hold), { status: 'accepted', txHash: signed.txHash });
+  assert.equal(w.approval.decisions, 2, 'the broadcast asks nothing');
+  assert.equal(w.approval.confirmations.at(-1).binding.token, w.approval.grants[1].token, 'it confirms under the new grant');
+  assert.equal(w.node.broadcasts.length, 1); assert.equal(JSON.stringify(w.node.broadcasts[0]), signed.signedTransaction, 'the kept bytes');
+});
+
 const heldSendCuts = {
   'the ledger released before the pass': async (w, signed, hold) => {
     await releaseFirst(w);
@@ -474,6 +492,17 @@ for (const [how, cut] of Object.entries(heldSendCuts)) {
     assert.deepEqual(await recordOf(w), record, 'the record and its bytes are unchanged');
   });
 }
+
+test("a held broadcast whose broadcastTx answer is lost is outcome_unknown, not a refusal, and its used hold reads and sends nothing again", async t => {
+  const w = await replayWorld(t), signed = await keptBytes(w);
+  const { approval: hold } = await w.adapter.approveSendAhead(signed);
+  w.reply = row => { if (row.body?.params[0].extra === 'broadcastTx') throw new Error('TEST-acknowledgement-lost'); };
+  await assert.rejects(broadcastWith(w, signed, hold), { code: 'outcome_unknown' });
+  assert.equal(w.node.broadcasts.length, 1, 'the bytes reached the node once');
+  const calls = w.node.calls.length;
+  await assert.rejects(broadcastWith(w, signed, hold), { code: 'approval_required' });
+  assert.equal(w.node.calls.length, calls, 'the used hold reads and sends nothing'); assert.equal(w.node.broadcasts.length, 1);
+});
 
 const sendAskChecks = [
   ['a stop before the reads', 'writes_stopped', { before: stop => { stop.mode = 'on'; } }],
