@@ -35,6 +35,31 @@ interface Run {
   stderr(): string;
 }
 
+/** Where a process runs and the settings it gets beyond PATH, HOME and TMPDIR. */
+interface RunOptions {
+  directory?: string;
+  environment?: Readonly<Record<string, string>>;
+}
+
+/** The parts of the node package's Demos node stand-in these tests use. */
+interface DemosNodeHelper {
+  DEMOS_NODE_URL: string;
+  demosPolicy(): Parameters<typeof policyFileText>[0];
+  demosNodeStub(state: unknown): Promise<Readonly<{ url: string; close(): Promise<void> }>>;
+  recordedDemosState(genesisHash: string): unknown;
+}
+
+// Package names held in variables, so the typecheck does not need the packages built.
+const NODE_PACKAGE_NAME: string = "@kynesyslabs/dacs-node";
+const WIRE_PACKAGE: string = "@kynesyslabs/dacs/wire";
+/** The x402 lane's own settings; a project without the x402 rail has none of them. */
+const X402_LANE_SETTINGS = Object.freeze({
+  DACS_WALLET_AUTHORITY_DATA_DIRECTORY: undefined,
+  DACS_WALLET_AUTHORITY_POLICY_FILE: undefined,
+  DACS_EVM_RPC_URL: undefined,
+  DACS_X402_AUTHORIZATION_SEARCH_FROM_BLOCK: undefined,
+});
+
 let root: string;
 let project: string;
 let stub: ChainStub;
@@ -100,24 +125,30 @@ afterAll(async () => {
   if (root !== undefined) await rm(root, { recursive: true, force: true });
 });
 
-/** Writes the project's `.env` from the settings and the overrides; an undefined override leaves the setting out. */
-async function writeEnvironment(overrides: Readonly<Record<string, string | undefined>> = {}): Promise<void> {
+/**
+ * Writes a project's `.env` (the x402 project's by default) from the settings
+ * and the overrides; an undefined override leaves the setting out.
+ */
+async function writeEnvironment(
+  overrides: Readonly<Record<string, string | undefined>> = {},
+  directory = project,
+): Promise<void> {
   const lines = Object.entries({ ...settings, ...overrides })
     .filter((entry): entry is [string, string] => entry[1] !== undefined)
     .map(([name, value]) => `${name}=${value}`);
-  await writeFile(join(project, ".env"), lines.join("\n") + "\n");
+  await writeFile(join(directory, ".env"), lines.join("\n") + "\n");
 }
 
-/** Runs `npm run <script> [-- args]` in the project. */
-function npmRun(script: string, args: readonly string[] = []): Run {
-  return runInProject("npm", ["run", script, ...(args.length === 0 ? [] : ["--", ...args])]);
+/** Runs `npm run <script> [-- args]` in a project. */
+function npmRun(script: string, args: readonly string[] = [], options: RunOptions = {}): Run {
+  return runInProject("npm", ["run", script, ...(args.length === 0 ? [] : ["--", ...args])], options);
 }
 
 /** Runs the command a generated script runs after its build step, with this Node. */
-function runBuiltScript(script: string): Run {
+function runBuiltScript(script: string, options: RunOptions = {}): Run {
   const command = generatedScripts[script]?.split(" && ").at(-1)?.split(" ");
   if (command?.[0] !== "node") throw new Error(`${script} does not end in a node command`);
-  return runInProject(process.execPath, command.slice(1));
+  return runInProject(process.execPath, command.slice(1), options);
 }
 
 function stopGroup(run: Run): void {
@@ -125,12 +156,12 @@ function stopGroup(run: Run): void {
   process.kill(-run.child.pid, "SIGTERM");
 }
 
-/** Starts a process in the project, in its own process group, with no DACS setting inherited. */
-function runInProject(executable: string, args: readonly string[], directory = project): Run {
+/** Starts a process in a project, in its own process group, with no DACS setting inherited. */
+function runInProject(executable: string, args: readonly string[], options: RunOptions = {}): Run {
   const child = spawn(executable, args, {
-    cwd: directory,
+    cwd: options.directory ?? project,
     detached: true,
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR },
+    env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...options.environment },
     stdio: ["ignore", "pipe", "pipe"],
   });
   children.push(child);
@@ -162,6 +193,19 @@ function lastLine(text: string): string | undefined {
   return text.trim().split("\n").at(-1);
 }
 
+/** The witness public key the fixture seed derives, as the service prints it. */
+async function witnessPublicKey(): Promise<string> {
+  const { dacsWalletSpendTestnetWitnessPublicKeyV1 } = await import(
+    fileURLToPath(new URL("src/walletSpendTestnetSettings.ts", NODE_PACKAGE))
+  ) as { dacsWalletSpendTestnetWitnessPublicKeyV1(seedFile: string): Promise<string> };
+  return dacsWalletSpendTestnetWitnessPublicKeyV1(join(root, "secrets", "witness-seed"));
+}
+
+/** The text with every run of whitespace, line breaks included, made one space. */
+function oneLine(text: string): string {
+  return text.replace(/\s+/g, " ");
+}
+
 async function portClosesWithin(deadlineMs: number): Promise<boolean> {
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
@@ -173,10 +217,7 @@ async function portClosesWithin(deadlineMs: number): Promise<boolean> {
 
 describe("generated authority command line", { timeout: 180_000 }, () => {
   test("the generated authority command prints the witness key, starts and stops the service", async () => {
-    const { dacsWalletSpendTestnetWitnessPublicKeyV1 } = await import(
-      fileURLToPath(new URL("src/walletSpendTestnetSettings.ts", NODE_PACKAGE))
-    ) as { dacsWalletSpendTestnetWitnessPublicKeyV1(seedFile: string): Promise<string> };
-    const expectedKey = await dacsWalletSpendTestnetWitnessPublicKeyV1(join(root, "secrets", "witness-seed"));
+    const expectedKey = await witnessPublicKey();
     await writeEnvironment();
 
     const printed = npmRun("dacs:authority", ["--print-witness-public-key"]);
@@ -233,7 +274,7 @@ describe("generated authority command line", { timeout: 180_000 }, () => {
     const missing = npmRun("dacs:authority:policy");
     expect(await missing.exited).toBe(1);
     expect(missing.stderr()).toContain(
-      JSON.stringify({ status: "refused", reasonCode: "authority-policy-file-setting-missing" }),
+      JSON.stringify({ status: "refused", rail: "x402", reasonCode: "authority-policy-file-setting-missing" }),
     );
 
     const target = join(root, "written", "policy.json");
@@ -247,29 +288,113 @@ describe("generated authority command line", { timeout: 180_000 }, () => {
     const unavailable = npmRun("dacs:authority:policy");
     expect(await unavailable.exited, unavailable.stderr()).toBe(1);
     expect(unavailable.stderr()).toContain(
-      JSON.stringify({ status: "refused", reasonCode: "authority-policy-actor-unavailable" }),
+      JSON.stringify({ status: "refused", rail: "x402", reasonCode: "authority-policy-actor-unavailable" }),
     );
     expect(await readdir(dirname(target))).toEqual([]);
   });
 
-  test("the authority command refuses in a project without the x402 rail", async () => {
+  test("a pay-dem project's authority commands write the DEM policy and start the DEM lane", async () => {
+    const demosNode = await import(
+      fileURLToPath(new URL("test/helpers/walletSpendDemosNode.ts", NODE_PACKAGE))
+    ) as DemosNodeHelper;
+    const { TP1_APPROVED_IDENTITY_RECORD } = await import(WIRE_PACKAGE) as {
+      TP1_APPROVED_IDENTITY_RECORD: Readonly<{ chainIdentity: string }>;
+    };
+    const node = await demosNode.demosNodeStub(demosNode.recordedDemosState(TP1_APPROVED_IDENTITY_RECORD.chainIdentity));
     const payDem = await generatedProject("pay-dem");
+    const both = await generatedProject("both");
     try {
-      await writeFile(join(payDem.project, ".env"), [
-        "DACS_BUYER_PUBLIC_BASE_URL=https://buyer.example.test",
-        "DACS_SELLER_PUBLIC_BASE_URL=https://seller.example.test",
-      ].join("\n") + "\n");
-      const build = runInProject("npm", ["run", "build"], payDem.project);
+      const policy = demosNode.demosPolicy();
+      const policyFile = join(payDem.root, "dem-policy.json");
+      await writeModeFile(policyFile, policyFileText(policy));
+      const demLane = {
+        ...X402_LANE_SETTINGS,
+        DACS_WALLET_AUTHORITY_WITNESS_PUBLIC_KEY: await witnessPublicKey(),
+        DACS_PAY_DEM_WALLET_AUTHORITY_DATA_DIRECTORY: join(payDem.root, "dem-authority-data"),
+        DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE: policyFile,
+        DACS_DEMOS_RPC_URL: demosNode.DEMOS_NODE_URL,
+      };
+      // The start check binds only an https node, so the child sends that name's requests to the stub.
+      const routed: RunOptions = {
+        directory: payDem.project,
+        environment: {
+          NODE_OPTIONS: `--import ${new URL("test/helpers/routeDemosNodeFetch.mjs", NODE_PACKAGE).href}`,
+          DACS_TEST_DEMOS_NODE_TARGET: node.url,
+        },
+      };
+
+      const build = npmRun("build", [], { directory: payDem.project });
       expect(await build.exited, build.stdout() + build.stderr()).toBe(0);
-      const refused = runInProject(process.execPath, [
-        "--import", "@kynesyslabs/dacs-node/demos-loader", "dist/src/cli.js", "authority",
-      ], payDem.project);
-      expect(await refused.exited).toBe(1);
-      expect(refused.stderr()).toContain(
-        JSON.stringify({ status: "refused", reasonCode: "authority-x402-profile-required" }),
-      );
+
+      await writeEnvironment({ ...demLane, DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE: undefined }, payDem.project);
+      const missing = npmRun("dacs:authority:policy", [], { directory: payDem.project });
+      expect(await missing.exited).toBe(1);
+      expect(missing.stderr()).toContain(JSON.stringify({
+        status: "refused", rail: "pay-dem", reasonCode: "authority-pay-dem-policy-file-setting-missing",
+      }));
+
+      await writeEnvironment(demLane, payDem.project);
+      const { dacsWalletSpendPolicyHashV1 } = await import(NODE_PACKAGE_NAME) as {
+        dacsWalletSpendPolicyHashV1(value: unknown): string;
+      };
+      const service = npmRun("dacs:authority", [], routed);
+      const listening = await firstJsonLine(service);
+      expect(listening, service.stderr()).toMatchObject({
+        status: "listening",
+        url: settings.DACS_WALLET_AUTHORITY_URL,
+        payDemLineageKey: expect.any(String),
+        payDemPolicyHash: dacsWalletSpendPolicyHashV1(policy),
+      });
+      expect(listening).not.toHaveProperty("lineageKey");
+      stopGroup(service);
+      await service.exited;
+      expect(await portClosesWithin(PORT_CLOSE_DEADLINE_MS)).toBe(true);
+
+      const direct = runBuiltScript("dacs:authority", routed);
+      expect(await firstJsonLine(direct), direct.stderr()).toMatchObject({ status: "listening" });
+      stopGroup(direct);
+      expect(await direct.exited, direct.stderr()).toBe(0);
+      expect(await portClosesWithin(PORT_CLOSE_DEADLINE_MS)).toBe(true);
+
+      for (const directory of [payDem.project, project, both.project]) {
+        const readme = oneLine(await readFile(join(directory, "secrets", "README.md"), "utf8"));
+        const qualified = readme.indexOf(
+          "In production, the separately operated authority retains PostgreSQL credentials",
+        );
+        expect(qualified, directory).toBeGreaterThan(0);
+        expect(readme.indexOf("The testnet service described below is not that authority"), directory)
+          .toBeGreaterThan(qualified);
+        expect(readme.indexOf("## Testnet authority service"), directory).toBeGreaterThan(qualified);
+        expect(readme, directory).not.toContain("fallback. The separately operated authority");
+      }
     } finally {
+      await node.close();
       await rm(payDem.root, { recursive: true, force: true });
+      await rm(both.root, { recursive: true, force: true });
+    }
+  });
+
+  test("a dual-rail project's authority-policy stops at the first refused rail", async () => {
+    const both = await generatedProject("both");
+    try {
+      const written = join(both.root, "written");
+      await mkdir(written);
+      const buyerIdentity = join(both.root, "buyer-demos-open");
+      await writeModeFile(buyerIdentity, "buyer-demos-fixture", 0o644);
+      await writeEnvironment({
+        DACS_WALLET_AUTHORITY_POLICY_FILE: join(written, "x402-policy.json"),
+        DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE: join(written, "dem-policy.json"),
+        DACS_BUYER_DEMOS_SECRET_FILE: buyerIdentity,
+      }, both.project);
+      const refused = npmRun("dacs:authority:policy", [], { directory: both.project });
+      expect(await refused.exited, refused.stdout() + refused.stderr()).toBe(1);
+      expect(refused.stderr()).toContain(
+        JSON.stringify({ status: "refused", rail: "x402", reasonCode: "authority-policy-actor-unavailable" }),
+      );
+      expect(refused.stdout() + refused.stderr()).not.toContain('"rail":"pay-dem"');
+      expect(await readdir(written)).toEqual([]);
+    } finally {
+      await rm(both.root, { recursive: true, force: true });
     }
   });
 });
