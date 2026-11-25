@@ -41,7 +41,7 @@ import { OutboundError } from './util/http.mjs';
 import { nodeProjectedNonce, OS_INTEGER, OS_DIGITS_MAX } from './dacs/chain.mjs';
 import { normalizeDemosAddress } from './signatures.mjs';
 import { projectDiagnostic, projectDiagnosticOperation, DIAGNOSTIC_LIMITS } from './diagnostic-projection.mjs';
-import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymentHeld, protocolApprovalFields, protocolStageHelp, protocolView, diagnosticProtocolView, planRunningOf, createSellerRequestRecords } from './dacs/protocol-purchases.mjs';
+import { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement, assertAgreementPaymentHeld, buildAnchorWrite, protocolApprovalFields, protocolStageHelp, protocolView, diagnosticProtocolView, planRunningOf, createSellerRequestRecords } from './dacs/protocol-purchases.mjs';
 import { usesNativeAgreementPayment } from './dacs/native-agreement-payment-consumer.mjs';
 import { assertRetainedProofUnchanged, purchaseCommitment, readRetainedNativeLaneProof, sellerCommitmentWitness } from './dacs/retained-native-lane-proof.mjs';
 import { PURCHASE_LIMITS } from './purchase-limits.mjs';
@@ -398,6 +398,17 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     throw new OperationError('job_id_unavailable', `no unused job id was found in ${JOB_ID_ATTEMPTS} attempts; nothing was prepared`, undefined, { cause: lastCollision });
   }
 
+  // The buyer's account nonce read at prepare for the anchor write record. A failed read, or an answer that is not a
+  // non-negative safe integer with a safe successor, refuses anchor_nonce_unavailable before anything is created.
+  async function readAnchorNonceFence(wallet) {
+    const message = 'the buyer wallet\'s account nonce could not be read exactly from the bound chain; nothing was prepared';
+    let nonce;
+    try { nonce = await chain.getAddressNonce(wallet); }
+    catch (error) { throw new OperationError('anchor_nonce_unavailable', message, undefined, { cause: error }); }
+    if (!Number.isSafeInteger(nonce) || nonce < 0 || !Number.isSafeInteger(nonce + 1)) throw new OperationError('anchor_nonce_unavailable', message);
+    return nonce;
+  }
+
   async function prepare({ accountId, listingId, version, seller, idempotencyKey, walletAddress, protocol: mode }) {
     assertPurchaseOpen();
     const wallet = selectWallet(accountId, walletAddress);
@@ -426,7 +437,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     const domain = await currentDomain();
     const dacs = mode ? await protocol.prepareTerms({ verification, domain, sellerClaim: seller, mode }) : null;
     await assertBuyerFunds(wallet, verification.price, mode);
-    // Recheck only TLS admission after the asynchronous balance read.
+    const nonceFence = dacs ? await readAnchorNonceFence(wallet) : null;
+    // Recheck only TLS admission after the asynchronous balance and nonce reads.
     if (mode) await protocol.assertSellerAdmission(seller);
     const preparedAt = new Date(now()).toISOString();
     const approvalExpiresAt = new Date(now() + approvalTtlMs).toISOString();
@@ -443,6 +455,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       preparedAt,
       approvalExpiresAt,
     };
+    // A protocol purchase's state starts with its anchor write record, built for the job id of each insert attempt.
+    const protocolState = (jobId) => ({ ...dacs.state, anchorWrite: buildAnchorWrite({ network: domain.network, from: wallet, nonceFence, jobId }) });
     const createWith = (jobId) => {
       const stored = dacs ? { ...terms, protocol: { ...dacs.terms, jobId } } : terms;
       return ops.createIdempotent({
@@ -456,7 +470,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         termsHash: contentHash(stored),
         ...(dacs ? { jobId } : {}),
         expiresAt: approvalExpiresAt,
-        state: { ...(config.sellerIdentities === 'on' ? { sellerDisplayName: verification.listing.seller.displayName?.slice(0, 200) } : {}), preparedVerification: { checks: verification.checks, evidence: verification.evidence }, ...(dacs ? { protocol: dacs.state } : {}) },
+        state: { ...(config.sellerIdentities === 'on' ? { sellerDisplayName: verification.listing.seller.displayName?.slice(0, 200) } : {}), preparedVerification: { checks: verification.checks, evidence: verification.evidence }, ...(dacs ? { protocol: protocolState(jobId) } : {}) },
       });
     };
     const { operation, created, handoffToken } = transaction(db, () => {

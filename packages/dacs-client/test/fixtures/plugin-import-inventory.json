@@ -36,6 +36,8 @@
   {"name": "DEVNET_AGREEMENT_PROFILE", "disposition": "client-root", "owner": "client", "entry": "root"},
   {"name": "DEVNET_NATIVE_BINDING_PATH", "disposition": "client-root", "owner": "client", "entry": "root"},
   {"name": "DEVNET_NATIVE_RPC_PATH", "disposition": "client-root", "owner": "client", "entry": "root"},
+  {"name": "CREATE_STORAGE_RESERVE_OS", "disposition": "client-root", "owner": "client", "entry": "root"},
+  {"name": "readAnchorReservedWriteId", "disposition": "client-root", "owner": "client", "entry": "root"},
   {"name": "openDurableWalletJournal", "disposition": "client-journal", "owner": "client", "entry": "wallet/durable-journal"},
   {"name": "DurableWalletJournalError", "disposition": "client-journal", "owner": "client", "entry": "wallet/durable-journal"},
   {"name": "DURABLE_WALLET_JOURNAL_FORMAT", "disposition": "client-journal", "owner": "client", "entry": "wallet/durable-journal"},

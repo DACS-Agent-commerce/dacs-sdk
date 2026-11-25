@@ -69,6 +69,7 @@ import { BuyerChainReadbackUnsupported, createBuyerChainReadback, POINTER_MISSIN
 import { cutText } from '../util/text.mjs';
 import { settleOnAbort } from '../util/http.mjs';
 import { isRecord, OS_INTEGER } from './chain.mjs';
+import { payloadHash } from './wallet-transactions.mjs';
 
 // Retained native Agreement profile; consumer capabilities are bound in terms.
 export const OFFLINE_AGREEMENT_MODE = 'dacs-sr2-wallet-agreement';
@@ -167,6 +168,53 @@ function receiptLimitsConfig(receiptFeeCeilings, buyerMandateCapOs) {
 function boundSellerReceipt(receipt, agreementHash) {
   if (!hasExactly(receipt, SELLER_RECEIPT_NAMES) || !AGREEMENT_HASH_TEXT.test(receipt.agreementHash) || receipt.agreementHash !== agreementHash || !isOsText(receipt.reservedMaximumOs)) return null;
   return { agreementHash: receipt.agreementHash, reservedMaximumOs: receipt.reservedMaximumOs };
+}
+
+// The anchor write record: the buyer's Agreement CREATE as a protocol purchase saves it at prepare, before any signature. Its
+// id names the intended write; it is not evidence the CREATE was sent or used the nonce read at prepare.
+const ANCHOR_WRITE_KIND = 'agreement-create';
+const ANCHOR_WRITE_NAMES = ['expectedNonce', 'from', 'jobId', 'kind', 'network', 'nonceFence', 'reservedWriteId'];
+const ANCHOR_WRITE_ID_TEXT = /^[0-9a-f]{64}$/;
+const anchorWriteUnsaved = () => new OperationError('anchor_write_unsaved', 'this is not a protocol purchase with a saved anchor write record; nothing was read');
+const anchorWriteInvalid = (member) => new OperationError('anchor_write_invalid', `the saved anchor write record's ${member} does not match this purchase; nothing was read`, { member });
+
+/**
+ * buildAnchorWrite({network,from,nonceFence,jobId}) returns the frozen anchor write record a protocol purchase saves at prepare:
+ * {kind:'agreement-create',network,from,nonceFence,expectedNonce:nonceFence+1,jobId,reservedWriteId}, where reservedWriteId is
+ * the payloadHash of the other six members. It reads, writes and signs nothing.
+ */
+export function buildAnchorWrite({ network, from, nonceFence, jobId }) {
+  const members = { kind: ANCHOR_WRITE_KIND, network, from, nonceFence, expectedNonce: nonceFence + 1, jobId };
+  return Object.freeze({ ...members, reservedWriteId: payloadHash(members) });
+}
+
+// Refuses anchor_write_invalid, naming the member, unless the record is exactly what buildAnchorWrite returns for these terms.
+function assertAnchorWriteMatches(record, terms) {
+  if (!hasExactly(record, ANCHOR_WRITE_NAMES)) throw anchorWriteInvalid('member list');
+  if (record.kind !== ANCHOR_WRITE_KIND) throw anchorWriteInvalid('kind');
+  if (record.network !== terms.network) throw anchorWriteInvalid('network');
+  if (record.from !== terms.buyer.wallet) throw anchorWriteInvalid('from');
+  if (record.jobId !== terms.protocol.jobId) throw anchorWriteInvalid('jobId');
+  if (!Number.isSafeInteger(record.nonceFence) || record.nonceFence < 0) throw anchorWriteInvalid('nonceFence');
+  if (record.expectedNonce !== record.nonceFence + 1) throw anchorWriteInvalid('expectedNonce');
+  if (!ANCHOR_WRITE_ID_TEXT.test(record.reservedWriteId) || record.reservedWriteId !== buildAnchorWrite(record).reservedWriteId) throw anchorWriteInvalid('reservedWriteId');
+}
+
+/**
+ * readAnchorReservedWriteId(operation) returns the reservedWriteId (64 lowercase hex) of the anchor write record a protocol purchase
+ * saved at prepare, for an operation as the operations store's get returns it. It throws OperationError(anchor_write_unsaved) for a
+ * missing operation, one that is not a protocol purchase, or one with no saved record, and OperationError(anchor_write_invalid) when
+ * the record is not exactly the one prepare builds for the operation's network, buyer wallet and job id (details.member names the
+ * member). It reads nothing else and writes nothing.
+ */
+export function readAnchorReservedWriteId(operation) {
+  const terms = operation?.terms;
+  if (operation?.kind !== 'purchase' || !isRecord(terms) || typeof terms.network !== 'string' || typeof terms.buyer?.wallet !== 'string'
+    || typeof terms.protocol?.jobId !== 'string') throw anchorWriteUnsaved();
+  const record = operation.state?.protocol?.anchorWrite;
+  if (record === undefined || record === null) throw anchorWriteUnsaved();
+  assertAnchorWriteMatches(record, terms);
+  return record.reservedWriteId;
 }
 
 // One line per stage; the layers below keep transfer, DACS purchase evidence,

@@ -45,6 +45,10 @@ export { createSellerSessionKeys } from './dacs/seller-session-keys.mjs';
 export { createDevnetNativeCommitmentCapability, DEVNET_NATIVE_COMMITMENT_MARKER } from './devnet-demo/commitment-consumer.mjs';
 /** OFFLINE_AGREEMENT_MODE is the retained wallet Agreement mode constant; isOfflineWalletAgreement(operation) returns whether the operation's terms select that profile. Neither reads, writes or throws. */
 export { OFFLINE_AGREEMENT_MODE, isOfflineWalletAgreement } from './dacs/protocol-purchases.mjs';
+/** readAnchorReservedWriteId(operation) returns the reservedWriteId (64 lowercase hex) of the anchor write record a protocol purchase saves at prepare, read from an operation as the operations store's get returns it. The id names the intended Agreement CREATE; it is not evidence the CREATE was sent, and the record's expectedNonce is only the nonce read at prepare. It throws OperationError(anchor_write_unsaved) for a missing operation, one that is not a protocol purchase or one with no saved record, and OperationError(anchor_write_invalid) when the record does not match the operation's network, buyer wallet and job id or its id does not recompute. It reads nothing else and writes nothing. */
+export { readAnchorReservedWriteId } from './dacs/protocol-purchases.mjs';
+/** CREATE_STORAGE_RESERVE_OS is the constant storage reserve, in OS as a positive decimal string, that the buyer funds check holds for an Agreement CREATE: the largest CREATE the native wallet allows (three 10 KiB chunks at 1 DEM each), not the CREATE's actual debit. Reading it has no effect. */
+export { CREATE_STORAGE_RESERVE_OS } from './public-admission.mjs';
 /** deriveStorageAddress(owner,programName,nonce,salt='') returns the deterministic stor- storage address text for that tuple. It throws TypeError when owner is not text; it performs no reads or writes. */
 export { deriveStorageAddress } from './dacs/wallet-transactions.mjs';
 /** SR2_WALLET_KIND is the wallet Agreement request-kind constant; reading it has no side effects. */
