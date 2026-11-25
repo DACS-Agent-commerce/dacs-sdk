@@ -1240,7 +1240,7 @@ const declaredFees=(c)=>c?.kind===PAYMENT_EVIDENCE_CREATE_KIND?paymentEvidenceDe
 function expectedCreate(row,c,artifact,policy){
   let op;
   try{op=buildStorageProgramCreatePayload({from:c.wallet,storageAddress:c.storageAddress,programName:c.programName,logicalAddress:c.logicalAddress,signedListing:artifact,nonce:c.nonce,timestamp:c.timestamp}).content.data[1];}catch{return null;}
-  // Every CREATE carries the seller's source binding. The adapter's carries nothing else beside the logical address and the three hashes.
+  // Every CREATE carries the seller's source binding. Beside it, the adapter's carries only the logical address, the artifact kind and two hashes.
   const bindings={networkBinding:policy.sourceBinding,...(c.kind===PAYMENT_EVIDENCE_CREATE_KIND?{}:{
     ...(row.kind===DEVNET_DEMO_ARTIFACT_KIND?{artifactBinding:{version:'1',policy:DEVNET_DEMO_ARTIFACT_POLICY,authority:policy.artifactAuthority,artifactKind:c.artifactKind,jobId:c.jobId,logicalAddress:c.logicalAddress,writer:policy.seller}}:{}),
     ...(c.artifactKind==='Deliverable'?{deliveryBinding:c.deliveryBinding}:{})})};
@@ -1442,8 +1442,9 @@ const PURCHASE_KEYS=['jobId','seller','buyer','listingPin','sourceBinding','agre
 // The executed CREATE content keys (Node 61b8e75, as the client checks them), the payment-evidence adapter's included.
 const CONFIRMED_CONTENT_KEYS=['type','from','from_ed25519_address','to','amount','data','nonce','timestamp','transaction_fee','network','chainIdentity','gcr_edits'];
 
-// The members a buyer's Agreement binding shares with the seller's source binding, as the SR-2 readback compares another
-// writer's binding: each must be a non-empty string equal to the seller's. The buyer's endpoint, authority and publications are its own.
+// The members a buyer's Agreement binding shares with the seller's source binding: the SR-2 readback's tuple for another writer's
+// binding and the binding version. Each must be a non-empty string equal to the seller's; the buyer's endpoint, authority and
+// publications are its own.
 const SHARED_BINDING_MEMBERS=['network','chainIdentity','pinVersion','bindingVersion'];
 const sharesBindingTuple=(buyer,seller)=>SHARED_BINDING_MEMBERS.every(key=>typeof buyer?.[key]==='string'&&buyer[key].length>0&&buyer[key]===seller?.[key]);
 
