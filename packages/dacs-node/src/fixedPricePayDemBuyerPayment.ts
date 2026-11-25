@@ -218,10 +218,14 @@ export function createDacsFixedPricePayDemBuyerPaymentV1(
  * can roll back independently of the wallet authority and the Demos chain.
  * An included observation must attest `execution: "executed"` after checking
  * the bound confirmed transaction record, including the retained signed nonce;
- * otherwise the payment stays held.
+ * otherwise the payment stays held. With `readAccountNonce`, a transfer still not
+ * on chain once the wallet's confirmed account nonce is past its signed nonce is
+ * reported absent, so the wallet authority can check the release on chain;
+ * without it, or when the read fails, the payment stays held.
  */
 export function createDacsFixedPricePayDemBuyerReconciliationV1(
   observeDemosTransfer: (txHash: string) => Promise<DemosTransferObservation>,
+  readAccountNonce?: () => Promise<number>,
 ): DacsPayDemBuyerPaymentTrackOptionsV1["reconcile"] {
   if (typeof observeDemosTransfer !== "function") {
     throw new TypeError("pay-dem buyer reconciliation requires a Demos observer");
@@ -289,6 +293,11 @@ export function createDacsFixedPricePayDemBuyerReconciliationV1(
     if (observation.status === "failed" || observation.status === "invalid") {
       return Object.freeze({ status: "operator-action" as const,
         reasonCode: "pay-dem-prepared-transfer-invalid" });
+    }
+    if (readAccountNonce !== undefined &&
+        await readAccountNonce().then((nonce) => nonce > prepared.nonce, () => false)) {
+      await fence.assertCurrent();
+      return Object.freeze({ status: "absent" as const, absenceProofHash: prepared.txHash });
     }
     return Object.freeze({ status: "indeterminate" as const,
       reasonCode: "pay-dem-prepared-transfer-pending" });

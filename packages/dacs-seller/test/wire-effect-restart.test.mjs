@@ -1,6 +1,7 @@
 // A host that stops at each cut of an effect route's attempt, and reopens over the same wire journal and transport store.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readOnlyRoleOf } from './helpers/agent-signing.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -545,12 +546,13 @@ async function bundleOverrunWorld(t, { paid, retainedCountersignature = false })
   const w = await bundleWorld(t, { leaseMs: SHORT_LEASE_MS }), pause = pausePoint(t), signer = { failures: 0, responses: 0 };
   if (paid) await editSession(w.fixture, w.jobId, markPaid);
   if (retainedCountersignature) await editSession(w.fixture, w.jobId, (session) => { session.countersignatureWork = { buyerSignature: 'TEST-retained-countersignature' }; });
-  w.handle.wireOverrides = { signer: { claim: SELLER.claim, sign: (bytes) => {
+  const responseSigner = { claim: SELLER.claim, sign: (bytes) => {
     if (!Buffer.from(bytes).toString('utf8').startsWith(DACS_SELLER_HTTP_DOMAINS.response)) return SELLER.sign(bytes);
     if (signer.failures > 0) { signer.failures--; throw new Error('TEST signer failure'); }
     signer.responses++;
     return pause.armed ? pause.hold().then(() => SELLER.sign(bytes)) : SELLER.sign(bytes);
-  } } };
+  } };
+  w.handle.wireOverrides = { signer: { ...responseSigner, readOnlyAnswerSigner: readOnlyRoleOf(responseSigner) } };
   w.reopen();
   return { w, pause, signer, effects: () => [w.fixture.signed.length, w.fixture.publications.length, completions(w).length] };
 }

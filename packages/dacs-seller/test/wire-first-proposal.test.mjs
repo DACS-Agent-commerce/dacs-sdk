@@ -20,16 +20,17 @@ const { setPurchaseAdmission } = await loadAdmissionDouble();
 setPurchaseAdmission('testnet-tp1');
 const { exchangeAgreement, planAgreement, listingPin } = await import('../../dacs-client/src/dacs/purchase-protocol.mjs');
 // These seller modules reach the client (through the devnet source checks), so they load after the hold double is installed.
-const { createOrdinaryCompletionPort, createSellerAgentClient, createSellerHttpHandler } = await import('../src/dacs/seller-http.mjs');
-const { createSellerWireClientAuth } = await import('../src/dacs/seller-wire-client-auth.mjs');
+const { createOrdinaryCompletionPort, createSellerHttpHandler } = await import('../src/dacs/seller-http.mjs');
+const { createSellerWireClientAuth, signedBuyerClient } = await import('./helpers/signed-buyer-driver.mjs');
 const { createWireContext } = await import('../src/dacs/seller-wire-requests.mjs');
+const { readOnlyRoleOf, testEffectBoundary } = await import('./helpers/agent-signing.mjs');
 const T0 = Date.UTC(2026, 9, 27, 12);
 const JOURNAL_LEASE_MS = 300_000;
 
 // The real buyer coordinator, wire authentication, HTTP client, handler and durable
 // transport store. The agent retains the exact proposal; contribution/anchor work
 // is deliberately unreachable so each case stops at the boundary under review.
-// `clientPackage` drives the buyer's own HTTPS client (packages/dacs-client) instead of the seller package's,
+// `clientPackage` drives the buyer's own HTTPS client (packages/dacs-client) instead of the test-only signed buyer,
 // at a public origin through a stand-in connector that answers from the same handler.
 async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) {
   mock.method(Date, 'now', () => T0);
@@ -67,14 +68,15 @@ async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) 
   const journal = openWireRequestJournal(await mkdtemp(join(directory, 'wire-')), { leaseMs: JOURNAL_LEASE_MS, clock });
   const { store: rawStore, capacity } = boundPurchaseOf(store);
   const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
-  const hostWire = createWireContext({ binding: wire.binding, tp1Network: { connection, readAuthority: authorityReader() }, signer: sellerSigner,
+  const hostWire = createWireContext({ binding: wire.binding, tp1Network: { connection, readAuthority: authorityReader() }, signer: { ...sellerSigner, readOnlyAnswerSigner: readOnlyRoleOf(sellerSigner) },
+    effectBoundary: testEffectBoundary({ binding: wire.binding, currentLocal: connection }).effectBoundary,
     journal, store, ready: () => true, now: clock, agent, requireDelegation: false, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }),
     readCommitmentReceipt: () => { throw new Error('TEST commitment read must not run'); } });
   const handler = createSellerHttpHandler(agent, { wire: hostWire });
-  const client = (clientPackage ? fetchClient(createSellerHttpsClient) : createSellerAgentClient)({ url: clientPackage ? FIXTURE_ENDPOINT : 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {
+  const client = (clientPackage ? fetchClient(createSellerHttpsClient) : signedBuyerClient)({ url: clientPackage ? FIXTURE_ENDPOINT : 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {
     // The buyer client takes each signed request with its transmit guards; this stand-in signs outside an effect boundary, so none refuse.
     request: async (...args) => { const signed = await authentication.request(...args); request = signed.payload; return clientPackage ? { ...signed, transmitGuards: NO_TRANSMIT_GUARDS } : signed; },
-    // The buyer client hands over `{header, status, body}`; the seller package's adapter reads the same bytes as `responseBytes`.
+    // The buyer client hands over `{header, status, body}`; the signed buyer's adapter reads the same bytes as `responseBytes`.
     verifyResponse: (request, received) => faults.verify(authentication, request, clientPackage ? { header: received.header, status: received.status, responseBytes: received.body } : received),
   }, fetchImpl: async (url, options) => {
     const path = new URL(url).pathname;

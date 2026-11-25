@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { WalletSpendPolicyV1, WalletSpendReservationV1 } from "@kynesyslabs/dacs";
+import type { WalletSpendPolicyV1, WalletSpendReservationV1, WalletSpendStateV1 } from "@kynesyslabs/dacs";
 
 import { openDacsWalletSpendFileAuthorityStoresV1 } from "../../src/walletSpendFileAuthorityStores.js";
 import type { DacsWalletSpendContinuityReceiptV1 } from "../../src/walletSpendPostgres.js";
@@ -103,6 +103,13 @@ export function directoryContents(directory: string): Record<string, string | nu
 
 export function stateFileNames(directory: string): string[] {
   return readdirSync(join(directory, "states")).sort();
+}
+
+/** The highest-generation state file in a data directory. */
+export function headStateFile(dataDirectory: string): WalletSpendStateV1 {
+  const states = readdirSync(join(dataDirectory, "states")).map((name) =>
+    JSON.parse(readFileSync(join(dataDirectory, "states", name), "utf8")) as WalletSpendStateV1);
+  return states.reduce((head, state) => state.generation > head.generation ? state : head);
 }
 
 /** The receipts of the witness records, in revision order. */

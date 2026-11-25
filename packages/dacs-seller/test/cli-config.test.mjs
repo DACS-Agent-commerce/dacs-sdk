@@ -13,7 +13,7 @@ const load = () => import('../src/cli/config.mjs');
 const bytes = value => Buffer.from(JSON.stringify(value));
 const config = () => ({
   format: 'dacs-seller-config/v1', dataDirectory: '/TEST-seller', keyPath: '/TEST-seller/seller-key.json',
-  rpcUrl: 'https://rpc.example.invalid/rpc', publicOrigin: 'https://seller.example.invalid',
+  rpcUrl: 'https://rpc.example.invalid/', publicOrigin: 'https://seller.example.invalid',
   listener: { mode: 'proxy', host: '127.0.0.1', port: 8080 }, directoryOrigin: null,
   listing: { listingId: 'TEST-listing', displayName: 'TEST seller', title: 'TEST text', description: 'TEST description',
     category: 'test.text', tags: ['test'], priceDem: '1.00', deadlineSecAfterCommit: 3600 },
@@ -171,9 +171,12 @@ test('seller.json validates RPC URLs, listeners and capacity defaults', async ()
   const { parseSellerConfig } = await load();
   const parsed = parseSellerConfig(bytes(config()));
   assert.equal(parsed.maxRecords, 10000); assert.equal(parsed.maxJobs, 10000);
-  for (const url of ['http://rpc.invalid', 'https://user@rpc.invalid', 'https://rpc.invalid/?x', 'https://rpc.invalid/#', 'https:rpc.invalid']) {
+  // seller.json pins no chain identity, so a plain-http RPC URL is refused even on a root; and the URL is a node root, with no path.
+  for (const url of ['http://rpc.invalid', 'http://rpc.invalid/', 'http://203.0.113.7:53550/', 'https://user@rpc.invalid', 'https://rpc.invalid/?x', 'https://rpc.invalid/#', 'https:rpc.invalid',
+    'https://rpc.invalid/rpc', 'https://rpc.invalid']) {
     assert.throws(() => parseSellerConfig(bytes(set(config(), 'rpcUrl', url))), fieldError('rpcUrl'));
   }
+  assert.equal(parseSellerConfig(bytes(set(config(), 'rpcUrl', 'https://203.0.113.7:53550/'))).rpcUrl, 'https://203.0.113.7:53550/');
   for (const [field, replacement] of [['listener.host', '0.0.0.0'], ['listener.port', 0], ['listener.port', 65536],
     ['listener.port', 1.5], ['listener.mode', 'http'], ['maxRecords', 0], ['maxJobs', 1.5], ['maxRecords', Number.MAX_SAFE_INTEGER + 1]]) {
     assert.throws(() => parseSellerConfig(bytes(set(config(), field, replacement))), fieldError(field));

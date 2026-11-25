@@ -20,6 +20,7 @@ import { transportOutcome } from '../src/dacs/seller-agent.mjs';
 const seller={...transport,...listingApi,agreementInput,listingPin,createSellerTransportStore};
 import { DACS_SELLER_HTTP_DOMAINS, inspectWireOperation } from '@kynesyslabs/dacs/wire';
 import { distinctHeaders } from './helpers/listener-host.mjs';
+import { signedBuyerClient } from './helpers/signed-buyer-driver.mjs';
 
 let walletSequence=60;
 function key() { const w=testWallet(walletSequence++);return {...w,sign:w.signBytes,signWallet:message=>'0x'+w.signBytes(Buffer.from(message)).toString('hex')}; }
@@ -70,7 +71,7 @@ async function world(t, answers, { proposalAnswers = [{ disposition: 'complete',
     await handle(req, res);
     return new Response(res.text, { status: res.status, headers: res.headers });
   };
-  const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl,
+  const client = signedBuyerClient({ url: 'http://127.0.0.1:1', fetchImpl,
     authentication: buyerWire.authentication(() => plan.agreementHash) });
   await client.propose({ proposal, transportIdentity, buyerIdentityBundle: buyerBundle });
   const claim = { jobId, txHash: 'a1'.repeat(32), payerPayingKey: buyerKey.claim, nativePaymentEvidence: 'sdk-pay-dem-intake-native-evidence/loopback-v1' };
@@ -205,7 +206,7 @@ async function delegatedWorld(t, answers, publication = null) {
     return new Response(res.text, { status: res.status, headers: res.headers });
   };
   let nonce = 0;
-  const client = seller.createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl,
+  const client = signedBuyerClient({ url: 'http://127.0.0.1:1', fetchImpl,
     authentication: {
       request: async (path, body, text) => {
         if (clock() < payload.expiresAt) return buyerWire.signRequest(path, body, { jobId, agreementHash: plan.agreementHash, text, signer: sessionKey, delegation });

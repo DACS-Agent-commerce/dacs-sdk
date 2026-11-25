@@ -783,8 +783,9 @@ jobs:
           db.exec(c.PURCHASE_STATE_SCHEMA);
           const store = c.createSqlitePurchaseStore(), coordinates = c.createCoordinateStore({ db });
           // Each factory gets past the runtime check and finishes construction at the floor.
-          c.createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store, admission });
-          c.createPurchaseService({ db, coordinates, config: {}, ops: {}, accounts: {}, verifier: {}, chain: {}, challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, admission });
+          const chain = { getTransactionFees: async () => 0n }, feeCeilingOs = c.PAID_WRITE_FEE_CEILING_OS;
+          c.createProtocolPurchases({ db, coordinates, ops: {}, dacsProtocol: {}, store, admission, chain, feeCeilingOs });
+          c.createPurchaseService({ db, coordinates, config: {}, ops: {}, accounts: {}, verifier: {}, chain, challenges: {}, store, purposes: { APPROVE_PURCHASE: 'purchase-approval' }, admission, feeCeilingOs });
           c.createListingVerifier({ directory: {}, chain: {}, admission });
           NODE
       # The public API, the SQLite write lease, transaction nesting and the SQLite iterator tests run here on each leg,

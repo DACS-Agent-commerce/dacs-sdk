@@ -342,7 +342,7 @@ const withinConfirmationBound=(validity)=>{try{return Buffer.byteLength(JSON.str
  * confirmation whose line is already appended runs the same checks and syncs the ledger again, and is true only for
  * the transaction the line records, so a line whose sync failed can be retried. Through confirm, a repeat after a
  * confirmation that answered true is false, since the write is no longer prepared.
- * approve.retained = {prepare, open, reopen, confirm, settle} is the lifecycle of a payment-evidence SettlementEvidence
+ * approve.retained = {prepare, open, reopen, confirm, settle, revocationGeneration} is the lifecycle of a payment-evidence SettlementEvidence
  * write whose exact bytes the caller retains for replay. The request is one of two kinds, each with exactly its own
  * members: devnet-settlement-evidence-storage-create, or the client payment-evidence adapter's
  * payment-evidence-storage-create (a debit in OS and its CREATE, no stored text). Its authorization is held until
@@ -358,7 +358,9 @@ const withinConfirmationBound=(validity)=>{try{return Buffer.byteLength(JSON.str
  * another open authorization of the same wallet nonce, a refusal that arose while the operator answered, or a
  * declined manual answer, with its reason) or operator_closing; confirm resolves false for a confirmation the current
  * checks refuse, whatever an earlier one was; reopen, confirm and settle reject with approval_reservation_unavailable
- * for an unknown or settled id, or a binding whose bytes are not its authorization's. */
+ * for an unknown or settled id, or a binding whose bytes are not its authorization's. revocationGeneration() counts the
+ * releases this ledger has started (it moves when settle(binding, 'released') starts, also when that release then fails),
+ * so a holder can see synchronously that nothing was withdrawn since it last read; it never throws. */
 export function composeSellerApproval({mode,policy,manual}){
   let prepared=null;
   const approve=async(request)=>{
@@ -415,6 +417,8 @@ function composeRetainedApproval({mode,policy,manual}){
   // The pending or open generation of each exact request text, and every generation a token was handed out for (with
   // its outcome once settled, for as long as its holder keeps the token).
   const manualByText=new Map(),manualGenerations=new WeakMap();
+  // The releases settle has started, counted before its first await.
+  let revocations=0;
   const approveManually=(request,requestText)=>{
     const current=manualByText.get(requestText);
     if(current)return current.answer;
@@ -475,6 +479,7 @@ function composeRetainedApproval({mode,policy,manual}){
       return policy.confirmManualRetained(requestText,validity);
     },
     settle:async(binding,outcome,reason)=>{
+      if(outcome==='released')revocations+=1;
       const{ledgerId,requestText}=exactBinding(binding);
       if(ledgerId!==null)return policy.settleById(ledgerId,outcome,reason,requestText);
       assertSettlementOutcome(outcome);
@@ -484,6 +489,7 @@ function composeRetainedApproval({mode,policy,manual}){
       if(generation.outcome!==null)throw settlementConflict(generation.outcome);
       generation.outcome=outcome;manualByText.delete(requestText);
     },
+    revocationGeneration:()=>revocations,
   });
 }
 

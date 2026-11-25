@@ -96,7 +96,7 @@ function coordinator(t, { status='settled_verified', stage='delivered', retained
    ...(retainedDelivery?{delivery:{...delivery,report},nativeEvidence:{status:'verified'},paymentEvidence:{ref:{contentHash:'d'.repeat(64)}}}:{}),...protocolPatch};
  const op=ops.createIdempotent({accountId:'TEST-buyer',kind:'purchase',idempotencyKey:'TEST',request:{},status,terms,termsHash:CHAIN,state:{protocol},expiresAt:new Date(Date.now()+3600000).toISOString()}).operation;
  const nativeEvidence=createNativePaymentEvidenceConsumer({rpcUrl:sourceCapability.pins.endpoint,sourceCapability});
- const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerTransport,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess});
+ const service=createProtocolPurchases({db,ops,coordinates:{unresolvedForSender:()=>[]},dacsProtocol:{walletAgreement:walletConfig,nativeSellerCommitment:commitment,nativeAgreementPayment:sourceCapability,nativePaymentEvidence:nativeEvidence,sellerTransport,sellerEndpoint:()=> 'https://seller.invalid'},store,buyerAccess,feeCeilingOs:'50000000000',chain:{getTransactionFees:async()=>1n},receiptFeeCeilings:{payFeeCeilingOs:'1000',anchorFeeCeilingOs:'2000'},buyerMandateCapOs:'100000000000'});
  return {op,ops,service};
 }
 test('host chain-readback bookkeeping keeps its source and records a repeated hold once', t => {

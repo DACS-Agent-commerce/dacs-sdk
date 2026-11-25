@@ -12,8 +12,8 @@ import { mock } from 'node:test';
 import DatabaseSync from 'better-sqlite3';
 import * as core from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, DACS_SELLER_HTTP_HEADER, inspectWireOperation, openWireRequestJournal } from '@kynesyslabs/dacs/wire';
-import { testWallet } from './protocol-fixture.mjs';
-import { integrityRoleOf } from './agent-signing.mjs';
+import { RECEIPT_FEE_CEILINGS, testWallet } from './protocol-fixture.mjs';
+import { integrityRoleOf, readOnlyRoleOf } from './agent-signing.mjs';
 import { T0 } from './reservation-accounting-fixture.mjs';
 import { sellerApi as seller } from './seller-internal-api.mjs';
 import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
@@ -23,6 +23,7 @@ import { createSessionAdmissionFixture } from './session-admission-fixture.mjs';
 import { presentContextAnswer } from './host-context-callbacks.mjs';
 import { hostBuyer } from './host-context-client.mjs';
 import { wireAuthentication, wireBuyer } from './wire-buyer.mjs';
+import { signedBuyerClient } from './signed-buyer-driver.mjs';
 import { fetchAsHost, proxyListener } from './listener-host.mjs';
 import { createSellerTransportStore, sellerStoreInternals } from '../../src/dacs/seller-transport-auth.mjs';
 import { createPurchaseCapacity } from '../../src/dacs/seller-purchase-capacity.mjs';
@@ -148,6 +149,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   } };
   // The host takes the key's roles: the effect signer above and a journal-only integrity role over it.
   sellerSigner.integritySigner = integrityRoleOf(sellerSigner);
+  sellerSigner.readOnlyAnswerSigner = readOnlyRoleOf(sellerSigner);
 
   const buyerBundles = new Map(), inputs = new Map(), agreements = new Map();
   // The buyer asks the host's challenge route for the job's challenge and presents it on the context route, which admits the session.
@@ -277,7 +279,8 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
     nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: node.rpcUrl, fetchImpl: node.fetchImpl, anchorEvidence: wallet.anchorEvidence, now: clock }),
     reconcilePaymentEvidence: wallet.reconcilePaymentEvidence, demDeliveryContext,
     nativeDemDelivery: createDevnetDemoDeliveryCapability({ authority: AUTHORITY, anchor: { ...artifactAnchor, authority: AUTHORITY }, deliveryEvidenceEnabled: true }),
-    railAuthority: rails.authority, sessionAdmission: admission.sessionAdmission, ...hostAuthority(), listener: proxyListener({ publicOrigin: listing.seller.publicEndpoint }), now: clock, artifactAnchor, dataDirectory });
+    railAuthority: rails.authority, sessionAdmission: admission.sessionAdmission, ...hostAuthority(), listener: proxyListener({ publicOrigin: listing.seller.publicEndpoint }), now: clock, artifactAnchor, dataDirectory,
+    receiptFeeCeilings: RECEIPT_FEE_CEILINGS });
   const start = async () => { const running = await startSellerHost(capabilities()); hosts.push(running); return running; };
   let host = await start();
   // The commitment the buyer attaches to a request: the seller's CREATE as the node and its finality reader show it.
@@ -306,7 +309,7 @@ export async function nativePaymentWorld(t, { directories = null, retained = nul
   const purchase = async ({ resume = null } = {}) => {
     const jobId = resume ?? `01J8N4YV7YVYQ4DB7M8T${String(++jobSequence).padStart(6, '0')}`;
     const plan = core.createFixedPriceAgreementSigningPlan(core.deriveFixedPriceAgreement(await vettedInput(jobId)));
-    const client = () => seller.createSellerAgentClient({ url: host.url, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: hostFetch, authentication: wireAuthentication(
+    const client = () => signedBuyerClient({ url: host.url, timeoutMs: CLIENT_TIMEOUT_MS, fetchImpl: hostFetch, authentication: wireAuthentication(
       { buyer: buyerKey, seller: sellerKey, listingPin: pin, clock, evidenceFor, readCommitmentReceipt, publicEndpoint: listing.seller.publicEndpoint }, () => plan.agreementHash) });
     if (resume === null) {
       const buyerContribution = await core.createFixedPriceAgreementSignatureContribution(plan, 'buyer', { party: buyerKey.claim, algorithm: 'ed25519', sign: buyerKey.sign });

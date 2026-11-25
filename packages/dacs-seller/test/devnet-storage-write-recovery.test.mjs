@@ -188,6 +188,52 @@ test('RPC submission and absence envelopes require exact fields and matching tra
  for(const n of [-1,'01','1.0',Number.MAX_SAFE_INTEGER+1,{},null])assert.equal(storageWriteAccountNonce(n),null);
  assert.equal(storageWriteAccountNonce('12'),12);
 });
+
+// Node e6af8f40 replies: endpointExecution.ts withDisposition and the staked-node
+// check, and transactionHandlers.ts getTxByHash.
+const mempoolReply=(hash,extra={})=>({result:200,response:null,require_reply:false,extra:{confirmationBlock:12,lastBlockNumber:10,published:true,hash,disposition:'mempool',...extra}});
+const notValidatorReply=()=>({result:400,response:{message:'This node is not a staked validator and does not accept transactions; submit to a validator RPC'},require_reply:false,extra:{error:'NOT_A_VALIDATOR'}});
+test('a mempool broadcast reply is accepted only when it names the hash that was sent',()=>{
+ const hash='a'.repeat(64),reply=mempoolReply(hash);
+ assert.equal(classifyStorageWriteSubmission(reply,hash),'accepted');
+ assert.equal(classifyStorageWriteSubmission(mempoolReply(hash,{published:false}),hash),'accepted');
+ const missing=key=>{const extra={...reply.extra};delete extra[key];return {...reply,extra};};
+ for(const answer of [mempoolReply('b'.repeat(64)),mempoolReply(hash.toUpperCase()),mempoolReply(hash,{disposition:'relay'}),mempoolReply(hash,{disposition:undefined}),
+  ...Object.keys(reply.extra).map(missing),mempoolReply(hash,{error:'TEST'}),mempoolReply(hash,{extraKey:1}),
+  mempoolReply(hash,{confirmationBlock:-1}),mempoolReply(hash,{confirmationBlock:null}),mempoolReply(hash,{lastBlockNumber:1.5}),mempoolReply(hash,{published:'true'}),
+  {...reply,result:400},{...reply,require_reply:true},{...reply,response:{hash}},{...reply,response:{message:'Failed to add transaction to mempool'}},{...reply,unexpected:true}])
+  assert.equal(classifyStorageWriteSubmission(answer,hash),'unknown',JSON.stringify(answer));
+ assert.equal(classifyStorageWriteSubmission(reply,undefined),'unknown');
+ // Both node 61b8e75 shapes keep their reading.
+ assert.equal(classifyStorageWriteSubmission({result:200,response:{hash},require_reply:false,extra:null},hash),'accepted');
+ assert.equal(classifyStorageWriteSubmission({result:200,response:{message:'Transaction relayed to validators'},require_reply:false,extra:{confirmationBlock:1}},hash),'accepted');
+});
+test('a node that is not a staked validator answers a definite refusal, never an acceptance',()=>{
+ const hash='a'.repeat(64),reply=notValidatorReply();
+ assert.equal(classifyStorageWriteSubmission(reply,hash),'refused-not-validator');
+ for(const answer of [{...reply,result:200},{...reply,extra:{error:'OTHER'}},{...reply,extra:{error:'NOT_A_VALIDATOR',hash}},{...reply,extra:'NOT_A_VALIDATOR'},
+  {...reply,response:{message:1}},{...reply,response:{message:'x',hash}},{...reply,response:null},{...reply,require_reply:true},{...reply,unexpected:true}])
+  assert.notEqual(classifyStorageWriteSubmission(answer,hash),'refused-not-validator',JSON.stringify(answer));
+ assert.equal(classifyStorageWriteSubmission({...reply,result:200},hash),'unknown');
+});
+test('a not-found lookup proves absence only once the node searched through the last block that could execute the write',()=>{
+ const status={result:200,response:{state:'unknown'},require_reply:false,extra:''},R=100;
+ const notFound=(extra)=>({result:404,response:null,require_reply:false,extra});
+ assert.equal(storageWriteAbsent(status,notFound({reason:'not_found',checkedThroughBlock:R+2}),R),true);
+ assert.equal(storageWriteAbsent(status,notFound({reason:'not_found',checkedThroughBlock:R+50}),R),true);
+ for(const through of [R+1,R,0,-1,R+2.5,'102',null,Number.MAX_SAFE_INTEGER+1])
+  assert.equal(storageWriteAbsent(status,notFound({reason:'not_found',checkedThroughBlock:through}),R),false,String(through));
+ for(const reference of [undefined,null,-1,1.5,'100',Number.MAX_SAFE_INTEGER])
+  assert.equal(storageWriteAbsent(status,notFound({reason:'not_found',checkedThroughBlock:Number.MAX_SAFE_INTEGER}),reference),false,String(reference));
+ for(const answer of [notFound({reason:'not_found'}),notFound({checkedThroughBlock:R+2}),notFound({reason:'not_found',checkedThroughBlock:R+2,extra:1}),notFound({reason:'missing',checkedThroughBlock:R+2}),
+  notFound(null),{...notFound({reason:'not_found',checkedThroughBlock:R+2}),response:'error'},{...notFound({reason:'not_found',checkedThroughBlock:R+2}),result:400},
+  {...notFound({reason:'not_found',checkedThroughBlock:R+2}),require_reply:true},{result:500,response:null,require_reply:false,extra:{reason:'lookup_failed',error:'TEST'}},
+  {result:500,response:null,require_reply:false,extra:{reason:'not_found',checkedThroughBlock:R+2}}])
+  assert.equal(storageWriteAbsent(status,answer,R),false,JSON.stringify(answer));
+ assert.equal(storageWriteAbsent({...status,response:{state:'pending'}},notFound({reason:'not_found',checkedThroughBlock:R+2}),R),false);
+ // The node 61b8e75 answer keeps its reading, with or without a kept reference block.
+ for(const reference of [R,undefined])assert.equal(storageWriteAbsent(status,{result:400,response:'error',require_reply:false,extra:null},reference),true);
+});
 test('confirmation envelopes reject incomplete or malformed node signatures and confirmation projections',()=>{
  const response={data:{valid:true,reference_block:1,message:'ok',gas_operation:null,transaction:{}},signature:{type:'ed25519',data:'0x'+'a'.repeat(128)},rpc_public_key:{type:'ed25519',data:'0x'+'b'.repeat(64)}};
  assert.equal(storageWriteConfirmationMatches(response),true);

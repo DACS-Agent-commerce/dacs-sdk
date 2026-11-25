@@ -16,6 +16,20 @@
 // `signer_reservation_uncertain`: an abort while the approval is still being prepared, and a store of the signed bytes whose
 // result cannot be read back.
 //
+// `approveAhead` takes the approval outside every pass, holding no lock, queue, fence or pass while the operator decides. With
+// the same checks before it reserves and right before it asks (wallet lock, purchase hold, the ledger's `revocationGeneration()`,
+// one synchronous `stopped()` read), it claims and plans as a fresh claim does, asks `prepare`, binds the answer and resolves a
+// hold for those exact bytes (`approval-hold.mjs`). `signCreate(input, {approval})` uses it once in the caller's pass: only this
+// adapter's hold is taken, the input, reservation, open authorization, chain nonce and fee reads must be the approved ones, and
+// the gate's last synchronous run checks that the hold is current right before the planned bytes are signed. An unused or failed
+// hold retires the reservation as above, after a grant the operator gave alone is settled `released` by its token. Until then
+// the signer stays reserved, and other writes of it are refused `signer_lane_busy`.
+//
+// `approveSendAhead` does the same for kept bytes: with the same checks, it runs the broadcast's authorization step below before
+// the pass and resolves a send hold. Only a replacement's `prepare` runs outside the queue, and it holds no lock, fence or pass.
+// `broadcast(retained, {approval})` then asks the ledger nothing new: the authorization must still be the reservation's and open,
+// and the gate's last synchronous run before `broadcastTx` checks that the hold is current. Releasing a send hold changes nothing.
+//
 // `broadcast` acts on the signed bytes the reservation holds, once per call and with no retry:
 //   authorization  the stored approval id is reopened. An id the ledger no longer holds open may have been spent by an execution
 //                  whose reservation write did not commit, so the chain is read for the held bytes first, with the readback below:
@@ -38,10 +52,11 @@ import { OperationError } from '../client-errors.mjs';
 import { creationProvenanceMatches } from '../dacs/demos-sr2-adapter.mjs';
 import { buildStorageProgramCreatePayload, deriveStorageAddress } from '../dacs/wallet-transactions.mjs';
 import { classifyStorageWriteSubmission, rpcEnvelope, storageWriteAccountNonce, storageWriteConfirmationMatches, storageWriteIdentityMatches } from '../devnet-demo/storage-write-recovery.mjs';
-import { AUTHORITY_READ_DEADLINE_MS } from '../public-admission.mjs';
+import { AUTHORITY_READ_DEADLINE_MS, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
 import { EmbeddedWalletError } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
 import { fetchBoundedJson, observeWithDeadline, settleOnAbort } from '../util/http.mjs';
+import { assertNotStoppedNow, createApprovalHold, endApprovalHold, takeApprovalHold } from './approval-hold.mjs';
 import { nativeWalletLaneKey } from './devnet-native-transport.mjs';
 import { hasKeys } from './payload-helpers.mjs';
 import { signerReservationKey } from './signer-reservation.mjs';
@@ -141,13 +156,19 @@ function planCreate(request, { signer, nonce, timestamp, postFork, networkFeeDem
 /**
  * Creates the payment-evidence CREATE adapter over the composition's signer reservations and a Demos instance bound to the
  * seller's wallet. `owner`, `fetchImpl` and `stamps` are the composition's transport owner, its effect-gated fetch and its RPC
- * stamp source; `recordCause(answer, error)` keeps the cause of a `pending` answer. Returns `{signCreate, broadcast,
- * readAccountNonce, readTransactionState}`. `signCreate(input, {signal})` resolves `{signedTransaction, txHash, nonce}`: the JSON
+ * stamp source; `recordCause(answer, error)` keeps the cause of a `pending` answer. Returns `{approveAhead, approveSendAhead,
+ * signCreate, broadcast, readAccountNonce, readTransactionState}`. `signCreate(input, {signal})` resolves `{signedTransaction, txHash, nonce}`: the JSON
  * of exactly `{hash, content, signature}`, its hash and its account nonce. It must run inside the caller's effect pass and
  * sends nothing. It rejects `signer_input_invalid`, `signer_lane_busy`, `locked` (the session's wallet is locked),
  * `user_rejected` (a refused or failed approval, cause kept), `approval_mismatch`, `node_reply_invalid`, the gate's or the
  * signer's own error, an abort's reason, the reservation's own refusals, and `signer_reservation_uncertain` when the
- * reservation is kept (see above).
+ * reservation is kept (see above). Given `{approval}`, a hold from `approveAhead`, it asks the ledger nothing and also rejects
+ * `approval_required` (a hold not this adapter's or no longer current, or a changed reservation or authorization).
+ * `approveAhead(input, {signal})` runs outside every effect pass and resolves `{answer}`, the bytes already stored for this input,
+ * or `{approval}`, a hold whose `release()` never rejects: `{released: true}`, or `{released: false}` with the cause kept by
+ * `recordCause`. Before it reserves and again before it asks it rejects `locked`, `profile_not_admitted`, `approval_required`
+ * (the ledger has no `revocationGeneration()`) and the stop codes of `stopped`, the composition's stop check, which it must
+ * answer synchronously; then it rejects as `signCreate` does for the same steps. Every member's `signal` is optional.
  * `broadcast({signedTransaction, txHash}, {signal})` must also run in an effect pass. It resolves `{status: 'accepted', txHash}`
  * after one dispatch of the held bytes and signs nothing. It rejects `retained_transaction_invalid` (the reservation does not
  * hold exactly these bytes, at the start or at the send; nothing was sent), the observer's refusal (the node does not serve the
@@ -157,18 +178,33 @@ function planCreate(request, { signer, nonce, timestamp, postFork, networkFeeDem
  * stored authorization is no longer open and the chain shows the execution, which ended the reservation; nothing was sent),
  * `confirm_rejected` (the node refused the confirmation), `outcome_unknown` (the confirmation or the dispatch has no valid answer;
  * the cause is kept), `locked`, or an abort's reason before the dispatch starts.
+ * `approveSendAhead({signedTransaction, txHash}, {signal})` runs outside every effect pass, with `approveAhead`'s checks before its
+ * reads and again before it asks for a replacement. It resolves `{approval}`, a send hold for the authorization of the held bytes,
+ * and rejects as `broadcast` does before the dispatch. Given `{approval}`, `broadcast` asks the ledger nothing new and also rejects
+ * `approval_required` (a hold not this adapter's or for other bytes, or an authorization no longer the reservation's, open or
+ * current, also at the gate's last check before the send; nothing was sent).
  * `readAccountNonce({signal})` resolves the account nonce, or rejects `node_reply_invalid` or `invalid_nonce`.
  * `readTransactionState({signedTransaction, txHash, nonce}, {signal})` resolves `{state: 'applied' | 'pending'}` and never rejects
  * for a failed read; a `pending` answer's cause is `internalCauseOf(answer)`. It starts no read after an abort. The seller journal
  * passes the bytes and nonce it keeps, which also reads a CREATE whose reservation has ended. Given `{txHash}` alone, it reads back
  * the bytes and nonce of the reservation holding that hash, and is `pending` when none does.
  */
-export function createPaymentEvidenceCreateAdapter({ reservations, approval, demos, observer, journal, pins, clock, rpcUrl, isWalletLocked, owner, fetchImpl, stamps, recordCause }) {
+export function createPaymentEvidenceCreateAdapter({ reservations, approval, demos, observer, journal, pins, clock, rpcUrl, isWalletLocked, owner, fetchImpl, stamps, stopped, recordCause }) {
   const signer = String(demos.getAddress()).toLowerCase(), inQueue = createQueue();
+  // The sign attempts of `approveAhead` that this adapter made and that have not ended.
+  const liveAttempts = new Set();
 
   // The adapter holds its own Demos instance, so the session's lock does not stop it; this check makes a locked wallet sign nothing.
   function assertUnlocked() {
     if (isWalletLocked()) throw new EmbeddedWalletError('locked', 'the wallet is locked; nothing was signed');
+  }
+  // Runs before an ahead approval reserves anything and again in the same synchronous step that asks the ledger.
+  function assertReadyToAsk() {
+    assertUnlocked();
+    if (!purchaseActionsAdmitted()) throw notAdmittedError();
+    const reportsWithdrawals = typeof approval.revocationGeneration === 'function';
+    if (!reportsWithdrawals) throw refuse('approval_required', new Error('the approval ledger cannot report a withdrawal synchronously; nothing was reserved or asked'));
+    assertNotStoppedNow(stopped);
   }
   async function assertNativeLaneIdle() {
     const lane = await journal.get(nativeWalletLaneKey(pins, signer));
@@ -206,31 +242,50 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     return answer;
   }
 
-  // Signs a fresh claim and stores the bytes. Every failure before they are stored retires the reservation, except an abort
-  // during the preparation, which keeps it.
-  async function signFresh(request, reservation, nonce, signal) {
-    let held = reservation, signed;
-    try {
-      const plan = planCreate(request, { signer, nonce, timestamp: clock.now(), pins, assertUnlocked, ...await readDebitInputs(signal) });
-      const requestText = JSON.stringify(plan.approvalRequest);
-      signal.throwIfAborted();
-      held = await reservations.bindApprovalIntent(held, requestText);
-      held = await reservations.bindApproval(held, await prepareApproval(requestText, signal));
-      signal.throwIfAborted();
-      await connected();
-      signed = await settleOnAbort(demos.sign(structuredClone(plan.transaction), { nonce, finalContent: plan.finalContent }), signal);
-    } catch (error) {
-      if (error?.code !== UNCERTAIN) await reservations.retireUnsigned(held);
-      throw error;
-    }
+  // Every failure before the signed bytes are stored retires the reservation, except an abort during the preparation and a
+  // store whose read-back cannot decide, which keep it: an uncertain store was read back by the reservation and stays.
+  async function retireUnlessUncertain(held, error) {
+    if (error?.code !== UNCERTAIN) await reservations.retireUnsigned(held);
+  }
+  // Reads the fees, plans the CREATE at `nonce` and stores its exact approval request on the reservation.
+  async function planFresh(request, reservation, nonce, signal) {
+    const debitInputs = await readDebitInputs(signal);
+    const plan = planCreate(request, { signer, nonce, timestamp: clock.now(), pins, assertUnlocked, ...debitInputs });
+    const requestText = JSON.stringify(plan.approvalRequest);
+    signal.throwIfAborted();
+    return { held: await reservations.bindApprovalIntent(reservation, requestText), plan, requestText, debitInputs };
+  }
+  // Asks the ledger for the stored request and binds its answer. Given an attempt, the answer is kept on it as soon as the ledger
+  // gives it, so a manual grant whose binding then fails is still settled.
+  async function approveFresh(held, requestText, signal, attempt = null) {
+    const binding = await prepareApproval(requestText, signal);
+    if (attempt) attempt.binding = binding;
+    return { held: await reservations.bindApproval(held, binding), binding };
+  }
+  // Signs the planned bytes of an approved claim `{request, held, plan, nonce}` and stores them. `finalCheck` runs in the gate's
+  // last synchronous run, right before the plan's own final content check and the inner signature. A signature that arrives
+  // after an abort is dropped.
+  async function signPlanned({ request, held, plan, nonce }, signal, finalCheck) {
+    signal.throwIfAborted();
+    await connected();
+    const finalContent = content => { finalCheck(); return plan.finalContent(content); };
+    const signed = await settleOnAbort(demos.sign(structuredClone(plan.transaction), { nonce, finalContent }), signal);
     const projectionText = JSON.stringify({ hash: signed.hash, content: signed.content, signature: { type: signed.signature.type, data: signed.signature.data } });
-    try { await reservations.bindSigned(held, { txHash: signed.hash, projectionText, inputDigest: request.inputDigest }); }
-    catch (error) {
-      // An uncertain store was read back by the reservation and stays; any other failure proves the bytes are not stored.
-      if (error?.code !== UNCERTAIN) await reservations.retireUnsigned(held);
+    await reservations.bindSigned(held, { txHash: signed.hash, projectionText, inputDigest: request.inputDigest });
+    return { signedTransaction: projectionText, txHash: signed.hash, nonce };
+  }
+  // Signs a fresh claim in one call and stores the bytes.
+  async function signFresh(request, reservation, nonce, signal) {
+    let held = reservation;
+    try {
+      const { plan, requestText, held: intended } = await planFresh(request, held, nonce, signal);
+      held = intended;
+      ({ held } = await approveFresh(held, requestText, signal));
+      return await signPlanned({ request, held, plan, nonce }, signal, () => {});
+    } catch (error) {
+      await retireUnlessUncertain(held, error);
       throw error;
     }
-    return { signedTransaction: projectionText, txHash: signed.hash, nonce };
   }
 
   // The retained text as a signed storage CREATE of this signer: its hash, its signature and its shape.
@@ -259,10 +314,11 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     if (reopened?.ledgerId !== approvalId || reopened.requestText !== requestText) throw refuse('approval_mismatch');
     return reopened;
   }
-  // The exact request's open authorization, else a new one. A preparation that failed may have committed, so it is read back first.
-  async function replacementApproval(requestText, signal) {
+  // The exact request's open authorization, else a new one; with `ask` false, the open one or null. A preparation that failed may
+  // have committed, so it is read back first.
+  async function replacementApproval(requestText, signal, ask = true) {
     const open = await settleOnAbort(approval.open(requestText), signal);
-    if (open !== null) return open;
+    if (open !== null || !ask) return open;
     try { return await prepareApproval(requestText, signal); }
     catch (cause) {
       const committed = await settleOnAbort(approval.open(requestText), signal);
@@ -273,19 +329,28 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
   // Reopens the stored authorization by id. One the ledger no longer holds open is replaced only after the chain shows the held bytes
   // never ran (`assertNotExecuted`) and the ledger shows the authorization was not spent (`assertNotSpent`), and the reservation
   // stores the replacement's id before anything is sent. A manual authorization has no id and is asked for again; it also reads the
-  // chain for the held bytes before every broadcast.
-  async function replayApproval(held, signal) {
+  // chain for the held bytes before every broadcast. With `ask` false nothing is prepared, and null means nothing is open.
+  async function replayApproval(held, signal, { ask = true } = {}) {
     const { approvalId, approvalIntent: requestText } = held.active;
     try {
       const reopened = approvalId === null ? null : await reopenApproval(approvalId, requestText, signal);
       if (reopened !== null) return reopened;
       await assertNotExecuted(held.active.signed.txHash, signal);
       if (approvalId !== null) await assertNotSpent({ ledgerId: approvalId, requestText }, signal);
-      const binding = await replacementApproval(requestText, signal);
-      if (binding?.requestText !== requestText) throw refuse('approval_mismatch');
-      if (binding.ledgerId !== null && binding.ledgerId !== approvalId) await reservations.renewApproval(held, binding);
-      return binding;
+      const binding = await replacementApproval(requestText, signal, ask);
+      return binding === null && !ask ? null : await renewedBinding(held, binding);
     } catch (cause) { throw signal.aborted || cause?.code === ALREADY_EXECUTED ? cause : refuse('approval_required', cause); }
+  }
+  // The replacement must be for the held request; the reservation stores a new id before anything is sent.
+  async function renewedBinding(held, binding) {
+    if (binding?.requestText !== held.active.approvalIntent) throw refuse('approval_mismatch');
+    if (binding.ledgerId !== null && binding.ledgerId !== held.active.approvalId) await reservations.renewApproval(held, binding);
+    return binding;
+  }
+  // Asks for the held request's replacement, outside the queue: its open authorization again, else a new one, then the renewal.
+  async function askReplacement(held, signal) {
+    try { return await renewedBinding(held, await replacementApproval(held.active.approvalIntent, signal)); }
+    catch (cause) { throw signal.aborted ? cause : refuse('approval_required', cause); }
   }
   // An authorization is settled spent only by a consume after a proven execution, so an execution whose reservation write did not
   // commit leaves a record naming a spent id. The readback runs on the held hash before any replacement: a proven execution ends the
@@ -313,21 +378,23 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     }
   }
 
-  // One bounded request to the pinned node, after the transport's current context is checked against the pins.
-  async function fetchPinned(url, options, signal) {
+  // One bounded request to the pinned node, after the transport's current context is checked against the pins. A `finalCheck`
+  // reaches the composition's `fetchImpl` as its third argument, which runs it in the gate's last synchronous run before the send.
+  async function fetchPinned(url, options, signal, finalCheck) {
     signal.throwIfAborted();
     const context = await owner.getContext();
     if (context.network !== pins.network || context.endpoint !== pins.endpoint || context.transportAuthority !== pins.transportAuthority) throw refuse('transport_mismatch');
     signal.throwIfAborted();
-    return fetchBoundedJson(url, { ...options, fetchImpl, signal, timeoutMs: AUTHORITY_READ_DEADLINE_MS, maxBytes: NODE_REPLY_MAX_BYTES, expectedOrigin: new URL(pins.endpoint).origin });
+    const send = finalCheck ? (input, init) => fetchImpl(input, init, { finalCheck }) : fetchImpl;
+    return fetchBoundedJson(url, { ...options, fetchImpl: send, signal, timeoutMs: AUTHORITY_READ_DEADLINE_MS, maxBytes: NODE_REPLY_MAX_BYTES, expectedOrigin: new URL(pins.endpoint).origin });
   }
-  const post = (body, headers, signal) => fetchPinned(pins.endpoint, { method: 'POST', body, headers }, signal);
+  const post = (body, headers, signal, finalCheck) => fetchPinned(pins.endpoint, { method: 'POST', body, headers }, signal, finalCheck);
   // A confirmTx or broadcastTx body with fresh authentication headers from the wallet's stamp source; the effect gate runs in `fetchImpl`.
-  async function execute(stage, data, signal) {
+  async function execute(stage, data, signal, finalCheck) {
     signal.throwIfAborted();
     const identity = `ed25519:${signer}`, timestamp = String(stamps.next(identity));
     const { data: signature } = await settleOnAbort(demos.signMessage(sha256Hex(`${identity}:${timestamp}`), { algorithm: 'ed25519', raw: true }), signal);
-    return post({ method: 'execute', params: [{ message: '', data, extra: stage }] }, { identity, timestamp, signature }, signal);
+    return post({ method: 'execute', params: [{ message: '', data, extra: stage }] }, { identity, timestamp, signature }, signal, finalCheck);
   }
   async function nodeRead(message, data, signal) {
     const answer = await post({ method: 'nodeCall', params: [{ message, data }] }, {}, signal);
@@ -351,12 +418,14 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     if (!validity.response.data.valid) throw refuse('confirm_rejected', new Error(validity.response.data.message));
     return validity;
   }
-  async function replay(retained, signal) {
+  // With a taken send hold `{hold, attempt}`, the authorization is the hold's, checked again and never asked for anew, and the
+  // hold must still be current right before the dispatch and in the gate's last synchronous run before the send.
+  async function replay(retained, signal, { hold = null, attempt = null } = {}) {
     assertUnlocked();
     signal.throwIfAborted();
     const tx = parseRetained(retained), held = await reservationHolding(retained);
     if (held === null) throw refuse(RETAINED_INVALID);
-    const binding = await replayApproval(held, signal);
+    const binding = attempt ? await heldSendApproval(held, attempt, signal) : await replayApproval(held, signal);
     assertApprovalCovers(binding.requestText, tx.content);
     // The confirmation reaches the approval, so it is asked only of a node whose chain is the pinned one.
     await observer.observe({ signal });
@@ -366,20 +435,28 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
       if (!paymentEvidenceConfirmationMatches(validity, retained.signedTransaction)) throw new Error('the confirmation changed during the policy check');
     } catch (cause) { throw signal.aborted ? cause : refuse('approval_required', cause); }
     signal.throwIfAborted();
-    return dispatchHeld(retained, validity, signal);
+    if (hold && hold.revision() === null) throw refuse('approval_required', new Error('the approval held for this send is no longer current; nothing was sent'));
+    return dispatchHeld(retained, validity, signal, hold);
   }
   // The send runs under the signer's reservation lock: a native write holds it from its reservation check through its send, and a
   // readback holds it to end the reservation. So the reservation is read again under it and must still hold exactly these bytes.
   // Only this lock is taken, never a lane lock, so the native transport's order (lane lock, then this one) is never reversed.
-  function dispatchHeld(retained, validity, signal) {
+  // With a hold, the gate checks it in its last synchronous run before the send; that refusal comes before anything is sent.
+  function dispatchHeld(retained, validity, signal, hold = null) {
+    let refusedAtBarrier = false;
+    const finalCheck = hold ? () => {
+      if (hold.revision() !== null) return;
+      refusedAtBarrier = true;
+      throw new EmbeddedWalletError('approval_required', 'the approval held for this send is no longer current; nothing was sent');
+    } : undefined;
     return journal.withWalletLock(signerReservationKey(pins, signer), async () => {
       if (await reservationHolding(retained) === null) throw refuse(RETAINED_INVALID);
       signal.throwIfAborted();
       try {
-        const answer = await execute('broadcastTx', validity, signal);
+        const answer = await execute('broadcastTx', validity, signal, finalCheck);
         if (classifyStorageWriteSubmission(answer, retained.txHash) !== 'accepted') throw refuse('node_reply_invalid');
         return { status: 'accepted', txHash: retained.txHash };
-      } catch (cause) { throw refuse('outcome_unknown', cause); }
+      } catch (cause) { throw refuse(refusedAtBarrier ? 'approval_required' : 'outcome_unknown', cause); }
     });
   }
 
@@ -470,26 +547,183 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     await transactionState({ txHash: active.signed.txHash }, signal);
     signal.throwIfAborted();
   }
+  // Claims the signer for the input: `{answer}` (its stored bytes) or `{reservation, nonce}`. A stored request without bytes is
+  // uncertain, or busy while this adapter's own ahead approval for it is in progress.
+  async function claimFor(request, signal) {
+    await freeSignerIfExecuted(request.logicalAddress, signal);
+    // The lane is checked under the signer's lock, the lock the native transport holds to issue a write, so no write is issued between this check and the claim.
+    const { reservation, nonce } = await reservations.reserve({ signer, operation: OPERATION, operationKey: request.logicalAddress, readChainNonce, signal, beforeClaim: assertNativeLaneIdle });
+    const { signed, approvalIntent, attemptId } = reservation.active;
+    if (signed !== null) {
+      if (signed.inputDigest !== request.inputDigest) throw refuse('signer_lane_busy');
+      return { answer: { signedTransaction: signed.projectionText, txHash: signed.txHash, nonce } };
+    }
+    if (approvalIntent === null) return { reservation, nonce };
+    const inProgress = [...liveAttempts].some(attempt => attempt.kind === 'sign' && attempt.held.active.attemptId === attemptId);
+    if (inProgress) throw refuse('signer_lane_busy', new Error('an approval for this evidence is in progress; nothing was signed'));
+    throw refuse(UNCERTAIN, new Error('an earlier call stopped while its approval could still be prepared'));
+  }
+
+  // A grant the operator gave alone has no ledger id, and the reservation settles nothing for it: it is ended here by its token.
+  async function settleManualGrant({ binding }) {
+    if (binding?.ledgerId === null) await approval.settle(binding, 'released', 'unsigned-retired');
+  }
+  // Ends a sign attempt that failed before its bytes were stored. A manual grant is settled first; if that fails, its cause is
+  // recorded on `error` and the reservation is kept. With `retire` false the reservation is no longer the attempt's and stays.
+  async function retireAttempt(attempt, error, { retire = true } = {}) {
+    liveAttempts.delete(attempt);
+    if (error?.code === UNCERTAIN) return;
+    try { await settleManualGrant(attempt); } catch (cause) {
+      if (Object(error) === error) recordCause(error, cause);
+      return;
+    }
+    if (retire) await retireUnlessUncertain(attempt.held, error);
+  }
+  // Settles an unused hold. Never rejects: a failure is `{released: false}` with its cause, and recovery retires the reservation.
+  // A send hold's authorization stays with the kept bytes, which the reservation keeps.
+  async function releaseAttempt(attempt) {
+    liveAttempts.delete(attempt);
+    if (attempt.kind === 'send') return Object.freeze({ released: true });
+    try {
+      await settleManualGrant(attempt);
+      await reservations.retireUnsigned(attempt.held);
+      return Object.freeze({ released: true });
+    } catch (error) {
+      const answer = Object.freeze({ released: false });
+      recordCause(answer, error);
+      return answer;
+    }
+  }
+  // Claims and plans in the queue, then asks outside it, right after the checks run again with no await in between.
+  async function approveClaim(request, signal) {
+    const claim = await inQueue(signal, async () => {
+      const claimed = await claimFor(request, signal);
+      if (claimed.answer) return claimed;
+      const attempt = { kind: 'sign', request, held: claimed.reservation, nonce: claimed.nonce, binding: null };
+      liveAttempts.add(attempt);
+      try { Object.assign(attempt, await planFresh(request, attempt.held, attempt.nonce, signal)); }
+      catch (error) { await retireAttempt(attempt, error); throw error; }
+      return { attempt };
+    });
+    if (claim.answer) return { answer: claim.answer };
+    const { attempt } = claim;
+    try {
+      assertReadyToAsk();
+      attempt.held = (await approveFresh(attempt.held, attempt.requestText, signal, attempt)).held;
+    } catch (error) { await retireAttempt(attempt, error); throw error; }
+    return { approval: createApprovalHold({ requestText: attempt.requestText, attempt, stopped,
+      revocationGeneration: () => approval.revocationGeneration(), settle: releaseAttempt }) };
+  }
+  // The ledger still holds the attempt's authorization open: its id reopens, or a manual grant is open under the same token.
+  // Returns the ledger's answer.
+  async function assertAuthorizationOpen(binding, signal) {
+    let open;
+    try {
+      open = binding.ledgerId === null ? await settleOnAbort(approval.open(binding.requestText), signal) : await reopenApproval(binding.ledgerId, binding.requestText, signal);
+    } catch (cause) { throw signal.aborted ? cause : refuse('approval_required', cause); }
+    const stillOpen = binding.ledgerId === null ? open?.ledgerId === null && open.requestText === binding.requestText && open.token === binding.token : open !== null;
+    if (!stillOpen) throw refuse('approval_required', new Error('the approval is no longer open; nothing was signed or sent'));
+    return open;
+  }
+  // A send hold's authorization must still be the reservation's and still open; nothing is asked of the ledger.
+  async function heldSendApproval(held, { binding }, signal) {
+    const { approvalId, approvalIntent } = held.active;
+    if (approvalIntent !== binding.requestText || approvalId !== binding.ledgerId) throw refuse('approval_required', new Error('the reservation no longer holds the approved authorization; nothing was sent'));
+    return assertAuthorizationOpen(binding, signal);
+  }
+  // The chain's next nonce and the fee reads must still be the ones the approved bytes were planned from.
+  async function assertPlannedInputs(attempt, current, signal) {
+    const chain = await readChainNonce({ signal });
+    if (!Number.isSafeInteger(chain) || chain < 0) throw refuse('invalid_nonce');
+    if (Math.max(chain + 1, current.floor) !== attempt.nonce) throw refuse('approval_mismatch');
+    const { postFork, networkFeeDem, rpcFeeDem } = await readDebitInputs(signal), planned = attempt.debitInputs;
+    if (postFork !== planned.postFork || networkFeeDem !== planned.networkFeeDem || rpcFeeDem !== planned.rpcFeeDem) throw refuse('approval_mismatch');
+  }
+  const ownsSignAttempt = attempt => attempt.kind === 'sign' && liveAttempts.has(attempt);
+  // Uses this adapter's current hold once, in the caller's pass; a refusal before the bytes are stored retires the attempt.
+  async function signWithHold(request, hold, signal) {
+    const attempt = takeApprovalHold(hold, ownsSignAttempt);
+    if (attempt === null) throw refuse('approval_required', new Error('the approval held for this CREATE is gone, used, stopped, withdrawn or not this wallet\'s; nothing was read or signed'));
+    let retire = true;
+    const finalCheck = () => {
+      if (hold.revision() === null) throw new EmbeddedWalletError('approval_required', 'the approval held for this CREATE is no longer current; nothing was signed');
+    };
+    try {
+      return await inQueue(signal, async () => {
+        if (request.inputDigest !== attempt.request.inputDigest) throw refuse('approval_mismatch');
+        const current = await reservations.current(signer);
+        if (current?.revision !== attempt.held.revision || current.active?.attemptId !== attempt.held.active.attemptId) {
+          retire = false;
+          throw refuse('approval_required', refuse('signer_reservation_stale'));
+        }
+        await assertAuthorizationOpen(attempt.binding, signal);
+        await assertPlannedInputs(attempt, current, signal);
+        signal.throwIfAborted();
+        return await signPlanned(attempt, signal, finalCheck);
+      });
+    } catch (error) {
+      await retireAttempt(attempt, error, { retire });
+      throw error;
+    } finally {
+      endApprovalHold(hold);
+      liveAttempts.delete(attempt);
+    }
+  }
+  // Makes the kept bytes' authorization current before the pass: every step that asks nobody runs in the queue, and only a
+  // replacement's `prepare` runs outside it, right after the checks run again. Signs and sends nothing.
+  async function approveSend(retained, tx, signal) {
+    const { held, open } = await inQueue(signal, async () => {
+      const holding = await reservationHolding(retained);
+      if (holding === null) throw refuse(RETAINED_INVALID);
+      return { held: holding, open: await replayApproval(holding, signal, { ask: false }) };
+    });
+    let binding = open;
+    if (binding === null) {
+      assertReadyToAsk();
+      binding = await askReplacement(held, signal);
+    }
+    signal.throwIfAborted();
+    assertApprovalCovers(binding.requestText, tx.content);
+    const attempt = { kind: 'send', txHash: retained.txHash, binding };
+    liveAttempts.add(attempt);
+    return { approval: createApprovalHold({ requestText: binding.requestText, attempt, stopped,
+      revocationGeneration: () => approval.revocationGeneration(), settle: releaseAttempt }) };
+  }
+  // Uses this adapter's current send hold for these bytes once, in the caller's pass.
+  async function broadcastWithHold(retained, hold, signal) {
+    const attempt = takeApprovalHold(hold, candidate => candidate.kind === 'send' && liveAttempts.has(candidate) && candidate.txHash === retained?.txHash);
+    if (attempt === null) throw refuse('approval_required', new Error('the approval held for this send is gone, used, stopped, withdrawn or not this wallet\'s; nothing was read or sent'));
+    try { return await inQueue(signal, () => replay(retained, signal, { hold, attempt })); } finally {
+      endApprovalHold(hold);
+      liveAttempts.delete(attempt);
+    }
+  }
 
   return Object.freeze({
-    async signCreate(input, { signal = new AbortController().signal } = {}) {
+    async approveAhead(input, { signal = new AbortController().signal } = {}) {
+      assertReadyToAsk();
+      const request = checkedInput(input, signer);
+      signal.throwIfAborted();
+      return approveClaim(request, signal);
+    },
+    async signCreate(input, { signal = new AbortController().signal, approval: hold } = {}) {
       assertUnlocked();
       const request = checkedInput(input, signer);
       signal.throwIfAborted();
+      if (hold !== undefined) return signWithHold(request, hold, signal);
       return inQueue(signal, async () => {
-        await freeSignerIfExecuted(request.logicalAddress, signal);
-        // The lane is checked under the signer's lock, the lock the native transport holds to issue a write, so no write is issued between this check and the claim.
-        const { reservation, nonce } = await reservations.reserve({ signer, operation: OPERATION, operationKey: request.logicalAddress, readChainNonce, signal, beforeClaim: assertNativeLaneIdle });
-        const { signed, approvalIntent } = reservation.active;
-        if (signed !== null) {
-          if (signed.inputDigest !== request.inputDigest) throw refuse('signer_lane_busy');
-          return { signedTransaction: signed.projectionText, txHash: signed.txHash, nonce };
-        }
-        if (approvalIntent !== null) throw refuse(UNCERTAIN, new Error('an earlier call stopped while its approval could still be prepared'));
-        return signFresh(request, reservation, nonce, signal);
+        const claim = await claimFor(request, signal);
+        return claim.answer ?? signFresh(request, claim.reservation, claim.nonce, signal);
       });
     },
-    broadcast(retained, { signal = new AbortController().signal } = {}) { return inQueue(signal, () => replay(retained, signal)); },
+    async approveSendAhead(retained, { signal = new AbortController().signal } = {}) {
+      assertReadyToAsk();
+      signal.throwIfAborted();
+      return approveSend(retained, parseRetained(retained), signal);
+    },
+    broadcast(retained, { signal = new AbortController().signal, approval: hold } = {}) {
+      return hold === undefined ? inQueue(signal, () => replay(retained, signal)) : broadcastWithHold(retained, hold, signal);
+    },
     async readAccountNonce({ signal = new AbortController().signal } = {}) {
       const nonce = storageWriteAccountNonce(await nodeRead('getAddressNonce', { address: signer }, signal));
       if (nonce === null) throw refuse('invalid_nonce');

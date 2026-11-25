@@ -123,6 +123,7 @@ export function makeCommitment(bid: SealedBid, salt?: string): SealedCommitment 
   if (!saltHasEnoughEntropy(s)) {
     throw new DacsError(
       `sealed-bid salt must be ≥${MIN_SALT_BYTES} bytes of entropy (SE-7)`,
+      { code: "sealed.salt_entropy_low" },
     );
   }
   return { bid, salt: s, bidHash: computeBidHash(bid, s) };
@@ -177,10 +178,13 @@ export function validateSealedParams(
   if (params.commitDeadline < nowMs + MIN_COMMIT_LEAD_MS) {
     throw new DacsError(
       "commitDeadline MUST be at least 60s in the future at session start (SE-1)",
+      { code: "sealed.commit_deadline_too_soon" },
     );
   }
   if (params.revealWindow < MIN_REVEAL_WINDOW_SECONDS) {
-    throw new DacsError("revealWindow MUST be ≥ 60 seconds (§8.4.3)");
+    throw new DacsError("revealWindow MUST be ≥ 60 seconds (§8.4.3)", {
+      code: "sealed.reveal_window_too_short",
+    });
   }
 }
 

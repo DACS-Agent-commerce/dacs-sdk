@@ -334,7 +334,7 @@ const ENTRY_POINTS = ["openWireEnvelope", "checkWireRequest", "checkUnopened", "
 const all = (value: string) => Object.fromEntries(ENTRY_POINTS.map((name) => [name, value]));
 
 describe("built @kynesyslabs/dacs/wire, as a consumer installs it", () => {
-  it("gives no package path to any wire module except ./wire", () => {
+  it("gives no package path to any wire module except ./wire and ./wire/node-endpoint", () => {
     expect(Object.values(shipped.deepImports)).toEqual(Array(4).fill("ERR_PACKAGE_PATH_NOT_EXPORTED"));
   });
 

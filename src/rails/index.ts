@@ -388,6 +388,7 @@ export {
   demosAddressFromClaim,
   normalizeDemosNativeAddress,
   PayDemIncludedNonceVisibilityError,
+  payDemConfirmedNonceSlot,
   payDemConfirmedTotalDebitOs,
   payDemSettle,
   payDemSettleCore,

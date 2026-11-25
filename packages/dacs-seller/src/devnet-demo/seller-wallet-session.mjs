@@ -12,7 +12,7 @@ import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { OperationError } from '../operations.mjs';
 import { SellerKeyError } from '../seller-key.mjs';
 import { createDevnetDemoArtifactAnchor } from './artifact-anchor.mjs';
-import { createSellerCreatePass } from './create-pass.mjs';
+import { createSellerCreatePass, lateSellerCreatePass } from './create-pass.mjs';
 import { createSellerNodeWallet } from './seller-node-wallet.mjs';
 
 const OPTIONS = Object.freeze(['endpoint', 'transportAuthority', 'fetchImpl', 'signer', 'loadKeyRecord', 'approve', 'approvalMode', 'journalMode', 'publications',
@@ -45,9 +45,8 @@ function checkOptions(options) {
 }
 
 // The one place the kit builds the artifact anchor over a finalized session, with the host's binding and connection reader.
-// Its wallet CREATEs and resends run through runCreate, over the host's effect boundary and this session.
-function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, binding, observeIdentity, effectBoundary, stopped, feeCeilingOs }) {
-  const { runCreate } = createSellerCreatePass({ effectBoundary, session, stopped, feeCeilingOs, clock });
+// Its wallet CREATEs and resends run through runCreate, the port's one pass over the host's effect boundary and this session.
+function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, binding, observeIdentity, runCreate }) {
   return createDevnetDemoArtifactAnchor({ sourceCapability: session.transport, journal: session.artifactJournal, walletFactory: session.walletFactory,
     network: session.transport.pins.network, signer, buyerAccess, now: () => clock.now(), vetMode: VET_MODE, binding, observeIdentity, runCreate });
 }
@@ -58,18 +57,23 @@ function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, bind
  * `loadKeyRecord()` (resolves fresh `dacs-seller-key/v1` bytes), `approve`, `approvalMode`, `journalMode`, `publications` and
  * `diagnostics` (passed unchanged to the seller Node wallet), `clock` (wall-clock milliseconds, `Date.now` by default) and
  * `buyerAccess` (the anchor's, `null` by default).
- * Returns a frozen port `{ authority, connectionAuthority, artifactAnchor, finalize(input), close() }`:
+ * Returns a frozen port `{ authority, connectionAuthority, artifactAnchor, runCreate, finalize(input), close() }`:
  * - `authority` is the read-only capability (no sign or send); its `claim()` throws wallet_session_not_finalized until finalize.
  * - `connectionAuthority` is the client's authority reader over it; only its connection scope answers.
  * - `artifactAnchor` is the one anchor handle for the host, the Vet provider and the delivery capability. Its `source`, `authority`,
  *   `writer` and `vetMode` are fixed now; its methods reject wallet_session_not_finalized until finalize binds it to the anchor
  *   composed over the finalized session, and wallet_session_closed after a close, each before any read.
+ * - `runCreate(op, work)` is the one pass finalize builds over the host's effect boundary and the finalized session, the one
+ *   the anchor uses too (createSellerCreatePass); it rejects wallet_session_not_finalized before finalize and wallet_session_closed
+ *   after a close, each before any read. The Vet provider and the Listing publisher take it as their `runCreate`.
  * - `finalize({ binding, effectBoundary, stopped, feeCeilingOs, stateLock, dataDirectory })`, called once by the host's stages
  *   under the state lock, checks that the boundary was built over `binding` and that `binding` is current on this port's connection,
  *   then calls `loadKeyRecord` once, zero-fills what it returned on every outcome, builds the seller Node wallet and resolves the
  *   frozen session `{ effectPass, runInEffectPass, walletFactory, transport, acquireConnectionFence, address, observer, artifactJournal,
  *   paymentEvidence, readBalance, close }`. The session's `close()` closes the handle and the wallet; the port keeps its owner.
  * - `close()` closes a live session, then the owner, once.
+ * `endpoint` is a canonical root URL over https, or over plain http (public Demos testnet nodes serve no https), judged under the
+ * approved TP-1 chain identity; binding then refuses a node whose live chain is another before any key load or signature.
  * Throws KitOperationGuardError, TypeError naming a malformed option, or the client's transport_mismatch. `finalize` rejects with
  * KitOperationGuardError, wallet_session_finalize_once, wallet_session_closed (the wallet build's refusal as `cause` when it failed),
  * wallet_session_boundary_mismatch, the wire's tp1_* refusal, SellerKeyError(seller_key_format_invalid) for a key value that is not a
@@ -80,8 +84,9 @@ export function createSellerWalletSession(options) {
   checkOptions(options);
   const { endpoint, transportAuthority, fetchImpl, signer, loadKeyRecord, approve, approvalMode, journalMode, publications, diagnostics,
     clock = { now: () => Date.now() }, buyerAccess = null } = options;
-  const owner = createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl });
-  let finalizeCalled = false, closed = false, closing = null, session = null, anchor = null;
+  // The port binds only the approved TP-1 record, so its chain identity is the one the owner's endpoint is judged under.
+  const owner = createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl, chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
+  let finalizeCalled = false, closed = false, closing = null, session = null, anchor = null, finalizedRunCreate = null;
   const authority = createNodeAuthorityCapability({ owner, claim: () => {
     if (closed) throw sessionClosed();
     if (anchor === null) throw notFinalized();
@@ -103,6 +108,11 @@ export function createSellerWalletSession(options) {
     if (closed) throw sessionClosed();
     if (anchor === null) throw notFinalized();
     return anchor;
+  };
+  const boundRunCreate = () => {
+    if (closed) throw sessionClosed();
+    if (finalizedRunCreate === null) throw notFinalized();
+    return finalizedRunCreate;
   };
   const artifactAnchor = Object.freeze({ source: ARTIFACT_SOURCE, authority: publications.demoArtifactPublication.authority, writer: signer.claim, vetMode: VET_MODE,
     ...Object.fromEntries(ANCHOR_METHODS.map((name) => [name, async (...args) => boundAnchor()[name](...args)])) });
@@ -149,8 +159,9 @@ export function createSellerWalletSession(options) {
       const wallet = await buildWallet({ binding, stopped, feeCeilingOs, stateLock, dataDirectory, keyRecord });
       try {
         const finalized = sessionOver(wallet);
-        anchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity, effectBoundary, stopped,
-          feeCeilingOs });
+        const { runCreate } = createSellerCreatePass({ effectBoundary, session: finalized, stopped, feeCeilingOs, clock });
+        anchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity, runCreate });
+        finalizedRunCreate = runCreate;
         session = finalized;
         return finalized;
       } catch (error) {
@@ -163,7 +174,7 @@ export function createSellerWalletSession(options) {
   }
 
   const port = Object.freeze({
-    authority, connectionAuthority, artifactAnchor, finalize,
+    authority, connectionAuthority, artifactAnchor, runCreate: lateSellerCreatePass(boundRunCreate), finalize,
     close: () => closing ??= (async () => {
       closed = true;
       try { await session?.close(); } finally { owner.close(); }

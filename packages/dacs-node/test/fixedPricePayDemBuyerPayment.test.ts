@@ -220,6 +220,44 @@ describe("fixed-price pay-dem buyer reconciliation", () => {
     });
   });
 
+  it("asks for a release only after the account nonce is past the prepared nonce", async () => {
+    const pending = { status: "indeterminate", reasonCode: "pay-dem-prepared-transfer-pending" };
+    const notFound = vi.fn(async () => ({ status: "not-found" as const, reason: "not indexed" }));
+    const readAccountNonce = vi.fn<() => Promise<number>>();
+    const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(notFound, readAccountNonce);
+
+    for (const accountNonce of [prepared.nonce - 1, prepared.nonce]) {
+      readAccountNonce.mockResolvedValueOnce(accountNonce);
+      await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual(pending);
+    }
+    readAccountNonce.mockResolvedValueOnce(prepared.nonce + 1);
+    await expect(reconcile({ payment, prepared, fence } as never))
+      .resolves.toEqual({ status: "absent", absenceProofHash: prepared.txHash });
+    readAccountNonce.mockRejectedValueOnce(new Error("wallet-spend-demos-rpc-deadline-exceeded"));
+    await expect(reconcile({ payment, prepared, fence } as never)).resolves.toEqual(pending);
+
+    // Without the reader, a missing transfer stays pending whatever the nonce.
+    await expect(createDacsFixedPricePayDemBuyerReconciliationV1(notFound)({ payment, prepared, fence } as never))
+      .resolves.toEqual(pending);
+
+    // Every other observation answers as before and never reads the nonce.
+    readAccountNonce.mockClear();
+    const otherObservations = [
+      { status: "failed" as const, reason: "transaction state is failed" },
+      { status: "invalid" as const, reason: "failed record" },
+      { status: "included" as const, execution: "executed" as const, nonce: prepared.nonce, txHash: prepared.txHash,
+        payer: payment.payer, payee: payment.payee, amountOs: payment.amountOs, blockNumber: 42, includedAt: 1_000 },
+    ];
+    for (const observation of otherObservations) {
+      const answer = await createDacsFixedPricePayDemBuyerReconciliationV1(async () => observation, readAccountNonce)(
+        { payment, prepared, fence } as never,
+      );
+      expect(answer.status).not.toBe("absent");
+    }
+    await expect(reconcile({ payment, fence } as never)).resolves.toMatchObject({ status: "operator-action" });
+    expect(readAccountNonce).not.toHaveBeenCalled();
+  });
+
   it("fails closed when the observed transfer tuple differs", async () => {
     const reconcile = createDacsFixedPricePayDemBuyerReconciliationV1(
       vi.fn(async () => ({

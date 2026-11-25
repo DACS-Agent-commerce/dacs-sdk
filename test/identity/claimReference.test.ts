@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { DacsError } from "../../src/errors.js";
 import {
   isCanonicalClaimReference,
   parseCanonicalClaimReference,
@@ -147,5 +148,32 @@ describe("CORE B.1 canonical ClaimReference", () => {
   it("fails closed through the throwing boundary", () => {
     expect(() => requireCanonicalClaimReference("did:demos:agent:abc?a=%"))
       .toThrow(/CORE B\.1 CF-2/);
+  });
+
+  it.each([
+    [
+      "the default label",
+      () => requireCanonicalClaimReference("not a ref"),
+      "ClaimReference must use canonical CORE B.1 CF-2 bytes",
+    ],
+    [
+      "a given label",
+      () => requireCanonicalClaimReference("not a ref", "buyer reference"),
+      "buyer reference must use canonical CORE B.1 CF-2 bytes",
+    ],
+  ])("a refused reference with %s carries its catalog code", (_name, call, message) => {
+    let thrown: unknown;
+    try {
+      call();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(DacsError);
+    expect(thrown).toMatchObject({
+      code: "identity.claim_reference_noncanonical",
+      category: "permanent",
+      message,
+    });
+    expect(Object.keys(thrown as object).sort()).toEqual(["category", "code", "name"]);
   });
 });

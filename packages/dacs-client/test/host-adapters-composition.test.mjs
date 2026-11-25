@@ -81,3 +81,14 @@ test('approval runs through the public purchase service on the shipped adapters:
   assert.equal(world.ops.get(world.accountId, operation.id).status, status);
   assert.equal(world.chain.broadcasts, broadcasts);
 });
+
+test('an approved purchase without native payment still receives its payment payload from prepareHandoff: the seller receipt check applies only to native payment', async (t) => {
+  admitted(t);
+  const world = await compositionWorld(t, { shippedAdapters: true });
+  const { operation, token } = world.seed({ status: 'approved', key: 'TEST-non-native', currentListing: true });
+  const result = await world.service.prepareHandoff({ operationId: operation.id, token });
+  assert.ok(result.payload, 'the payment payload is offered');
+  assert.equal(result.refused, undefined);
+  assert.equal(world.ops.get(world.accountId, operation.id).status, 'payment_handoff');
+  assert.equal(world.ops.history(operation.id).some((event) => event.type === 'handoff_refused'), false);
+});

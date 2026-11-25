@@ -2,6 +2,7 @@
 // card's title; nonces are random at run time, so tests compare shapes, codes and counts, never values.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { causeOf } from './helpers/refusal-body.mjs';
 import * as guard from '../src/kit-operation-guard.mjs';
 import { DACS_SELLER_HTTP_HEADER } from '@kynesyslabs/dacs/wire';
 import { SellerTransportError, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
@@ -174,7 +175,7 @@ test('A39 a challenge while stopped is refused seller_stopped 503; a throwing pr
     const sql = watchSql(t);
     const answer = await w.post(signed);
     assert.deepEqual(summary(answer), [503, 'seller_stopped']);
-    assert.equal(answer.body.cause, cause, 'the cause stays visible in the signed answer');
+    assert.equal(causeOf(answer.body), cause, 'the cause stays visible in the signed answer');
     await signed.verify(answer);
     assertNothingWritten(w, sql);
     w.state.stop = () => false;
