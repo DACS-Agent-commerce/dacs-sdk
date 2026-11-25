@@ -1316,9 +1316,11 @@ async function purchaseRefusal(row,c,artifact,policy,held){
 
 /** Validate one exact seller write request; return null when policy may approve it, else a reason.
  * Checks, in order: the request's shape ('request-shape'), its exact debit ('debit') under limits.maxWriteTotalOs
- * ('write-fee-cap'), its write kind (WRITE_KINDS, 'request-shape'), its exact CREATE and stored bytes against the
- * one expected CREATE ('create-bytes'; a payment-evidence-storage-create request has no stored text, so its artifact
- * is its CREATE's data and its debit is in OS), the artifact's members ('artifact') and logical address ('logical-address'),
+ * ('write-fee-cap'), that its CREATE and stored text can be read (storedArtifact, 'create-bytes'; a
+ * payment-evidence-storage-create request has no stored text, so its artifact is its CREATE's data and its debit is
+ * in OS), its write kind (WRITE_KINDS, 'request-shape'), its exact CREATE and stored bytes against the one expected
+ * CREATE and its storage fee against the stored byte count ('create-bytes'), the artifact's job id ('artifact'),
+ * structure ('artifact-structure'), members ('artifact') and logical address ('logical-address'),
  * then fresh purchase authority (purchaseRefusal). 'seller-record-missing' and 'cancellation-unknown' are holds for
  * exact manual approval, returned only once everything else passes; held (these exact bytes were manually approved)
  * waives them and nothing else. Payment evidence must name the purchase's verified paymentTxRef ('payment-tx');
