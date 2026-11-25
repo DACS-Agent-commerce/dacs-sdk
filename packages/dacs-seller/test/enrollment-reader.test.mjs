@@ -197,6 +197,16 @@ test('two uncached reads send the exact nodeCall body with distinct fresh 64-hex
   assert.ok(!JSON.stringify(node.requests).includes('TEST-session'), 'the session id is never sent');
 });
 
+test('a canonical plain-http node endpoint reads under the approved-chain pin and a non-canonical one is still refused', async (t) => {
+  const httpEndpoint = 'http://127.0.0.1:8080/';
+  const { node, open } = world(t, { endpoint: httpEndpoint });
+  assert.deepEqual(await open().entriesFor(BUYER), [entryFor(BUYER)]);
+  assert.ok(node.urls.length > 2 && node.urls.every((url) => url === httpEndpoint), 'every read goes to the http endpoint');
+  for (const endpoint of ['http://127.0.0.1:8080/path', 'http://user@127.0.0.1:8080/', 'ftp://127.0.0.1/']) {
+    assert.throws(() => open({ endpoint }), undefined, endpoint);
+  }
+});
+
 test('missing malformed extra-key small-order wrong-identity and wrong-signer trust pins refuse and the actual signer pin accepts', async (t) => {
   const { node, options, open } = world(t);
   const { trustedNode } = options;

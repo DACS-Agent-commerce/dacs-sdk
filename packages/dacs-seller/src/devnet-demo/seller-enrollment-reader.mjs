@@ -100,7 +100,7 @@ export function openVerifiedEnrollmentReader({ endpoint, transportAuthority, fet
   parseTrustedNodePin(trustedNode);
   if (!isNonEmptyString(claim)) throw refusal('enrollment_invalid', 'the seller claim is not a nonempty string');
   if (!pinValid(listingPin)) throw refusal('enrollment_invalid', 'the Listing pin is not {listingId, version, contentHash}');
-  const owner = createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl });
+  const owner = createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl, chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
   let observer, capability;
   try {
     observer = createNodeObserver({ owner, clock });
