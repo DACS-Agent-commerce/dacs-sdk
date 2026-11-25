@@ -1,5 +1,6 @@
 // The keystore buyer's read-only paid-write preview: the complete approval request and the content demosdk 4.0.17 finalizes, made from
-// keyless source observations outside any effect pass. Real keystore compositions over the scripted TP-1 node; no network.
+// keyless source observations outside any effect pass; and its one-use approval, spent by one request inside the pass. Real keystore
+// compositions over the scripted TP-1 node; no network.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -9,6 +10,7 @@ import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { agreementRequest, ok, scriptedNode, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
 import { finalizedWorld } from './helpers/finalized-node-world.mjs';
 import { buildCountingSigns, inPlainPass, keystoreDir, keystoreWorld } from './helpers/keystore-world.mjs';
+const { loadNodeDemos } = await import('../src/wallet/node-demos-loading.mjs');
 import { createWorld, queuingFenceOwner } from './helpers/native-create-world.mjs';
 const { openDurableWalletJournal } = await import('../src/wallet/durable-journal.mjs');
 const { buildNativeTransferPayload } = await import('../src/dacs/wallet-transactions.mjs');
@@ -38,8 +40,8 @@ function preFork(node) {
 const demRequest = () => ({ method: 'sendTransaction', params: [buildNativeTransferPayload({ from: SENDER, to: PAYEE, amountOs: '2000000000', nonce: 1, timestamp: T0, encoding: 'dem-number' })] });
 
 /** A built keystore composition with its key signatures counted. */
-async function previewWorld(t, input) {
-  const w = await keystoreWorld(t, keystoreDir(t).file(), input);
+async function previewWorld(t, input, file = keystoreDir(t).file()) {
+  const w = await keystoreWorld(t, file, input);
   const counts = await buildCountingSigns(t, w);
   assert.equal(w.session.wallet.getPublicAccount().address, SENDER);
   return Object.assign(w, { counts });
@@ -160,8 +162,8 @@ test('native and CREATE previews match independent complete approval-content vec
 
 test('unsupported malformed or not-admitted preview requests refuse without a handle key call node read journal write or execute', async t => {
   const w = await previewWorld(t);
-  const viewKeys = ['actionsAdmitted', 'getPublicAccount', 'getWriteProfile', 'isLocked', 'lock', 'preparePaidWrite', 'request'];
-  assert.deepEqual(Object.keys(w.session).sort(), ['binding', 'close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'preparePaidWrite', 'runInEffectPass', 'transport', 'wallet', 'walletFactory', 'withheldReopen']);
+  const viewKeys = ['actionsAdmitted', 'authorizePaidWrite', 'getPublicAccount', 'getWriteProfile', 'isLocked', 'lock', 'preparePaidWrite', 'request'];
+  assert.deepEqual(Object.keys(w.session).sort(), ['authorizePaidWrite', 'binding', 'close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'preparePaidWrite', 'runInEffectPass', 'transport', 'wallet', 'walletFactory', 'withheldReopen']);
   const selected = w.session.walletFactory({ anchorJournal: w.journal });
   for (const view of [w.session.wallet, selected]) assert.deepEqual(Object.keys(view).sort(), viewKeys);
   const before = await snapshot(w);
@@ -199,7 +201,7 @@ test('unqualified or non-testnet bindings refuse preview without a handle key ca
   const preview = binding => createPaidApproval({ projectPaidWrite, transactionTransport, relayOrigin, feeCeilingOs: FEE.feeCeilingOs,
     session: { getPublicAccount: () => ({ address: SENDER }), isLocked: () => false, request: async () => { seen.keyCalls += 1; } },
     transport: { pins: { network: 'demos-testnet', chainIdentity: CHAIN }, inspectWalletNonceLane: async () => null, observeBinding: async () => binding,
-      readRpc: async (_path, body) => ({ result: 200, response: answers[body.params[0].message] }) } }).previewFor(w.journal);
+      readRpc: async (_path, body) => ({ result: 200, response: answers[body.params[0].message] }) } }).viewFor(w.journal, async () => { seen.keyCalls += 1; }).preparePaidWrite;
   const rows = [
     ['another binding version', { ...observed, bindingVersion: 'TEST-binding/v0' }], ['a mainnet network', { ...observed, network: 'demos-mainnet' }],
     ['another chain', { ...observed, chainIdentity: 'e'.repeat(64) }], ['an unreadable chain identity', { ...observed, chainIdentity: 'TEST-chain' }],
@@ -300,4 +302,292 @@ test('CREATE preview constructs the Base anchor plan and rejects altered envelop
   ];
   for (const [name, change] of rows) await assert.rejects(w.session.preparePaidWrite(altered(change), FEE), hasCode('invalid_params'), name);
   await assertUntouched(w, before, { readsAllowed: true });
+});
+
+const BASE_KEYS = ['binding', 'close', 'effectBoundary', 'effectPass', 'internalCauseOf', 'runInEffectPass', 'transport', 'wallet', 'walletFactory', 'withheldReopen'];
+const VIEW_KEYS = ['actionsAdmitted', 'getPublicAccount', 'getWriteProfile', 'isLocked', 'lock', 'request'];
+const PAID_KEYS = ['authorizePaidWrite', 'preparePaidWrite'];
+const sorted = names => [...names].sort();
+const messageOf = row => row.body?.params?.[0]?.message;
+
+/** A built keystore composition with its key signatures and its host `approve` calls counted. */
+async function paidWorld(t, file) {
+  const approvals = [];
+  const w = await previewWorld(t, { approve: async request => { approvals.push(request.method); return true; } }, file);
+  return Object.assign(w, { approvals });
+}
+/** Prepares `request` on `view` and authorizes its complete preview content. */
+async function permitFor(view, request, options = FEE) {
+  const preview = await view.preparePaidWrite(request, options);
+  return { ...preview, permit: await view.authorizePaidWrite(preview.prepared, preview.content) };
+}
+/** Key signatures (source authentication included), signatures inside the SDK's transaction sign, execute calls and broadcasts so far. */
+const marks = w => ({ keys: w.counts.inner, signed: w.counts.inSign, effects: w.effects().length, broadcasts: w.node.broadcasts.length });
+/** The request `view` sends with `option` inside a plain effect pass whose fee ceiling is `passCeiling`. */
+const sendInPass = (w, view, request, option, passCeiling) => inPlainPass(w, () => view.request(request, option), passCeiling);
+/** A non-keystore buyer whose approve callback records each request's method. */
+async function approvingControl(t) {
+  const approvals = [], control = await finalizedWorld(t, { input: { approve: async request => { approvals.push(request.method); return true; } } });
+  await control.build();
+  return Object.assign(control, { approvals });
+}
+/** Changes the network binding in the next source answer the wallet reads that carries one. */
+function changeNextBinding(t, change) {
+  const json = Response.prototype.json;
+  const spy = t.mock.method(Response.prototype, 'json', async function changedBinding() {
+    const value = await Reflect.apply(json, this, []);
+    if (!value?.binding) return value;
+    spy.mock.restore();
+    return { ...value, binding: change(value.binding) };
+  });
+}
+
+/** createPaidApproval over stand-in reads and a stand-in planner whose approval content is `content`; `send` stands for the wallet provider. */
+function standInApproval(content, send) {
+  const answers = { getAddressNonce: 0, getNetworkParameters: { networkFee: 1, rpcFee: 0 }, getNetworkInfo: { forks: { osDenomination: { activated: true } } } };
+  const approval = createPaidApproval({ feeCeilingOs: FEE.feeCeilingOs, transactionTransport: null, relayOrigin: null, session: { getPublicAccount: () => ({ address: SENDER }) },
+    transport: { pins: { network: 'demos-testnet', chainIdentity: CHAIN }, inspectWalletNonceLane: async () => null, observeBinding: async () => ({}),
+      readRpc: async (_path, body) => ({ result: 200, response: answers[body.params[0].message] }) },
+    projectPaidWrite: async () => ({ callback: { method: 'sendTransaction', address: SENDER, purpose: 'TEST-purpose', content }, signedContent: { nonce: 1 } }) });
+  return { approval, view: approval.viewFor(null, request => send(approval, request)) };
+}
+const standInRequest = () => ({ method: 'sendTransaction', params: [{ content: { type: 'native', nonce: 1 } }] });
+
+/** Every leaf path of a JSON value. */
+const leafPaths = (value, path = []) => (value !== null && typeof value === 'object' ? Object.entries(value).flatMap(([key, member]) => leafPaths(member, [...path, key])) : [path]);
+/** A copy of `value` whose leaf at `path` holds another valid value of its type; a decimal amount becomes smaller. */
+function changedLeaf(value, path) {
+  const copy = structuredClone(value), parent = path.slice(0, -1).reduce((node, key) => node[key], copy), key = path.at(-1), leaf = parent[key];
+  if (typeof leaf === 'number') parent[key] = leaf + 1;
+  else if (typeof leaf === 'boolean') parent[key] = !leaf;
+  else if (leaf === null) parent[key] = 'TEST-changed';
+  else parent[key] = /^\d+$/.test(leaf) ? String(BigInt(leaf) > 0n ? BigInt(leaf) - 1n : 1n) : `${leaf}X`;
+  return copy;
+}
+
+test('a complete native paid-write preview approved before the pass signs and broadcasts exactly once', async t => {
+  const w = await paidWorld(t);
+  assert.deepEqual(Object.keys(w.session).sort(), sorted([...BASE_KEYS, ...PAID_KEYS]));
+  for (const view of [w.session.wallet, w.session.walletFactory({ anchorJournal: w.journal })]) assert.deepEqual(Object.keys(view).sort(), sorted([...VIEW_KEYS, ...PAID_KEYS]));
+  // The composition's members are its default view's: the composition prepares, the default view authorizes and spends.
+  const request = w.request(), preview = await w.session.preparePaidWrite(request, FEE), before = marks(w);
+  const permit = await w.session.wallet.authorizePaidWrite(preview.prepared, preview.content);
+  assert.deepEqual([Reflect.ownKeys(permit), Object.isFrozen(permit)], [[], true]);
+  // An extra option member is refused before the provider is entered and leaves the permit usable.
+  assert.equal((await sendInPass(w, w.session.wallet, request, { paidApproval: permit, retry: true })).error?.code, 'invalid_params');
+  assert.deepEqual(marks(w), before);
+  const sent = await sendInPass(w, w.session.wallet, request, { paidApproval: permit });
+  assert.equal(sent.success, true, JSON.stringify(sent));
+  assert.deepEqual({ signed: w.counts.inSign, effects: w.effects(), broadcasts: w.node.broadcasts.length }, { signed: 1, effects: ['confirmTx', 'broadcastTx'], broadcasts: 1 });
+  assert.equal(w.node.broadcasts[0].content.from, SENDER);
+  assert.equal(canonicalize(w.node.broadcasts[0].content), canonicalize(preview.signedContent));
+  assert.deepEqual(w.approvals, [], 'the host approve callback is not asked for a scoped paid write');
+  // A non-keystore buyer keeps its members and asks its approve callback once.
+  const control = await approvingControl(t);
+  assert.deepEqual([Object.keys(control.session).sort(), Object.keys(control.session.wallet).sort()], [BASE_KEYS, VIEW_KEYS]);
+  assert.equal((await control.send()).success, true);
+  assert.deepEqual(control.approvals, ['sendTransaction']);
+});
+
+test('a complete storage CREATE preview approved before the pass signs and broadcasts exactly once', async t => {
+  const w = await paidWorld(t);
+  const create = await agreementRequest(w), { timestamp } = create.params[0].transaction.content;
+  assert.ok(Number.isSafeInteger(timestamp) && timestamp > 0);
+  const preview = await w.session.wallet.preparePaidWrite(create, FEE), permit = await w.session.authorizePaidWrite(preview.prepared, preview.content);
+  const sent = await sendInPass(w, w.session.wallet, create, { paidApproval: permit });
+  assert.equal(sent.success, true, JSON.stringify(sent));
+  // The host approved the Agreement's own signature (a write with no paid scope) once, and was not asked for the scoped CREATE.
+  assert.deepEqual({ signed: w.counts.inSign, broadcasts: w.node.broadcasts.length, approvals: w.approvals }, { signed: 1, broadcasts: 1, approvals: ['sign'] });
+  assert.equal(canonicalize(w.node.broadcasts[0].content), canonicalize(preview.signedContent));
+  // The planner takes no caller plan: a forged anchorPlan beside a valid CREATE gives the projection of the call without it.
+  const relayOrigin = 'https://node-wallet.invalid', transactionTransport = createDevnetAgreementWalletTransport(w.session.transport.profile(relayOrigin), { relayOrigin });
+  const input = { request: create, transaction: create.params[0], address: SENDER, binding: await w.session.transport.observeBinding(), fee: { networkFee: 1, rpcFee: 0 },
+    postFork: true, chainNonce: 1, transactionTransport, relayOrigin, scopedPaidWrite: true };
+  const anchorPlan = { nonce: 7, transaction: { content: { ...create.params[0].transaction.content, to: 'stor-' + '0'.repeat(40), nonce: 7 } } };
+  assert.deepEqual(await projectPaidWrite({ ...input, anchorPlan }), await projectPaidWrite(input));
+  const control = await approvingControl(t);
+  assert.equal((await control.session.wallet.request(await agreementRequest(control))).success, true);
+  assert.deepEqual(control.approvals, ['sign', 'sendTransaction']);
+});
+
+test('a params-only approval refuses before a native signature or execute call', async t => {
+  const w = await paidWorld(t);
+  const request = w.request(), preview = await w.session.preparePaidWrite(request, FEE), before = marks(w);
+  const partials = [['the params', request.params], ['the transaction', request.params[0]], ['a params digest', sha256Hex(canonicalize(request.params))],
+    ['the content member alone', preview.content.content], ['the fee ceiling alone', FEE]];
+  for (const [name, partial] of partials) {
+    await assert.rejects(w.session.authorizePaidWrite(preview.prepared, partial), hasCode('paid_approval_mismatch'), name);
+    assert.equal((await sendInPass(w, w.session.wallet, request, { paidApproval: partial })).error?.code, 'paid_approval_required', name);
+  }
+  assert.deepEqual({ ...marks(w), approvals: w.approvals }, { ...before, approvals: [] });
+});
+
+test('an approval handle from another session or wallet view refuses before a key call', async t => {
+  const files = keystoreDir(t), w = await paidWorld(t, files.file()), v = await keystoreWorld(t, files.file());
+  await v.build();
+  const request = w.request(), selected = w.session.walletFactory({ anchorJournal: w.journal }), second = w.session.walletFactory({ anchorJournal: w.journal });
+  const foreign = await permitFor(v.session.wallet, request), own = await selected.preparePaidWrite(request, FEE), before = marks(w);
+  await assert.rejects(w.session.authorizePaidWrite(foreign.prepared, foreign.content), hasCode('paid_approval_mismatch'), 'another session\'s handle');
+  assert.equal((await sendInPass(w, w.session.wallet, request, { paidApproval: foreign.permit })).error?.code, 'paid_approval_required', 'another session\'s permit');
+  for (const view of [w.session.wallet, second]) await assert.rejects(view.authorizePaidWrite(own.prepared, own.content), hasCode('paid_approval_mismatch'), 'another view\'s handle');
+  const permit = await selected.authorizePaidWrite(own.prepared, own.content);
+  for (const view of [w.session.wallet, second]) assert.equal((await sendInPass(w, view, request, { paidApproval: permit })).error?.code, 'paid_approval_mismatch', 'another view\'s permit');
+  assert.deepEqual({ ...marks(w), other: v.effects().length + v.node.broadcasts.length }, { ...before, other: 0 });
+  // The permit refused on the other views is still good once on its own.
+  assert.equal((await sendInPass(w, selected, request, { paidApproval: permit })).success, true);
+});
+
+test('each changed native or CREATE approval field refuses with zero inner signatures and zero execute calls', async t => {
+  const w = await paidWorld(t);
+  const native = w.request(), authorized = [];
+  for (const [name, request] of [['native', native], ['CREATE', await agreementRequest(w)]]) {
+    const preview = await w.session.preparePaidWrite(request, FEE), before = marks(w), removed = { ...preview.content };
+    delete removed.purpose;
+    const changes = [...leafPaths(preview.content).map(path => [path.join('.'), changedLeaf(preview.content, path)]), ['an added member', { ...preview.content, extra: 1 }],
+      ['an added content member', { ...preview.content, content: { ...preview.content.content, extra: 1 } }], ['a removed member', removed]];
+    assert.ok(changes.length > 30, `${name}: ${changes.length} changes`);
+    for (const [field, changed] of changes) await assert.rejects(w.session.authorizePaidWrite(preview.prepared, changed), hasCode('paid_approval_mismatch'), `${name} ${field}`);
+    assert.deepEqual(marks(w), before, name);
+    // Still prepared: its own content authorizes it.
+    authorized.push(await w.session.authorizePaidWrite(preview.prepared, preview.content));
+  }
+  assert.equal((await sendInPass(w, w.session.wallet, native, { paidApproval: authorized[0] })).success, true);
+  assert.deepEqual(w.approvals, ['sign'], 'only the Agreement\'s own signature asked the host');
+  // A spelling that differs only by Unicode normalization is other content.
+  const { view } = standInApproval({ memo: 'café' }, () => assert.fail('nothing is sent'));
+  const preview = await view.preparePaidWrite(standInRequest(), FEE), decomposed = structuredClone(preview.content);
+  decomposed.content.memo = 'café';
+  await assert.rejects(view.authorizePaidWrite(preview.prepared, decomposed), hasCode('paid_approval_mismatch'));
+  assert.equal(typeof await view.authorizePaidWrite(preview.prepared, preview.content), 'object');
+});
+
+test('a changed binding fee fork or nonce after preview refuses before the inner signature', async t => {
+  const w = await paidWorld(t);
+  const answer = response => new Response(JSON.stringify(ok(response)), { headers: { 'content-type': 'application/json' } });
+  const changes = [
+    ['the binding', 'paid_approval_mismatch', () => changeNextBinding(t, binding => ({ ...binding, connectionId: 'TEST-other-connection' }))],
+    ['the fee', 'paid_approval_mismatch', () => { w.node.intercept = row => (messageOf(row) === 'getNetworkParameters' ? answer({ networkFee: 2, rpcFee: 0, additionalFee: 0 }) : null); }],
+    // The finalized amounts no longer match the prepared send's encoding, which the existing final-content check refuses first.
+    ['the denomination fork', 'payload_mismatch', () => preFork(w.node)],
+    ['the nonce', 'stale_plan', () => { w.node.nonce = 4; }],
+  ];
+  for (const [name, code, change] of changes) {
+    const request = w.request(), { permit } = await permitFor(w.session.wallet, request);
+    change();
+    const refused = await sendInPass(w, w.session.wallet, request, { paidApproval: permit });
+    Object.assign(w.node, { intercept: null, nonce: 0 });
+    assert.equal(refused.error?.code, code, `${name}: ${JSON.stringify(refused)}`);
+    assert.deepEqual({ signed: w.counts.inSign, effects: w.effects().length, approvals: w.approvals }, { signed: 0, effects: 0, approvals: [] }, name);
+  }
+});
+
+test('an unsupported request member at preview or entry refuses before any key call', async t => {
+  const w = await paidWorld(t);
+  const create = await agreementRequest(w), decomposed = structuredClone(create), before = marks(w);
+  decomposed.params[0].transaction.content.data[1].programName += 'é';
+  await assert.rejects(w.session.preparePaidWrite(decomposed, FEE), hasCode('invalid_params'), 'a CREATE request with a non-NFC string');
+  await assert.rejects(w.session.preparePaidWrite({ ...w.request(), note: undefined }, FEE), hasCode('invalid_params'), 'an own undefined member at preview');
+  const request = w.request(), { permit } = await permitFor(w.session.wallet, request);
+  request.note = undefined;
+  assert.equal((await sendInPass(w, w.session.wallet, request, { paidApproval: permit })).error?.code, 'invalid_params', 'an own undefined member at entry');
+  assert.deepEqual(marks(w), before);
+  delete request.note;
+  assert.equal((await sendInPass(w, w.session.wallet, request, { paidApproval: permit })).success, true);
+  assert.equal((await sendInPass(w, w.session.wallet, request, { paidApproval: permit })).error?.code, 'paid_approval_used');
+  assert.equal(w.node.broadcasts.length, 1);
+});
+
+test('a consumed permit cannot approve a retry concurrent request or second wallet view', async t => {
+  const w = await paidWorld(t);
+  const request = w.request(), selected = w.session.walletFactory({ anchorJournal: w.journal }), { prepared, content, permit } = await permitFor(w.session.wallet, request);
+  await assert.rejects(w.session.authorizePaidWrite(prepared, content), hasCode('paid_approval_used'), 'a second authorization before any request');
+  // A request nested inside the entered one, and a concurrent one, cannot borrow its permit.
+  let nested;
+  w.node.intercept = row => { if (!nested && messageOf(row) === 'getNetworkParameters') nested = w.session.wallet.request(request, { paidApproval: permit }); return null; };
+  const [first, concurrent] = await inPlainPass(w, () => Promise.all([w.session.wallet.request(request, { paidApproval: permit }), w.session.wallet.request(request, { paidApproval: permit })]));
+  w.node.intercept = null;
+  assert.equal(first.success, true, JSON.stringify(first));
+  assert.deepEqual([concurrent.error?.code, (await nested).error?.code], ['paid_approval_used', 'paid_approval_used']);
+  const after = marks(w);
+  for (const view of [w.session.wallet, selected]) assert.equal((await sendInPass(w, view, request, { paidApproval: permit })).error?.code, 'paid_approval_used');
+  await assert.rejects(w.session.authorizePaidWrite(prepared, content), hasCode('paid_approval_used'), 'a second authorization after a completed request');
+  assert.deepEqual(marks(w), { ...after, broadcasts: 1 });
+  // An entered request that fails before the approval callback (after the source authentication) still spends its permit.
+  const f = await paidWorld(t);
+  const failures = [['an unanswered fee read', row => { if (messageOf(row) === 'getNetworkParameters') throw new Error('TEST-read-timeout'); return null; }],
+    ['a refused nonce read', row => (messageOf(row) === 'getAddressNonce' ? new Response('TEST-unavailable', { status: 503 }) : null)]];
+  for (const [name, failure] of failures) {
+    const failedRequest = f.request(), entered = await permitFor(f.session.wallet, failedRequest);
+    f.node.intercept = failure;
+    const failed = await sendInPass(f, f.session.wallet, failedRequest, { paidApproval: entered.permit });
+    f.node.intercept = null;
+    assert.equal(failed.success, false, name);
+    const spent = marks(f);
+    assert.deepEqual({ signed: spent.signed, effects: spent.effects }, { signed: 0, effects: 0 }, name);
+    assert.equal((await sendInPass(f, f.session.wallet, failedRequest, { paidApproval: entered.permit })).error?.code, 'paid_approval_used', name);
+    await assert.rejects(f.session.authorizePaidWrite(entered.prepared, entered.content), hasCode('paid_approval_used'), `${name}: a second authorization`);
+    assert.deepEqual(marks(f), spent, `${name}: the retry made no key call or execute call`);
+  }
+});
+
+test('the signer refuses a changed finalized field after the approval callback with zero inner signatures', async t => {
+  const w = await paidWorld(t);
+  const { Demos } = await loadNodeDemos(), request = w.request(), { permit } = await permitFor(w.session.wallet, request);
+  // Demos finalizes another time; its hash and signed message stay self-consistent and the debit is unchanged, so only the approved-content equality sees it.
+  const sign = Demos.prototype.sign;
+  t.mock.method(Demos.prototype, 'sign', function laterTime(transaction, options) { transaction.content.timestamp = T0 + 1; return Reflect.apply(sign, this, [transaction, options]); });
+  const refused = await sendInPass(w, w.session.wallet, request, { paidApproval: permit });
+  assert.equal(refused.error?.code, 'paid_approval_mismatch', JSON.stringify(refused));
+  assert.deepEqual({ signed: w.counts.inSign, effects: w.effects().length, approvals: w.approvals }, { signed: 0, effects: 0, approvals: [] });
+});
+
+test('a second approval callback in one request refuses before another inner signature', async () => {
+  const callback = { method: 'sendTransaction', address: SENDER, purpose: 'TEST-purpose', content: { amountOs: '1' } }, signatures = [];
+  const { view } = standInApproval(callback.content, async approval => {
+    for (let call = 0; call < 2; call += 1) {
+      try { approval.approvalCheck(callback); } catch (error) { return { refused: error.code, signatures: signatures.length }; }
+      signatures.push(approval.signedContentCheck({ nonce: 1 }, { totalDebitOs: '1', feeDebitOs: '1' }));
+    }
+    return { refused: null };
+  });
+  const request = standInRequest(), preview = await view.preparePaidWrite(request, FEE);
+  const permit = await view.authorizePaidWrite(preview.prepared, preview.content);
+  assert.deepEqual(await view.request(request, { paidApproval: permit }), { refused: 'paid_approval_used', signatures: 1 });
+  assert.deepEqual(signatures, [{ totalDebitOs: '1', feeDebitOs: '1', requiredCeilingOs: FEE.feeCeilingOs }]);
+});
+
+test('a spent permit is lost on close and cannot authorize a new session', async t => {
+  const file = keystoreDir(t).file(), w = await paidWorld(t, file);
+  const request = w.request(), { prepared, content, permit } = await permitFor(w.session.wallet, request);
+  assert.equal((await sendInPass(w, w.session.wallet, request, { paidApproval: permit })).success, true);
+  await w.close();
+  const reopened = await keystoreWorld(t, file);
+  await reopened.build();
+  const keys = w.counts.inner;
+  assert.equal((await sendInPass(reopened, reopened.session.wallet, request, { paidApproval: permit })).error?.code, 'paid_approval_required');
+  await assert.rejects(reopened.session.authorizePaidWrite(prepared, content), hasCode('paid_approval_mismatch'));
+  assert.deepEqual({ keys: w.counts.inner, effects: reopened.effects().length }, { keys, effects: 0 });
+});
+
+test('a changed callback-only binding field refuses before an inner transaction signature or execute call', async t => {
+  const w = await paidWorld(t);
+  const request = w.request(), { signedContent, permit } = await permitFor(w.session.wallet, request);
+  assert.equal(JSON.stringify(signedContent).includes('transportAuthority'), false, 'Demos does not sign the binding');
+  changeNextBinding(t, binding => ({ ...binding, transportAuthority: 'TEST-other-authority' }));
+  const refused = await sendInPass(w, w.session.wallet, request, { paidApproval: permit });
+  assert.equal(refused.error?.code, 'paid_approval_mismatch', JSON.stringify(refused));
+  assert.deepEqual({ signed: w.counts.inSign, effects: w.effects().length, approvals: w.approvals }, { signed: 0, effects: 0, approvals: [] });
+});
+
+test('higher and lower valid pass ceilings than the prepared ceiling refuse before an inner transaction signature', async t => {
+  const w = await paidWorld(t), prepared = { feeCeilingOs: '30000000000' };
+  for (const passCeiling of ['40000000000', '20000000000']) {
+    const request = w.request(), { content, permit } = await permitFor(w.session.wallet, request, prepared);
+    assert.ok(BigInt(content.content.debit.totalOs) <= 20000000000n, 'the finalized fee is below both pass ceilings');
+    const refused = await sendInPass(w, w.session.wallet, request, { paidApproval: permit }, passCeiling);
+    assert.equal(refused.error?.code, 'paid_approval_mismatch', `${passCeiling}: ${JSON.stringify(refused)}`);
+    assert.deepEqual({ signed: w.counts.inSign, effects: w.effects().length }, { signed: 0, effects: 0 }, passCeiling);
+  }
+  const request = w.request(), { permit } = await permitFor(w.session.wallet, request, prepared);
+  assert.equal((await sendInPass(w, w.session.wallet, request, { paidApproval: permit }, prepared.feeCeilingOs)).success, true);
 });
