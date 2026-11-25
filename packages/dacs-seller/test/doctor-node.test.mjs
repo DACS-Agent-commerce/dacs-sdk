@@ -184,7 +184,7 @@ test('readSellerBalance uses the same owner as the pin; abort and close refuse. 
   assert.equal(signatures.length, 0);
 });
 
-test('the production seller port given a canonical plain-HTTP root, with the approved testnet identity present, refuses `transport_mismatch` from its three-argument `createNodeTransportOwner` call before binding, with no signature or publication; test 25b\'s doctor HTTP acceptance is unchanged; passing `chainIdentity` at the port\'s owner call fails this test', async (t) => {
+test('the production seller port given a canonical plain-HTTP root, with the approved testnet identity present, refuses `transport_mismatch` from its three-argument `createNodeTransportOwner` call before binding, with no signature or publication; the doctor\'s HTTP acceptance is unchanged; passing `chainIdentity` at the port\'s owner call fails this test', async (t) => {
   const signatures = await spyTransactionSignatures(t.mock);
   const node = scriptedNode();
   let keyLoads = 0;
