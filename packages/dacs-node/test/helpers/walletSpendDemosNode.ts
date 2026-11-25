@@ -184,6 +184,10 @@ export interface DemosNodeState {
   genesisHash: string;
   forkActivated: unknown;
   balance: unknown;
+  /** The `getAddressNonce` answer: the payer's highest confirmed nonce. */
+  accountNonce: unknown;
+  /** The `getTransactionHistory` page, newest first. */
+  history: unknown[];
 }
 
 export interface DemosNodeStub {
@@ -205,14 +209,47 @@ export async function closeDemosNodeStubs(): Promise<void> {
   })));
 }
 
-/** The default state: the recorded records, the approved identity and a post-fork balance. */
+/**
+ * The default state: the recorded records, the approved identity, a post-fork balance, and an account
+ * nonce one below the confirmed transfer's, so a new hold's planned nonce is that transfer's nonce.
+ */
 export function recordedDemosState(genesisHash: string): DemosNodeState {
   return {
     records: new Map(Object.keys(node2.getTxByHash).map((hash) => [hash, recordedTransaction(hash)])),
     genesisHash,
     forkActivated: true,
     balance: "12000000000",
+    accountNonce: CONFIRMED_NONCE - 1,
+    history: [],
   };
+}
+
+/** The confirmed transfer's record rewritten as a 1 DEM confirmed transfer from the payer to itself. */
+export function selfTransferRecord(hash: string, nonce: number): Record<string, unknown> {
+  const record = recordedTransaction(CONFIRMED_HASH);
+  const content = record.content as Record<string, unknown> & { data: [string, { args: unknown[] }] };
+  const oneDem = "1000000000";
+  record.hash = hash;
+  record.blockNumber = CONFIRMED_BLOCK + nonce;
+  content.nonce = String(nonce);
+  content.to = DEMOS_WALLET;
+  content.amount = Number(oneDem);
+  content.data[1].args = [DEMOS_PAYER, oneDem];
+  content.gcr_edits = [
+    { type: "balance", operation: "remove", isRollback: false, account: DEMOS_WALLET, amount: oneDem },
+    { type: "balance", operation: "add", isRollback: false, account: DEMOS_WALLET, amount: oneDem },
+    { type: "balance", operation: "remove", isRollback: false, account: DEMOS_WALLET, amount: CONFIRMED_FEE },
+    { type: "nonce", operation: "add", isRollback: false, account: DEMOS_WALLET, amount: 1 },
+  ];
+  return record;
+}
+
+/** A history row for an incoming transfer from another account. */
+export function inboundHistoryRow(hash: string): Record<string, unknown> {
+  const sender = `0x${"cd".repeat(32)}`;
+  return { hash, status: "confirmed", blockNumber: CONFIRMED_BLOCK, content: {
+    type: "native", from: sender, from_ed25519_address: sender, to: DEMOS_WALLET, nonce: "3",
+  } };
 }
 
 const ok = (response: unknown) => ({ status: 200, body: { result: 200, response } });
@@ -253,6 +290,10 @@ function defaultAnswer(state: DemosNodeState, call: DemosNodeCall): DemosNodeAns
       return ok({ forks: { osDenomination: { activationHeight: 0, activated: state.forkActivated } } });
     case "getAddressInfo":
       return ok({ balance: state.balance });
+    case "getAddressNonce":
+      return ok(state.accountNonce);
+    case "getTransactionHistory":
+      return ok(state.history);
     default:
       return { status: 200, body: { result: 400, response: "error" } };
   }

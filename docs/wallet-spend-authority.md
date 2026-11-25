@@ -200,8 +200,16 @@ runtime user that owns the secret files:
    with the fee the chain record shows, and it keeps one claim per transfer in
    its data directory's `transfers/` folder, so a transfer settles one hold even
    across restarts. A DEM transfer carries no expiry, so the
-   DEM lane never releases a hold on the buyer's word or by time: an interrupted
-   DEM purchase keeps its hold. Never reuse an epoch.
+   DEM lane never releases a hold on the buyer's word alone or by time. At
+   reserve it records the wallet's next account nonce, and the buyer refuses to
+   broadcast a payment for that hold signed with any other nonce. To free the
+   hold of an interrupted DEM purchase whose payment never landed, send two
+   transactions from the buyer's Demos wallet (a 1 DEM transfer to itself is the
+   smallest): the first takes that nonce and the second moves the wallet past
+   it. The buyer's next reconciliation asks for the release, and the service
+   grants it only when the chain shows the account nonce past the recorded one,
+   the buyer's prepared transfer not on chain, and the wallet's own transaction
+   at that nonce paying the payee nothing. Never reuse an epoch.
 8. In a dual-rail project one service on one address serves both lanes, because
    the buyer uses one authority connection for both rails. The lanes share the
    token, id, epoch and witness key.
@@ -254,8 +262,20 @@ the DEM lane. In each case the hold stays.
   payee. That nonce paid for something else, and the wallet key should be
   treated as in use elsewhere.
 - `wallet-spend-dem-absence-refused`: the buyer reported that a DEM payment
-  never happened. The DEM lane releases no hold on that claim.
+  never happened for a hold with no recorded nonce. The DEM lane never releases
+  such a hold.
+- `wallet-spend-dem-release-paid`: the buyer asked to release a DEM hold, but
+  the claimed transfer is on chain, or the transaction at the recorded nonce
+  pays the payee. Settle the hold with that transfer instead.
+- `wallet-spend-dem-release-unproven`: the buyer asked to release a DEM hold,
+  but the chain does not show which transaction took the recorded nonce, for
+  example because it is not on the wallet's newest history page.
 - `wallet-spend-dem-transfer-mismatch`: the transfer the buyer named does not
-  move the hold's amount from the policy wallet to the hold's payee.
+  move the hold's amount from the policy wallet to the hold's payee, or does
+  not carry the hold's recorded nonce.
 - `wallet-spend-dem-evidence-reused`: the transfer the buyer named is already
   counted for another hold.
+
+A release asked for before the wallet's account nonce is past the recorded one
+is refused with `wallet-spend-dem-release-nonce-pending` and prints no line;
+the buyer asks again later.

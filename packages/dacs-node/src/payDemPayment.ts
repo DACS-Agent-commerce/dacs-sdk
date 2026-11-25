@@ -911,15 +911,20 @@ export function createDacsPayDemBuyerPaymentTrackV1(
         }
         let settlement: Readonly<SettleResult>;
         try {
-          let preparedCheckpointed = false;
+          let preparedNonce: number | undefined;
           let beginEffect: Promise<void> | undefined;
           const beginPreparedEffect = async (): Promise<void> => {
-            if (!preparedCheckpointed) {
+            if (preparedNonce === undefined) {
               throw new DacsPayDemBuyerPaymentError(
                 "pay-dem-prepared-transfer-checkpoint-missing",
               );
             }
             const reserved = await reserveWallet();
+            // A hold that plans a nonce may only be paid by a transfer signed with that nonce.
+            const planned = reserved.permit.plannedTransferNonce;
+            if (planned !== undefined && planned !== preparedNonce) {
+              throw new DacsPayDemBuyerPaymentError("pay-dem-planned-nonce-mismatch");
+            }
             beginEffect ??= reserved.permit.beginEffect();
             await beginEffect;
           };
@@ -934,7 +939,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
                     // Deferred reservation is safe there only while no
                     // prepared checkpoint exists; the mandatory pre-broadcast
                     // hook acquires and begins the wallet effect later.
-                    if (!preparedCheckpointed) return;
+                    if (preparedNonce === undefined) return;
                     throw new DacsPayDemBuyerPaymentError(
                       "pay-dem-wallet-reservation-missing",
                     );
@@ -958,7 +963,7 @@ export function createDacsPayDemBuyerPaymentTrackV1(
             journalPreparedTransfer: async (rawPrepared) => {
               const captured = capturePrepared(rawPrepared, payment);
               await fence.checkpoint(PREPARED_CHECKPOINT, captured);
-              preparedCheckpointed = true;
+              preparedNonce = captured.nonce;
             },
             assertCurrentBeforeBroadcast: async () => {
               broadcastHookEntered = true;
@@ -1036,9 +1041,17 @@ export function createDacsPayDemBuyerPaymentTrackV1(
         return captured;
       },
       // A completed payment is read from the node again before it is reported.
-      // This only reads: no wallet accounting and no notice.
+      // This only reads: no wallet accounting and no notice. The payment is
+      // already recorded as made, so a read that shows no transfer is not proof
+      // the transfer never happened: it stays unconfirmed and is read again.
       async reauthenticate({ input, fence }) {
-        return readChain(capturePaymentInput(input), fence);
+        const captured = await readChain(capturePaymentInput(input), fence);
+        return captured.status === "absent"
+          ? Object.freeze({
+              status: "indeterminate" as const,
+              reasonCode: "pay-dem-recorded-transfer-unconfirmed",
+            })
+          : captured;
       },
     },
     projectResult(value) {
