@@ -88,7 +88,13 @@ A composition with `dacsProtocol.nativeAgreementPayment` takes two more options,
 - `receiptFeeCeilings`: exactly `{ payFeeCeilingOs, anchorFeeCeilingOs }`, each canonical decimal OS text (`0` allowed, at most 78 digits). Anything else throws `OperationError('receipt_fee_ceilings_invalid')`.
 - `buyerMandateCapOs`: the buyer's approved mandate cap as canonical decimal OS text. Anything else throws `OperationError('buyer_mandate_cap_invalid')`. The ceilings are checked first.
 
-The seller's signed ordinary commit answer carries `sellerReceipt: { agreementHash, reservedMaximumOs }`. The protocol keeps it with the verified commitment only when it has exactly those members, is canonical and names this purchase's Agreement. `assertSellerReceiptReservation(operation)` reads only the operation it is given. It throws `OperationError('seller_receipt_reservation_insufficient')` unless the kept receipt's `reservedMaximumOs` equals the approved price plus both fee ceilings and is no more than the mandate cap. A composition without native payment always refuses. `prepareHandoff` checks it before the payment nonce is read and again on the saved row before the coordinates are written, and `readNativePaymentLane` checks it before the one-time wallet guard is issued. A refused handoff stays `approved` and offers no payload; a refused lane read leaves the guard unissued.
+The seller's signed ordinary commit answer carries `sellerReceipt: { agreementHash, reservedMaximumOs }`. The protocol keeps it with the verified commitment only when it has exactly those members, is canonical and names this purchase's Agreement. `assertSellerReceiptReservation(operation, networkFeeOs)` reads only the operation and the fee it is given. `networkFeeOs` is the network fee as a non-negative bigint in OS, as `chain.getTransactionFees()` returns it (the wallet's 1 DEM gas plus the node's fees). It throws `OperationError('seller_receipt_reservation_insufficient')` unless three things hold:
+
+- the Pay debit, the approved price plus `networkFeeOs`, is no more than the kept receipt's `reservedMaximumOs`;
+- `reservedMaximumOs` is no more than the price plus both of this buyer's fee ceilings;
+- `reservedMaximumOs` is no more than the mandate cap.
+
+The ceilings are the buyer's own limits. They need not equal the seller's, but a seller whose receipt is above them is refused. When the seller's two fee ceilings together are below the network fee, every Pay is refused. A composition without native payment always refuses. `prepareHandoff` reads the network fee once. It checks the receipt against that fee before the payment nonce is read, and again on the saved row before the coordinates are written. `readNativePaymentLane` reads the fee again and applies the per-write fee ceiling and the receipt check before the one-time wallet guard is issued; a fee that cannot be read refuses `write-fee-cap`. A refused handoff stays `approved` and offers no payload; a refused lane read leaves the guard unissued.
 
 ### createPurchaseService
 
@@ -444,7 +450,7 @@ The public diagnostics are `status`, `portalOperation`, `portalEvidence` and `ve
 
 ### Protocol
 
-The protocol pass-through methods are exactly `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`, `observeReportedPayment`, `assertSellerReceiptReservation` and `readRetainedNativePaymentLane`. The seller receipt reservation check is synchronous and refuses a missing, unequal or over-cap seller receipt with seller_receipt_reservation_insufficient. Methods outside this list refuse with `profile_not_admitted` before host effects. No caller option lifts the action hold.
+The protocol pass-through methods are exactly `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`, `observeReportedPayment`, `assertSellerReceiptReservation` and `readRetainedNativePaymentLane`. The last one is synchronous and refuses a missing seller receipt, one below the Pay debit, or one above the buyer's ceilings or mandate cap, with seller_receipt_reservation_insufficient. Methods outside this list refuse with `profile_not_admitted` before host effects. No caller option lifts the action hold.
 
 ### Writers
 
