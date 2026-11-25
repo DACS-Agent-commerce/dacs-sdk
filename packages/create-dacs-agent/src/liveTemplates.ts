@@ -5160,11 +5160,18 @@ function testnetAuthorityReadme(options: LiveProjectTemplateOptions): string {
    ` : ""}${payDem ? `The DEM lane counts a payment only when the chain shows that transfer
    executed: from the buyer's Demos wallet, to the agreed payee, for the exact
    amount, with the fee the confirmed record shows. A DEM transfer carries no
-   expiry, so the DEM lane never releases a hold by time or on an absence claim.
-   An interrupted DEM purchase whose transfer never lands keeps its hold, and
-   with one purchase at a time DEM buying waits until you start a new lineage
-   (point 6). If the service prints \`hold-needs-operator\` with a
-   \`wallet-spend-dem-\` code, check that transfer before buying again.
+   expiry, so the DEM lane never releases a hold by time or on a claim alone.
+   At reserve it records the buyer wallet's next Demos transaction number, and
+   the buyer never sends a payment for that hold with any other number. If a
+   DEM purchase was interrupted and its payment never landed, send two
+   transactions from the buyer's Demos wallet (a 1 DEM transfer to itself is
+   the smallest). The first uses that number and the second moves the wallet
+   past it. The buyer then asks the service to release the hold. The service
+   releases it only when the chain shows the wallet past that number and the
+   transaction at that number pays nothing to the seller. Otherwise the hold
+   stays, and DEM buying waits until you start a new lineage (point 6). If the
+   service prints \`hold-needs-operator\` with a \`wallet-spend-dem-\` code,
+   check that transfer before buying again.
    ` : ""}Never reuse an epoch.
 ${both ? `8. One service on one address serves both lanes, because the buyer uses one
    authority connection for both rails. Both lanes share the token, id, epoch
