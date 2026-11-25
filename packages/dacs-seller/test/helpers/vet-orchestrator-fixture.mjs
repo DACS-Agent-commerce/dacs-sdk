@@ -12,6 +12,8 @@ import { listingPin } from '../../src/dacs/purchase-protocol.mjs';
 import { purchaseSupport } from '../../src/dacs/listing.mjs';
 import { anchorFixture, signSdkCreate } from './anchor-isolated-fixture.mjs';
 import { createOperatorBuyerAccess } from '../../src/devnet-demo/buyer-access.mjs';
+import { testEffectBoundary, testRunCreate } from './agent-signing.mjs';
+import { TEST_CONNECTION } from './wire-authority-fixture.mjs';
 export { BUYER, SELLER, T0, JOB };
 export const W = 'tp1-g3-orchestrator', OTHER = testWallet(4), copy = structuredClone;
 export const address = party => compositeVerificationAddress(JOB, party.claim);
@@ -71,7 +73,11 @@ export async function orchestratorFixture(t, { real = false, disk = false, vetMo
         const inner = native ? native.open() : memory;
         return { ...inner, publish: async (request) => { await controls.beforePublish?.(request); const result = await inner.publish(request); controls.creates.push(request.logicalAddress); await controls.afterPublish?.(request, result); return result; } };
     };
-    const config = { anchor: openAnchor(), vetMode, listing, store, buyerAccess: createOperatorBuyerAccess({ openBuyerAccess: false, custodyBuyer: BUYER.claim, buyerForJob: () => BUYER.address }), now: () => T0, log: () => { }, wallet: { claim: SELLER.claim, signBytes: async (bytes) => { await controls.beforeSign?.(bytes); controls.signatures.push(Buffer.from(bytes).toString()); return SELLER.signBytes(bytes); } }, counterparty: Object.fromEntries(['issueChallenge', 'evaluate', 'readRecord'].map(key => [key, () => { controls.counterpartyCalls++; throw new Error('TEST W counterparty ' + key); }])) };
+    // The signatures' passes run over a test boundary whose stop check reads `controls.stopped` and whose connection is
+    // `controls.connection` once a test sets it.
+    const stopped = () => controls.stopped === true;
+    const { effectBoundary, dataDirectory: effectsDirectory } = testEffectBoundary({ stopped, currentLocal: () => ({ ...(controls.connection ?? TEST_CONNECTION) }) });
+    const config = { anchor: openAnchor(), runCreate: testRunCreate({ effectBoundary, stopped }).runCreate, vetMode, listing, store, buyerAccess: createOperatorBuyerAccess({ openBuyerAccess: false, custodyBuyer: BUYER.claim, buyerForJob: () => BUYER.address }), now: () => T0, log: () => { }, wallet: { claim: SELLER.claim, signBytes: async (bytes) => { await controls.beforeSign?.(bytes); controls.signatures.push(Buffer.from(bytes).toString()); return SELLER.signBytes(bytes); } }, counterparty: Object.fromEntries(['issueChallenge', 'evaluate', 'readRecord'].map(key => [key, () => { controls.counterpartyCalls++; throw new Error('TEST W counterparty ' + key); }])) };
     const provider = (extra = {}) => createDevnetDemoAgreementContextProvider({ ...config, ...extra });
     const fresh = (extra = {}) => { const handle = path ? openPartyVetStore({ path, mode: 'open' }) : base; if (path)
         handles.push(handle); return provider({ store: wrapped(handle), anchor: openAnchor(), ...extra }); };
@@ -110,7 +116,7 @@ export async function orchestratorFixture(t, { real = false, disk = false, vetMo
         controls.afterUpdate = null;
         return { pending, resume, entry: copy((await row()).ops[role]) };
     };
-    return { listing, records, controls, base, store, config, input, native, openAnchor, provider, fresh, run, sellerRequest, row, cut, when, receipt };
+    return { listing, records, controls, base, store, config, input, native, openAnchor, provider, fresh, run, sellerRequest, row, cut, when, receipt, effectBoundary, effectsDirectory };
 }
 export function assertPresent(answer) { assert.equal(answer?.disposition, 'present', JSON.stringify(answer)); return answer.value; }
 export async function blocked(work) { let out; try {

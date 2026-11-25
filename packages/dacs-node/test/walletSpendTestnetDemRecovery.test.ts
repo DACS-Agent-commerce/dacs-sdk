@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   captureWalletSpendPolicyV1,
-  settlementKey,
   type WalletSpendRecoveryObservationV1,
   type WalletSpendReservationV1,
   type WalletSpendStateV1,
@@ -20,17 +19,22 @@ import {
   openDacsWalletSpendDemEvidenceStoreV1,
 } from "../src/walletSpendTestnetDemRecovery.js";
 import {
-  CONFIRMED_AMOUNT,
   CONFIRMED_FEE,
   CONFIRMED_HASH,
+  CONFIRMED_NONCE,
   DEMOS_PAYEE,
-  DEMOS_WALLET,
+  DEMOS_RAIL_ID as RAIL_ID,
   FAILED_HASH,
   closeDemosNodeStubs,
   closedPortUrl,
+  demosHold as demHold,
   demosNodeStub,
   demosPolicy,
+  demosSettledClaim as settled,
+  inboundHistoryRow,
   recordedDemosState,
+  recordedTransaction,
+  selfTransferRecord,
   type DemosNodeAnswer,
   type DemosNodeCall,
   type DemosNodeState,
@@ -50,37 +54,7 @@ afterEach(async () => {
 });
 
 const POLICY = captureWalletSpendPolicyV1(demosPolicy());
-const RAIL_ID = "pay-dem-native";
-/** The fee ceiling the buyer reserves: the confirmed record's 1 DEM fee fits under it. */
-const FEE_CEILING = "2000000000";
 const CREATED_AT = 1_700_000_000_000;
-
-/** A hold shaped as the SDK's pay-dem buyer builds it for one job phase. */
-function demHold(jobId = "job-dem", options: Readonly<{ fee?: boolean; payee?: string; amount?: string }> = {}):
-  WalletSpendReservationV1 {
-  const amount = options.amount ?? CONFIRMED_AMOUNT;
-  return {
-    reservationVersion: "1",
-    reservationId: `pay-dem:${settlementKey(RAIL_ID, jobId, 0)}`,
-    jobId,
-    phaseIndex: 0,
-    phase: "pay-dem",
-    agreementHash: "a".repeat(64),
-    settlementBindingHash: "b".repeat(64),
-    railId: RAIL_ID,
-    railDefinitionHash: "c".repeat(64),
-    wallet: DEMOS_WALLET,
-    chainId: "demos",
-    payee: options.payee ?? DEMOS_PAYEE,
-    finality: { model: "bft-final" },
-    debits: [
-      { asset: "DEM", purpose: "service", expectedAmount: amount, maximumAmount: amount },
-      ...(options.fee === false ? [] : [{
-        asset: "DEM", purpose: "network-fee" as const, expectedAmount: "0", maximumAmount: FEE_CEILING,
-      }]),
-    ],
-  };
-}
 
 function row(reservation: WalletSpendReservationV1, settledWith?: string): WalletSpendStoredReservationV1 {
   return {
@@ -99,18 +73,6 @@ function row(reservation: WalletSpendReservationV1, settledWith?: string): Walle
 
 function stateOf(...rows: WalletSpendStoredReservationV1[]): WalletSpendStateV1 {
   return { stateVersion: 1, policyHash: "f".repeat(64), generation: 2, reservations: rows, totals: [], rollingEvents: [] };
-}
-
-/** A settled claim; `fee` null leaves out the network-fee debit. */
-function settled(hash = CONFIRMED_HASH, fee: string | null = CONFIRMED_FEE): WalletSpendRecoveryObservationV1 {
-  return {
-    disposition: "settled",
-    evidenceHash: hash,
-    debits: [
-      { asset: "DEM", purpose: "service", amount: CONFIRMED_AMOUNT },
-      ...(fee === null ? [] : [{ asset: "DEM", purpose: "network-fee" as const, amount: fee }]),
-    ],
-  };
 }
 
 interface RuleWorld {
@@ -151,6 +113,43 @@ const gcrEdits = (content: Record<string, unknown>) => content.gcr_edits as Reco
 
 const answering = (message: string, answer: DemosNodeAnswer) =>
   (call: DemosNodeCall) => (call.message === message ? answer : undefined);
+
+/** The nonce a hold planned for its transfer: the recorded confirmed transfer's nonce. */
+const PLANNED = CONFIRMED_NONCE;
+/** A transfer the buyer prepared and never broadcast; the node does not know it. */
+const PREPARED_HASH = "9".repeat(64);
+const SELF_AT_PLANNED = "5".repeat(64);
+const SELF_AFTER_PLANNED = "6".repeat(64);
+
+const plannedRow = (reservation: WalletSpendReservationV1, planned = PLANNED): WalletSpendStoredReservationV1 =>
+  ({ ...row(reservation), plannedTransferNonce: planned });
+
+const absent = (evidenceHash = PREPARED_HASH): WalletSpendRecoveryObservationV1 =>
+  ({ disposition: "terminal-absent", evidenceHash });
+
+const messages = (calls: readonly DemosNodeCall[]) => calls.map(({ message }) => message);
+
+/**
+ * A node past the planned nonce: own self-transfers at the planned nonce and the one after it, and an
+ * inbound row between them, newest first. `change` edits the served state before the claim.
+ */
+async function releaseWorld(
+  change: (node: DemosNodeState) => void = () => undefined,
+  answer?: (call: DemosNodeCall) => DemosNodeAnswer | undefined,
+) {
+  const hold = demHold();
+  const subject = await world(stateOf(plannedRow(hold)), answer === undefined ? {} : { answer });
+  const node = subject.node;
+  node.accountNonce = PLANNED + 1;
+  node.records.set(SELF_AT_PLANNED, selfTransferRecord(SELF_AT_PLANNED, PLANNED));
+  node.records.set(SELF_AFTER_PLANNED, selfTransferRecord(SELF_AFTER_PLANNED, PLANNED + 1));
+  node.history = [
+    selfTransferRecord(SELF_AFTER_PLANNED, PLANNED + 1), inboundHistoryRow("7".repeat(64)),
+    selfTransferRecord(SELF_AT_PLANNED, PLANNED),
+  ];
+  change(node);
+  return { ...subject, hold };
+}
 
 describe("DEM chain rule for the testnet wallet-spend authority", () => {
   it("accepts settled only when the chain shows that exact transfer executed with its real fee", async () => {
@@ -240,7 +239,7 @@ describe("DEM chain rule for the testnet wallet-spend authority", () => {
     });
   });
 
-  it("never releases a DEM hold on an absence claim", async () => {
+  it("never releases a DEM hold without a planned nonce on an absence claim", async () => {
     const hold = demHold();
     const leaseEndedLongAgo = { ...row(hold), leaseExpiresAt: CREATED_AT - 86_400_000 };
     for (const state of [stateOf(row(hold)), stateOf(leaseEndedLongAgo)]) {
@@ -409,5 +408,175 @@ describe("DEM chain rule for the testnet wallet-spend authority", () => {
     await expect(missing.rule.check(hold, settled()))
       .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-hold-missing" });
     expect(missing.calls).toEqual([]);
+  });
+
+  it("refuses a DEM release while the chain nonce is not past the planned nonce", async () => {
+    const hold = demHold();
+    const subject = await world(stateOf({ ...plannedRow(hold), leaseExpiresAt: CREATED_AT - 86_400_000 }));
+    await expect(subject.rule.check(hold, absent(`0x${PREPARED_HASH}`)))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-evidence-invalid" });
+    expect(subject.calls).toEqual([]);
+
+    for (const accountNonce of [PLANNED - 2, PLANNED - 1, PLANNED]) {
+      subject.node.accountNonce = accountNonce;
+      for (const disposition of ["terminal-absent", "not-invoked"] as const) {
+        await expect(subject.rule.check(hold, { disposition, evidenceHash: PREPARED_HASH }))
+          .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-release-nonce-pending" });
+      }
+    }
+    expect(new Set(messages(subject.calls))).toEqual(new Set(["getAddressNonce"]));
+    for (const accountNonce of [null, "07"]) {
+      subject.node.accountNonce = accountNonce;
+      await expect(subject.rule.check(hold, absent()))
+        .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-unavailable" });
+    }
+    expect(subject.reports).toEqual([]);
+  });
+
+  it("refuses a DEM release when a matching transfer took the planned nonce, and settles the hold instead", async () => {
+    // (a) The hold's own transfer took the planned nonce while the buyer claims its prepared transfer is absent.
+    const paid = await releaseWorld((node) => {
+      node.history = [selfTransferRecord(SELF_AFTER_PLANNED, PLANNED + 1), recordedTransaction(CONFIRMED_HASH)];
+    });
+    await expect(paid.rule.check(paid.hold, absent()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-release-paid" });
+    expect(paid.reports).toEqual([{
+      status: "hold-needs-operator", reasonCode: "wallet-spend-dem-release-paid",
+      reservationId: paid.hold.reservationId, transactionHash: CONFIRMED_HASH,
+    }]);
+    await expect(paid.rule.check(paid.hold, settled()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-paid" });
+
+    // (b) A transfer of another amount to the payee at the planned nonce keeps the hold too.
+    const partialHash = "4".repeat(64);
+    const partial = recordedTransaction(CONFIRMED_HASH);
+    partial.hash = partialHash;
+    const partialContent = partial.content as { data: [string, { args: unknown[] }]; gcr_edits: { amount: unknown }[] };
+    partialContent.data[1].args[1] = "1";
+    for (const edit of partialContent.gcr_edits.slice(0, 2)) edit.amount = "1";
+    const partialPaid = await releaseWorld((node) => {
+      node.records.set(partialHash, partial);
+      node.history = [selfTransferRecord(SELF_AFTER_PLANNED, PLANNED + 1), partial];
+    });
+    await expect(partialPaid.rule.check(partialPaid.hold, absent()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-release-paid" });
+
+    // (c) The claimed transfer itself on chain, executed or not, keeps the hold; a pending one is unproven.
+    const claimedIncluded = await releaseWorld();
+    await expect(claimedIncluded.rule.check(claimedIncluded.hold, absent(CONFIRMED_HASH)))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-release-paid" });
+    const notExecuted = await releaseWorld((node) => {
+      (node.records.get(CONFIRMED_HASH) as Record<string, unknown>).status = "included";
+    });
+    await expect(notExecuted.rule.check(notExecuted.hold, absent(CONFIRMED_HASH)))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-release-paid" });
+    const pending = await releaseWorld(undefined,
+      answering("getTransactionStatus", { status: 200, body: { result: 200, response: { state: "pending" } } }));
+    await expect(pending.rule.check(pending.hold, absent()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-release-unproven" });
+    for (const subject of [claimedIncluded, notExecuted, pending]) {
+      expect(messages(subject.calls)).not.toContain("getTransactionHistory");
+    }
+  });
+
+  it("reads the account nonce answered as { nonce } for the release check", async () => {
+    const released = await releaseWorld((node) => { node.accountNonce = { nonce: PLANNED + 1 }; },
+      answering("getTransactionStatus", { status: 200, body: { result: 400, response: "error" } }));
+    await expect(released.rule.check(released.hold, absent()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-released" });
+
+    const pending = await releaseWorld((node) => { node.accountNonce = { nonce: PLANNED }; });
+    await expect(pending.rule.check(pending.hold, absent()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-release-nonce-pending" });
+  });
+
+  it("releases a DEM hold once another own transaction took the planned nonce and the account nonce is past it", async () => {
+    // (a) The prepared transfer is unknown to the node, and an own self-transfer took the planned nonce.
+    const released = await releaseWorld(undefined,
+      answering("getTransactionStatus", { status: 200, body: { result: 400, response: "error" } }));
+    await expect(released.rule.check(released.hold, absent()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-released" });
+    await expect(released.rule.check(released.hold, { disposition: "not-invoked", evidenceHash: PREPARED_HASH }))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-released" });
+    expect(released.calls.filter(({ message }) => message === "getTxByHash").map(({ data }) => data.hash))
+      .toEqual([SELF_AT_PLANNED, SELF_AT_PLANNED]);
+    expect(released.reports).toEqual([]);
+
+    // (b) Each slot the chain does not prove keeps the hold, with one report line.
+    const ownAt = (nonce: number, hash: string) => selfTransferRecord(hash, nonce);
+    const unproven: Array<(node: DemosNodeState) => void> = [
+      (node) => { node.history = [ownAt(PLANNED + 1, SELF_AFTER_PLANNED), inboundHistoryRow("7".repeat(64))]; },
+      (node) => { node.history.push(ownAt(PLANNED, "8".repeat(64))); },
+      (node) => { node.history = [ownAt(PLANNED, SELF_AT_PLANNED), ownAt(PLANNED + 1, SELF_AFTER_PLANNED)]; },
+      (node) => { (node.history[1] as { content: Record<string, unknown> }).content = { from: "unreadable", nonce: "3" }; },
+      (node) => { (node.records.get(SELF_AT_PLANNED) as Record<string, unknown>).status = "failed"; },
+      // The record has no block number, or another block than the history row names.
+      (node) => { delete (node.records.get(SELF_AT_PLANNED) as Record<string, unknown>).blockNumber; },
+      (node) => { (node.records.get(SELF_AT_PLANNED) as { blockNumber: number }).blockNumber += 1; },
+      (node) => { (node.history[2] as { blockNumber: number }).blockNumber += 1; },
+      (node) => {
+        const content = (node.records.get(SELF_AT_PLANNED) as { content: Record<string, unknown> }).content;
+        content.from_ed25519_address = `0x${"ef".repeat(32)}`;
+      },
+      (node) => {
+        const content = (node.records.get(SELF_AT_PLANNED) as { content: Record<string, unknown> }).content;
+        content.nonce = String(PLANNED - 1);
+      },
+    ];
+    for (const change of unproven) {
+      const subject = await releaseWorld(change);
+      await expect(subject.rule.check(subject.hold, absent()))
+        .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-release-unproven" });
+      // A slot whose record cannot be trusted is named by its hash; a page that shows no slot names none.
+      expect(subject.reports).toMatchObject([{
+        status: "hold-needs-operator", reasonCode: "wallet-spend-dem-release-unproven",
+        reservationId: subject.hold.reservationId,
+      }]);
+    }
+
+    // (c) A history page over its size or row limit changes nothing.
+    const oversized = await releaseWorld(undefined, answering("getTransactionHistory", {
+      status: 200, body: { result: 200, response: [{ padding: "x".repeat(5 * 1024 * 1024) }] },
+    }));
+    const tooManyRows = await releaseWorld((node) => {
+      node.history = Array.from({ length: 101 }, (_, index) => inboundHistoryRow(index.toString(16).padStart(64, "0")));
+    });
+    for (const subject of [oversized, tooManyRows]) {
+      await expect(subject.rule.check(subject.hold, absent()))
+        .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-unavailable" });
+    }
+
+    // (d) A hold without a planned nonce is never released, and nothing is read.
+    const unplanned = await world(stateOf(row(demHold())));
+    await expect(unplanned.rule.check(demHold(), absent()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-absence-refused" });
+    expect(unplanned.calls).toEqual([]);
+  });
+
+  it("checks a retried release again from the chain after a restart before the core recorded it", async () => {
+    const beforeRestart = await releaseWorld();
+    await expect(beforeRestart.rule.check(beforeRestart.hold, absent()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-released" });
+    // The new process trusts no earlier answer: it reads the nonce, the claimed transfer and the slot again.
+    const afterRestart = await releaseWorld();
+    await expect(afterRestart.rule.check(afterRestart.hold, absent()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-released" });
+    expect(messages(afterRestart.calls)).toEqual([
+      "getAddressNonce", "getTransactionStatus", "getTransactionHistory", "getTxByHash",
+    ]);
+  });
+
+  it("refuses settled for a transfer at another nonce than the hold's planned nonce", async () => {
+    const hold = demHold();
+    const subject = await world(stateOf(plannedRow(hold, PLANNED - 1)));
+    await expect(subject.rule.check(hold, settled()))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-dem-transfer-mismatch" });
+    expect(subject.reports).toEqual([{
+      status: "hold-needs-operator", reasonCode: "wallet-spend-dem-transfer-mismatch",
+      reservationId: hold.reservationId, transactionHash: CONFIRMED_HASH,
+    }]);
+    const matching = await world(stateOf(plannedRow(hold)));
+    await expect(matching.rule.check(hold, settled()))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-dem-paid" });
   });
 });

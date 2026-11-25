@@ -52,13 +52,29 @@ const recorderOver = (journal, extra = {}) => {
   return { recorder: createPurchaseEvidenceRecorder({ admission, journal, ...extra }), used };
 };
 
-const createFor = (deliveryId, hash, { viaMetadata = false } = {}) => ({
+// A retained signed CREATE that names `deliveryId` in its program data, in its artifact binding, or in both.
+const createFor = (deliveryId, hash, { viaMetadata = false, viaBoth = false } = {}) => ({
   hash,
   stage: 'issued',
-  signedTransaction: { content: { from: '0xabc', type: 'storageProgram', data: viaMetadata
-    ? ['storageProgram', { data: {}, metadata: { artifactBinding: { jobId: deliveryId } } }]
-    : ['storageProgram', { data: { jobId: deliveryId }, metadata: {} }] } },
+  signedTransaction: {
+    content: {
+      from: '0xabc',
+      type: 'storageProgram',
+      data: ['storageProgram', {
+        operation: 'CREATE_STORAGE_PROGRAM',
+        data: viaMetadata ? {} : { jobId: deliveryId },
+        metadata: viaMetadata || viaBoth ? { artifactBinding: { jobId: deliveryId } } : {},
+      }],
+    },
+    signature: { type: 'ed25519', data: 'TEST-signature-bytes' },
+  },
 });
+// `createFor` after `change` edited the copy of its signed transaction.
+const createWith = (deliveryId, hash, change) => {
+  const row = createFor(deliveryId, hash);
+  change(row.signedTransaction);
+  return row;
+};
 
 function runChild(path, mode, report) {
   return new Promise((resolve, reject) => {
@@ -102,9 +118,14 @@ test('openRetainedCreateJournal and resultHistory call only get and entries on t
   const lane = 'devnet/native-wallet/TEST-lane';
   const { recorder: writer } = recorderOver(journal);
   await writer.recordWalletResult(reportOf(deliveryId, 1));
-  await journal.put('devnet/native-wallet/TEST-create-a', createFor(deliveryId, hashOf(11)));
+  await journal.put(`${lane}/create-a`, createFor(deliveryId, hashOf(11)));
   await journal.put('devnet/native-wallet/TEST-create-b', createFor(deliveryId, hashOf(12), { viaMetadata: true }));
-  await journal.put('devnet/native-wallet/TEST-create-other', createFor(otherId, hashOf(13)));
+  await journal.put(`${lane}/create-both`, createFor(deliveryId, hashOf(14), { viaBoth: true }));
+  await journal.put(`${lane}/create-other`, createFor(otherId, hashOf(13)));
+  await journal.put(`${lane}/create-unsigned`, createWith(deliveryId, hashOf(15), (signed) => { delete signed.signature; }));
+  await journal.put(`${lane}/write-not-create`, createWith(deliveryId, hashOf(16), (signed) => { signed.content.data[1].operation = 'WRITE_STORAGE'; }));
+  await journal.put(`${lane}/create-conflict-data`, createWith(deliveryId, hashOf(17), (signed) => { signed.content.data[1].metadata = { artifactBinding: { jobId: otherId } }; }));
+  await journal.put(`${lane}/create-conflict-metadata`, createWith(deliveryId, hashOf(18), (signed) => { signed.content.data[1].data = { jobId: otherId }; signed.content.data[1].metadata = { artifactBinding: { jobId: deliveryId } }; }));
   await journal.put(lane, { stage: 'issued' });
   await journal.put(`${lane}/child`, { stage: 'observed' });
   await journal.put(`${lane}-sibling`, { stage: 'issued' });
@@ -113,20 +134,61 @@ test('openRetainedCreateJournal and resultHistory call only get and entries on t
   const { recorder } = recorderOver(watched);
   const before = await journal.entries();
   const history = await recorder.resultHistory(deliveryId);
-  const snapshot = await recorder.openRetainedCreateJournal({ deliveryId, laneKey: lane });
+  const snapshot = await recorder.openRetainedCreateJournal({ deliveryId });
   const readerCalls = { ...calls };
   assert.equal(readerCalls.entries, 1, 'the snapshot scans the journal once');
   for (const name of ['put', 'appendUnderLock', 'withWalletLock', 'releaseAbandonedLock', 'withOwnedOrAcquiredLane', 'inspectLocks']) assert.equal(readerCalls[name], 0, name);
   assert.deepEqual(await journal.entries(), before, 'reading changed nothing');
 
   assert.equal(history.length, 1);
-  assert.deepEqual(Object.keys(snapshot), ['deliveryId', 'laneKey', 'records']);
-  assert.deepEqual(snapshot.records.map(([key]) => key).sort(), ['devnet/native-wallet/TEST-create-a', 'devnet/native-wallet/TEST-create-b', lane, `${lane}/child`]);
+  assert.deepEqual(Object.keys(snapshot), ['deliveryId', 'records']);
+  assert.equal(snapshot.deliveryId, deliveryId);
+  assert.deepEqual(snapshot.records.map(([key]) => key).sort(), ['devnet/native-wallet/TEST-create-b', `${lane}/create-a`, `${lane}/create-both`]);
   assert.ok(Object.isFrozen(snapshot) && Object.isFrozen(snapshot.records));
   assert.ok(snapshot.records.every((pair) => Object.isFrozen(pair) && Object.isFrozen(pair[1])));
   assert.ok(Object.isFrozen(snapshot.records[0][1].signedTransaction ?? {}));
   for (const member of Object.values(snapshot)) assert.notEqual(typeof member, 'function');
   for (const name of ['put', 'append', 'appendUnderLock', 'withWalletLock', 'lock', 'resume', 'write']) assert.equal(name in snapshot, false, name);
+});
+
+test('openRetainedCreateJournal refuses laneKey, any extra member and a missing or non-object input before reading the journal', async (t) => {
+  const { journal } = openWorld(t);
+  const deliveryId = generateCanonicalJobId();
+  await journal.put(`${laneOf(deliveryId)}/create`, createFor(deliveryId, hashOf(11)));
+  const { journal: watched, calls } = counting(journal);
+  const { recorder } = recorderOver(watched);
+  const refused = [
+    { deliveryId, laneKey: laneOf(deliveryId) }, { deliveryId, laneKey: '' }, { deliveryId, laneKey: undefined },
+    { deliveryId, other: 1 }, { deliveryId, laneKey: laneOf(deliveryId), other: 1 },
+    {}, { laneKey: laneOf(deliveryId) }, undefined, null, [], [deliveryId], deliveryId,
+  ];
+  for (const input of refused) {
+    await assert.rejects(recorder.openRetainedCreateJournal(input), { name: 'TypeError', message: 'reader_input_invalid' }, JSON.stringify(input));
+  }
+  await assert.rejects(recorder.openRetainedCreateJournal({ deliveryId: 'job-1' }), { name: 'TypeError', message: 'delivery_id_invalid' });
+  await assert.rejects(recorder.openRetainedCreateJournal({ deliveryId: undefined }), { name: 'TypeError', message: 'delivery_id_invalid' });
+  assert.equal(calls.get, 0, 'no refusal called get');
+  assert.equal(calls.entries, 0, 'no refusal called entries');
+
+  const snapshot = await recorder.openRetainedCreateJournal({ deliveryId });
+  assert.deepEqual(snapshot.records.map(([key]) => key), [`${laneOf(deliveryId)}/create`]);
+});
+
+test('openRetainedCreateJournal omits a row whose signature, content type or storage marker is not the retained signed form', async (t) => {
+  const { journal } = openWorld(t);
+  const deliveryId = generateCanonicalJobId();
+  const rows = {
+    'empty-signature': createWith(deliveryId, hashOf(21), (signed) => { signed.signature.data = ''; }),
+    'non-string-signature': createWith(deliveryId, hashOf(22), (signed) => { signed.signature.data = 7; }),
+    'other-signature-type': createWith(deliveryId, hashOf(23), (signed) => { signed.signature.type = 'rsa'; }),
+    'other-content-type': createWith(deliveryId, hashOf(24), (signed) => { signed.content.type = 'native'; }),
+    'no-storage-marker': createWith(deliveryId, hashOf(25), (signed) => { signed.content.data[0] = 'other'; }),
+  };
+  for (const [name, row] of Object.entries(rows)) await journal.put(`devnet/native-wallet/TEST-${name}`, row);
+  await journal.put('devnet/native-wallet/TEST-valid', createFor(deliveryId, hashOf(20)));
+  const { recorder } = recorderOver(journal);
+  const snapshot = await recorder.openRetainedCreateJournal({ deliveryId });
+  assert.deepEqual(snapshot.records.map(([key]) => key), ['devnet/native-wallet/TEST-valid']);
 });
 
 test('result recording and retained CREATE journal reads run while stopped, held and with a failing binding', async (t) => {
@@ -142,7 +204,7 @@ test('result recording and retained CREATE journal reads run while stopped, held
     try {
       assert.deepEqual(await recorder.recordWalletResult(reportOf(deliveryId, index + 1)), { status: 'recorded', count: index + 1 }, hold);
       assert.equal((await recorder.resultHistory(deliveryId)).length, index + 1, hold);
-      const snapshot = await recorder.openRetainedCreateJournal({ deliveryId, laneKey: 'devnet/native-wallet/TEST-lane' });
+      const snapshot = await recorder.openRetainedCreateJournal({ deliveryId });
       assert.equal(snapshot.records.length, 1, hold);
     } finally { setPurchaseAdmission('held'); }
   }
@@ -161,7 +223,7 @@ test('recordWalletResult and openRetainedCreateJournal never continue, resend, s
   assert.ok(Object.isFrozen(recorder));
 
   for (let n = 1; n <= 3; n += 1) await recorder.recordWalletResult(reportOf(deliveryId, n));
-  await recorder.openRetainedCreateJournal({ deliveryId, laneKey: laneOf(deliveryId) });
+  await recorder.openRetainedCreateJournal({ deliveryId });
 
   assert.equal(network.mock.callCount(), 0);
   assert.deepEqual(used, []);
@@ -196,10 +258,7 @@ test('invalid report members, wrong delivery or lane, journal failure and a repe
   assert.deepEqual(await journal.entries(), []);
 
   await assert.rejects(recorder.resultHistory('job-1'), { name: 'TypeError' });
-  for (const laneKey of [undefined, '', 7]) {
-    await assert.rejects(recorder.openRetainedCreateJournal({ deliveryId, laneKey }), { name: 'TypeError' }, String(laneKey));
-  }
-  await assert.rejects(recorder.openRetainedCreateJournal({ deliveryId: 'job-1', laneKey: laneOf(deliveryId) }), { name: 'TypeError' });
+  await assert.rejects(recorder.openRetainedCreateJournal({ deliveryId: 'job-1' }), { name: 'TypeError', message: 'delivery_id_invalid' });
 
   assert.deepEqual(await recorder.recordWalletResult(good), { status: 'recorded', count: 1 });
   const retained = await journal.entries();
@@ -217,7 +276,7 @@ test('invalid report members, wrong delivery or lane, journal failure and a repe
   const { recorder: unreadableRecorder } = recorderOver(unreadable);
   await assert.rejects(unreadableRecorder.recordWalletResult(reportOf(deliveryId, 2)), (error) => error === readFailure);
   await assert.rejects(unreadableRecorder.resultHistory(deliveryId), (error) => error === readFailure);
-  await assert.rejects(unreadableRecorder.openRetainedCreateJournal({ deliveryId, laneKey: laneOf(deliveryId) }), (error) => error === readFailure);
+  await assert.rejects(unreadableRecorder.openRetainedCreateJournal({ deliveryId }), (error) => error === readFailure);
   assert.deepEqual(await journal.entries(), retained, 'a failed read writes nothing');
 
   const holder = openSecond();

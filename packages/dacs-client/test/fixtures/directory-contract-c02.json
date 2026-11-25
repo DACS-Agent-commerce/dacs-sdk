@@ -5,6 +5,7 @@
     "path": "reference-implementations/dacs-directory/src/catalog/contracts.ts",
     "lines": "6-102"
   },
+  "rowMembers": ["listingId", "version", "contentHash", "anchor", "seller", "offering", "pricing", "status", "catalogObservedAt", "transactionReadiness"],
   "statuses": ["active", "revoked"],
   "revocationMembers": ["sellerPrimaryClaim", "listingId", "listingVersion", "listingContentHash", "logicalAddress", "markerAnchor", "markerContentHash"],
   "markerAnchorMembers": ["kind", "locator"],
