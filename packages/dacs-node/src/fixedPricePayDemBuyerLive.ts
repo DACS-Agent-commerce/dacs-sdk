@@ -25,6 +25,7 @@ import { createDacsBuyerPayDemLiveCommerceAssemblyV1 } from
 import type { DacsBuyerPayDemLiveCommerceGraphV1 } from
   "./livePayDemCommerceGraph.js";
 import type { DacsLiveRoleOperationContextV1 } from "./roleRuntime.js";
+import { createDacsWalletSpendDemosReaderV1 } from "./walletSpendDemosReader.js";
 
 export interface DacsFixedPricePayDemBuyerLiveOptionsV1 {
   context: Readonly<DacsLiveRoleOperationContextV1>;
@@ -56,6 +57,12 @@ export async function createDacsFixedPricePayDemBuyerLiveV1(
         ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
       }).observeDemosTransfer
     : options.observeDemosTransfer;
+  // The same bounded reader the testnet authority uses; it reads the wallet's confirmed account nonce.
+  const walletNonce = createDacsWalletSpendDemosReaderV1({
+    rpcUrl: options.demosRpcUrl,
+    policy: options.walletSpendAuthority.policy,
+    ...(options.fetchImpl === undefined ? {} : { fetch: options.fetchImpl }),
+  });
   const agreement = createDacsFixedPricePayDemBuyerAgreementPolicyV1({
     context: options.context,
   });
@@ -95,7 +102,7 @@ export async function createDacsFixedPricePayDemBuyerLiveV1(
     agreement,
     payment: {
       resolveAuthority: payment.resolveAuthority,
-      reconcile: createDacsFixedPricePayDemBuyerReconciliationV1(observer),
+      reconcile: createDacsFixedPricePayDemBuyerReconciliationV1(observer, walletNonce.readAccountNonce),
       walletSpendAuthority: options.walletSpendAuthority,
       ...(options.effectLeaseDurationMs === undefined
         ? {} : { effectLeaseDurationMs: options.effectLeaseDurationMs }),

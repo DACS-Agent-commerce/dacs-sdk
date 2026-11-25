@@ -271,4 +271,21 @@ describe("resolveAndRead (#54 typed read-with-verification)", () => {
       record: { serviceId: "market-data" },
     });
   });
+
+  test("a binding that is not an object is indeterminate", async () => {
+    const index = { resolve: async () => ({ status: "present", binding: "x" }) } as never;
+    await expect(resolveAndRead(index, LOGICAL, SELLER, depsWith({}))).resolves.toEqual({
+      status: "indeterminate",
+      reason: "binding snapshot failed: binding is not an object",
+    });
+  });
+
+  test("a record that is not an object is indeterminate", async () => {
+    const index = createInMemoryBindingIndex([binding()]);
+    const deps = depsWith({}, { read: async () => [] as never });
+    await expect(resolveAndRead(index, LOGICAL, SELLER, deps)).resolves.toEqual({
+      status: "indeterminate",
+      reason: "read record snapshot failed: record is not an object",
+    });
+  });
 });

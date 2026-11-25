@@ -269,12 +269,16 @@ function serializeClaim(claim: WalletSpendReservationClaimV1): unknown {
       ...(claim.permit.authorizationValidBefore === undefined ? {} : {
         authorizationValidBefore: claim.permit.authorizationValidBefore,
       }),
+      ...(claim.permit.plannedTransferNonce === undefined ? {} : {
+        plannedTransferNonce: claim.permit.plannedTransferNonce,
+      }),
     },
   };
 }
 
 interface RemotePermitDataV1 {
   authorizationValidBefore?: number;
+  plannedTransferNonce?: number;
   reservationId: string;
   bindingHash: string;
   settlementBindingHash: string;
@@ -284,12 +288,17 @@ interface RemotePermitDataV1 {
 }
 
 function permitData(value: unknown): RemotePermitDataV1 {
+  const optional = plainObject(value)
+    ? ["authorizationValidBefore", "plannedTransferNonce"].filter((key) => Object.hasOwn(value, key))
+    : [];
   if (!plainObject(value) || !exact(value, [
-    "reservationId", "bindingHash", "settlementBindingHash", "owner", "generation",
-    "reservation", ...(Object.hasOwn(value, "authorizationValidBefore") ? ["authorizationValidBefore"] : []),
+    "reservationId", "bindingHash", "settlementBindingHash", "owner", "generation", "reservation", ...optional,
   ]) || (Object.hasOwn(value, "authorizationValidBefore") &&
       (!Number.isSafeInteger(value.authorizationValidBefore) ||
-        (value.authorizationValidBefore as number) <= 0)) || typeof value.reservationId !== "string" ||
+        (value.authorizationValidBefore as number) <= 0)) ||
+      (Object.hasOwn(value, "plannedTransferNonce") &&
+        (!Number.isSafeInteger(value.plannedTransferNonce) || (value.plannedTransferNonce as number) < 0)) ||
+      typeof value.reservationId !== "string" ||
       typeof value.bindingHash !== "string" || !HASH_RE.test(value.bindingHash) ||
       typeof value.settlementBindingHash !== "string" ||
       !HASH_RE.test(value.settlementBindingHash) || typeof value.owner !== "string" ||
