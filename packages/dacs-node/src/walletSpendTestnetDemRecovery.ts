@@ -177,9 +177,11 @@ export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
     if (claimed.status === "pending") stopForOperator(RELEASE_UNPROVEN, hold.reservationId, claim.evidenceHash);
     const slot = await input.reader.findTransactionAtNonce(planned).catch(unavailable) ??
       stopForOperator(RELEASE_UNPROVEN, hold.reservationId);
-    const record = await input.reader.readRecord(slot).catch(unavailable);
-    const kind = payDemConfirmedNonceSlot(record, { txHash: slot, nonce: planned, payer, payee: hold.payee });
-    if (kind !== "other") stopForOperator(kind === null ? RELEASE_UNPROVEN : RELEASE_PAID, hold.reservationId, slot);
+    const record = await input.reader.readRecord(slot.hash).catch(unavailable);
+    const kind = payDemConfirmedNonceSlot(record, {
+      txHash: slot.hash, nonce: planned, blockNumber: slot.blockNumber, payer, payee: hold.payee,
+    });
+    if (kind !== "other") stopForOperator(kind === null ? RELEASE_UNPROVEN : RELEASE_PAID, hold.reservationId, slot.hash);
   }
 
   const check: DemRecoveryCheck = async (reservation, observation) => {

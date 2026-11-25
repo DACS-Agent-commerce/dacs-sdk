@@ -32,12 +32,15 @@ export interface DacsWalletSpendDemosReaderV1 {
   /** The node's `getTxByHash` answer for `txHash`, unparsed. */
   readRecord(txHash: string): Promise<unknown>;
   /**
-   * The hash of the wallet's one own confirmed transaction at `nonce` on its newest history page, or
-   * undefined when the page does not show exactly one. The hash only locates the transaction; the
-   * caller reads its record back before deciding anything.
+   * The hash and block number of the wallet's one own confirmed transaction at `nonce` on its newest
+   * history page, or undefined when the page does not show exactly one. They only locate the
+   * transaction; the caller reads its record back and requires the same block before deciding anything.
    */
-  findTransactionAtNonce(nonce: number): Promise<string | undefined>;
+  findTransactionAtNonce(nonce: number): Promise<DemosHistorySlot | undefined>;
 }
+
+/** The own history row that took a nonce. */
+export type DemosHistorySlot = Readonly<{ hash: string; blockNumber: number }>;
 
 const RECORD_ANSWER_BYTES = 64 * 1024;
 /** A block or a history page lists many transactions, so it gets a larger limit than a record. */
@@ -71,10 +74,11 @@ function demosAccount(value: unknown): string | null {
 
 /**
  * One history row of `wallet`: "skip" when it says nothing about the wallet's nonce (a failed row, or
- * another readable payer), the own confirmed row's nonce and hash, or "unknown" for anything else,
- * which makes the whole page unknown. The payer is `from_ed25519_address` when present, else `from`.
+ * another readable payer), the own confirmed row's nonce, hash and block number, or "unknown" for
+ * anything else, which makes the whole page unknown. The payer is `from_ed25519_address` when present,
+ * else `from`.
  */
-function slotRow(row: unknown, wallet: string): "skip" | "unknown" | Readonly<{ nonce: number; hash: string }> {
+function slotRow(row: unknown, wallet: string): "skip" | "unknown" | (DemosHistorySlot & Readonly<{ nonce: number }>) {
   if (!isObject(row) || (row.status !== "confirmed" && row.status !== "failed")) return "unknown";
   if (row.status === "failed") return "skip";
   if (!isObject(row.content)) return "unknown";
@@ -88,12 +92,12 @@ function slotRow(row: unknown, wallet: string): "skip" | "unknown" | Readonly<{ 
       blockNumber < 0 || typeof row.hash !== "string" || !TX_HASH_RE.test(row.hash) || nonce === null) {
     return "unknown";
   }
-  return { nonce, hash: row.hash };
+  return { nonce, hash: row.hash, blockNumber };
 }
 
 /** The one own row at `nonce` on a page whose own rows are newest first by nonce, else undefined. */
-function ownRowAtNonce(page: readonly unknown[], wallet: string, nonce: number): string | undefined {
-  let found: string | undefined;
+function ownRowAtNonce(page: readonly unknown[], wallet: string, nonce: number): DemosHistorySlot | undefined {
+  let found: DemosHistorySlot | undefined;
   let last = Number.POSITIVE_INFINITY;
   for (const row of page) {
     const slot = slotRow(row, wallet);
@@ -101,7 +105,7 @@ function ownRowAtNonce(page: readonly unknown[], wallet: string, nonce: number):
     if (slot === "skip") continue;
     if (slot.nonce > last || (slot.nonce === nonce && found !== undefined)) return undefined;
     last = slot.nonce;
-    if (slot.nonce === nonce) found = slot.hash;
+    if (slot.nonce === nonce) found = { hash: slot.hash, blockNumber: slot.blockNumber };
   }
   return found;
 }
@@ -255,7 +259,7 @@ export function createDacsWalletSpendDemosReaderV1(input: Readonly<{
     return nodeNonce(isObject(answer) ? answer.nonce : answer) ?? invalid();
   }
 
-  async function findTransactionAtNonce(nonce: number): Promise<string | undefined> {
+  async function findTransactionAtNonce(nonce: number): Promise<DemosHistorySlot | undefined> {
     const page = await nodeCall("getTransactionHistory", {
       address: policy.wallet, type: "all", start: 0, limit: DEMOS_HISTORY_MAX_PAGE_SIZE,
     }, LIST_ANSWER_BYTES);

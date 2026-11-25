@@ -1402,11 +1402,11 @@ function namedRecipients(body: Record<string, unknown>): string[] | null {
  * Classifies the confirmed transaction `txHash` that took `nonce` for `payer`. Pure: no I/O.
  * @returns "pays-payee" when it credits `payee` in any way (its `to`, a native send's recipient or
  *   an execution edit's account), "other" when it does not, and null unless the record is
- *   `confirmed`, within the observation limits, binds exactly this hash, nonce and payer, and every
- *   native recipient and edit account in it can be read.
+ *   `confirmed`, within the observation limits, binds exactly this hash, nonce, block and payer, and
+ *   every native recipient and edit account in it can be read.
  */
 export function payDemConfirmedNonceSlot(record: unknown, expected: Readonly<{
-  txHash: string; nonce: number; payer: string; payee: string;
+  txHash: string; nonce: number; blockNumber: number; payer: string; payee: string;
 }>): "pays-payee" | "other" | null {
   const payee = normalizedDemosAccount(expected.payee);
   if (payee === null || !transactionRecordWithinLimits(record)) return null;
@@ -1420,7 +1420,8 @@ export function payDemConfirmedNonceSlot(record: unknown, expected: Readonly<{
     signedHash: expected.txHash,
     signedNonce: expected.nonce,
   });
-  if (identity.status !== "bound" || identity.transaction.status !== DEMOS_EXECUTED_RECORD_STATUS) return null;
+  if (identity.status !== "bound" || identity.transaction.status !== DEMOS_EXECUTED_RECORD_STATUS ||
+      confirmedNonce(identity.transaction.blockNumber) !== expected.blockNumber) return null;
   const body = identity.transaction.content as Record<string, unknown>;
   if (!bodyNamesPayer(body, expected.payer)) return null;
   const recipients = namedRecipients(body);
