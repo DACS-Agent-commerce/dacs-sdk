@@ -710,8 +710,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       }
       const nonce = await chain.getAddressNonce(t.buyer.wallet);
       if (nonce === coords.nonceFence) {
-        // The re-offered payload pays its stored amount; the host's ceiling is read again for it.
-        await assertWriteWithinFeeCeiling(feeCeilingOs, coords.amountOs, chain);
+        // The host's fee ceiling is read again for the re-offered payload.
+        await assertWriteWithinFeeCeiling(feeCeilingOs, chain);
         if (t.protocol) {
           try {
             await protocolGate(operation, 'handoff-reissue');
@@ -728,8 +728,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       return { operation, payload: null };
     }
     if (operation.status !== 'approved') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
-    // The payment's debit is its price plus the network fee; over the host's ceiling nothing is saved, moved or offered.
-    await assertWriteWithinFeeCeiling(feeCeilingOs, t.price.amountOs, chain);
+    // A network fee over the host's ceiling saves, moves and offers nothing.
+    await assertWriteWithinFeeCeiling(feeCeilingOs, chain);
     // Authoritative: always a fresh chain readback, never the preflight's.
     const recheck = await verifier.verify({ listingId: t.listing.listingId, version: t.listing.version, seller: t.seller.claim, purchaseId: operation.id, fresh: true });
     if (!recheck.transactable || recheck.contentHash !== t.listing.contentHash || recheck.price?.amountOs !== t.price.amountOs || recheck.payee !== t.seller.payee) {
@@ -1532,9 +1532,8 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       assertPurchaseLimits(operation.accountId, operation.terms.buyer.wallet, operation.id);
       await assertBoundDomain(operation);
       const fee = await assertBuyerFunds(operation.terms.buyer.wallet, operation.terms.price, OFFLINE_AGREEMENT_MODE);
-      // Both paid writes ahead, the Agreement CREATE and the payment, must fit the host's ceiling before the first is made.
-      assertWithinFeeCeiling(feeCeilingOs, CREATE_STORAGE_RESERVE_OS, fee);
-      assertWithinFeeCeiling(feeCeilingOs, operation.terms.price.amountOs, fee);
+      // Both paid writes ahead, the Agreement CREATE and the payment, pay this network fee; it must fit the host's ceiling before the first is made.
+      assertWithinFeeCeiling(feeCeilingOs, fee);
       const current = protocolOperation(operationId, token);
       if (current.status !== operation.status) throw new OperationError('invalid_state', `purchase is ${current.status}`);
       assertPurchaseLimits(current.accountId, current.terms.buyer.wallet, current.id);
@@ -1715,7 +1714,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
       });
       // The release transfer is a paid write: over the host's ceiling cancel refuses with the purchase left as it was.
       const release = async (reason) => {
-        await assertWriteWithinFeeCeiling(feeCeilingOs, RELEASE_AMOUNT_OS, chain);
+        await assertWriteWithinFeeCeiling(feeCeilingOs, chain);
         return open(reason);
       };
       if (await chain.getAddressNonce(wallet) < coords.expectedNonce) return release('cancel pending: the handed-off transfer may still land; waiting for its nonce slot to be used');
