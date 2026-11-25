@@ -5,7 +5,7 @@ import type {
   SupplementarySignal,
 } from "../artifacts/types.js";
 import { isIdentityBundle } from "../artifacts/validators.js";
-import { signedBytes } from "../crypto/index.js";
+import { signedBytes } from "../crypto/signedBytes.js";
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
 import { requireCanonicalJobId } from "../negotiate/jobId.js";

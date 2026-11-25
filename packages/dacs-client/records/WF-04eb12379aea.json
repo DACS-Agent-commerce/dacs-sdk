@@ -1,0 +1,107 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF move Listing validation and address parsing into read-only modules, narrow the core imports and mark over-limit responses response_too_large",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "d301638b1f48455779956d2baad1f21883609a2d",
+      "after": "fa690f4b128359271d1b0fd86c307a87b4ec6dcf"
+    },
+    {
+      "path": "packages/dacs-client/src/client-errors.mjs",
+      "before": "242423938795f24b31349c0477c6b9942059d930",
+      "after": "819723864a5f9fdf23c7a32f8293c4be2f34c888"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/chain.mjs",
+      "before": "1e918802dc38fbf0abb5e8ea39a25994597795a5",
+      "after": "b45673f05259eb69d79885144c3de87f2194c3d8"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/directory.mjs",
+      "before": "f01b4ca1c4a59562ef0a9865c8c689b562feac86",
+      "after": "93d6dd312f43ed061edd4a063c058ed82f773fb0"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/listing-read-only.mjs",
+      "before": null,
+      "after": "72c49fda008c229f7c4138f59a9a14c002d095e6"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/listing.mjs",
+      "before": "2ccda92111d56f34cc15a09e1d2a51044cdf255e",
+      "after": "41044f909cc9cf702d69a201a0b203e764a9ec16"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/read-only-address.mjs",
+      "before": null,
+      "after": "add8fe731cc39b76cb93449bbe1d80f790402d83"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/verification.mjs",
+      "before": "aeb4e5b4bee9b4ea8b39728aef78d043e1c4f6eb",
+      "after": "44bb9aa23b7eb649527c57ec1f2b6f73d504de34"
+    },
+    {
+      "path": "packages/dacs-client/src/signatures.mjs",
+      "before": "ea2845c8b7caf1b411be2e29a70005a94e4218c0",
+      "after": "70bd2166be8a7a15db2b5b1c024c73fe50ed645b"
+    },
+    {
+      "path": "packages/dacs-client/src/util/http.mjs",
+      "before": "01c62b14963d1579c1a2e3cc02ffd392dff692a6",
+      "after": "458dd317c87d5fabfa0be03c5a84665be20e7b5e"
+    },
+    {
+      "path": "packages/dacs-client/test/read-only-listing-graph.test.mjs",
+      "before": null,
+      "after": "73e2e9d1cc6bc5b1943ff92f6107b1d7535c64be"
+    },
+    {
+      "path": "packages/dacs-client/test/read-only-listing-pure.test.mjs",
+      "before": null,
+      "after": "3ad9778bbae9f330276b7155b9ab063e4840ffbf"
+    }
+  ],
+  "commitFiles": [
+    ".github/workflows/ci.yml",
+    "ARCHITECTURE.md",
+    "README.md",
+    "package.json",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-04eb12379aea.json",
+    "packages/dacs-client/src/client-errors.mjs",
+    "packages/dacs-client/src/dacs/chain.mjs",
+    "packages/dacs-client/src/dacs/directory.mjs",
+    "packages/dacs-client/src/dacs/listing-read-only.mjs",
+    "packages/dacs-client/src/dacs/listing.mjs",
+    "packages/dacs-client/src/dacs/read-only-address.mjs",
+    "packages/dacs-client/src/dacs/verification.mjs",
+    "packages/dacs-client/src/signatures.mjs",
+    "packages/dacs-client/src/util/http.mjs",
+    "packages/dacs-client/test/read-only-listing-graph.test.mjs",
+    "packages/dacs-client/test/read-only-listing-pure.test.mjs",
+    "scripts/release-policy.json",
+    "src/agent/listingValidation.ts",
+    "src/artifacts/signaturePredicates.ts",
+    "src/artifacts/signatures.ts",
+    "src/artifacts/validators.ts",
+    "src/crypto/ed25519.ts",
+    "src/crypto/ed25519Verify.ts",
+    "src/crypto/signedBytes.ts",
+    "src/crypto/signing.ts",
+    "src/identity/bundle.ts",
+    "src/identity/demosCci.ts",
+    "src/identity/domainClaimVerification.ts",
+    "src/internal/isRecord.ts",
+    "src/listing/read-only.ts",
+    "src/seller/payDemObserver.ts",
+    "src/seller/payDemObserverReadOnly.ts",
+    "test/wire/wire.test.ts",
+    "tools/lint/layers.json",
+    "tools/lint/shared-helpers-baseline.txt"
+  ],
+  "note": "Standard Listing validation, the signature check it uses and the catalog freshness check move to src/dacs/listing-read-only.mjs; the Demos address and claim parser moves to src/dacs/read-only-address.mjs. The old modules re-export the same functions, so the purchase verifier runs unchanged code, and purchase support stays in src/dacs/listing.mjs. The Directory, transport, client-error, chain and Listing modules import narrow core entries instead of the core root. The bounded JSON transport adds code response_too_large to its two over-limit errors and keeps their kind and message. Both new modules are listed in the package files."
+}

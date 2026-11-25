@@ -25,11 +25,8 @@ import {
   encodeAddressSegment,
   sha256Hex,
 } from "../canonical/index.js";
-import {
-  ed25519Verify,
-  publicKeyFromRaw,
-  signedBytes,
-} from "../crypto/index.js";
+import { ed25519Verify, publicKeyFromRaw } from "../crypto/ed25519Verify.js";
+import { signedBytes } from "../crypto/signedBytes.js";
 import {
   snapshotCanonicalJson,
   snapshotCanonicalJsonRead,

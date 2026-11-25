@@ -1,17 +1,21 @@
-import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
+import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs/canonical';
 // Bounded outbound JSON requests: fixed origin, no redirects, hard timeout,
 // post-decompression byte cap, no ambient credentials. Failures are typed so
 // callers can distinguish "timeout" and "unavailable" from "invalid". A
 // deadline is kind 'timeout' with the deadline's TimeoutError as cause, at
 // every stage of the request. A caller's abort rejects with the caller's own
-// reason, unchanged.
+// reason, unchanged. A body over the byte cap, declared or streamed, is kind
+// 'invalid' with code 'response_too_large'.
 export class OutboundError extends Error {
-  constructor(kind, message, { status, cause } = {}) {
+  constructor(kind, message, { status, cause, code } = {}) {
     super(message, cause === undefined ? undefined : { cause });
     this.kind = kind; // 'unavailable' | 'invalid' | 'not-found' | 'timeout'
     this.status = status;
+    if (code !== undefined) this.code = code;
   }
 }
+
+const tooLarge = () => new OutboundError('invalid', 'response exceeds byte limit', { code: 'response_too_large' });
 
 /** Cancel a response body that will not be read. Never throws; returns nothing. */
 export function cancelResponseBody(response) {
@@ -54,7 +58,7 @@ async function readCapped(response, maxBytes, stop, cancellation) {
   const declared = response.headers.get('content-length');
   if (declared !== null && Number(declared) > maxBytes) {
     cancelResponseBody(response);
-    throw new OutboundError('invalid', 'response exceeds byte limit');
+    throw tooLarge();
   }
   if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
@@ -71,7 +75,7 @@ async function readCapped(response, maxBytes, stop, cancellation) {
       total += value.byteLength;
       if (total > maxBytes) {
         void reader.cancel().catch(() => {});
-        throw new OutboundError('invalid', 'response exceeds byte limit');
+        throw tooLarge();
       }
       chunks.push(value);
     }

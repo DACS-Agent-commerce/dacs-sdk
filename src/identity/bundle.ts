@@ -2,7 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import type { IdentityBundle } from "../artifacts/types.js";
 import { canonicalize, sha256Hex } from "../canonical/index.js";
-import { signedBytes } from "../crypto/signing.js";
+import { signedBytes } from "../crypto/signedBytes.js";
 import { DacsError } from "../errors.js";
 
 const BUNDLE_PRESENTATION_SEPARATOR = "dacs-bundle-presentation:v1:";

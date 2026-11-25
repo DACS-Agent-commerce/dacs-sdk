@@ -83,6 +83,14 @@
     "./wire": {
       "types": "./dist/wire/index.d.ts",
       "import": "./dist/wire/index.js"
+    },
+    "./listing/read-only": {
+      "types": "./dist/listing/read-only.d.ts",
+      "import": "./dist/listing/read-only.js"
+    },
+    "./seller/pay-dem-observer": {
+      "types": "./dist/seller/payDemObserverReadOnly.d.ts",
+      "import": "./dist/seller/payDemObserverReadOnly.js"
     }
   },
   "bin": {

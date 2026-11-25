@@ -1104,6 +1104,8 @@ used without pulling in `demosdk`:
 | `@kynesyslabs/dacs/crypto` | no | Ed25519 + §7.7 domain-separated signing |
 | `@kynesyslabs/dacs/artifacts` | no | spine artifact types + validators |
 | `@kynesyslabs/dacs/identity` | no | CCI parsing + canonical Demos agent ClaimReference helpers |
+| `@kynesyslabs/dacs/listing/read-only` | no | signed Listing validation and Ed25519 verification, with no signing helpers |
+| `@kynesyslabs/dacs/seller/pay-dem-observer` | no | the read-only pay-dem transfer observer alone |
 
 The commerce coordinator is an explicit production x402 profile, not a generic
 `pay-*` dispatcher. It binds the supported Standard revision plus the verified
