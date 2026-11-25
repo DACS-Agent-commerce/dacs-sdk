@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client package manifest with the read-only listing files and the retained native lane proof file",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "7857b970db02245231f8184c2fedf2f3cb0e6fd6",
+      "after": "7857b970db02245231f8184c2fedf2f3cb0e6fd6"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-25ea8a52991e.json"
+  ],
+  "note": "Both sides of the merge recorded the manifest, so their newest records disagree; this record chooses the merged copy, which lists the read-only address and listing files together with the retained native lane proof file."
+}
