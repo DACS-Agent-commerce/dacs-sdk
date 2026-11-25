@@ -6,7 +6,6 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { OperationError } from '../client-errors.mjs';
 import { POSITIVE_OS_AMOUNT } from '../public-admission.mjs';
-import { EmbeddedWalletError } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 
 const PAID_JSON_MAX_DEPTH = 64;
 const PAID_JSON_MAX_BYTES = 256 * 1024;
@@ -19,7 +18,6 @@ const REFUSALS = Object.freeze({
 });
 
 const fail = (code, message) => { throw new OperationError(code, message); };
-const refusePaid = (code, cause) => new EmbeddedWalletError(code, REFUSALS[code], cause === undefined ? {} : { cause });
 const refuseJson = () => fail('invalid_params', 'a paid write is bounded plain JSON: no undefined, symbol, function, accessor, hole, cycle, non-plain container or non-NFC string');
 
 function checkPlainJson(value, ancestors) {
@@ -86,9 +84,10 @@ const canonicalOrNull = value => { try { return strictPaidJson(value); } catch {
 const refusalEnvelope = error => ({ success: false, data: null, error: { code: error.code, message: error.message } });
 
 /**
- * createPaidApproval({session, transport, transactionTransport, relayOrigin, feeCeilingOs, projectPaidWrite}) binds the keystore composition's paid-write
- * approval over its SDK wallet session, its raw Agreement transport, the wallet's transport descriptor and relay origin, the session fee ceiling and the
- * wallet provider's `projectPaidWrite` planner (which only the reviewed session module imports). Returns `{viewFor, approvalCheck, signedContentCheck}`.
+ * createPaidApproval({session, transport, transactionTransport, relayOrigin, feeCeilingOs, projectPaidWrite, EmbeddedWalletError}) binds the keystore
+ * composition's paid-write approval over its SDK wallet session, its raw Agreement transport, the wallet's transport descriptor and relay origin, the
+ * session fee ceiling, and the wallet provider's `projectPaidWrite` planner and error class (which only the reviewed session module imports): the
+ * provider passes on only its own errors' codes. Returns `{viewFor, approvalCheck, signedContentCheck}`.
  *
  * `viewFor(anchorJournal, send)` returns one wallet view's `{preparePaidWrite, authorizePaidWrite, request}`, where `send(request)` is the view's own
  * provider request. `preparePaidWrite(request, {feeCeilingOs})` resolves `{content, signedContent, prepared}`: the deeply frozen approval request
@@ -110,10 +109,11 @@ const refusalEnvelope = error => ({ success: false, data: null, error: { code: e
  * `requiredCeilingOs` when `content` is exactly the prepared Demos content and the callback consumed this request's permit, and throws
  * EmbeddedWalletError(paid_approval_mismatch, the cause kept) otherwise, or (paid_approval_required) outside an entered request.
  */
-export function createPaidApproval({ session, transport, transactionTransport, relayOrigin, feeCeilingOs: sessionCeilingOs, projectPaidWrite }) {
+export function createPaidApproval({ session, transport, transactionTransport, relayOrigin, feeCeilingOs: sessionCeilingOs, projectPaidWrite, EmbeddedWalletError }) {
   // The records a later one-use approval checks against, keyed by the handle; the composition's own identity and each view's token bind them.
   // A record moves prepared → authorized → inFlight → consumed, and never back; `permits` maps each minted permit to its record.
   const ownerSession = Object.freeze({}), preparedRecords = new WeakMap(), permits = new WeakMap(), requestScope = new AsyncLocalStorage();
+  const refusePaid = (code, cause) => new EmbeddedWalletError(code, REFUSALS[code], cause === undefined ? {} : { cause });
   async function prepare(viewToken, anchorJournal, request, options) {
     const feeCeilingOs = passCeilingOf(options, sessionCeilingOs);
     const requestCanonical = strictPaidJson(request), copy = frozenCopy(requestCanonical);

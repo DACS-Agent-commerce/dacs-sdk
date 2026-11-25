@@ -17,7 +17,7 @@ const { buildNativeTransferPayload } = await import('../src/dacs/wallet-transact
 const { nativeWalletLaneKey } = await import('../src/wallet/devnet-native-transport.mjs');
 const { passContext, runInPassContext } = await import('../src/wallet/pass-context.mjs');
 const { createPaidApproval } = await import('../src/wallet/paid-approval.mjs');
-const { createDevnetAgreementWalletTransport, projectPaidWrite } = await import('../src/public/portal/embedded-wallet/sdk-provider.mjs');
+const { createDevnetAgreementWalletTransport, EmbeddedWalletError, projectPaidWrite } = await import('../src/public/portal/embedded-wallet/sdk-provider.mjs');
 
 const SENDER = '0xc6daef40e1d433c82885c850e5cd8fe321654d8625eac544aa49ca767c2f23be';
 const PAYEE = '0x' + '2'.repeat(64);
@@ -198,7 +198,7 @@ test('unqualified or non-testnet bindings refuse preview without a handle key ca
   const relayOrigin = 'https://node-wallet.invalid', transactionTransport = createDevnetAgreementWalletTransport(w.session.transport.profile(relayOrigin), { relayOrigin });
   const answers = { getAddressNonce: 0, getNetworkParameters: { networkFee: 1, rpcFee: 0 }, getNetworkInfo: { forks: { osDenomination: { activated: true } } } };
   const seen = { keyCalls: 0 };
-  const preview = binding => createPaidApproval({ projectPaidWrite, transactionTransport, relayOrigin, feeCeilingOs: FEE.feeCeilingOs,
+  const preview = binding => createPaidApproval({ projectPaidWrite, EmbeddedWalletError, transactionTransport, relayOrigin, feeCeilingOs: FEE.feeCeilingOs,
     session: { getPublicAccount: () => ({ address: SENDER }), isLocked: () => false, request: async () => { seen.keyCalls += 1; } },
     transport: { pins: { network: 'demos-testnet', chainIdentity: CHAIN }, inspectWalletNonceLane: async () => null, observeBinding: async () => binding,
       readRpc: async (_path, body) => ({ result: 200, response: answers[body.params[0].message] }) } }).viewFor(w.journal, async () => { seen.keyCalls += 1; }).preparePaidWrite;
@@ -345,7 +345,7 @@ function changeNextBinding(t, change) {
 /** createPaidApproval over stand-in reads and a stand-in planner whose approval content is `content`; `send` stands for the wallet provider. */
 function standInApproval(content, send) {
   const answers = { getAddressNonce: 0, getNetworkParameters: { networkFee: 1, rpcFee: 0 }, getNetworkInfo: { forks: { osDenomination: { activated: true } } } };
-  const approval = createPaidApproval({ feeCeilingOs: FEE.feeCeilingOs, transactionTransport: null, relayOrigin: null, session: { getPublicAccount: () => ({ address: SENDER }) },
+  const approval = createPaidApproval({ EmbeddedWalletError, feeCeilingOs: FEE.feeCeilingOs, transactionTransport: null, relayOrigin: null, session: { getPublicAccount: () => ({ address: SENDER }) },
     transport: { pins: { network: 'demos-testnet', chainIdentity: CHAIN }, inspectWalletNonceLane: async () => null, observeBinding: async () => ({}),
       readRpc: async (_path, body) => ({ result: 200, response: answers[body.params[0].message] }) },
     projectPaidWrite: async () => ({ callback: { method: 'sendTransaction', address: SENDER, purpose: 'TEST-purpose', content }, signedContent: { nonce: 1 } }) });
