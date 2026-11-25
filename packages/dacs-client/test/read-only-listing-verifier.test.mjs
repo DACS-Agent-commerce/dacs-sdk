@@ -159,7 +159,8 @@ test('changed chain owner or pinned identity refuses without a Listing', async (
 });
 
 test('missing future or stale catalog observation refuses listing_catalog_stale', async () => {
-  const { catalogObservedAt: _omitted, ...missing } = rowFor(listing);
+  const missing = rowFor(listing);
+  delete missing.catalogObservedAt;
   for (const row of [missing, rowFor(listing, { observedAt: CHECKED_AT + 1 }), rowFor(listing, { observedAt: CHECKED_AT - DAY_MS - 1 })]) {
     const { counts, verifier } = world({ row });
     await refuses(verifier.verify(coordinates), 'listing_catalog_stale');
@@ -201,7 +202,8 @@ test('missing oversized or unreadable revocation marker refuses without a Listin
 });
 
 test('invalid Listing or identity signature and revoked Listing refuse listing_standard_invalid', async () => {
-  const { signature: _signature, ...unsigned } = listing;
+  const unsigned = structuredClone(listing);
+  delete unsigned.signature;
   const otherSignature = signWith('dacs-listing:v1:', { ...unsigned, offering: { ...unsigned.offering, title: 'Other' } }).signature.value;
   const forged = { ...listing, signature: { ...listing.signature, value: otherSignature } };
   await refuses(serving(forged).verifier.verify(coordinates), 'listing_standard_invalid');
