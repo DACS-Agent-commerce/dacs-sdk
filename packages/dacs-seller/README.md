@@ -1321,7 +1321,7 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `getParticipantEnrollmentProof` with a fresh nonce. It checks the chain identity
   before and after, reads the signed block, and returns every entry the pinned key
   signed for that request, revoked ones included. A signed complete empty set
-  returns `[]`. Calls run one at a time inside one 10 s deadline, and the reply is
+  returns `[]`. Calls run one at a time, each inside its own 10 s deadline, and the reply is
   limited to 1 MiB, 16 entries, 1,024 members per list and 32 levels. Refusals are
   `OperationError`s with the original error as `cause`:
   `enrollment_unverified`, `enrollment_invalid`, `enrollment_timeout`,
