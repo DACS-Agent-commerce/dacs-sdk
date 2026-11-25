@@ -76,12 +76,12 @@ export async function buildCountingSigns(t, w) {
   return counts;
 }
 
-/** Runs `work` in a plain effect pass (passContext(), no job class) on the owner's fence. */
-export async function inPlainPass(w, work) {
+/** Runs `work` in a plain effect pass (passContext(), no job class) on the owner's fence, with the pass fee ceiling `feeCeilingOs`. */
+export async function inPlainPass(w, work, feeCeilingOs = '50000000000') {
   const lease = await w.passOwner.acquireConnectionFence();
   try {
     const handle = w.session.effectPass({ fence: lease, deadline: w.clock.now() + 5000, refreshAuthority: () => {}, finalStop: () => {},
-      synchronousChecks: [], feeCeilingOs: '50000000000', context: passContext() });
+      synchronousChecks: [], feeCeilingOs, context: passContext() });
     return await w.session.runInEffectPass(handle, work);
   } finally { lease.release(); }
 }
