@@ -63,7 +63,9 @@ import { createDevnetDemoDeliveryCapability } from '../../src/devnet-demo/native
 import { composeSellerApproval, createExactOperatorApproval, createSellerContextAdmission } from '../../src/devnet-demo/operator-approval.mjs';
 import { lateWriteWatchOpen } from '../../src/devnet-demo/late-write-watch.mjs';
 import { createInMemoryPartyVetStore, openPartyVetStore } from '../../src/devnet-demo/party-vet-store.mjs';
+import { openVerifiedEnrollmentReader } from '../../src/devnet-demo/seller-enrollment-reader.mjs';
 import { sellerRecordsPurchaseResolver } from '../../src/devnet-demo/seller-purchase-source.mjs';
+import { testOnlyNodeKey, trustedNodeFor } from './enrollment-signing.mjs';
 import { storageWriteRpcSigner } from '../../src/devnet-demo/storage-write-recovery.mjs';
 import { createWriteExclusionRule } from '../../src/devnet-demo/write-exclusion.mjs';
 import { loadKeyFile } from '../../src/seller-key.mjs';
@@ -202,6 +204,8 @@ export function capabilityBuilders(t) {
     ['src/devnet-demo/party-vet-store.mjs#createInMemoryPartyVetStore', () => createInMemoryPartyVetStore()],
     ['src/devnet-demo/party-vet-store.mjs#openPartyVetStore', () => onClose(openPartyVetStore({ path: join(directory(), 'party.sqlite'), mode: 'create' }))],
     ['src/devnet-demo/seller-node-wallet.mjs#createSellerNodeWallet', (w) => w.nodeWallet.wallet],
+    ['src/devnet-demo/seller-enrollment-reader.mjs#openVerifiedEnrollmentReader', (w) => onClose(openVerifiedEnrollmentReader({ endpoint: 'https://rpc.example.invalid/',
+      transportAuthority: 'TEST-inventory', fetchImpl: never('a fetch'), claim: seller.claim, listingPin: w.context.pin, trustedNode: trustedNodeFor(testOnlyNodeKey()) }))],
     ['src/devnet-demo/seller-purchase-source.mjs#sellerRecordsPurchaseResolver', () => sellerRecordsPurchaseResolver({ sessionOf: () => null, buyerAccess: createOperatorBuyerAccess({ openBuyerAccess: false, custodyBuyer: seller.claim }),
       now: () => 0, observePayment: never('observePayment') })],
     ['src/devnet-demo/seller-state-lock.mjs#acquireSellerStateLock', (w) => w.nodeWallet.stateLock],
