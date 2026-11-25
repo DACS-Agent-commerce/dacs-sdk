@@ -1432,6 +1432,7 @@ export {
   type D402SettlementResult,
   createPayDemRail,
   PayDemIncludedNonceVisibilityError,
+  payDemConfirmedNonceSlot,
   payDemConfirmedTotalDebitOs,
   payDemSettle,
   payDemSettleCore,

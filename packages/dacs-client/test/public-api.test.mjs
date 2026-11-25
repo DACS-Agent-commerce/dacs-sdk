@@ -251,8 +251,8 @@ test('the complete public protocol method set refuses actions before host effect
   assert.equal(effects, 0);
 });
 
-const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment']);
-const PASSIVE_SERVICE_METHODS = new Set(['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning']);
+const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'readRetainedNativePaymentLane']);
+const PASSIVE_SERVICE_METHODS = new Set(['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning', 'nativePaymentLaneRead']);
 const refusesAsPromise = (member, name) => {
   const result = member({});
   assert.ok(result instanceof Promise, `${name} returns a Promise`);
@@ -295,7 +295,7 @@ test('every active method returns a Promise and every passive method keeps its s
   await refusesAsPromise(verifier.verify, 'verify');
 });
 
-test('every purchase-service member outside the passive list (status, portalOperation, portalEvidence, verifyDeal, planRunning) rejects profile_not_admitted with seller, signer, broadcast and row writes 0, and so does every active member of the Listing verifier, and every function member of the object the public createProtocolPurchases returns outside PASSIVE_PROTOCOL_METHODS (holdChainReadback, keepChainPointers and the native payment helpers such as cancelNativePayment included), with ops.transition and every other host write counter at 0', async (t) => {
+test('every purchase-service member outside the passive list (status, portalOperation, portalEvidence, verifyDeal, planRunning, nativePaymentLaneRead) rejects profile_not_admitted with seller, signer, broadcast and row writes 0, and so does every active member of the Listing verifier, and every function member of the object the public createProtocolPurchases returns outside PASSIVE_PROTOCOL_METHODS (holdChainReadback, keepChainPointers and the native payment helpers such as cancelNativePayment included), with ops.transition and every other host write counter at 0', async (t) => {
   const { service, protocol, verifier, writes, rows, close } = await heldPublicObjects();
   t.after(close);
   const before = rows();

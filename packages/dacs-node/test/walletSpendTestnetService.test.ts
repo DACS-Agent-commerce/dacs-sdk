@@ -24,6 +24,7 @@ import {
   CONFIRMED_AMOUNT,
   CONFIRMED_FEE,
   CONFIRMED_HASH,
+  CONFIRMED_NONCE,
   DEMOS_NODE_URL,
   DEMOS_WALLET,
   closeDemosNodeStubs,
@@ -36,6 +37,7 @@ import {
   demosPolicy,
   demosSettledClaim,
   recordedDemosState,
+  selfTransferRecord,
   withoutX402Lane,
   type DemosNodeStub,
 } from "./helpers/walletSpendDemosNode.js";
@@ -683,6 +685,46 @@ describe("testnet wallet-spend authority service", () => {
       await expect((await second.demClient()).reconcile(demosHold(), absentDem)).rejects.toMatchObject(rejected);
       expect(headState(settings.demDirectory).reservations).toEqual([
         expect.objectContaining({ reservationId: demosHold().reservationId, stage: "reserved" }),
+      ]);
+    });
+
+    it("a DEM hold recorded before a restart keeps its planned nonce and is released once the chain shows that nonce used", async () => {
+      const node = await approvedNode();
+      const settings = await withDemLane();
+      const first = await startDem(settings);
+      // The service records the hold; the buyer never sees the answer, so it never broadcasts.
+      await demPermit(await first.demClient());
+      await first.authority.stop();
+
+      const client = await (await startDem(settings)).demClient();
+      await expect(client.reserve(demosHold())).resolves.toMatchObject({ status: "held", stage: "reserved" });
+      expect(headState(settings.demDirectory).reservations).toEqual([
+        expect.objectContaining({ stage: "reserved", plannedTransferNonce: CONFIRMED_NONCE }),
+      ]);
+
+      const selfAtPlanned = selfTransferRecord("5".repeat(64), CONFIRMED_NONCE);
+      const selfAfterPlanned = selfTransferRecord("6".repeat(64), CONFIRMED_NONCE + 1);
+      node.state.records.set(String(selfAtPlanned.hash), selfAtPlanned);
+      node.state.records.set(String(selfAfterPlanned.hash), selfAfterPlanned);
+      node.state.history = [selfAfterPlanned, selfAtPlanned];
+      node.state.accountNonce = CONFIRMED_NONCE + 1;
+      pastLease();
+      await expect(client.reconcile(demosHold(), { disposition: "not-invoked", evidenceHash: "9".repeat(64) }))
+        .resolves.toBe("released");
+      await expect(client.reserve(demosHold("job-two"))).resolves.toMatchObject({ status: "reserved" });
+      expect(headState(settings.demDirectory).reservations.find(({ reservation }) => reservation.jobId === "job-two"))
+        .toMatchObject({ plannedTransferNonce: CONFIRMED_NONCE + 2 });
+    });
+
+    it("a DEM hold binds the planned nonce from a node that answers the account nonce as { nonce }", async () => {
+      const node = await approvedNode();
+      node.state.accountNonce = { nonce: CONFIRMED_NONCE - 1 };
+      const settings = await withDemLane();
+      const service = await startDem(settings);
+      await expect((await service.demClient()).reserve(demosHold()))
+        .resolves.toMatchObject({ status: "reserved" });
+      expect(headState(settings.demDirectory).reservations).toEqual([
+        expect.objectContaining({ stage: "reserved", plannedTransferNonce: CONFIRMED_NONCE }),
       ]);
     });
 
