@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged wallet provider and node wallet session after carrying the base up into the node endpoint rule",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "before": "b2e9f5a2cfa47d6f6ea28213dd1461a6aff9be74",
+      "after": "b2e9f5a2cfa47d6f6ea28213dd1461a6aff9be74"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "dc8bf264413ff12a8d7bd5eac8f6623b1faf913f",
+      "after": "dc8bf264413ff12a8d7bd5eac8f6623b1faf913f"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-1d8d04914e0a.json"
+  ],
+  "note": "Both sides of the merge of the base recorded these files, so their newest records disagree; this record chooses the merged copies. The wallet provider keeps the node endpoint rule at readTransport, createDevnetAgreementWalletTransport and createSdkWalletSession beside the base's projectPaidWrite planner; the Node session keeps canonicalNodeEndpoint at the Agreement transport and the session beside the base's paid-write approval wiring. Git merged both without a conflict. No file other than this record changes."
+}
