@@ -30,10 +30,11 @@ interface DoctorCheck {
 
 interface GeneratedDoctorModule {
   writeGeneratedX402WalletSpendPolicyFileV1(): Promise<PolicyFileResult>;
+  writeGeneratedPayDemWalletSpendPolicyFileV1(): Promise<PolicyFileResult>;
   runGeneratedDoctor(
     phase: "post-start",
     scope: "buy",
-    operation: Readonly<{ rail: "x402" }>,
+    operation: Readonly<{ rail: "x402" | "pay-dem" }>,
   ): Promise<Readonly<{ checks: readonly DoctorCheck[] }>>;
 }
 
@@ -48,6 +49,16 @@ interface GeneratedConfigModule {
     asset: string;
     decimals: number;
   }>): WalletSpendPolicy;
+  configuredPayDemWalletSpendPolicy(wallet: string): WalletSpendPolicy;
+}
+
+/** The parts of the node package's Demos node stand-in these tests use. */
+interface DemosNodeHelper {
+  DEMOS_NODE_URL: string;
+  demosNodeStub(state: unknown): Promise<Readonly<{ url: string; close(): Promise<void> }>>;
+  recordedDemosState(genesisHash: string): unknown;
+  fetchRoutingDemosNodeTo(target: string): typeof fetch;
+  closeDemosNodeStubs(): Promise<void>;
 }
 
 interface GeneratedLifecycleModule {
@@ -57,7 +68,8 @@ interface GeneratedLifecycleModule {
 }
 
 interface TestnetAuthority {
-  policyHash: string;
+  policyHash?: string;
+  payDem?: Readonly<{ lineageKey: string; policyHash: string }>;
   stop(): Promise<void>;
 }
 
@@ -85,6 +97,7 @@ interface RefusalCase {
 const NODE_PACKAGE_NAME: string = "@kynesyslabs/dacs-node";
 const DEMOS_LOADER: string = "@kynesyslabs/dacs-node/demos-loader";
 const CANONICAL_PACKAGE: string = "@kynesyslabs/dacs/canonical";
+const WIRE_PACKAGE: string = "@kynesyslabs/dacs/wire";
 const VIEM_ACCOUNTS: string = "viem/accounts";
 
 const NODE_PACKAGE = new URL("../../dacs-node/", import.meta.url);
@@ -109,26 +122,45 @@ const CHANGED_LIMITS = Object.freeze({
   DACS_X402_WALLET_MAX_CUMULATIVE_DEBIT: "50",
   DACS_X402_WALLET_MAX_COUNTERPARTY_DEBIT: "9",
 });
+/** The eight wallet limits the DEM policy reads, each changed from its default. */
+const CHANGED_DEM_LIMITS = Object.freeze({
+  DACS_WALLET_MAX_CONCURRENT_EFFECTS: "2",
+  DACS_WALLET_MAX_RETAINED_RESERVATIONS: "5000",
+  DACS_WALLET_ROLLING_WINDOW_MS: "3600000",
+  DACS_WALLET_MAX_ROLLING_EFFECTS: "4",
+  DACS_PAY_DEM_WALLET_MINIMUM_RESERVE: "6",
+  DACS_PAY_DEM_WALLET_MAX_ROLLING_DEBIT: "30",
+  DACS_PAY_DEM_WALLET_MAX_CUMULATIVE_DEBIT: "90",
+  DACS_PAY_DEM_WALLET_MAX_COUNTERPARTY_DEBIT: "20",
+});
+/** The buyer's Demos wallet the actor stand-in reports: 32 bytes, as the Demos runtime gives. */
+const BUYER_DEMOS_WALLET = `0x${"b1".repeat(32)}`;
 
 // Only the actor, registry and actor-storage dependencies are replaced; every other export stays real.
 const resolveRail = vi.fn<() => Promise<Rail>>();
 const createActorRuntime = vi.fn(async (input: Readonly<{ role: string; authority: string; writePolicy: string }>) => ({
   publicKey: new Uint8Array(32),
   authority: input.authority,
-  walletAddress: `0x${input.role === "buyer" ? "b1" : "c2"}${"00".repeat(19)}`,
+  walletAddress: input.role === "buyer" ? BUYER_DEMOS_WALLET : `0x${"c2".repeat(32)}`,
 }));
 const openSqliteDatabase = vi.fn(async () => ({ close: () => undefined }));
 
 let root: string;
 let project: string;
+let payDemProject: string;
 let x402Doctor: GeneratedDoctorModule;
 let payDemDoctor: GeneratedDoctorModule;
 let x402Config: GeneratedConfigModule;
+let payDemConfig: GeneratedConfigModule;
 let lifecycle: GeneratedLifecycleModule;
 let nodePackage: NodePackage;
+let demosNode: DemosNodeHelper;
+let approvedDemosIdentity: string;
 let canonicalize: (value: unknown) => string;
 let stub: ChainStub;
 let settings: Record<string, string>;
+/** The DEM lane's settings, with the x402 lane's own settings removed. */
+let demLane: Readonly<Record<string, string | undefined>>;
 let buyerWallet: string;
 const services: TestnetAuthority[] = [];
 const cleanup: string[] = [];
@@ -139,6 +171,7 @@ beforeAll(async () => {
   await import(DEMOS_LOADER);
   ({ root, project } = await generatedProject("x402"));
   const payDem = await generatedProject("pay-dem");
+  payDemProject = payDem.project;
   cleanup.push(root, payDem.root);
 
   vi.doMock("@kynesyslabs/dacs", async (importOriginal) => ({
@@ -158,7 +191,14 @@ beforeAll(async () => {
   x402Config = await import(join(project, "src", "config.ts")) as GeneratedConfigModule;
   lifecycle = await import(join(project, "src", "lifecycle.ts")) as GeneratedLifecycleModule;
   payDemDoctor = await import(join(payDem.project, "src", "doctor.ts")) as GeneratedDoctorModule;
+  payDemConfig = await import(join(payDem.project, "src", "config.ts")) as GeneratedConfigModule;
   nodePackage = await import(NODE_PACKAGE_NAME) as NodePackage;
+  demosNode = await import(
+    fileURLToPath(new URL("test/helpers/walletSpendDemosNode.ts", NODE_PACKAGE))
+  ) as DemosNodeHelper;
+  approvedDemosIdentity = (await import(WIRE_PACKAGE) as {
+    TP1_APPROVED_IDENTITY_RECORD: Readonly<{ chainIdentity: string }>;
+  }).TP1_APPROVED_IDENTITY_RECORD.chainIdentity;
   ({ canonicalize } = await import(CANONICAL_PACKAGE) as { canonicalize: (value: unknown) => string });
   const { privateKeyToAccount } = await import(VIEM_ACCOUNTS) as {
     privateKeyToAccount(key: string): { address: string };
@@ -183,6 +223,7 @@ beforeAll(async () => {
   for (const [name, content] of Object.entries(secretFiles)) await writeModeFile(join(secrets, name), content);
   for (const role of ["buyer", "seller"]) await mkdir(join(root, "data", role), { recursive: true, mode: 0o700 });
   await mkdir(join(root, "policy"));
+  await mkdir(join(root, "dem-policy"));
   const identity = (byte: string) => `did:demos:agent:${byte.repeat(32)}`;
   settings = {
     DACS_DEPLOYMENT: "local",
@@ -212,10 +253,18 @@ beforeAll(async () => {
     DACS_WALLET_AUTHORITY_POLICY_FILE: join(root, "policy", "policy.json"),
     DACS_WALLET_AUTHORITY_ALLOW_INSECURE_LOOPBACK: "1",
   };
+  demLane = Object.freeze({
+    DACS_WALLET_AUTHORITY_DATA_DIRECTORY: undefined,
+    DACS_WALLET_AUTHORITY_POLICY_FILE: undefined,
+    DACS_PAY_DEM_WALLET_AUTHORITY_DATA_DIRECTORY: join(root, "dem-authority-data"),
+    DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE: join(root, "dem-policy", "policy.json"),
+    DACS_DEMOS_RPC_URL: demosNode.DEMOS_NODE_URL,
+  });
 }, SETUP_TIMEOUT_MS);
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   resolveRail.mockReset();
   createActorRuntime.mockClear();
   openSqliteDatabase.mockClear();
@@ -224,6 +273,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await stub?.close();
+  await demosNode?.closeDemosNodeStubs();
   for (const directory of cleanup) await rm(directory, { recursive: true, force: true });
 });
 
@@ -261,6 +311,22 @@ async function serviceLimitCheck(): Promise<DoctorCheck | undefined> {
   resolveRail.mockResolvedValue(TESTNET_RAIL);
   const report = await x402Doctor.runGeneratedDoctor("post-start", "buy", { rail: "x402" });
   return report.checks.find((check) => check.id === "x402.service-limit");
+}
+
+/** The DEM policy the generated buyer builds for its Demos wallet under the current environment. */
+function buyerDemPolicy(): WalletSpendPolicy {
+  return payDemConfig.configuredPayDemWalletSpendPolicy(BUYER_DEMOS_WALLET);
+}
+
+async function writtenDemPolicy(): Promise<Extract<PolicyFileResult, { status: "written" }>> {
+  const result = await payDemDoctor.writeGeneratedPayDemWalletSpendPolicyFileV1();
+  if (result.status !== "written") throw new Error(`DEM policy file refused: ${result.reasonCode}`);
+  return result;
+}
+
+async function payDemServiceLimitCheck(): Promise<DoctorCheck | undefined> {
+  const report = await payDemDoctor.runGeneratedDoctor("post-start", "buy", { rail: "pay-dem" });
+  return report.checks.find((check) => check.id === "pay-dem.service-limit");
 }
 
 describe("generated authority policy file", { timeout: 60_000 }, () => {
@@ -348,6 +414,62 @@ describe("generated authority policy file", { timeout: 60_000 }, () => {
     expect(await readFile(notADirectory, "utf8")).toBe("a regular file");
     expect((await readdir(root)).filter((name) => name.startsWith("refused-parent"))).toEqual(["refused-parent"]);
   });
+
+  test("authority-policy writes the buyer's exact DEM policy", async () => {
+    useSettings(demLane);
+    const target = join(root, "dem-policy", "policy.json");
+    const written = await writtenDemPolicy();
+    expect(written).toEqual({
+      status: "written",
+      path: target,
+      policyHash: nodePackage.dacsWalletSpendPolicyHashV1(buyerDemPolicy()),
+    });
+    expect(await readFile(target, "utf8")).toBe(canonicalize(buyerDemPolicy()));
+    expect((await stat(target)).mode & 0o777).toBe(0o600);
+    expect(createActorRuntime.mock.calls.map(([input]) => [input.role, input.writePolicy]))
+      .toEqual([["buyer", "read-only"], ["seller", "read-only"]]);
+    expect(resolveRail).not.toHaveBeenCalled();
+    expect(openSqliteDatabase).not.toHaveBeenCalled();
+    expect(await readdir(dirname(target))).toEqual(["policy.json"]);
+
+    const refusedTarget = join(root, "dem-refused", "policy.json");
+    await mkdir(dirname(refusedTarget));
+    const openIdentity = join(root, "secrets", "buyer-demos-readable-dem");
+    await writeModeFile(openIdentity, "buyer-demos-identity-fixture", 0o644);
+    const cases: readonly RefusalCase[] = [
+      {
+        reasonCode: "authority-pay-dem-policy-file-setting-missing",
+        overrides: { DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE: undefined },
+        runtimeCalls: 0,
+      },
+      { reasonCode: "authority-pay-dem-profile-required", doctor: () => x402Doctor, runtimeCalls: 0 },
+      {
+        reasonCode: "authority-policy-actor-unavailable",
+        overrides: { DACS_BUYER_DEMOS_SECRET_FILE: openIdentity },
+        runtimeCalls: 0,
+      },
+      {
+        reasonCode: "authority-policy-limits-invalid",
+        overrides: { DACS_PAY_DEM_WALLET_MAX_ROLLING_DEBIT: "abc" },
+        runtimeCalls: 2,
+      },
+    ];
+    for (const { reasonCode, overrides = {}, doctor = () => payDemDoctor, runtimeCalls } of cases) {
+      useSettings({ ...demLane, DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE: refusedTarget, ...overrides });
+      createActorRuntime.mockClear();
+      expect(await doctor().writeGeneratedPayDemWalletSpendPolicyFileV1(), reasonCode)
+        .toEqual({ status: "refused", reasonCode });
+      expect(createActorRuntime, reasonCode).toHaveBeenCalledTimes(runtimeCalls);
+      expect(await readdir(dirname(refusedTarget)), reasonCode).toEqual([]);
+    }
+
+    const notADirectory = join(root, "dem-refused-parent");
+    await writeModeFile(notADirectory, "a regular file");
+    useSettings({ ...demLane, DACS_PAY_DEM_WALLET_AUTHORITY_POLICY_FILE: join(notADirectory, "policy.json") });
+    expect(await payDemDoctor.writeGeneratedPayDemWalletSpendPolicyFileV1())
+      .toEqual({ status: "refused", reasonCode: "authority-policy-write-failed" });
+    expect(await readFile(notADirectory, "utf8")).toBe("a regular file");
+  });
 });
 
 describe("generated doctor against the testnet authority service", { timeout: 120_000 }, () => {
@@ -390,15 +512,69 @@ describe("generated doctor against the testnet authority service", { timeout: 12
     expect(containerHash).toBe(written.policyHash);
   });
 
+  test("the post-start doctor's pay-dem check passes against the running DEM lane", async () => {
+    const node = await demosNode.demosNodeStub(demosNode.recordedDemosState(approvedDemosIdentity));
+    vi.stubGlobal("fetch", demosNode.fetchRoutingDemosNodeTo(node.url));
+    const lane = { ...demLane, DACS_PAY_DEM_WALLET_AUTHORITY_DATA_DIRECTORY: join(root, "dem-lineage-pass") };
+    const environment = useSettings(lane);
+    const written = await writtenDemPolicy();
+    const service = await nodePackage.startDacsWalletSpendTestnetAuthorityV1({ environment });
+    services.push(service);
+    expect(service.payDem?.policyHash).toBe(written.policyHash);
+    expect(service.policyHash).toBeUndefined();
+
+    expect(await payDemServiceLimitCheck()).toMatchObject({
+      status: "pass",
+      facts: {
+        policyHash: written.policyHash,
+        asset: "DEM",
+        maximumPerOrderDebit: buyerDemPolicy().assets[0]?.maximumPerOrderDebit,
+        balance: "12000000000",
+      },
+    });
+
+    useSettings({ ...lane, DACS_PAY_DEM_WALLET_MAX_ROLLING_DEBIT: "7" });
+    expect((await payDemServiceLimitCheck())?.status).not.toBe("pass");
+
+    useSettings(lane);
+    await service.stop();
+    expect((await payDemServiceLimitCheck())?.status).not.toBe("pass");
+  });
+
+  test("the container computes the host's DEM policy hash after a limit change", async () => {
+    const dotEnvironment = useSettings({ ...demLane, ...CHANGED_DEM_LIMITS });
+    const written = await writtenDemPolicy();
+    const hostHash = nodePackage.dacsWalletSpendPolicyHashV1(buyerDemPolicy());
+    const container = containerEnvironment(
+      await readFile(join(payDemProject, "compose.yaml"), "utf8"),
+      dotEnvironment,
+    );
+    for (const [name, value] of Object.entries(CHANGED_DEM_LIMITS)) expect(container[name], name).toBe(value);
+
+    vi.unstubAllEnvs();
+    for (const name of Object.keys(dotEnvironment)) vi.stubEnv(name, undefined);
+    for (const [name, value] of Object.entries(container)) vi.stubEnv(name, value);
+    const containerHash = nodePackage.dacsWalletSpendPolicyHashV1(buyerDemPolicy());
+    expect(containerHash).toBe(hostHash);
+    expect(containerHash).toBe(written.policyHash);
+  });
+
   test("the generated backup never selects the authority data directory", async () => {
     const authorityDirectory = join(root, "data", "authority");
-    await mkdir(join(authorityDirectory, "witness"), { recursive: true, mode: 0o700 });
-    await writeModeFile(join(authorityDirectory, "witness", "record"), "authority witness record");
+    const demAuthorityDirectory = join(root, "data", "dem-authority");
+    for (const directory of [authorityDirectory, demAuthorityDirectory]) {
+      await mkdir(join(directory, "witness"), { recursive: true, mode: 0o700 });
+      await writeModeFile(join(directory, "witness", "record"), "authority witness record");
+    }
     await writeModeFile(join(root, "data", "buyer", "buyer-state"), "buyer state");
     await writeModeFile(join(root, "data", "seller", "seller-state"), "seller state");
     const backupKey = join(root, "secrets", "backup-key");
     await writeModeFile(backupKey, "0f".repeat(32));
-    useSettings({ DACS_WALLET_AUTHORITY_DATA_DIRECTORY: authorityDirectory, DACS_BACKUP_AUTH_KEY_FILE: backupKey });
+    useSettings({
+      DACS_WALLET_AUTHORITY_DATA_DIRECTORY: authorityDirectory,
+      DACS_PAY_DEM_WALLET_AUTHORITY_DATA_DIRECTORY: demAuthorityDirectory,
+      DACS_BACKUP_AUTH_KEY_FILE: backupKey,
+    });
     const output = join(root, "backup");
     const manifest = await lifecycle.createGeneratedBackupV1({ outputDirectory: output });
     expect(manifest.roles.map(({ role, files }) => [role, files.map(({ path }) => path)])).toEqual([

@@ -1,0 +1,67 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF refuse every keystore paid write without a one-use approval and add the read-only paid-write preview",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "d301638b1f48455779956d2baad1f21883609a2d",
+      "after": "e0433d254abc584dea8b9d55c2bb20b102656ce9"
+    },
+    {
+      "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "before": "a94338a81529c17307cc771d56707a7c00a961bb",
+      "after": "b57e1bfc2a9e4ca048ad6bc358b50517100ec4e7"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "e5c956d29e34634c8f1dc5aac21d61af6c72ef14",
+      "after": "ecb27225f37583a4aeaf01972e6b71c7b0a4aba4"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "c88133db00e476c722ed03e87dd5c85f71176ede",
+      "after": "b74d2dfce58137577ee0a90d658f2521dc6c9886"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/paid-approval.mjs",
+      "before": null,
+      "after": "dbbe18c020adb3bf5b7edf09a00c68a80eed9328"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/keystore-world.mjs",
+      "before": null,
+      "after": "d42a619f5e913efe211ed5f3f77ce6f4d2b0ffd2"
+    },
+    {
+      "path": "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+      "before": "def522dd3544c465818c54bd50d90df3d876f3f1",
+      "after": "c4cc7fd110c2e62bb32a299249db97e1a2044fa3"
+    },
+    {
+      "path": "packages/dacs-client/test/node-wallet-paid-approval.test.mjs",
+      "before": null,
+      "after": "7ef29eebc2e36e22c99ab3a22221879abd7551e0"
+    },
+    {
+      "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+      "before": "00dd61a3a954ee2243563b41f3bbffdbcd78d586",
+      "after": "f758210cb1268d887f076d60615a3b770fa4ac92"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-7542ffd02fd6.json",
+    "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/src/wallet/paid-approval.mjs",
+    "packages/dacs-client/test/helpers/keystore-world.mjs",
+    "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+    "packages/dacs-client/test/node-wallet-paid-approval.test.mjs",
+    "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+    "scripts/release-policy.json"
+  ]
+}

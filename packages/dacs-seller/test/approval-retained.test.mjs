@@ -419,6 +419,31 @@ test('settle by id still completes after the approval is stopped, and a second s
  assert.equal((await completions(fixture.evidencePath,prepared.ledgerId)).length,1);assert.equal((await rowOf(fixture.evidencePath,prepared.ledgerId)).outcome,'spent');
 });
 
+test('the retained ledger\'s revocationGeneration moves by one, synchronously, when a release starts, in manual and policy mode, also when that release then fails; prepare, open, reopen, confirm and a spent or unknown settlement leave it',async t=>{
+ const fixture=await ledgerFixture(t),retained=fixture.compose(fixture.restart()).retained,request=evidence();
+ const g0=retained.revocationGeneration();
+ assert.ok(Number.isSafeInteger(g0)&&g0>=0,'a non-negative safe integer');
+ const first=await retained.prepare(request);
+ assert.deepEqual(await retained.open(first.requestText),bindingOf(first));await retained.reopen(first.ledgerId);
+ assert.equal(await retained.confirm(bindingOf(first),executed(request)),true);
+ assert.equal(retained.revocationGeneration(),g0,'prepare, open, reopen and confirm leave it');
+ const releasing=retained.settle(bindingOf(first),'released');
+ assert.equal(retained.revocationGeneration(),g0+1,'it moved before the release settled');
+ await releasing;
+ const second=await retained.prepare(secondEvidence());
+ await retained.settle(bindingOf(second),'unknown');await retained.settle(bindingOf(second),'spent');
+ assert.equal(retained.revocationGeneration(),g0+1,'an unknown or spent settlement leaves it');
+ await rejectsWith(retained.settle({ledgerId:second.ledgerId,requestText:'TEST-other'},'released'),'approval_reservation_unavailable');
+ assert.equal(retained.revocationGeneration(),g0+2,'a release counts when it starts, also when it then fails');
+ const manualFixture=await ledgerFixture(t),manual=composeSellerApproval({mode:'manual',policy:manualFixture.restart(),manual:async()=>true}).retained;
+ const m0=manual.revocationGeneration(),grant=await manual.prepare(evidence());
+ assert.equal(grant.ledgerId,null);assert.equal(manual.revocationGeneration(),m0,'a manual grant leaves it');
+ const ending=manual.settle(bindingOf(grant),'released');
+ assert.equal(manual.revocationGeneration(),m0+1,'a manual release moved it before its promise settled');
+ await ending;
+ assert.equal(await manual.open(grant.requestText),null,'the released grant is closed');
+});
+
 const SIGN_FORMAT='dacs-node2-seller-policy-sign-authorization/v1';
 const signLineFor=(requestBytes,mark={retained:true})=>JSON.stringify({format:SIGN_FORMAT,reservationId:randomUUID(),approvalHash:createHash('sha256').update(requestBytes).digest('hex'),requestBytes,totalOs:JSON.parse(requestBytes).content.debit.totalOs,recordedAt:T0,...mark})+'\n';
 
