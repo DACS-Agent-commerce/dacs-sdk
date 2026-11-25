@@ -1,0 +1,14 @@
+{
+  "current-entry": {
+    "answerSha256": "e8f387533e7d444c4ca3984c8ea7adcdb571bd993746a03e504ad1e466340b6a",
+    "signingInputSha256": "dec9df0e261143ae1df71fd6d56c162938e27cbb1d9f68e358d1cf3054ae1fd1"
+  },
+  "complete-empty": {
+    "answerSha256": "23e6dde4dfcf7f9cf595649c6dce316f00097ba98cc48238ece89b6a73cf569d",
+    "signingInputSha256": "9b829624d685ca2700005946c64069dfbb96c892e32e664c8c02784625885cef"
+  },
+  "revoked-entry": {
+    "answerSha256": "a806b800a940a0fdd97b4048d6db29b2753c6a3c762f293e674f2aa7c2cd0ac7",
+    "signingInputSha256": "1958222abec256a0a2d84da36de1b12d0bdb2c251425fc23679168074052a0b3"
+  }
+}

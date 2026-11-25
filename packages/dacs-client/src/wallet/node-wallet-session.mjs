@@ -125,7 +125,7 @@ export function createHeldTransportFacade({ admission, transport } = {}) {
   return facade;
 }
 
-// `approveAhead`, `signCreate` and `broadcast` are active: each call refuses profile_not_admitted while held and checks the binding before it runs.
+// `approveAhead`, `approveSendAhead`, `signCreate` and `broadcast` are active: each call refuses profile_not_admitted while held and checks the binding before it runs.
 // The two reads are passive and keep working while held.
 function createHeldAdapter(admission, adapter) {
   const wrapped = admitPublicFactory(() => adapter, { passive: ['readAccountNonce', 'readTransactionState'], purchase: true })({ admission });
@@ -628,10 +628,11 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
  * of `createNodeWalletSession` over a seller transport.
  * `transport` is the registered held facade of `createHeldTransportFacade`; `observer` is `createNodeObserver({owner, clock})` over the same owner, with no fence.
  * The facade has `withWalletNonceLock(scope, work)`, the wallet's native lane held around `work` (see the README's "Wallet nonce lane").
- * `paymentEvidenceAdapter` is `{approveAhead, signCreate, broadcast, readAccountNonce, readTransactionState}`: the first three are active members under the hold.
- * `approveAhead` runs outside every effect pass and takes the approval of one CREATE as a hold; it needs `stopped()` to answer a boolean synchronously. `signCreate`
- * and `broadcast` run in the caller's effect pass (`signCreate` signs one payment-evidence storage CREATE on the signer reservation, with or without a hold, and sends
- * nothing; `broadcast` confirms and dispatches the stored bytes), and the two reads are passive (see `node-payment-evidence-adapter.mjs`).
+ * `paymentEvidenceAdapter` is `{approveAhead, approveSendAhead, signCreate, broadcast, readAccountNonce, readTransactionState}`: the first four are active members
+ * under the hold. `approveAhead` and `approveSendAhead` run outside every effect pass and take the approval of one CREATE, or of its stored bytes' send, as a hold;
+ * they need `stopped()` to answer a boolean synchronously. `signCreate` and `broadcast` run in the caller's effect pass, with or without a hold (`signCreate` signs one
+ * payment-evidence storage CREATE on the signer reservation and sends nothing; `broadcast` confirms and dispatches the stored bytes), and the two reads are passive
+ * (see `node-payment-evidence-adapter.mjs`).
  * Options are those of `createNodeWalletSession` plus `publications: {settlementPublication, deliveryPublication, demoArtifactPublication}`, the required
  * `approveConfirmedWrite`, a function or an explicit `null` (manual mode, no callback installed), and the optional `qualify({phase, signal})` the effect gate awaits
  * first. A confirmation by another sender, or of a Listing CREATE, is answered `true` without calling the policy; every other seller confirmation calls it once,
@@ -639,7 +640,8 @@ function routeConfirmedWrite(approveConfirmedWrite, ownAddress) {
  * Also requires `stateOwnership` `{directory, held()}`, the host's proof that it holds the state lock for the directory containing `journal`. Before it
  * returns, the composition removes the lock rows of dead holders from `journal` and retires every signer reservation that has no signed bytes. It also requires
  * `paymentEvidenceApproval` `{prepare, open, reopen, confirm, settle}`, the kit's approval ledger for payment-evidence CREATEs; `open` and `settle` serve the
- * signer reservation. A hold from `approveAhead` also needs the ledger's synchronous `revocationGeneration()`; construction requires only the five members.
+ * signer reservation. A hold from `approveAhead` or `approveSendAhead` also needs the ledger's synchronous `revocationGeneration()`; construction requires only the
+ * five members.
  * Rejects as `createNodeWalletSession` does, with TypeError(approveConfirmedWrite) for any other policy value, OperationError(invalid_params) for a `qualify`
  * that is not a function, the transport's own refusal of the publications, `state_ownership_required` (cause kept when the proof itself failed) without a
  * valid proof, and `invalid_params` when a ledger member is not a function.
@@ -727,12 +729,14 @@ async function buildNodeComposition(options, seller, requirePass = false) {
     const gate = createEffectGate({ owner, expectedLocal: admission.binding.local, clock, qualify, passRequired: seller || requirePass, jobContextRequired: seller });
     // A confirmTx or broadcastTx body is gated and the real fetch runs synchronously after the gate. A refused body is not dispatched, although
     // this attempt's earlier reads (the nonce check) were; an effect body this attempt already sent stays dispatched.
-    const fetchImpl = (input, init) => {
+    // A caller's `finalCheck` runs in the gate's last synchronous run for that body, right before the real fetch.
+    const fetchImpl = (input, init, { finalCheck } = {}) => {
       const attempt = attempts.getStore(), stage = executeStageOf(init?.body);
       const send = () => { if (attempt) attempt.dispatched = true; return owner.fetchImpl(input, init); };
       if (!stage) return send();
       if (attempt) attempt.dispatched = attempt.effectSent === true;
-      return gate.pass({ phase: stage, signal: init.signal }, () => { if (attempt) attempt.effectSent = true; return send(); });
+      const checks = finalCheck ? { checkContent: () => { finalCheck(); } } : {};
+      return gate.pass({ phase: stage, signal: init.signal, ...checks }, () => { if (attempt) attempt.effectSent = true; return send(); });
     };
     const stamps = createRpcStampSource(clock);
     const reopenGrants = createReopenGrants();
