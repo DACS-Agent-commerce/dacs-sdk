@@ -1,0 +1,10 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record the README wording commit of the read-only Listing verifier",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/records/WF-8480997889e2.json"
+  ],
+  "note": "The commit before this one changes only the client README, which needs no inventory row, so the newest commit to touch the package had no row. This commit carries one."
+}
