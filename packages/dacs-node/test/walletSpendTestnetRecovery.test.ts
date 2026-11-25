@@ -69,6 +69,7 @@ const settledClaim = (amount = TESTNET_AMOUNT): WalletSpendSettlementObservation
   debits: [{ asset: TESTNET_ASSET, purpose: "service", amount }],
 });
 const absentClaim: WalletSpendRecoveryObservationV1 = { disposition: "terminal-absent", evidenceHash: "e".repeat(64) };
+const notInvokedClaim: WalletSpendRecoveryObservationV1 = { disposition: "not-invoked", evidenceHash: "f".repeat(64) };
 
 /** The fixture hold declaring another finality depth. */
 const withDepth = (finalityBlocks: number, item = RESERVATION): WalletSpendReservationV1 =>
@@ -265,6 +266,25 @@ describe("testnet wallet-spend recovery rule", () => {
       .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-unavailable" });
   });
 
+  it("releases a not-invoked hold only on the same chain proof as an absent one", async () => {
+    for (const finalTime of [VALID_BEFORE - 1, VALID_BEFORE]) {
+      await expect(rule(await chainStub(defaultChain(finalTime))).check(RESERVATION, notInvokedClaim))
+        .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-authorization-still-valid" });
+    }
+    await expect(rule(await chainStub(defaultChain(VALID_BEFORE + 1))).check(RESERVATION, notInvokedClaim))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-expired-unused" });
+
+    const cancelled = defaultChain();
+    payment(cancelled, { event: "canceled", transfers: [] });
+    await expect(rule(await chainStub(cancelled)).check(RESERVATION, notInvokedClaim))
+      .resolves.toEqual({ accepted: true, reasonCode: "wallet-spend-chain-cancelled" });
+
+    const paid = defaultChain(VALID_BEFORE + 1);
+    payment(paid);
+    await expect(rule(await chainStub(paid)).check(RESERVATION, notInvokedClaim))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-paid" });
+  });
+
   it("refuses every claim when the chain cannot be read", async () => {
     const oversized = JSON.stringify({ padding: "x".repeat(1_100 * 1024) });
     const failures: readonly Readonly<{
@@ -328,8 +348,8 @@ describe("testnet wallet-spend recovery rule", () => {
       .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-hold-missing" });
     await expect(rule(stub).raw.check(RESERVATION, absentClaim))
       .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-hold-missing" });
-    await expect(rule(stub).check(RESERVATION, { disposition: "not-invoked", evidenceHash: "e".repeat(64) }))
-      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-absence-kind-refused" });
+    await expect(rule(stub).raw.check(RESERVATION, notInvokedClaim))
+      .resolves.toEqual({ accepted: false, reasonCode: "wallet-spend-chain-hold-missing" });
     expect(stub.calls).toEqual([]);
 
     const doubled = defaultChain();
