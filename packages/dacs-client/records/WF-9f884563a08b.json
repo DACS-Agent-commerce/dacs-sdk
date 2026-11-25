@@ -1,0 +1,23 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF default the read-only Listing verifier's fetch functions to the global fetch and its clock to Date.now",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/listing/read-only-verifier.mjs",
+      "before": "87c154ad29dd2220778adc3abfd81004e4dfbf9b",
+      "after": "e4a58d282ce0a401edbf86ee8b2d405f322ac438"
+    },
+    {
+      "path": "packages/dacs-client/test/read-only-listing-verifier.test.mjs",
+      "before": "53a245fbfc0c980a23958f704e5f345e99104f41",
+      "after": "0e7b38c95c2e138748c1f47982e8f2f8001e2de8"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-9f884563a08b.json",
+    "packages/dacs-client/src/listing/read-only-verifier.mjs",
+    "packages/dacs-client/test/read-only-listing-verifier.test.mjs"
+  ]
+}

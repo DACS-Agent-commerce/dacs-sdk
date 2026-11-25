@@ -108,6 +108,7 @@ function budgetedFetch(fetchImpl, budget, deadline) {
  * chain reader over `directoryFetchImpl` and `chainFetchImpl`, which share
  * one budget of LISTING_MAX_FETCHES requests and one LISTING_CALL_TIMEOUT_MS
  * deadline. `pinnedIdentity` is the testnet genesis identity, 64 lowercase hex.
+ * Both fetch functions default to the global `fetch`, and `now` to Date.now.
  *
  * `verify({listingId, version, seller, fresh = true})` resolves a frozen
  * `{listingId, version, seller, listing, contentHash, anchor, checkedAt,
@@ -117,9 +118,9 @@ function budgetedFetch(fetchImpl, budget, deadline) {
  *
  * The factory throws, and `verify` rejects with, ReadOnlyListingError.
  */
-export function createReadOnlyListingVerifier(options) {
-  assertOptions(options ?? {});
-  const { directoryOrigin, rpcUrl, pinnedIdentity, directoryFetchImpl, chainFetchImpl, now } = options;
+export function createReadOnlyListingVerifier({ directoryFetchImpl = globalThis.fetch, chainFetchImpl = globalThis.fetch, now = () => Date.now(), ...endpoints } = {}) {
+  const { directoryOrigin, rpcUrl, pinnedIdentity } = endpoints;
+  assertOptions({ ...endpoints, directoryFetchImpl, chainFetchImpl, now });
 
   async function lookup(coordinates, call) {
     const { listingId, version, seller } = coordinates;

@@ -278,6 +278,16 @@ test('stalled Directory chain and marker reads refuse listing_read_timeout withi
   });
 });
 
+test('without fetch functions or a clock the verifier reads through the global fetch and Date.now', async (t) => {
+  const { counts, directoryFetchImpl, chainFetchImpl } = world();
+  t.mock.method(globalThis, 'fetch', (input, init) => (new URL(input).origin === DIRECTORY ? directoryFetchImpl : chainFetchImpl)(input, init));
+  t.mock.timers.enable({ apis: ['Date'], now: CHECKED_AT });
+  const verifier = createReadOnlyListingVerifier({ directoryOrigin: DIRECTORY, rpcUrl: RPC, network: 'testnet', pinnedIdentity: PIN });
+  const result = await verifier.verify(coordinates);
+  assert.equal(result.checkedAt, CHECKED_AT);
+  assert.deepEqual({ directory: counts.directory, chain: counts.chain }, { directory: 2, chain: 2 });
+});
+
 test('read failures expose only fixed code and reason with no cause or node text', async () => {
   const SECRET = 'node-secret-text';
   const failures = [
