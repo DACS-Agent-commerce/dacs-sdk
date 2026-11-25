@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client package manifest with the passive native payment lane proof file",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "9d27d7e87d11b82526a21c01128c6ffbf05a0267",
+      "after": "9d27d7e87d11b82526a21c01128c6ffbf05a0267"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-519fa7d4defc.json"
+  ],
+  "note": "Both sides of the merge of the base recorded this file, so their newest records disagree; this record chooses the merged copy. The manifest lists the passive native payment lane proof source file. Git merged it without a conflict. No file other than this record changes."
+}
