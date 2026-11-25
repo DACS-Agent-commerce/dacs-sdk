@@ -1,0 +1,47 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client files after merging phase0-completion into the native Pay receipt gate",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "18375c20558490b7d3c1ac591c7087b7c7a25ec8",
+      "after": "18375c20558490b7d3c1ac591c7087b7c7a25ec8"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "295283221222047a765d5b8ab1c93bc076fca761",
+      "after": "295283221222047a765d5b8ab1c93bc076fca761"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "e28d40504f73619b53d58d28c3571aa032a9c64d",
+      "after": "e28d40504f73619b53d58d28c3571aa032a9c64d"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+      "before": "831648b3c42ed2928994f7d0a56ca2c2e23d56a7",
+      "after": "831648b3c42ed2928994f7d0a56ca2c2e23d56a7"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+      "before": "10ae9652f1c176c881f19ed981813c9d17088b12",
+      "after": "10ae9652f1c176c881f19ed981813c9d17088b12"
+    },
+    {
+      "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+      "before": "443c4a8f58ddf7337e9178c7067a9a5e8b02bc36",
+      "after": "443c4a8f58ddf7337e9178c7067a9a5e8b02bc36"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-suspension.test.mjs",
+      "before": "588614ed512d75ab5964f4b1ed305deb0a1964c9",
+      "after": "588614ed512d75ab5964f4b1ed305deb0a1964c9"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-7db49f80980d.json"
+  ],
+  "note": "Both sides of the merge recorded these files; this record names the merged copies, which keep the base's network fee and stop handling work and the seller receipt gate on native Pay. No file other than this record changes."
+}

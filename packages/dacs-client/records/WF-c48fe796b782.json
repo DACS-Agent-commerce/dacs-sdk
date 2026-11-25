@@ -1,0 +1,48 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF let a keystore buyer authorize one approved paid write and spend it once inside the pass",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "before": "b57e1bfc2a9e4ca048ad6bc358b50517100ec4e7",
+      "after": "2467428793d276ce1551de2573e706547952edcc"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "b74d2dfce58137577ee0a90d658f2521dc6c9886",
+      "after": "775c479f7b0e20b4e2999eb4932c7e18b51132cb"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/paid-approval.mjs",
+      "before": "dbbe18c020adb3bf5b7edf09a00c68a80eed9328",
+      "after": "f96889bdb4b3a88b896d37ce3180437701d151c9"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/keystore-world.mjs",
+      "before": "d42a619f5e913efe211ed5f3f77ce6f4d2b0ffd2",
+      "after": "0d0f55b25d0392c06e740ccfe6a81779bb6f44d2"
+    },
+    {
+      "path": "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+      "before": "750d8e40be5cb42372348bb121e0e50607187e42",
+      "after": "f0ab86e92a1203dd3cefed183e278936fb94ab4e"
+    },
+    {
+      "path": "packages/dacs-client/test/node-wallet-paid-approval.test.mjs",
+      "before": "7ef29eebc2e36e22c99ab3a22221879abd7551e0",
+      "after": "97ac4bfa84fe595d5cdccd3fbfd12840261cb10b"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-c48fe796b782.json",
+    "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/src/wallet/paid-approval.mjs",
+    "packages/dacs-client/test/helpers/keystore-world.mjs",
+    "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+    "packages/dacs-client/test/node-wallet-paid-approval.test.mjs"
+  ]
+}
