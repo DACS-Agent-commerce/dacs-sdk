@@ -28,7 +28,8 @@ import { assertCurrentAuthorization, currentPassContext, isPassContext, passCont
 import { createReadQueue } from './read-queue.mjs';
 import { createSignerReservations } from './signer-reservation.mjs';
 import { createKeystoreWalletOpener, JOURNAL_METHODS } from './keystore-wallet-opener.mjs';
-import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError, normalizeMnemonic } from '../public/portal/embedded-wallet/sdk-provider.mjs';
+import { createPaidApproval } from './paid-approval.mjs';
+import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedWalletError, normalizeMnemonic, projectPaidWrite } from '../public/portal/embedded-wallet/sdk-provider.mjs';
 
 // A comparison value inside the descriptor only: `_doPost` checks the URL it is given equals the
 // descriptor's `rpcUrl` and never fetches it, and `bindingRelay` replaces the binding fetches.
@@ -106,8 +107,8 @@ export { isDevnetAgreementTransport, isDevnetSettlementTransport, isDevnetDemoTr
  */
 export function createHeldTransportFacade({ admission, transport } = {}) {
   const wrapped = admitPublicFactory(() => transport, { passive: PASSIVE_TRANSPORT_METHODS, purchase: true })({ admission });
-  // The reopen entry is the composition's own (`withheldReopen`), never a member a host or a relay holds.
-  const members = Object.fromEntries(Object.entries(wrapped).filter(([name]) => !['actionsAdmitted', 'reopenWithheldBroadcast'].includes(name)));
+  // The reopen entry (`withheldReopen`) and the nonce-lane inspection are the composition's own, never members a host or a relay holds.
+  const members = Object.fromEntries(Object.entries(wrapped).filter(([name]) => !['actionsAdmitted', 'reopenWithheldBroadcast', 'inspectWalletNonceLane'].includes(name)));
   const facade = Object.freeze({ ...members, binding(request, ...args) {
     try {
       return request?.phase === READBACK_PHASE ? transport.binding({ ...request, phase: READBACK_PHASE }, ...args) : wrapped.binding(request, ...args);
@@ -678,6 +679,8 @@ const composeBuyerWithRequiredPass = options => composeStages(options, true);
  * OperationError(runtime_unsupported) and the stop codes (writes_stopped | stop_check_failed | stop_check_invalid; `stopped()` must answer a boolean
  * synchronously); then OperationError(keystore_unreadable | keystore_unlock_failed | invalid_mnemonic), a composition stage's own error, or
  * keystore_address_mismatch after the composition is closed. It writes and caches nothing, and zero-fills every phrase copy it makes.
+ * The composition and each `walletFactory` view also have `preparePaidWrite(request, {feeCeilingOs})`, the read-only preview of `createPaidApproval`
+ * (`paid-approval.mjs`), and every `wallet.request` for `sendTransaction` answers `paid_approval_required` with nothing signed or sent.
  */
 export const openKeystoreWalletSession = createKeystoreWalletOpener({ compose: composeBuyerWithRequiredPass });
 
@@ -752,8 +755,10 @@ async function buildNodeComposition(options, seller, requirePass = false) {
     await session.importMnemonic(mnemonic);
     // Routing identity outlives signing custody, which passive wallet.lock() clears.
     if (seller) sellerAddress = session.getPublicAccount().address;
+    const paidApproval = requirePass ? createPaidApproval({ session, transport, transactionTransport, relayOrigin: NODE_WALLET_RELAY_ORIGIN, feeCeilingOs, projectPaidWrite }) : null;
     const walletFactory = ({ anchorJournal: selected = journal } = {}) => admitPublicFactory(() => ({
-      request: request => selectedJournal.run(selected, () => session.request(request)),
+      request: request => paidApproval?.refuseUnpermitted(request) ?? selectedJournal.run(selected, () => session.request(request)),
+      ...(paidApproval ? { preparePaidWrite: paidApproval.previewFor(selected) } : {}),
       ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])),
     }), { passive: PASSIVE_METHODS, purchase: true })({ admission });
     const reservations = seller ? createSignerReservations({ journal, pins: expected, openApproval: requestText => paymentEvidenceApproval.open(requestText),
@@ -768,7 +773,8 @@ async function buildNodeComposition(options, seller, requirePass = false) {
     const paymentEvidenceAdapter = seller ? createHeldAdapter(admission, createPaymentEvidenceCreateAdapter({ reservations, approval: paymentEvidenceApproval,
       demos: evidenceDemos, observer, journal, pins: expected, clock, rpcUrl: transactionTransport.rpcUrl, isWalletLocked: () => session.isLocked(),
       owner, fetchImpl, stamps, stopped, recordCause })) : null;
-    const composition = Object.freeze({ wallet: walletFactory(), walletFactory, internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass, effectBoundary,
+    const wallet = walletFactory();
+    const composition = Object.freeze({ wallet, walletFactory, ...(paidApproval ? { preparePaidWrite: (...args) => wallet.preparePaidWrite(...args) } : {}), internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass, effectBoundary,
       transport: createHeldTransportFacade({ admission, transport }), ...(seller ? { observer, paymentEvidenceAdapter } : {}),
       withheldReopen: Object.freeze({ register: scope => reopenGrants.register(scope), reopen: request => transport.reopenWithheldBroadcast(request) }),
       async close() { session.lock(); evidenceDemos?.disconnect(); await transport.close(); } });
