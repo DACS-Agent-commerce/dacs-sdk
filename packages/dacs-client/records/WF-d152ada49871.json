@@ -1,0 +1,54 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF export a keyless signed relay transport from the package root",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "aef9866fe49288629d74d07215e8ee9cf656c242",
+      "after": "07374b272d95bab09aee16a512ef031227b2b82b"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "38ae9ef1cfe56d7f17fbb5e9c90fb54f6fda48cf",
+      "after": "876fc87d384deb423914f5376a570a3d2467d2ab"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/held-transport-facade.mjs",
+      "before": null,
+      "after": "63c3a0f731e825eba89400d2f677d8191a9d868e"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+      "before": "40367f47c71c08ce3582aed4d4eca16918016ee7",
+      "after": "c7df50e0e29f9fa78762bb6be823ff533d9d5749"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "a2e54680dd5030f0f252ae80f5445e3ac8dfdaf5",
+      "after": "ef3494f8b111befa8c7fc8706f0d8f00740fcd18"
+    },
+    {
+      "path": "packages/dacs-client/test/keyless-signed-relay-transport.test.mjs",
+      "before": null,
+      "after": "3927c32eaefbbd7d548e712332908dc4b898c278"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "5dc1578c4350b1a5288b8445a2293dc45953ac06",
+      "after": "4bf603af7198826317b98469dd13e0d95df7d60f"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-d152ada49871.json",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/wallet/held-transport-facade.mjs",
+    "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/test/keyless-signed-relay-transport.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs"
+  ]
+}

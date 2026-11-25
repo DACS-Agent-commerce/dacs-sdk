@@ -1,4 +1,5 @@
-// A key-free Agreement relay view over a caller's transport owner and journal, and the pure public Agreement profile.
+// Key-free Agreement transports over a caller's transport owner and journal: a readback view that signs and sends nothing, a relay
+// that confirms and broadcasts what the buyer's own wallet signed, and the pure public Agreement profile.
 import { canonicalize } from '@kynesyslabs/dacs';
 import { assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
@@ -6,9 +7,13 @@ import { normalizeDemosAddress } from '../signatures.mjs';
 import { settleOnAbort } from '../util/http.mjs';
 import { approvedPins, approvedSourcePolicy, checkConstruction, fail, readExpectedPins, withinAuthorityDeadline } from './approved-record-pins.mjs';
 import { agreementProfileFor, createDevnetAgreementTransport, registerHeldTransportFacade, BOUNDARY_METHODS } from './devnet-native-transport.mjs';
+import { createHeldTransportFacade, finalizeEffectBoundary } from './held-transport-facade.mjs';
 import { JOURNAL_METHODS } from './keystore-wallet-opener.mjs';
 
 const KEYLESS_OPTION_NAMES = ['admission', 'owner', 'journal', 'walletAddress'];
+const SIGNED_RELAY_OPTION_NAMES = ['admission', 'owner', 'journal', 'stopped', 'feeCeilingOs'];
+const SIGNED_RELAY_OPTIONS_INVALID = 'keyless_relay_options_invalid';
+const RELAY_CHECK_REQUIRED = 'relay_authorization_required';
 const KEYLESS_OWNER_METHODS = ['currentLocal', 'getContext', 'acquireConnectionFence', 'fetchImpl'];
 const READBACK_PHASE = 'readback';
 const RELEASE_PHASE = 'release';
@@ -115,6 +120,45 @@ export async function createKeylessAgreementTransport(options) {
   });
   registerHeldTransportFacade(view, inner);
   return view;
+}
+
+/**
+ * Returns a Promise for a frozen `{nativeTransport}`: a registered Agreement transport (`isDevnetAgreementTransport` is true) that relays what the buyer's own
+ * wallet signed. It holds no key and signs nothing. `nativeTransport.rpc(body, headers, {currentAuthorization})` confirms and broadcasts a native payment or
+ * an Agreement CREATE exactly as the wallet signed it, with the wallet's own RPC authentication headers, under a lease the wallet took through
+ * `walletBinding`; it also makes the three preparation reads. Every other member is the held facade's (see `createHeldTransportFacade`).
+ *
+ * Options, and only these: `{admission: {binding, currentLocal}, owner, journal, stopped, feeCeilingOs}`. `owner` is a transport owner (see
+ * `createNodeTransportOwner`) and `journal` a durable native-transfer journal; the caller owns both and closes them. `stopped()` is the host's stop check and
+ * `feeCeilingOs` its fee ceiling, a positive decimal OS amount, both required with no default. The binding is checked by the wire within 10 s, and the pins
+ * come from that binding alone.
+ *
+ * Right before the first byte of each confirmation or broadcast, the effect boundary checks that purchase actions are admitted, the binding is current,
+ * `stopped()` answers false and the whole signed debit (the amount, plus every fee for a broadcast) is at most `feeCeilingOs`, and then runs
+ * `currentAuthorization`. A failed check sends nothing and rejects with its code: `profile_not_admitted`, the wire's `tp1_*` refusal, `writes_stopped`,
+ * `write-fee-cap`, or the check's own error. An `execute` body without the relay check rejects TypeError(relay_authorization_required) before anything runs.
+ * A broadcast whose outcome is unknown stays in `journal` and is never sent again: later sends of those bytes and new leases for that wallet reject
+ * `outcome_unknown`, and `binding({phase: 'readback', address, hash})` reads it back. `close()` closes the transport, not the owner or the journal.
+ *
+ * Rejects with TypeError(admission_required | admission_input_untrusted | keyless_relay_options_invalid | a missing or malformed `stopped`, `feeCeilingOs` or
+ * journal), OperationError(runtime_unsupported | invalid_transport_owner | profile_not_admitted (cause kept) | tp1_local_binding_changed).
+ */
+export async function createKeylessSignedRelayTransport(options) {
+  checkConstruction(options);
+  if (Object.keys(options).some(name => !SIGNED_RELAY_OPTION_NAMES.includes(name))
+    || !KEYLESS_OWNER_METHODS.every(name => typeof options.owner?.[name] === 'function')) throw new TypeError(SIGNED_RELAY_OPTIONS_INVALID);
+  const { admission, owner, journal, stopped, feeCeilingOs } = options;
+  const boundary = finalizeEffectBoundary({ owner, journal, admission, stopped, feeCeilingOs });
+  await checkKeylessAdmission(admission, owner);
+  const inner = createDevnetAgreementTransport({ expected: readExpectedPins(admission.binding, owner), transportOwner: owner, journal,
+    fetchImpl: (input, init) => owner.fetchImpl(input, init), boundary, ...approvedSourcePolicy(), authorityBinding: admission.binding });
+  const held = createHeldTransportFacade({ admission, transport: inner });
+  const nativeTransport = Object.freeze({ ...held, rpc(body, headers, relayOptions) {
+    if (body?.method === 'execute' && relayOptions === undefined) return Promise.reject(new TypeError(RELAY_CHECK_REQUIRED));
+    return held.rpc(body, headers, relayOptions);
+  } });
+  registerHeldTransportFacade(nativeTransport, inner);
+  return Object.freeze({ nativeTransport });
 }
 
 /**
