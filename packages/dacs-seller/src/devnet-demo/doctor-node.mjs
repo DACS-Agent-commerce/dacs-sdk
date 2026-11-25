@@ -1,20 +1,17 @@
-// The seller doctor's read-only node connection and exact balance read. It opens no wallet, key, journal, lock or file, signs
-// nothing, and its imports reach no SQLite module.
+// The seller doctor's read-only node connection and balance read: no wallet, key, journal, lock, file, signature or SQLite import.
 import { TP1_APPROVED_IDENTITY_RECORD, canonicalNodeEndpoint } from '@kynesyslabs/dacs/wire';
 import { createNodeObserver, createNodeTransportOwner, readNodeAddressBalance } from '@kynesyslabs/dacs-client/node-wallet';
 import { SELLER_TRANSPORT_AUTHORITY, createConnectionAuthorityReader } from './connection-authority.mjs';
 
-// The chain identity the doctor's connection is pinned to; binding checks the live node against it.
+// The pinned chain identity; binding checks the live node against it.
 const CHAIN_IDENTITY = TP1_APPROVED_IDENTITY_RECORD.chainIdentity;
 
 /**
- * Opens the doctor's one read-only connection to `rpcUrl` and returns the frozen `{ owner, readAuthority, observer, close() }`.
- * `rpcUrl` must be a canonical node root: https, or plain http only under the approved TP-1 chain identity, which binding then
- * checks against the live node. `owner` is the client's transport owner with the fixed SELLER_TRANSPORT_AUTHORITY; `readAuthority`
- * is the production connection reader over it, for `bindTp1Profile` with `owner.currentLocal()`; `observer` is the client's
- * read-only observer of the same owner. `close()` closes the owner, once; every read after it refuses transport_closed. It gives
- * no qualification source. Throws TypeError for an empty `sellerClaim`, a `fetchImpl` that is not a function or an `rpcUrl` that
- * is not such a root, each before a connection opens; a later construction failure closes the owner and is rethrown.
+ * Opens one read-only connection to `rpcUrl` (a canonical https root, or http only under the approved TP-1 chain identity) and returns
+ * frozen `{ owner, readAuthority, observer, close() }`: the client's owner with SELLER_TRANSPORT_AUTHORITY, the production connection
+ * reader (for `bindTp1Profile` with `owner.currentLocal()`) and observer over it; after `close()` every read refuses transport_closed.
+ * Throws TypeError for an empty `sellerClaim`, a non-function `fetchImpl` or another `rpcUrl`, before any connection; a later
+ * construction failure closes the owner and is rethrown. It gives no qualification source.
  */
 export function openDoctorNode({ rpcUrl, sellerClaim, fetchImpl = globalThis.fetch }) {
   if (typeof sellerClaim !== 'string' || sellerClaim === '') throw new TypeError('sellerClaim must be a nonempty string');

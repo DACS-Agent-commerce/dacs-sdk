@@ -188,7 +188,7 @@ const host = await startSellerHost({
                          // session, each read within 10,000 ms (tp1_authority_timeout). Under the lock it finalizes it.
                          // createSellerWalletSession(...) is the production port (below); with it, artifactAnchor
                          // must be walletSession.artifactAnchor, or the host refuses with a TypeError
-  participantImplementations, // { entriesFor(claim, { sessionId, signal }) -> [{ claim, profile, modules, evidence, revoked }] }: the
+  participantImplementations, // { entriesFor(claim) -> [{ claim, profile, modules, evidence, revoked }] }: the
                          // independently approved enrollment of each buyer, read on every request; a buyer
                          // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
@@ -1172,8 +1172,7 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   payment evidence (`native_evidence_required`), so these capabilities and the supported Listing size are checked before
   commitment or payment intake. Actual delivery still depends on valid producer
   output and available operator capabilities. The delivery capabilities
-  accept a `TEST-` authority or a bound TP-1 token, and native payment
-  evidence only a loopback fixture node.
+  accept a `TEST-` authority or a bound TP-1 token, and native payment evidence only a loopback fixture node.
   The host checks `agreementAnchor` and `artifactAnchor` only by shape, and
   the wallet journal's `broadcast` is the operator's own callback, so those
   can still reach a real node; keep them on the fixture too (see the start of
@@ -1315,10 +1314,9 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   The provider's `resolveBuyer`, `recoverBuyer` and `resolveSeller` and each
   method of the kit client `createSellerAgentClient` check the kit operation
   guard at each call.
-- On each job read the stages' seller reader calls its
-  `readParticipantEvidence({ claim, sessionId, signal })`, which reads the
-  host's enrollment for a buyer the job relates to this seller and Listing, then
-  reads the connection. The stages abort `signal` when the read ends or times out.
+- Each job read calls the seller reader's `readParticipantEvidence({ claim, sessionId, signal })`, which reads
+  `participantImplementations.entriesFor(claim, { sessionId, signal })` for a buyer the job relates to this seller
+  and Listing, before the connection; the stages abort `signal` when the read ends or times out.
 - `openDoctorNode({ rpcUrl, sellerClaim, fetchImpl })` opens one read-only
   connection (`{ owner, readAuthority, observer, close() }`, transport authority
   `SELLER_TRANSPORT_AUTHORITY`; http only for the approved TP-1 testnet), and

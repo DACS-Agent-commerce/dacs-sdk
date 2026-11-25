@@ -236,9 +236,8 @@ SQL mutation, while retained retries can read their answers.
 
 Capacity lookup work is bounded by retained rows with indexed effect/job references. Opening an existing store creates an index on peer_effect_jobs(job). Job reclamation checks legacy unmapped effects once, then selects only the needed unused jobs through indexed anti-joins. Context reclamation runs only when capacity needs space and stops after enough trusted terminal contexts; below capacity it reads no old sessions. At a full context cap with no terminal sessions it may inspect every retained context once; D12 must supply a bounded synchronous job-state lookup. d5-challenge-retention.test.mjs T14 verifies that challenge cleanup stops inspecting terminal sessions once capacity is available, and T2 that a full-capacity refusal makes no SQL mutation; no test pins the query plans or statement counts.
 
-The host supplies participant enrollment through `participantImplementations`; this package supplies none. The read-only
-pair `createNodeAuthorityReader({ owner, claim })` decides the connection scope alone. The staged seller reader uses its
-`readParticipantEvidence({ claim, sessionId, signal })` on every job read, which reads the host's enrollment each time.
+The host supplies participant enrollment through `participantImplementations`; this package supplies none. The pair from `createNodeAuthorityReader`
+decides the connection scope alone; the staged seller reader's `readParticipantEvidence({ claim, sessionId, signal })` reads the enrollment on every job read.
 
 Run the seller checks from the repository root after building the core:
 
