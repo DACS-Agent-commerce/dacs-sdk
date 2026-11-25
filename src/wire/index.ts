@@ -46,6 +46,7 @@ export {
   type Tp1AuthorityDecision,
   type Tp1AuthorityReader,
 } from "./profile.js";
+export { canonicalNodeEndpoint } from "./node-endpoint.js";
 export {
   isWirePayload,
   wireEnvelopeSigningBytes,
