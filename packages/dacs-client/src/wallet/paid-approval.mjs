@@ -72,9 +72,10 @@ async function refuseUncertainLanes({ transport, anchorJournal, address, create 
 }
 
 /**
- * createPaidApproval({session, transport, transactionTransport, relayOrigin, feeCeilingOs, projectPaidWrite}) binds the keystore composition's paid-write
- * approval over its SDK wallet session, its raw Agreement transport, the wallet's transport descriptor and relay origin, the session fee ceiling and the
- * wallet provider's `projectPaidWrite` planner (which only the reviewed session module imports). Returns
+ * createPaidApproval({session, transport, transactionTransport, relayOrigin, nodeEndpoint, feeCeilingOs, projectPaidWrite}) binds the keystore composition's
+ * paid-write approval over its SDK wallet session, its raw Agreement transport, the wallet's transport descriptor, relay origin and the node endpoint rule
+ * the session admitted it under (https only when absent), the session fee ceiling and the wallet provider's `projectPaidWrite` planner (which only the
+ * reviewed session module imports). Returns
  * `{previewFor(anchorJournal), refuseUnpermitted(request)}`. `previewFor` returns one wallet view's `preparePaidWrite(request, {feeCeilingOs})`,
  * which resolves `{content, signedContent, prepared}`: the deeply frozen approval request `{method, address, purpose, content}` (the planner's content
  * plus `feeCeilingOs`) and Demos-finalized `transaction.content`, and an opaque frozen handle. It rejects, before any node read: invalid_params (options,
@@ -83,7 +84,7 @@ async function refuseUncertainLanes({ transport, anchorJournal, address, create 
  * authenticates, confirms, broadcasts or writes a journal record. `refuseUnpermitted` returns the closed `paid_approval_required` envelope for every
  * `sendTransaction`, and undefined for any other method.
  */
-export function createPaidApproval({ session, transport, transactionTransport, relayOrigin, feeCeilingOs: sessionCeilingOs, projectPaidWrite }) {
+export function createPaidApproval({ session, transport, transactionTransport, relayOrigin, nodeEndpoint, feeCeilingOs: sessionCeilingOs, projectPaidWrite }) {
   // The records a later one-use approval checks against, keyed by the handle; the composition's own identity and each view's token bind them.
   const ownerSession = Object.freeze({}), preparedRecords = new WeakMap();
   async function prepare(viewToken, anchorJournal, request, options) {
@@ -97,7 +98,7 @@ export function createPaidApproval({ session, transport, transactionTransport, r
     const chainNonce = await nodeValue(transport, 'getAddressNonce', { address }, value => Number.isSafeInteger(value) && value >= 0) + 1;
     const fee = await nodeValue(transport, 'getNetworkParameters', {}, value => typeof value?.networkFee === 'number' && typeof value?.rpcFee === 'number');
     const postFork = (await nodeValue(transport, 'getNetworkInfo', {}, value => typeof value?.forks?.osDenomination?.activated === 'boolean')).forks.osDenomination.activated;
-    const projection = await projectPaidWrite({ request: copy, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, scopedPaidWrite: true });
+    const projection = await projectPaidWrite({ request: copy, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, nodeEndpoint, scopedPaidWrite: true });
     if (session.getPublicAccount()?.address !== address) fail('locked', 'the wallet was locked or replaced while the paid write was prepared');
     const callbackCanonical = strictPaidJson({ ...projection.callback, content: { ...projection.callback.content, feeCeilingOs } });
     const signedCanonical = strictPaidJson(projection.signedContent), prepared = Object.freeze({});

@@ -5,8 +5,9 @@ import assert from 'node:assert/strict';
 import { canonicalNodeEndpoint, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { api, ok, scriptedNode } from './helpers/tp1-node-fixture.mjs';
 import { finalizedWorld } from './helpers/finalized-node-world.mjs';
+import { addressOfFixture, keystoreDir, PASSPHRASE } from './helpers/keystore-world.mjs';
 const { createDemosNetworkBinder } = await import('../src/dacs/network-binding.mjs');
-const { createDevnetAgreementWalletTransport } = await import('../src/public/portal/embedded-wallet/sdk-provider.mjs');
+const { createDevnetAgreementWalletTransport, projectPaidWrite } = await import('../src/public/portal/embedded-wallet/sdk-provider.mjs');
 const { loadNodeDemos } = await import('../src/wallet/node-demos-loading.mjs');
 
 const CHAIN = TP1_APPROVED_IDENTITY_RECORD.chainIdentity;
@@ -96,6 +97,34 @@ test('over a plain-http root under the approved identity the staged composition 
   for (const nodeEndpoint of [undefined, canonicalNodeEndpoint]) {
     for (const chainIdentity of [CHAIN, OTHER_CHAIN]) assert.ok(relayed({ ...transportBinding, endpoint: SECURE, chainIdentity }, nodeEndpoint)());
   }
+});
+
+test('over a plain-http root under the approved identity the keystore composition prepares a paid write once, over that root, and still sends nothing unapproved', async t => {
+  const node = scriptedNode(), httpOwner = owner(PLAIN, CHAIN, node.fetch);
+  t.after(() => httpOwner.close());
+  const expectedAddress = await addressOfFixture(t);
+  const world = await finalizedWorld(t, { node,
+    input: { owner: httpOwner, keystorePath: keystoreDir(t).file(), passphrase: PASSPHRASE, expectedAddress, stopped: () => false },
+    compose: options => api.openKeystoreWalletSession(Object.fromEntries(Object.entries(options).filter(([name]) => name !== 'key'))) });
+  await world.build();
+  const preview = await world.session.preparePaidWrite(world.request(), { feeCeilingOs: '50000000000' });
+  assert.equal(preview.content.content.networkBinding.endpoint, PLAIN);
+  assert.equal(typeof preview.prepared, 'object');
+  assert.equal((await world.send()).error?.code, 'paid_approval_required');
+  assert.deepEqual([world.node.broadcasts.length, world.effects().length], [0, 0]);
+  assert.ok(world.node.calls.every(row => row.url.startsWith(PLAIN) && row.redirect === 'error'));
+});
+
+test('without the wire rule the paid-write planner refuses a plain-http Agreement transport its session admitted, and plans it with the rule', async t => {
+  const { world } = await composedOver(t, PLAIN);
+  await world.build();
+  const transactionTransport = createDevnetAgreementWalletTransport(world.session.transport.profile(RELAY_ORIGIN), { relayOrigin: RELAY_ORIGIN, nodeEndpoint: canonicalNodeEndpoint });
+  const binding = await world.session.transport.observeBinding(), request = world.request(), address = world.session.wallet.getPublicAccount().address;
+  const plan = nodeEndpoint => projectPaidWrite({ request, transaction: request.params[0], address, binding, fee: { networkFee: 1, rpcFee: 0 }, postFork: true,
+    chainNonce: 1, transactionTransport, relayOrigin: RELAY_ORIGIN, nodeEndpoint, scopedPaidWrite: true });
+  await assert.rejects(plan(undefined), { code: 'not_configured' });
+  assert.equal((await plan(canonicalNodeEndpoint)).callback.content.networkBinding.endpoint, PLAIN);
+  assert.equal(world.node.broadcasts.length, 0);
 });
 
 test('a node over a plain-http root that reports another chain refuses the staged composition before any key is loaded, signature made or effect sent', async t => {

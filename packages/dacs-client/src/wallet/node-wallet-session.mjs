@@ -755,7 +755,7 @@ async function buildNodeComposition(options, seller, requirePass = false) {
     await session.importMnemonic(mnemonic);
     // Routing identity outlives signing custody, which passive wallet.lock() clears.
     if (seller) sellerAddress = session.getPublicAccount().address;
-    const paidApproval = requirePass ? createPaidApproval({ session, transport, transactionTransport, relayOrigin: NODE_WALLET_RELAY_ORIGIN, feeCeilingOs, projectPaidWrite }) : null;
+    const paidApproval = requirePass ? createPaidApproval({ session, transport, transactionTransport, relayOrigin: NODE_WALLET_RELAY_ORIGIN, nodeEndpoint: canonicalNodeEndpoint, feeCeilingOs, projectPaidWrite }) : null;
     const walletFactory = ({ anchorJournal: selected = journal } = {}) => admitPublicFactory(() => ({
       request: request => paidApproval?.refuseUnpermitted(request) ?? selectedJournal.run(selected, () => session.request(request)),
       ...(paidApproval ? { preparePaidWrite: paidApproval.previewFor(selected) } : {}),

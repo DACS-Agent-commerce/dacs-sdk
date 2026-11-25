@@ -920,17 +920,18 @@ async function createProjection({ transaction, address, binding, fee, chainNonce
 /**
  * projectPaidWrite(input) resolves the approval request and the Demos-finalized content of one native send or storage anchor CREATE, made from checked
  * observations with no network read, signature or write: `{callback: {method, address, purpose, content}, signedContent, nonceSource, observedNonce}`.
- * `input` is `{request, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, scopedPaidWrite}`: the
+ * `input` is `{request, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, nodeEndpoint, scopedPaidWrite}`: the
  * `sendTransaction` request and its one transaction, the wallet address, the source's fresh network binding, the node's `getNetworkParameters` answer,
- * whether its denomination fork is active, the wallet's next nonce on the chain, and the wallet's transport descriptor and relay origin. A CREATE is
+ * whether its denomination fork is active, the wallet's next nonce on the chain, and the wallet's transport descriptor, relay origin and the node
+ * endpoint rule its session admitted it under (https only when absent). A CREATE is
  * planned by the transport's anchor planner, which checks its envelope, signed-scope and derived-address hashes and its relay origin.
  * `scopedPaidWrite` is the keystore buyer's paid write: it requires a positive safe-integer timestamp, adds `nonceSource` and `observedNonce` to the
  * callback content, and projects `signedContent` (demosdk 4.0.17's finalized `transaction.content`); otherwise `signedContent` is null, since Demos
  * stamps a missing time when it signs. Rejects with EmbeddedWalletError(not_configured | invalid_params | wrong_wallet | unsupported | stale_plan |
  * network_binding_unavailable | network_binding_required).
  */
-export async function projectPaidWrite({ request, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, scopedPaidWrite = false }) {
-  const transport = readTransport(transactionTransport, relayOrigin);
+export async function projectPaidWrite({ request, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, nodeEndpoint, scopedPaidWrite = false }) {
+  const transport = readTransport(transactionTransport, relayOrigin, nodeEndpoint);
   if (!transport || transport.held) throw new EmbeddedWalletError('not_configured', 'paid writes need a configured write transport');
   if (request?.method !== 'sendTransaction' || !Array.isArray(request.params) || request.params.length !== 1 || request.params[0] !== transaction) throw new EmbeddedWalletError('invalid_params', 'sendTransaction expects params: [transaction]');
   const create = transaction?.kind === DACS_STORAGE_ANCHOR_KIND || isSourceCreate(transaction, transport);
@@ -1175,7 +1176,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     // On an Agreement transport the denomination the node reports at approval is the one the signed content must carry.
     const approvedPostFork = transport.devnetAgreement ? (await nodeRead(demos, started, 'getNetworkInfo', {}, (v) => typeof v?.forks?.osDenomination?.activated === 'boolean')).forks.osDenomination.activated : undefined;
     // The live nonce was compared with the planned one above (the loopback fixture reads none).
-    const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params }, transaction: tx, address, binding: networkFence, fee, postFork: approvedPostFork, chainNonce: plan.nonce, transactionTransport, relayOrigin });
+    const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params }, transaction: tx, address, binding: networkFence, fee, postFork: approvedPostFork, chainNonce: plan.nonce, transactionTransport, relayOrigin, nodeEndpoint });
     stillCurrent(started);
     await approvedWrite(started, callback);
     if(transport.devnetNative) {
@@ -1245,7 +1246,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
       const debit = nativeDebit({ amountOs: plan.storageFeeOs }, fee);
       if (!debit) throw new EmbeddedWalletError('unsupported', 'the anchor fees cannot be shown exactly before signing');
       // The live nonce was compared with the planned one above.
-      const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params: [request] }, transaction: request, address, binding, fee, postFork, chainNonce: plan.nonce, transactionTransport, relayOrigin });
+      const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params: [request] }, transaction: request, address, binding, fee, postFork, chainNonce: plan.nonce, transactionTransport, relayOrigin, nodeEndpoint });
       stillCurrent(started);
       await approvedWrite(started, callback);
       if (demos.rpc_url !== transport.rpcUrl) throw new EmbeddedWalletError('payload_mismatch', 'the approved anchor RPC route changed; nothing was signed');
