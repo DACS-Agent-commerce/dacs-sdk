@@ -77,7 +77,7 @@ describe("error codes", () => {
 
   test("a category class refuses a catalog code from another category at compile time", () => {
     // `npm run typecheck` is the check: an unused `@ts-expect-error` fails it.
-    // The catalog holds only a permanent code, so no category class accepts a code yet.
+    // Only a substrate code is accepted by `SubstrateError`; the other category classes accept no code yet.
     const construct = () => [
       // @ts-expect-error schema.invalid_field is permanent, not transient
       new TransientError("x", { code: "schema.invalid_field" }),
@@ -87,6 +87,12 @@ describe("error codes", () => {
       new SubstrateError("x", { code: "schema.invalid_field" }),
     ];
     expect(construct).toBeTypeOf("function");
+  });
+
+  test("a category class accepts a catalog code of its own category", () => {
+    const error = new SubstrateError("x", { code: "anchor.native_address_empty" });
+    expect(error.code).toBe("anchor.native_address_empty");
+    expect(error.category).toBe("substrate");
   });
 
   test("a category class keeps its cause", () => {

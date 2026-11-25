@@ -571,7 +571,9 @@ whether the proof was unused; the verifier awaits it. `createExplicitResumeLedge
 keeps claims in process memory until they expire by the latest `time` it has
 been given (so overlapping verifications on different clocks cannot release a
 claim another still treats as live), throws `wire_input_invalid` for an `expiresAt`
-or `time` that is not an unsigned integer, and refuses past 4,096 live ones; it does not survive a restart, so a proof can verify again after one until
+or `time` that is not an unsigned integer, throws `explicit_resume_expired` for a
+proof already expired by the latest `time` it has seen, and refuses past 4,096
+live ones. It does not survive a restart, so a proof can verify again after one until
 its `expiresAt` (at most 60 s). A host that must keep one-use across a restart
 supplies a durable ledger. The proof never starts an effect by itself: the
 request that carries it still passes `checkWireRequest` and the journal.
@@ -1039,7 +1041,7 @@ buyer's own delegation in `signWireRequest` (its code kept, such as
 | `tp1_authority_required`, `tp1_connection_unverified`, `tp1_participant_profile_mismatch` | missing trusted reader, unauthenticated/changed active connection, or mismatched authenticated participant/session profile and module evidence |
 | `peer_request_unverified` | `checkWireRequest` given anything but an envelope `openWireEnvelope` verified under the same binding |
 | `wire_route_requires_preagreement` (500) | the challenge or the context route given to `checkWireRequest` |
-| `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype); a response opened without its `principal`; an `expiresAt` or `time` given to the explicit-resume ledger that is not an unsigned integer |
+| `wire_input_invalid` | an options object, or a record or bytes inside one, that is not plain data (a Proxy, an accessor, an exotic prototype); a response opened without its `principal`; an `expiresAt` or `time` given to the explicit-resume ledger that is not an unsigned integer; a scope given to `verifyExplicitCreateResume` that is not plain data, omits `binding`, `request`, `delegation` (`null` is allowed) or `ledger`, has a `time` that is not an unsigned integer, has a `request` or `delegation` that is not plain data, or has a non-null `ledger` without a `claim()` function. A `null` `ledger` throws a plain `TypeError`, and a `null` `binding` is refused `tp1_binding_required`; both happen before the header is read. Every `wire_input_invalid` is 500 |
 | `discovery_*` | discovery document and endpoint proof |
 | `endpoint_proof_required`, `endpoint_proof_mismatch` | a request signed without an endpoint proof `verifyEndpointProof` made under the signer's binding, or with one for another seller, endpoint or Listing pin |
 | `seller_not_ready` (503) | the endpoint proof's document says `ready: false`, and no request is signed for a new purchase (any request but a continuing one with the job's finalized `commitment`); or `admitPreAgreementRequest` given `ready: false` for the challenge route, or for the context route without `retained.accepted: true`, or `checkWireRequest` given `ready: false` for a proposal, commitment or commitment-signature request that is neither `retained.allocated` nor bound to an existing operation; a supplied continuation capability lifts the proof's refusal |

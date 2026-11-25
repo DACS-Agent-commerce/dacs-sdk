@@ -1,0 +1,69 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF take the payment-evidence approval before the effect pass and sign it once inside the pass",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "4015c72223017a91ca704434bf53854185848068",
+      "after": "9b3ddc5868a8f1d6245600a9123ce01dd178d6bc"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/approval-hold.mjs",
+      "before": null,
+      "after": "8226c50c0433660ed7d43d681a4a17da9b4d6738"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+      "before": "79bec398fc626399619f9c40ee0a83a57544d910",
+      "after": "ae3aa6adc721ae8acc68eb91bbd48cea92f51baa"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "bc07d0969125601e104451059162eef25f4ec868",
+      "after": "1c8a78de46d135b4da42a04114817bbce0e5216a"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/payment-evidence-adapter-world.mjs",
+      "before": null,
+      "after": "67b14815c1400495105bbf60cacda5934d31480f"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+      "before": "7bdb85058bb12df06cb2c405afa45ac4005e1d81",
+      "after": "24dc51b14070f944cf48a4bbc80e3595757c79ed"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+      "before": "27720e1d2f3fc057ac8d8d8088bd7ca924fcb9ea",
+      "after": "2d18609e5bc9a1a61fc1ccc879d6a52929a3fc62"
+    },
+    {
+      "path": "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+      "before": "4b085583830a67d1c8a3c8ad2b3f33f0c840bba0",
+      "after": "7d816837943d9faa04dddbc988f11a867ab1d257"
+    },
+    {
+      "path": "packages/dacs-client/test/payment-evidence-approval-ahead.test.mjs",
+      "before": null,
+      "after": "d9b416854e0683ae8413f0c844b7ae85e66d5e6d"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-fe5ff1108c6e.json",
+    "packages/dacs-client/src/wallet/approval-hold.mjs",
+    "packages/dacs-client/src/wallet/node-payment-evidence-adapter.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/test/helpers/payment-evidence-adapter-world.mjs",
+    "packages/dacs-client/test/helpers/payment-evidence-approval-double.mjs",
+    "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+    "packages/dacs-client/test/node-payment-evidence-adapter.test.mjs",
+    "packages/dacs-client/test/payment-evidence-approval-ahead.test.mjs",
+    "packages/dacs-seller/src/devnet-demo/operator-approval.mjs",
+    "packages/dacs-seller/test/approval-retained.test.mjs",
+    "scripts/release-policy.json"
+  ]
+}

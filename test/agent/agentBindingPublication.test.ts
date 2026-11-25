@@ -25,6 +25,7 @@ import {
   resolveAndRead,
   type BindingPublisher,
 } from "../../src/discovery/index.js";
+import { SubstrateError } from "../../src/errors.js";
 import type { DemosAdapter } from "../../src/substrate/DemosAdapter.js";
 
 const SELLER_SEED = Uint8Array.from(Buffer.alloc(32, 7));
@@ -430,6 +431,35 @@ describe("Agent.publishListing binding publication (#54)", () => {
     });
     expect(state.creates).toBe(1);
     expect(publicationAttempts).toBe(2);
+  });
+
+  test("an adapter that returns an empty native address fails with a coded substrate error and publishes nothing", async () => {
+    const { adapter, state } = fakeAdapter();
+    const bindings = createInMemoryBindingStore();
+    const emptyAddress = {
+      ...adapter,
+      async anchorWriteOnce() {
+        state.creates += 1;
+        return { address: "", txRef: "tx-empty" };
+      },
+    } as unknown as DemosAdapter;
+    const agent = buildAgent(emptyAddress, {
+      demosRpc: "mem",
+      wallet: "secret",
+      ...PUBLICATION_CAPABILITIES,
+      bindings: { index: bindings, publisher: bindings },
+    });
+
+    const error: unknown = await agent.publishListing(LISTING).then(() => undefined, (e: unknown) => e);
+
+    expect(error).toBeInstanceOf(SubstrateError);
+    expect(error).toMatchObject({
+      category: "substrate",
+      code: "anchor.native_address_empty",
+      message: "anchorWriteOnce returned an empty native address",
+    });
+    expect(state.creates).toBe(1);
+    expect(bindings.snapshot()).toEqual([]);
   });
 
   test("does not expose a ref when the publisher acknowledges before index visibility", async () => {

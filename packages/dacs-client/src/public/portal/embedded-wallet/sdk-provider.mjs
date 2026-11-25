@@ -850,6 +850,92 @@ async function anchorSignatureMatches(signed, address) {
   } catch { return false; }
 }
 
+// The storage CREATE kinds a source transport sends: the Agreement and each publication its declaration enables.
+const isSourceCreate = (tx, transport) => transport.devnetAgreement && (tx?.kind===DEVNET_AGREEMENT_STORAGE_KIND || (transport.devnetSettlement && tx?.kind===DEVNET_SETTLEMENT_STORAGE_KIND)
+  || (transport.devnetDelivery && tx?.kind===DEVNET_DELIVERY_STORAGE_KIND) || (transport.devnetDemo && tx?.kind===DEVNET_DEMO_STORAGE_KIND));
+
+// Whether a fresh source network binding is the authenticated pin of this transport: its version, network and chain identity, and on an
+// Agreement transport the declared chain identity and binding id.
+function sourceBindingMatches(binding, transport) {
+  const declared = transport.transportBinding;
+  return binding?.bindingVersion === 'dacs-demos-network-binding/v1' && binding.network === transport.network && HASH.test(binding.chainIdentity ?? '')
+    && (!declared || (binding.chainIdentity === declared.chainIdentity && binding.bindingId === declared.bindingId));
+}
+
+// demosdk 4.0.17 serializerGate: an amount on the signed wire, a decimal OS string after the denomination fork and a whole-DEM number before
+// it (a number passes unchanged).
+const signedWireAmount = (value, postFork) => (postFork ? wireToOs(value).toString() : typeof value === 'number' ? value : Number(wireToOs(value) / OS_PER_DEM));
+const withHexPrefix = (value) => (value.startsWith('0x') ? value : `0x${value}`);
+
+// demosdk 4.0.17 Demos.sign's finalized content of `tx` signed by `address`: the sender fields, the GCR edits (the operation's own, then the
+// 1 DEM gas debit and the nonce increment, each carrying the transaction's own hash field), the node's fees with no additional fee, and the
+// denomination's wire amounts. `operationEdits(sender, edit)` returns the operation's own edits.
+function signedContentOf(tx, address, fee, postFork, operationEdits) {
+  const c = tx.content, sender = withHexPrefix(c.from_ed25519_address || address), wire = (value) => signedWireAmount(value, postFork);
+  const edit = (type, operation, account, amount) => ({ type, operation, isRollback: false, account: withHexPrefix(account), txhash: tx.hash, amount: type === 'balance' ? wire(amount) : amount });
+  return { ...c, ...(c.amount == null ? {} : { amount: wire(c.amount) }), from: address, from_ed25519_address: sender,
+    gcr_edits: [...operationEdits(sender, edit), edit('balance', 'remove', sender, 1), edit('nonce', 'add', sender, 1)],
+    transaction_fee: { network_fee: wire(fee.networkFee), rpc_fee: wire(fee.rpcFee), additional_fee: wire(0), rpc_address: null } };
+}
+
+function nativeProjection({ transaction, address, binding, fee, chainNonce, transport }) {
+  const plan = nativeSendPlan(transaction, address);
+  if (chainNonce !== plan.nonce) throw new EmbeddedWalletError('stale_plan', 'the actual native wallet nonce differs; nothing was signed');
+  const debit = nativeDebit(plan, fee);
+  if (!debit) throw new EmbeddedWalletError('unsupported', 'the node reported fees this wallet cannot show exactly before signing; nothing was signed');
+  if (transport.devnetNative && !sourceBindingMatches(binding, transport)) throw new EmbeddedWalletError('network_binding_unavailable', 'the actual network-binding capability did not return an authenticated source pin');
+  const [to, amount] = transaction.content.data[1].args;
+  return { tx: transaction, nonceSource: 'prepared-native-plus-chain', operationEdits: (sender, edit) => [edit('balance', 'remove', sender, amount), edit('balance', 'add', to, amount)],
+    purpose: `Send ${formatDem(plan.amountOs)} DEM from this embedded wallet to ${plan.to}. Total debit ${formatDem(debit.totalOs)} DEM: the amount, the SDK's ${formatDem(SDK_GAS_OS)} DEM gas and the node fees (${transport.devnetNative ? 'explicit independently supplied transport pin; single node, not finality' : 'SIMULATED loopback fixture'}).`,
+    content: { action: 'native DEM transfer', from: address, to: plan.to, amountOs: plan.amountOs.toString(), amountDem: formatDem(plan.amountOs), nonce: plan.nonce, debit: debitView(debit), network: transport.network,
+      evidence: transport.devnetNative ? 'Explicit source-supplied network pin; native signature is NOT chain/purchase-bound; single-node readback is not finality.' : EVIDENCE_LABEL,
+      ...(transport.devnetNative ? { networkBinding: Object.fromEntries(['network', 'chainIdentity', 'pinVersion', 'endpoint', 'transportAuthority', 'connectionId'].map((k) => [k, binding[k]])) } : {}),
+      sending: SENDING_NOTE } };
+}
+
+async function createProjection({ transaction, address, binding, fee, chainNonce, transport, relayOrigin }) {
+  const plan = await (transport.devnetAgreement ? devnetAgreementAnchorPlan : storageAnchorPlan)(transaction, address, transport, relayOrigin);
+  if (chainNonce !== plan.nonce) throw new EmbeddedWalletError('stale_plan', 'the wallet nonce differs from the approved CREATE coordinate');
+  const debit = nativeDebit({ amountOs: plan.storageFeeOs }, fee);
+  if (!debit) throw new EmbeddedWalletError('unsupported', 'the anchor fees cannot be shown exactly before signing');
+  if (transport.devnetAgreement && !sourceBindingMatches(binding, transport)) throw new EmbeddedWalletError('network_binding_required', 'fresh binding differs from signed source terms');
+  const op = plan.transaction.content.data[1];
+  return { tx: plan.transaction, nonceSource: 'anchor-plan-plus-chain', operationEdits: (sender, edit) => [edit('balance', 'remove', sender, Number(plan.storageFeeOs / OS_PER_DEM)),
+    { type: 'storageProgram', target: op.storageAddress, isRollback: false, txhash: plan.transaction.hash, context: { operation: 'CREATE_STORAGE_PROGRAM', sender, data: { variables: op, metadata: op.metadata || null } } }],
+    purpose: `Create immutable ${plan.artifactKind} for job ${plan.jobId}. Total debit ${formatDem(debit.totalOs)} DEM (${transport.devnetAgreement ? 'explicit independently supplied source pin; single node, finality not established' : 'SIMULATED fixture; no real consensus'}).`,
+    content: { kind: plan.kind, action: 'immutable DACS storage anchor CREATE', artifactKind: plan.artifactKind, jobId: plan.jobId,
+      owner: plan.owner, wallet: address, logicalAddress: plan.logicalAddress, storageAddress: plan.storageAddress, programName: plan.programName,
+      contentHash: plan.contentHash, contentHashProfile: 'SDK CF-1 signed scope (top-level signature/signatures omitted)', envelopeHash: plan.envelopeHash,
+      ...(plan.artifactKind==='Deliverable'?{deliveryBinding:op.metadata.deliveryBinding}:{}),
+      storageBytes: plan.storageBytes, exactStorageBytes: plan.exactStorageBytes, exactCreate: plan.exactCreate,
+      nonce: plan.nonce, timestamp: plan.transaction.content.timestamp, debit: { storageFeeDem: formatDem(plan.storageFeeOs), ...debitView(debit), sellerAmountDem: '0',
+        note: 'Complete debit: storage fee, SDK gas, network fee, RPC fee and zero additional fee. Exact CREATE bytes, signed fields and every edit are checked before one broadcast.' },
+      network: transport.network, chainIdentity: transport.devnetAgreement ? transport.transportBinding.chainIdentity : DACS_STORAGE_ANCHOR_CHAIN_IDENTITY, ...(transport.devnetAgreement ? {networkBinding:transport.transportBinding}:{}), evidence: transport.devnetAgreement ? 'Explicit TEST/source pin; not independent review or consensus finality' : EVIDENCE_LABEL, sending: SENDING_NOTE } };
+}
+
+/**
+ * projectPaidWrite(input) resolves the approval request and the Demos-finalized content of one native send or storage anchor CREATE, made from checked
+ * observations with no network read, signature or write: `{callback: {method, address, purpose, content}, signedContent, nonceSource, observedNonce}`.
+ * `input` is `{request, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, scopedPaidWrite}`: the
+ * `sendTransaction` request and its one transaction, the wallet address, the source's fresh network binding, the node's `getNetworkParameters` answer,
+ * whether its denomination fork is active, the wallet's next nonce on the chain, and the wallet's transport descriptor and relay origin. A CREATE is
+ * planned by the transport's anchor planner, which checks its envelope, signed-scope and derived-address hashes and its relay origin.
+ * `scopedPaidWrite` is the keystore buyer's paid write: it requires a positive safe-integer timestamp, adds `nonceSource` and `observedNonce` to the
+ * callback content, and projects `signedContent` (demosdk 4.0.17's finalized `transaction.content`); otherwise `signedContent` is null, since Demos
+ * stamps a missing time when it signs. Rejects with EmbeddedWalletError(not_configured | invalid_params | wrong_wallet | unsupported | stale_plan |
+ * network_binding_unavailable | network_binding_required).
+ */
+export async function projectPaidWrite({ request, transaction, address, binding, fee, postFork, chainNonce, transactionTransport, relayOrigin, scopedPaidWrite = false }) {
+  const transport = readTransport(transactionTransport, relayOrigin);
+  if (!transport || transport.held) throw new EmbeddedWalletError('not_configured', 'paid writes need a configured write transport');
+  if (request?.method !== 'sendTransaction' || !Array.isArray(request.params) || request.params.length !== 1 || request.params[0] !== transaction) throw new EmbeddedWalletError('invalid_params', 'sendTransaction expects params: [transaction]');
+  const create = transaction?.kind === DACS_STORAGE_ANCHOR_KIND || isSourceCreate(transaction, transport);
+  const { tx, nonceSource, operationEdits, purpose, content } = await (create ? createProjection : nativeProjection)({ transaction, address, binding, fee, chainNonce, transport, relayOrigin });
+  if (scopedPaidWrite && !(Number.isSafeInteger(tx.content.timestamp) && tx.content.timestamp > 0)) throw new EmbeddedWalletError('invalid_params', 'a paid write needs its own positive timestamp, so its signed bytes are fixed before approval');
+  return { callback: { method: 'sendTransaction', address, purpose, content: { ...content, ...(scopedPaidWrite ? { nonceSource, observedNonce: chainNonce } : {}) } },
+    signedContent: scopedPaidWrite ? signedContentOf(tx, address, fee, postFork, operationEdits) : null, nonceSource, observedNonce: chainNonce };
+}
+
 // Proof URL checks as SDK 4.0.16 applies them (formats.web2 prefixes; the
 // github handle is proof.split("/")[3]), plus the handle shape the server uses.
 function proofHandle(context, proofUrl) {
@@ -1055,7 +1141,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
   async function sendTransaction(params) {
     if (!Array.isArray(params) || params.length !== 1) throw new EmbeddedWalletError('invalid_params', 'sendTransaction expects params: [transaction]');
     const tx = params[0];
-    const sourceCreate=transport.devnetAgreement && (tx?.kind===DEVNET_AGREEMENT_STORAGE_KIND || (transport.devnetSettlement && tx?.kind===DEVNET_SETTLEMENT_STORAGE_KIND) || (transport.devnetDelivery && tx?.kind===DEVNET_DELIVERY_STORAGE_KIND) || (transport.devnetDemo && tx?.kind===DEVNET_DEMO_STORAGE_KIND));
+    const sourceCreate=isSourceCreate(tx, transport);
     if (transport.devnetNative && !sourceCreate && (tx?.kind === DACS_STORAGE_ANCHOR_KIND || tx?.content?.type !== 'native')) throw new EmbeddedWalletError('held_for_review','the native-only source capability does not enable this CREATE, listing or identity write');
     if (tx?.kind === DACS_STORAGE_ANCHOR_KIND || sourceCreate) return storageProgramAnchor(tx);
     if (tx?.content?.type === 'storageProgram') return storageProgramCreate(tx);
@@ -1074,7 +1160,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
       const bound=await bindingCall({ phase:'bind' });
       if(bound.pending) throw Object.assign(new EmbeddedWalletError('outcome_unknown','an issued native transfer is retained; read it back, never resend'),{ data:{ hash:bound.pending.hash,nonce:bound.pending.nonce } });
       networkFence=bound.binding;
-      if(networkFence?.bindingVersion !== 'dacs-demos-network-binding/v1' || networkFence.network !== transport.network || !HASH.test(networkFence.chainIdentity ?? '')) throw new EmbeddedWalletError('network_binding_unavailable','the actual network-binding capability did not return an authenticated source pin');
+      if(!sourceBindingMatches(networkFence, transport)) throw new EmbeddedWalletError('network_binding_unavailable','the actual network-binding capability did not return an authenticated source pin');
     }
     try {
     await connectRpc(demos, started);
@@ -1084,24 +1170,10 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     if (!debit) throw new EmbeddedWalletError('unsupported', 'the node reported fees this wallet cannot show exactly before signing; nothing was signed');
     // On an Agreement transport the denomination the node reports at approval is the one the signed content must carry.
     const approvedPostFork = transport.devnetAgreement ? (await nodeRead(demos, started, 'getNetworkInfo', {}, (v) => typeof v?.forks?.osDenomination?.activated === 'boolean')).forks.osDenomination.activated : undefined;
-    await approvedWrite(started, {
-      method: 'sendTransaction',
-      address,
-      purpose: `Send ${formatDem(plan.amountOs)} DEM from this embedded wallet to ${plan.to}. Total debit ${formatDem(debit.totalOs)} DEM: the amount, the SDK's ${formatDem(SDK_GAS_OS)} DEM gas and the node fees (${transport.devnetNative ? 'explicit independently supplied transport pin; single node, not finality' : 'SIMULATED loopback fixture'}).`,
-      content: {
-        action: 'native DEM transfer',
-        from: address,
-        to: plan.to,
-        amountOs: plan.amountOs.toString(),
-        amountDem: formatDem(plan.amountOs),
-        nonce: plan.nonce,
-        debit: debitView(debit),
-        network: transport.network,
-        evidence: transport.devnetNative ? 'Explicit source-supplied network pin; native signature is NOT chain/purchase-bound; single-node readback is not finality.' : EVIDENCE_LABEL,
-        ...(transport.devnetNative ? { networkBinding:{ network:networkFence.network,chainIdentity:networkFence.chainIdentity,pinVersion:networkFence.pinVersion,endpoint:networkFence.endpoint,transportAuthority:networkFence.transportAuthority,connectionId:networkFence.connectionId } } : {}),
-        sending: SENDING_NOTE,
-      },
-    });
+    // The live nonce was compared with the planned one above (the loopback fixture reads none).
+    const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params }, transaction: tx, address, binding: networkFence, fee, postFork: approvedPostFork, chainNonce: plan.nonce, transactionTransport, relayOrigin });
+    stillCurrent(started);
+    await approvedWrite(started, callback);
     if(transport.devnetNative) {
       // The lease names its transfer and the digest of its exact payload, so
       // the operator's source refuses it, before anything is signed, if a
@@ -1155,7 +1227,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
     const sourcePhase=async(body)=>{const auth=['bind','signature'].includes(body.phase)?await sourceAuthHeaders(demos,address,stamp):null;if(auth)stillCurrent(started);
       const r=(bindingRelay ? await bindingRelay({ address,...body },auth) : await fetch(transport.bindingUrl,{method:'POST',headers:{'content-type':'application/json',...auth},body:JSON.stringify({...body,address}),credentials:'same-origin',redirect:'error'}));const v=await r.json();if(!r.ok || v.error){if(v.error==null)throw new EmbeddedWalletError('network_binding_required','fresh source network binding is unavailable',{cause:r.cause});throw sourceRefusal(v.error,'fresh source network binding is unavailable',r.cause);}return v;};
     if(transport.devnetAgreement){const bound=await sourcePhase({phase:'bind'});if(bound.pending)throw new EmbeddedWalletError('outcome_unknown','an issued source transaction requires readback, never resend');binding=bound.binding;
-      if(binding.chainIdentity!==transport.transportBinding.chainIdentity || binding.bindingId!==transport.transportBinding.bindingId)throw new EmbeddedWalletError('network_binding_required','fresh binding differs from signed source terms');}
+      if(!sourceBindingMatches(binding, transport))throw new EmbeddedWalletError('network_binding_required','fresh binding differs from signed source terms');}
     const lane = JSON.stringify([transport.network, transport.devnetAgreement ? transport.transportBinding.chainIdentity : DACS_STORAGE_ANCHOR_CHAIN_IDENTITY, address]);
     try { return await journal.withWalletLock(lane, async () => {
       const previous = await journal.get(lane);
@@ -1168,16 +1240,10 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, tra
       const fee = await nodeRead(demos, started, 'getNetworkParameters', {}, (v) => typeof v?.networkFee === 'number' && typeof v?.rpcFee === 'number');
       const debit = nativeDebit({ amountOs: plan.storageFeeOs }, fee);
       if (!debit) throw new EmbeddedWalletError('unsupported', 'the anchor fees cannot be shown exactly before signing');
-      await approvedWrite(started, { method: 'sendTransaction', address,
-        purpose: `Create immutable ${plan.artifactKind} for job ${plan.jobId}. Total debit ${formatDem(debit.totalOs)} DEM (${transport.devnetAgreement ? 'explicit independently supplied source pin; single node, finality not established' : 'SIMULATED fixture; no real consensus'}).`,
-        content: { kind: plan.kind, action: 'immutable DACS storage anchor CREATE', artifactKind: plan.artifactKind, jobId: plan.jobId,
-          owner: plan.owner, wallet: address, logicalAddress: plan.logicalAddress, storageAddress: plan.storageAddress, programName: plan.programName,
-          contentHash: plan.contentHash, contentHashProfile: 'SDK CF-1 signed scope (top-level signature/signatures omitted)', envelopeHash: plan.envelopeHash,
-          ...(plan.artifactKind==='Deliverable'?{deliveryBinding:plan.transaction.content.data[1].metadata.deliveryBinding}:{}),
-          storageBytes: plan.storageBytes, exactStorageBytes: plan.exactStorageBytes, exactCreate: plan.exactCreate,
-          nonce: plan.nonce, timestamp: plan.transaction.content.timestamp, debit: { storageFeeDem: formatDem(plan.storageFeeOs), ...debitView(debit), sellerAmountDem: '0',
-            note: 'Complete debit: storage fee, SDK gas, network fee, RPC fee and zero additional fee. Exact CREATE bytes, signed fields and every edit are checked before one broadcast.' },
-          network: transport.network, chainIdentity: transport.devnetAgreement ? transport.transportBinding.chainIdentity : DACS_STORAGE_ANCHOR_CHAIN_IDENTITY, ...(transport.devnetAgreement ? {networkBinding:transport.transportBinding}:{}), evidence: transport.devnetAgreement ? 'Explicit TEST/source pin; not independent review or consensus finality' : EVIDENCE_LABEL, sending: SENDING_NOTE } });
+      // The live nonce was compared with the planned one above.
+      const { callback } = await projectPaidWrite({ request: { method: 'sendTransaction', params: [request] }, transaction: request, address, binding, fee, postFork, chainNonce: plan.nonce, transactionTransport, relayOrigin });
+      stillCurrent(started);
+      await approvedWrite(started, callback);
       if (demos.rpc_url !== transport.rpcUrl) throw new EmbeddedWalletError('payload_mismatch', 'the approved anchor RPC route changed; nothing was signed');
       const recheckedNetwork = await nodeRead(demos, started, 'getNetworkInfo', {}, (v) => isPlainObject(v));
       if ((!transport.devnetAgreement && (recheckedNetwork.simulated !== true || recheckedNetwork.chainIdentity !== DACS_STORAGE_ANCHOR_CHAIN_IDENTITY)) || recheckedNetwork.forks?.osDenomination?.activated !== postFork) {
