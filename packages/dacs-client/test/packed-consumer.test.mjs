@@ -129,3 +129,25 @@ test('the installed ./node-wallet entry exports the keyless purchase source, and
   `);
   run(process.execPath, ['keyless-source.mjs'], app);
 });
+
+test('the installed ./node-wallet entry exports the keyless evidence source, and its result passes the settlement transport check', t => {
+  const { app, run } = installPackedPair(t);
+  writeFileSync(join(app, 'keyless-evidence.mjs'), `
+    import assert from 'node:assert/strict';
+    import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+    import { createKeylessEvidenceSource, isDevnetSettlementTransport } from '@kynesyslabs/dacs-client/node-wallet';
+    assert.equal(typeof createKeylessEvidenceSource, 'function');
+    const local = { endpoint: 'https://rpc.example.invalid/', transportAuthority: 'vector-authority', connectionId: 'vector-conn-1' };
+    const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local, readAuthority: async scope => ({ local: { ...scope.local },
+      chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity, provenance: 'TEST-authority', sessionId: scope.sessionId, participants: [] }) });
+    const currentLocal = () => ({ ...local });
+    const refuse = () => { throw new Error('TEST-not-called'); };
+    const owner = { currentLocal, getContext: refuse, acquireConnectionFence: refuse, fetchImpl: refuse };
+    const journal = Object.fromEntries(['get', 'put', 'entries', 'withWalletLock', 'appendUnderLock', 'withOwnedOrAcquiredLane'].map(name => [name, refuse]));
+    const result = await createKeylessEvidenceSource({ admission: { binding, currentLocal }, owner, journal, stopped: () => false, feeCeilingOs: '50000000000' });
+    assert.deepEqual(Object.keys(result), ['evidenceSourceCapability']);
+    assert.equal(isDevnetSettlementTransport(result.evidenceSourceCapability), true);
+    await result.evidenceSourceCapability.close();
+  `);
+  run(process.execPath, ['keyless-evidence.mjs'], app);
+});

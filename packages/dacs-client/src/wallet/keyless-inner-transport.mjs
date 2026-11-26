@@ -1,4 +1,4 @@
-// The keyless Agreement transport both keyless node-wallet factories build over a caller's transport owner and durable
+// The keyless inner transport the keyless node-wallet factories build over a caller's transport owner and durable
 // journal: the construction checks, the binding check, the approved pins, the client's effect boundary and the inner
 // native transport. It holds no key, signs nothing and loads no demosdk. Not in the package `exports` map.
 import { POSITIVE_OS_AMOUNT } from '../public-admission.mjs';
@@ -22,7 +22,7 @@ function checkKeylessOptions(options) {
 }
 
 /**
- * Returns a Promise for a frozen `{inner, admission}`: `inner` is a registered Agreement-only native transport over `owner` and
+ * Returns a Promise for a frozen `{inner, admission}`: `inner` is a registered native transport (by default Agreement-only) over `owner` and
  * `journal`, pinned to the admitted binding, whose effects go through the client's effect boundary with the host's `stopped` check
  * and `feeCeilingOs` bounding the signed network fee only; `admission` is the caller's own. The caller wraps `inner` and closes it.
  *
@@ -31,15 +31,20 @@ function checkKeylessOptions(options) {
  * OperationError(runtime_unsupported), TypeError(keyless_relay_options_invalid | keyless_relay_fee_ceiling_invalid |
  * keyless_relay_stop_invalid | keyless_relay_owner_invalid | keyless_relay_journal_invalid), none of which calls the owner or the
  * journal; then OperationError(profile_not_admitted, cause kept | tp1_local_binding_changed) from the binding check.
+ *
+ * The optional second argument picks another inner constructor: `construct` (default `createDevnetAgreementTransport`) is
+ * called once with `innerOptions`, then the builder's own options, which win. The fee-only and no-repeat-confirm options go to
+ * the Agreement constructor only, because the settlement, delivery and demo constructors refuse them.
  */
-export async function openKeylessInnerTransport(options) {
+export async function openKeylessInnerTransport(options, { construct = createDevnetAgreementTransport, innerOptions = {} } = {}) {
   checkConstruction(options);
   checkKeylessOptions(options);
   const { admission, owner, journal, stopped, feeCeilingOs } = options;
   await checkAdmission(admission, owner);
   const expected = readExpectedPins(admission.binding, owner);
   const boundary = finalizeEffectBoundary({ owner, journal, admission, stopped, feeCeilingOs });
-  const inner = createDevnetAgreementTransport({ expected, transportOwner: owner, journal, fetchImpl: (input, init) => owner.fetchImpl(input, init), boundary,
-    ...approvedSourcePolicy(), networkFeeCeilingOnly: true, noRepeatUnknownConfirm: true });
+  const agreementOnly = construct === createDevnetAgreementTransport ? { networkFeeCeilingOnly: true, noRepeatUnknownConfirm: true } : {};
+  const inner = construct({ ...innerOptions, expected, transportOwner: owner, journal, fetchImpl: (input, init) => owner.fetchImpl(input, init), boundary,
+    ...approvedSourcePolicy(), ...agreementOnly });
   return Object.freeze({ inner, admission });
 }

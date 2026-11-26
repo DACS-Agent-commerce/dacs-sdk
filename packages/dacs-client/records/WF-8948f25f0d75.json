@@ -1,0 +1,55 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add a keyless evidence source that gives the payment evidence consumer read-only settlement members with no key and no send",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "bcefc1311f9893d3172824f6702a9bfa897b68b7",
+      "after": "cac65aca3a9e32e38f8b461b06544eda953eca56"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-evidence-source.mjs",
+      "before": null,
+      "after": "b20768a8133354ccec8f406e7622c60409d30236"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-inner-transport.mjs",
+      "before": "3fe98ce3a49306c8894dca7780e7179dd6ffcab8",
+      "after": "b20034501c7698945738aaac0dcc7f260e146cb1"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "606e95ca1d81073af7684598758f18b9856d8ef5",
+      "after": "d9f0ad667167f626b1a84dc915aedd1626e08515"
+    },
+    {
+      "path": "packages/dacs-client/test/keyless-evidence-source.test.mjs",
+      "before": null,
+      "after": "7b965efaf09c8fdf78be448f5fb2f52c82d83799"
+    },
+    {
+      "path": "packages/dacs-client/test/packed-consumer.test.mjs",
+      "before": "c41bf4ce039667f71c3e4218ab1a86c624576730",
+      "after": "e7bd609bcee3dbc2322faebbe2337d0d709121dd"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "7cfd2e6ff8a70019e489b6ceca390df4c385221e",
+      "after": "d58cd7d86942c84b3d36ed8ba712c0d387fee4ae"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-8948f25f0d75.json",
+    "packages/dacs-client/src/wallet/keyless-evidence-source.mjs",
+    "packages/dacs-client/src/wallet/keyless-inner-transport.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/test/keyless-evidence-source.test.mjs",
+    "packages/dacs-client/test/packed-consumer.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "scripts/release-policy.json"
+  ]
+}
