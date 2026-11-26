@@ -281,7 +281,7 @@ test('retained.prepare refuses with no ledger line, as approve.prepare does for 
  const purchaseMutations={
   'agreement binding empty':{agreementHash:''},'agreement binding null':{agreementHash:null},'agreement binding other':{agreementHash:'not-a-hash'},
   'resolved purchase price':{amountOs:'2000000000'},'payment transaction':{paymentTxRef:{...PAYMENT_TX_REF,txHash:'6'.repeat(64)}},'listing pin':{listingPin:{...pin,version:2}},
-  'source binding':{sourceBinding:{...sourceBinding,bindingId:'f'.repeat(64)}},'seller':{seller:`did:demos:agent:${'3'.repeat(64)}`},'job':{jobId:JOBS[4]},
+  'seller':{seller:`did:demos:agent:${'3'.repeat(64)}`},'job':{jobId:JOBS[4]},
  };
  // A request that is not payment evidence is refused at the boundary, before the policy reads anything.
  const refuse=async(name,request)=>{
@@ -293,6 +293,17 @@ test('retained.prepare refuses with no ledger line, as approve.prepare does for 
  fixture.state.purchase=purchase();
  const prepared=await approval.retained.prepare(evidence());
  assert.equal((await openSigns(fixture.evidencePath)).length,1);assert.equal(prepared.requestText,JSON.stringify(evidence()));
+});
+
+test('retained approval refuses a changed buyer chain identity',async t=>{
+ const fixture=await ledgerFixture(t),approval=fixture.compose(fixture.restart(),()=>assert.fail('a final refusal never falls back to the operator'));
+ fixture.state.purchase={...purchase(),sourceBinding:{...sourceBinding,chainIdentity:'f'.repeat(64)}};
+ const before=await text(fixture.evidencePath);
+ await rejectsWith(approval.retained.prepare(evidence()),'approval_refused');
+ assert.equal(await text(fixture.evidencePath),before,'the retained preparation wrote no ledger line');
+ assert.equal(await approval(evidence()),false);
+ assert.equal((await lines(fixture.evidencePath)).at(-1).policyReason,'purchase','the shared slot names the purchase refusal');
+ assert.deepEqual(await openSigns(fixture.evidencePath),[]);
 });
 
 test('manual approval runs the same checks as policy approval, table {purchase closed, purchase unpaid, fee cap manually overridden, debit mismatch} × {retained.prepare, retained.confirm}: retained.prepare after a waivable policy refusal asks the operator and gates again after the yes, so a waived write is a ledger authorization with a ledgerId that counts one write; its confirm is true only with the exact-debit and fresh purchase checks passing, false when the debit does not match, and not refused by the policy fee cap that was manually overridden while the debit is within K9\'s 50 DEM ceiling (above it prepare stays refused); a purchase that closes or becomes unpaid during the manual callback refuses the prepare with no sign line',async t=>{

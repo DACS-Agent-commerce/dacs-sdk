@@ -367,12 +367,28 @@ test('the real seller projection of a qualified Agreement buyer holds a finality
   assert.equal(await refusal(r,policy(resolve)),'cancellation-unknown');
 });
 
-// The Agreement's transport binding is the policy's, every member (D-2).
-for(const key of [...Object.keys(sourceBinding),'TEST'])test(`a purchase whose transport binding has ${key==='TEST'?'an extra member':`another ${key}`} refuses at every check (D-2)`,async()=>{
-  const binding={...sourceBinding,[key]:`${sourceBinding[key]??''}0`};
+// The buyer's Agreement binding shares the network, chain identity, pin version and binding version with the policy's source
+// binding; its other members are the buyer's own. The four checks are preparation and the last check before signing, each
+// before and after payment.
+const SHARED_BINDING_MEMBERS=['network','chainIdentity','pinVersion','bindingVersion'];
+async function purchaseAnswers(binding){
   const before=requestFor({artifactKind:'FinalityCommitmentRecord'}),after=requestFor(),open=policy(()=>projection({sourceBinding:binding})),paid=policy(()=>paidProjection({sourceBinding:binding}));
-  assert.equal(await refusal(before,open),'purchase');assert.equal(await stillOpenBeforePayment(before,open),'purchase');
-  assert.equal(await refusal(after,paid),'purchase');assert.equal(await stillAuthorizedToSign(after,paid),'purchase');
+  return [await refusal(before,open),await stillOpenBeforePayment(before,open),await refusal(after,paid),await stillAuthorizedToSign(after,paid)];
+}
+const withoutMember=(record,name)=>Object.fromEntries(Object.entries(record).filter(([key])=>key!==name));
+test('a changed, missing or non-string shared tuple member refuses purchase at every check',async()=>{
+  for(const key of SHARED_BINDING_MEMBERS){
+    for(const [form,binding] of [['changed',{...sourceBinding,[key]:`${sourceBinding[key]}0`}],['missing',withoutMember(sourceBinding,key)],['not a string',{...sourceBinding,[key]:7}]]){
+      assert.deepEqual(await purchaseAnswers(binding),['purchase','purchase','purchase','purchase'],`${form} ${key}`);
+    }
+  }
+});
+test('actor-local and extra buyer binding members do not block the shared-tuple purchase',async()=>{
+  const publication={artifactKind:'SettlementEvidence',authority:'TEST-buyer-settlement',phase:'pay-dem',phaseIndex:2};
+  for(const [label,binding] of [...['source','bindingId','endpoint','transportAuthority'].map(key=>[`another ${key}`,{...sourceBinding,[key]:`${sourceBinding[key]}0`}]),
+    ['an extra member',{...sourceBinding,TEST:'TEST-extra'}],['a publication member',{...sourceBinding,settlementPublication:publication}]]){
+    assert.deepEqual(await purchaseAnswers(binding),[null,null,null,null],label);
+  }
 });
 
 // Payment evidence names the transaction the observer verified (D-3).
