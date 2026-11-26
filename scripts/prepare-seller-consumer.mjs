@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -150,11 +150,38 @@ function install(app) {
   writeFileSync(join(app, "prepared.json"), JSON.stringify(marker, null, 2) + "\n");
 }
 
+// Resolve existing ancestors too: the new directory, or several of its parents,
+// may not exist yet, and an outside path may enter the checkout through a symlink.
+// Native realpath also normalizes case aliases on case-insensitive filesystems.
+function realLocation(directory) {
+  let ancestor = directory;
+  const suffix = [];
+  for (;;) {
+    try {
+      return join(realpathSync.native(ancestor), ...suffix);
+    } catch (error) {
+      if (error.code !== "ENOENT" || dirname(ancestor) === ancestor) throw error;
+      suffix.unshift(basename(ancestor));
+      ancestor = dirname(ancestor);
+    }
+  }
+}
+
+function isInside(parent, directory) {
+  const path = relative(parent, directory);
+  return path !== ".." && !path.startsWith(".." + sep) && !isAbsolute(path);
+}
+
 // Creates the directory (or a fresh temporary one), so an existing path is refused untouched.
 function prepare(directory) {
   if (!existsSync(join(root, "dist", "index.js"))) throw new Error("the core is not built: run npm run build before npm run seller:prepare");
   if (!existsSync(join(root, "packages/dacs-node/dist", "secrets.js"))) throw new Error("dacs-node is not built: run npm run host:build before npm run seller:prepare");
-  const app = directory === undefined ? mkdtempSync(join(tmpdir(), "dacs-seller-consumer-")) : resolve(directory);
+  // For the default, check the temporary parent before mkdtemp creates anything.
+  const target = resolve(directory === undefined ? tmpdir() : directory);
+  if (isInside(root, target) || isInside(realpathSync.native(root), realLocation(target))) {
+    throw new Error("refusing to prepare " + target + ": pass a new directory outside the checkout with npm run seller:prepare -- <new directory>");
+  }
+  const app = directory === undefined ? mkdtempSync(join(target, "dacs-seller-consumer-")) : target;
   if (directory !== undefined) {
     try {
       mkdirSync(app);

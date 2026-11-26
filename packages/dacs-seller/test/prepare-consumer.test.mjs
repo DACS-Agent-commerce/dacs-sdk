@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { sellerSourceFingerprint, staleSetupReason } from '../../../scripts/prepare-seller-consumer.mjs';
@@ -85,6 +85,120 @@ async function waitFor(path) {
 }
 
 const preparedPath = (stdout) => stdout.match(/^Prepared locked seller consumer: (.+)$/m)?.[1];
+
+// A minimal checkout reaches the first pack only for an admissible location.
+// No registry, build or install is needed to exercise the directory boundary.
+function pathFixture(t) {
+  const probe = fixture(t), checkout = join(probe.base, 'checkout');
+  for (const [file, content] of Object.entries({
+    'dist/index.js': '',
+    'packages/dacs-node/dist/secrets.js': '',
+    'package.json': '{"name":"@kynesyslabs/dacs","version":"0.1.0-alpha.0"}',
+  })) {
+    mkdirSync(dirname(join(checkout, file)), { recursive: true });
+    writeFileSync(join(checkout, file), content);
+  }
+  mkdirSync(join(checkout, 'scripts'));
+  const copy = join(checkout, 'scripts', 'prepare-seller-consumer.mjs');
+  copyFileSync(script, copy);
+  const link = join(probe.base, 'checkout-link');
+  symlinkSync(checkout, link);
+  return { ...probe, checkout, link,
+    run: (directory, extra = {}) => spawnSync(process.execPath, [copy, ...(directory === undefined ? [] : [directory])], {
+      cwd: checkout, env: { ...probe.env, PREPARE_PROBE_FAIL: 'pack', ...extra }, encoding: 'utf8', timeout: RUN_TIMEOUT_MS,
+    }),
+  };
+}
+
+const INSIDE = {
+  'a relative directory from the checkout': () => 'smoke',
+  'an absolute directory under packages': ({ checkout }) => join(checkout, 'packages', 'smoke'),
+  'a relative directory normalized back into the checkout': () => '../checkout/smoke',
+  'the checkout root': ({ checkout }) => checkout,
+  'an outside symlink into the checkout': ({ link }) => join(link, 'smoke'),
+  'missing descendants of a symlink into the checkout': ({ link }) => join(link, 'missing', 'nested', 'smoke'),
+  'a symlink naming the checkout root itself': ({ link }) => link,
+  'a symlink into a checkout subdirectory': ({ base, checkout }) => {
+    const link = join(base, 'packages-link');
+    symlinkSync(join(checkout, 'packages'), link);
+    return join(link, 'smoke');
+  },
+};
+
+for (const [label, target] of Object.entries(INSIDE)) test(`${label} is refused before creating a consumer or invoking npm`, (t) => {
+  const probe = pathFixture(t), directory = target(probe), before = snapshot(probe.base);
+  const result = probe.run(directory);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /refusing to prepare .*outside the checkout/);
+  assert.match(result.stderr, /npm run seller:prepare --/);
+  assert.deepEqual(probe.calls(), [], 'nothing was packed or installed');
+  assert.deepEqual(snapshot(probe.base), before, 'no directory, file or symlink was changed');
+});
+
+for (const kind of ['checkout', 'link']) test(`a default temporary directory under the ${kind} is refused before creating anything`, (t) => {
+  const probe = pathFixture(t), before = snapshot(probe.base);
+  const result = probe.run(undefined, { TMPDIR: probe[kind] });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /refusing to prepare .*outside the checkout/);
+  assert.deepEqual(probe.calls(), []);
+  assert.deepEqual(snapshot(probe.base), before);
+});
+
+const OUTSIDE = {
+  'an absolute sibling sharing the checkout name prefix': ({ checkout }) => checkout + '-consumer',
+  'a relative directory outside the checkout': () => '../consumer',
+  'a directory through a symlink to an outside parent': ({ base }) => {
+    const parent = join(base, 'outside'), link = join(base, 'outside-link');
+    mkdirSync(parent);
+    symlinkSync(parent, link);
+    return join(link, 'consumer');
+  },
+};
+
+for (const [label, target] of Object.entries(OUTSIDE)) test(`${label} reaches setup and retains failed-install cleanup`, (t) => {
+  const probe = pathFixture(t), directory = target(probe), before = snapshot(probe.checkout);
+  const result = probe.run(directory);
+  assert.notEqual(result.status, 0, 'the stub deliberately fails the first pack');
+  assert.equal(probe.calls().length, 1, 'the outside location reached the first pack');
+  assert.match(probe.calls()[0], /^pack /);
+  assert.doesNotMatch(result.stderr, /outside the checkout/);
+  assert.equal(existsSync(resolve(probe.checkout, directory)), false, 'failed setup leaves no consumer');
+  assert.deepEqual(snapshot(probe.checkout), before);
+});
+
+for (const kind of ['child', 'root', 'missing descendants', 'temporary parent']) test(`a differently cased ${kind} follows the filesystem's directory identity`, (t) => {
+  const probe = pathFixture(t), alias = join(probe.base, 'CHECKOUT');
+  const original = lstatSync(probe.checkout), alternate = existsSync(alias) ? lstatSync(alias) : null;
+  const same = alternate !== null && alternate.dev === original.dev && alternate.ino === original.ino;
+  t.diagnostic(`case variant names the checkout: ${same}`);
+  // On a case-sensitive filesystem this is a distinct outside directory.
+  if (!same) mkdirSync(alias);
+  const directory = kind === 'temporary parent' ? undefined : kind === 'root' ? alias :
+    kind === 'missing descendants' ? join(alias, 'missing', 'nested', 'smoke') : join(alias, 'smoke');
+  const before = snapshot(probe.base);
+  const result = probe.run(directory, kind === 'temporary parent' ? { TMPDIR: alias } : {});
+  assert.notEqual(result.status, 0, 'refusal or the deliberate first-pack failure');
+  if (same) {
+    assert.match(result.stderr, /refusing to prepare .*outside the checkout/);
+    assert.match(result.stderr, /npm run seller:prepare --/);
+    assert.deepEqual(probe.calls(), [], 'the alias is refused before npm');
+    assert.deepEqual(snapshot(probe.base), before, 'no consumer or other entry was created or changed');
+  } else {
+    assert.doesNotMatch(result.stderr, /outside the checkout/);
+    if (kind === 'root' || kind === 'missing descendants') {
+      assert.match(result.stderr, kind === 'root' ? /it already exists; pass a new directory/ : /ENOENT/);
+      assert.deepEqual(probe.calls(), []);
+      assert.deepEqual(snapshot(probe.base), before);
+    } else {
+      assert.equal(probe.calls().length, 1, 'the distinct outside directory reaches setup');
+      assert.match(probe.calls()[0], /^pack /);
+      const after = snapshot(probe.base);
+      delete before.entries['npm.log'];
+      delete after.entries['npm.log'];
+      assert.deepEqual(after, before, 'the failed outside setup leaves no consumer');
+    }
+  }
+});
 
 test('a new directory is created and prepared, with prepared.json binding runtime, sources and lock', (t) => {
   const probe = fixture(t), directory = join(probe.base, 'consumer');
