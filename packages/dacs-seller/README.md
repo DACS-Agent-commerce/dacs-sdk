@@ -191,8 +191,8 @@ const host = await startSellerHost({
   participantImplementations, // { entriesFor(claim) -> [{ claim, profile, modules, evidence, revoked }] }: the
                          // independently approved enrollment of each buyer, read on every request; a buyer
                          // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch
-  reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
-                         // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
+  reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's own answer for an evidence
+                         // anchor ('unsigned' | 'rebroadcast' | 'pending'); the agent checks the pair when it is built
   resumeDeliverableCreate: deliveryJournal.resume, // optional (below); nativeDemDelivery is then
                          // createNativeDemDeliveryCapability({ ..., submitAuthorized: deliveryJournal.submitAuthorized })
 });
@@ -738,22 +738,21 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   It also needs a readback that finds nothing: at most once per request,
   never in the request of the first attempt, and never once a readback has
   authenticated it. A name-index miss is no proof that nothing landed
-  (CORE §5.1). After any other answer, a throw, or a crash during the call
-  (`anchorOutcome: "sent"` or `"unknown"`), a readback that finds nothing asks
-  `reconcilePaymentEvidence`, once per claim. It is the wallet's own journal
-  for this exact evidence, and the host does not start without it, so a paid
-  order whose anchor outcome is unknown always has a way on. It is called with
-  `{ logicalAddress, artifact, writer, artifactKind, jobId, receiptContentHash,
-  attempt: { outcome, answer } }`:
-  - `{ status: "unsigned" }` must mean that no transaction the wallet signed for
-    this address is or can still be executed; only this answer lets the agent
-    send the same bytes again;
-  - `{ status: "rebroadcast" | "pending", txHash }` means the one signed
-    transaction was broadcast again unchanged (a dropped submission), or is
-    still pending; the agent waits for its readback and never asks for a new
-    signature;
-  - any other answer or a throw keeps the claim held (`reconcileError` keeps
-    the cause).
+  (CORE §5.1), and a readback miss alone allows no new signature or send.
+  After any other answer, a throw, or a crash during the call
+  (`anchorOutcome: "sent"` or `"unknown"`), the buyer's next claim asks the
+  journal's `ensureEvidence` under that claim's current authorization: it
+  sends the one kept CREATE again unchanged, or finds it applied, and signs
+  anew only when no kept CREATE can still land. The agent does not call
+  `reconcilePaymentEvidence`; it only checks that the function comes from the
+  same journal. Asked with `{ logicalAddress, artifact, writer, artifactKind,
+  jobId, receiptContentHash, attempt: { outcome, answer } }`, the journal answers:
+  - `{ status: "unsigned" }`: no transaction the wallet signed for this address
+    is or can still be executed;
+  - `{ status: "rebroadcast" | "pending", txHash }`: the one signed transaction
+    was broadcast again unchanged (a dropped submission), or is still pending.
+    A journal that approves ahead (below) answers `pending` for a resend no
+    authorization check guards, and sends nothing.
 
   `createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
   readAccountNonce, readTransactionState, readNetworkInfo })` gives both functions from the
@@ -815,7 +814,12 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   returns the held write.
   The operator sees a held write as the `write-fee-cap` reason with the hash
   and cost of the write. On the payment evidence path it is `anchorError`
-  (`code` and `message`) on the held answer of the seller agent. On the
+  (`code` and `message`) on the held answer of the seller agent. The same code
+  with the effect gate's message, "the effect gate refused; nothing was signed
+  or sent", and no hash or cost is not a held write: a release on the seller's
+  approval ledger (the approval withdrawn) ended the payment-evidence approval
+  before the signature. Nothing was signed or kept, there is nothing to clear,
+  and the buyer's next claim asks for the approval again. On the
   Deliverable path it is the `reason` of the held, pending or indeterminate
   delivery outcome, which starts with `write-fee-cap:`.
   To clear a held write, call `clearHeldWrite({ logicalAddress, txHash })` on
@@ -843,6 +847,18 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   Clearing the same write again answers the same result without reading the
   chain.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
+  The options also take `approveAhead` and `approveSendAhead` (both or neither;
+  a `TypeError` otherwise) and `approvalSignal` (an `AbortSignal`):
+  - with the two approve options, every new signature and every send asks the
+    operator's approval before the writer lock and outside the journal's
+    deadline, uses it once in the effect pass, and releases an unused one;
+  - a call with no authorization check signs, sends and asks nothing;
+  - `approvalSignal`, like the journal's `close()`, ends every approval the
+    journal waits for. Later asks and new signatures are refused with its
+    reason; a kept CREATE not yet sent is refused `operator_closing` and stays
+    unsent; a send whose approval is held still runs;
+  - with your own such journal behind a host, abort its `approvalSignal` before
+    `host.close()`: the host does not end the waits itself.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
   `'applied'`, `'pending'`, or `'absent'`; the journal also passes the kept
@@ -869,7 +885,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   CREATE; restore the file to resolve it. The journal also refuses
   (`wallet_journal_unknown_attempt`) an attempt whose `txHash` it never kept. While that CREATE can still be executed, the journal
   broadcasts the same signed bytes again (`rebroadcast`, or `pending` when the
-  broadcast fails). The node never executes a transaction whose nonce the
+  broadcast fails; a journal that approves ahead does this only through an
+  authorized `ensureEvidence`). The node never executes a transaction whose nonce the
   account has reached: it refuses it, or includes it as failed. So once the
   account nonce has reached the kept nonce (read first), and a complete
   authenticated index proves non-execution through that snapshot height, the
@@ -1254,8 +1271,9 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   (`src/devnet-demo/seller-node-wallet.mjs`) takes the seller state lock it
   must hold, the opened seller key and the key record, the composed seller
   approval and a node connection, and returns the wallet factory, the held
-  source capability, the read-only observer, the payment-evidence journal
-  over the client's payment-evidence adapter, and a bounded balance read.
+  source capability, the read-only observer, the client's payment-evidence
+  adapter, with the kit operation guard checked at each effect call, and a
+  bounded balance read.
   Before any effect it removes the lock rows a dead holder left in the client
   journals it opens. The source capability is the only value the devnet
   artifact anchor, issued-write readback and the source mode of native
@@ -1297,8 +1315,15 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   session has `effectPass`, `runInEffectPass`,
   `walletFactory`, `transport` (with `recoverStorageWrite`),
   `acquireConnectionFence` (the fence its passes need), `address`,
-  `observer`, `artifactJournal`, `paymentEvidence`, `readBalance` and
-  `close`. A second finalization refuses `wallet_session_finalize_once`, and
+  `observer`, `artifactJournal`, `paymentEvidence`, `nativePaymentEvidence`,
+  `endApprovalWaits`, `readBalance` and `close`. `paymentEvidence` is the
+  session's payment-evidence journal, which signs and sends only in the
+  session's passes and asks the operator's approval before each pass;
+  `nativePaymentEvidence` is the payment-evidence consumer that anchors
+  through it. `endApprovalWaits()` ends every approval that journal waits for
+  and refuses later ones and every new signature (`operator_closing`); a kept
+  CREATE not yet sent stays unsent, and its call says so. `close()` closes the
+  journal and the wallet once. A second finalization refuses `wallet_session_finalize_once`, and
   after a close the handle, the fence and finalization refuse
   `wallet_session_closed`.
 - The port's `runCreate` is the one pass finalization builds, the same one the
