@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest and node fixture after carrying the base up into the wallet bridge part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "40399430f4b4d3c88e5e8f6f3c19f70cf2e4765c",
+      "after": "40399430f4b4d3c88e5e8f6f3c19f70cf2e4765c"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+      "before": "08da62f0692f99e9a0ea1a07ad9d5ce5598db8db",
+      "after": "08da62f0692f99e9a0ea1a07ad9d5ce5598db8db"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-87320aac6bd9.json"
+  ],
+  "note": "Both sides of the merge of the base recorded these files, so their newest records disagree; this record chooses the merged copies. The manifest keeps the wallet bridge export and file and takes the base's evidence recorder export; the node fixture is the automatic merge of both sides. No file other than this record changes."
+}

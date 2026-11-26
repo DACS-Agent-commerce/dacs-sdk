@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest after carrying the base up",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "31f91ec8963d89a623a9c5b9dcf06843067476a9",
+      "after": "31f91ec8963d89a623a9c5b9dcf06843067476a9"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-e16d380f9e15.json"
+  ],
+  "note": "Both sides of the merge recorded the client manifest, so their newest records disagree; this record chooses the merged copy, which keeps the listing read-only and read-only address file entries and takes the other side's purchase wallet bridge export and file entry. Git merged both without a conflict. No file other than this record changes."
+}

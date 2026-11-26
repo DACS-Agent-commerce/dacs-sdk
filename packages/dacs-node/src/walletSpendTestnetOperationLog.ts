@@ -7,23 +7,33 @@ type Retained = NonNullable<Awaited<ReturnType<DacsWalletSpendRemoteOperationSto
 
 /**
  * In-memory operation log for a long-running service. It keeps at most `limit`
- * operations: once full, a new claim drops the oldest completed operation, and is
- * refused as `full` only while every kept operation is still unresolved. A
- * dropped operation is not lost: the durable wallet state still answers its
- * exact repeat, the same as after a restart.
+ * operations. Once full, a new claim drops the oldest completed operation that
+ * has been kept for at least `minRetainMs`, so a client that lost a reply can
+ * still read its outcome by an exact query. A new claim is refused as `full`
+ * while every kept operation is unresolved or younger than that. A dropped
+ * operation is not lost: the durable wallet state still answers its exact
+ * repeat, the same as after a restart.
  */
 export function createRetainingDacsWalletSpendOperationLogV1(
   limit: number,
+  minRetainMs = 0,
+  now: () => number = Date.now,
 ): DacsWalletSpendRemoteOperationStoreV1 {
-  if (!Number.isSafeInteger(limit) || limit <= 0) {
+  if (!Number.isSafeInteger(limit) || limit <= 0 ||
+      !Number.isSafeInteger(minRetainMs) || minRetainMs < 0) {
     throw new Error("wallet-spend-authority-operation-retention-invalid");
   }
   const values = new Map<string, Retained>();
+  const completedAt = new Map<string, number>();
   const key = (roleId: string, operationId: string) => `${roleId}\0${operationId}`;
   const conflict = () => new DacsWalletSpendRemoteError("wallet-spend-authority-operation-conflict");
   const dropOldestCompleted = (): boolean => {
+    const cutoff = now() - minRetainMs;
     for (const [identity, retained] of values) {
-      if (retained.response !== undefined) return values.delete(identity);
+      if (retained.response === undefined) continue;
+      if ((completedAt.get(identity) ?? Number.NEGATIVE_INFINITY) > cutoff) continue;
+      completedAt.delete(identity);
+      return values.delete(identity);
     }
     return false;
   };
@@ -49,6 +59,7 @@ export function createRetainingDacsWalletSpendOperationLogV1(
       if (prior === undefined || prior.requestHash !== input.requestHash) throw conflict();
       if (prior.response !== undefined &&
           canonicalize(prior.response) !== canonicalize(input.response)) throw conflict();
+      if (prior.response === undefined) completedAt.set(identity, now());
       values.set(identity, { ...prior, response: input.response });
     },
   };

@@ -28,6 +28,7 @@ export function entryPointClosure() {
   visit('src/wallet/node-wallet-session.mjs');
   visit('src/substrate/demos.mjs');
   visit('src/passive-evidence-recorder.mjs');
+  visit('src/purchase/wallet-bridge.mjs');
   visit('src/listing/read-only-verifier.mjs');
   for (const path of PACKED_UNREACHED_MODULES) files.add(path);
   return [...files].sort();

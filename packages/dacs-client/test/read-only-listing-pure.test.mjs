@@ -8,7 +8,7 @@ import * as readOnly from '../src/dacs/listing-read-only.mjs';
 import * as listingModule from '../src/dacs/listing.mjs';
 import * as verificationModule from '../src/dacs/verification.mjs';
 import { createDirectoryClient } from '../src/dacs/directory.mjs';
-import { fetchBoundedJson } from '../src/util/http.mjs';
+import { fetchBoundedJson, RESPONSE_BYTE_LIMIT } from '../src/util/http.mjs';
 import { addressForClaim } from '../src/signatures.mjs';
 import { createEphemeralWallet } from './fixtures/wallet.mjs';
 import { fixtureListing, fixtureLocator, summaryFor } from './fixtures/listings.mjs';
@@ -102,12 +102,12 @@ test('pure Listing validation retains the existing signature revocation and purc
   assert.equal(result.listing, undefined);
 });
 
-test('bounded JSON transport marks declared and streamed oversized responses response_too_large', async () => {
+test('bounded JSON transport marks declared and streamed oversized responses response_byte_limit', async () => {
   const MAX_BYTES = 64;
   const read = (response) => fetchBoundedJson('https://rpc.invalid/read', { fetchImpl: async () => response, timeoutMs: 1_000, maxBytes: MAX_BYTES });
   const assertTooLarge = (error) => {
     assert.equal(error.kind, 'invalid');
-    assert.equal(error.code, 'response_too_large');
+    assert.equal(error.code, RESPONSE_BYTE_LIMIT);
     assert.equal(error.message, 'response exceeds byte limit');
     return true;
   };
