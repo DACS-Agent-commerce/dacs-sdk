@@ -16,6 +16,8 @@ const { POINTER_MISSING, PUBLIC_SIGNED_CREATES } = await import('../../src/dacs/
 /** Distinct positive fixture values: the Agreement price and the buyer's two receipt fee ceilings, in OS. */
 export const PRICE_OS = 1000000000n, PAY_FEE_OS = 2000n, ANCHOR_FEE_OS = 3000n;
 export const EXACT_SUM_OS = PRICE_OS + PAY_FEE_OS + ANCHOR_FEE_OS;
+/** The network fee the chain reports by default: what a Pay debits beyond its price, in OS. */
+export const NETWORK_FEE_OS = 1n;
 const MANDATE_CAP_OS = 100000000000n;
 const STATE = Symbol.for('TEST-stored-request-flows');
 const COMMIT_PATH = wire.DACS_SELLER_HTTP_PATHS.commitments;
@@ -106,9 +108,10 @@ export async function receiptWorld(t, { priceOs = PRICE_OS, payFeeOs = PAY_FEE_O
       return new Response(text, { status: 200, headers: { 'content-type': 'application/json', [wire.DACS_SELLER_HTTP_HEADER]: header } });
     },
   };
-  const hooks = { beforeNonce: () => {} };
+  // `networkFee` answers the chain's fee read: the OS a Pay debits beyond its price (gas and node fees).
+  const hooks = { beforeNonce: () => {}, networkFee: async () => NETWORK_FEE_OS };
   const chain = { network: 'testnet', pinnedIdentity: IDENTITY, networkIdentity: async () => ({ identity: IDENTITY, mode: 'public-chain-read' }),
-    getAddressNonce: async () => { await hooks.beforeNonce(); return HANDOFF_NONCE_FENCE; }, getTransactionFees: async () => 1n };
+    getAddressNonce: async () => { await hooks.beforeNonce(); return HANDOFF_NONCE_FENCE; }, getTransactionFees: () => hooks.networkFee() };
   // The host's per-write fee ceiling, above the Agreement price plus the network fee, given to both factories.
   const feeCeilingOs = '50000000000';
   const verifier = { verify: async () => ({ transactable: true, contentHash: made.pin.contentHash, price: { amountOs: osText(priceOs) },

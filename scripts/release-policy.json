@@ -3,7 +3,7 @@
   "packages": [
     {
       "name": "@kynesyslabs/dacs", "directory": ".",
-      "requiredExports": [".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire", "./write-attempt-guard"],
+      "requiredExports": [".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire", "./wire/node-endpoint", "./write-attempt-guard"],
       "allow": [
         "package.json", "README.md", "LICENSE", "SECURITY.md",
         "dist/**/*.js", "dist/**/*.js.map", "dist/**/*.d.ts", "dist/**/*.d.ts.map",
@@ -28,15 +28,15 @@
     {
       "name": "@kynesyslabs/dacs-client", "directory": "packages/dacs-client",
       "preparationBlockers": ["private package is not releasable"],
-      "preparationManifestSha256": "918629d16dbfdcbd3ac6dd49b09f9b507828239aaa51d1f23e6df0cc2bc13e26",
+      "preparationManifestSha256": "be324b94ecd69ffd53614321ecd5c1902356918183f2354d4f7c48571a8e4cee",
       "preparationSnapshotBlockers": ["@kynesyslabs/dacs-client: release identity or publish policy is invalid"],
-      "requiredExports": [".", "./wallet/durable-journal", "./substrate/demos"],
+      "requiredExports": [".", "./wallet/durable-journal", "./substrate/demos", "./rpc-endpoint", "./purchase/wallet-bridge"],
       "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
     },
     {
       "name": "@kynesyslabs/dacs-seller", "directory": "packages/dacs-seller",
       "preparationBlockers": ["private package is not releasable"],
-      "preparationManifestSha256": "a9acab08c48ba658307db26fad9958b019e1a7674a6b50c83303b25f68383d91",
+      "preparationManifestSha256": "f3733df0dbf9e97b6ef12c599ba752855928d10f830155b963acd34578ffc429",
       "preparationSnapshotBlockers": ["@kynesyslabs/dacs-seller: release identity or publish policy is invalid"],
       "requiredExports": ["."],
       "allow": ["package.json", "README.md", "LICENSE", "bin/**/*.mjs", "src/**/*.mjs", "PROFILE.json", "ADMISSION.md", "SOURCES.md"]

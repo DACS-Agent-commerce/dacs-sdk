@@ -148,6 +148,19 @@ Both records require verified, established `finalized` receipts on every answer.
 Checkpoints reuse retained signatures; unknown signing outcomes stay held.
 The seller writes and signs both Vet records as orchestrator (known testnet gap G3); the buyer-written Vet arrives in N1.
 
+A buyer's enrollment can come from `openVerifiedEnrollmentReader`, which
+accepts only answers signed by the node key the operator pins. Its result is
+every signed entry for the buyer, revoked ones included, or `[]` for a signed
+complete empty set. Each call reads the node again with a fresh nonce; nothing
+is cached. A failed read never becomes an empty list. It rejects with an
+`enrollment_*` refusal: a bad signature, another signer, nonce, claim, Listing
+pin, chain or block, a malformed or oversized answer, a timeout, a changed
+connection, a closed reader or an unavailable node. When the session admission
+reads it on a first presentation, that rejection becomes
+`session_admission_unavailable` (503) with the enrollment refusal as its cause.
+No presentation is accepted, and no purchase step signs or sends anything.
+enrollment-host.test.mjs covers this path.
+
 Buyer-side seller requirements are not a capability of this route: an extra
 request scope field is refused. The seller is evaluated against that empty
 requirement, independently of the Listing's buyer requirement, during initial
@@ -235,6 +248,9 @@ or wire effect; a recognized presentation nonce is consumed on attempt. Challeng
 SQL mutation, while retained retries can read their answers.
 
 Capacity lookup work is bounded by retained rows with indexed effect/job references. Opening an existing store creates an index on peer_effect_jobs(job). Job reclamation checks legacy unmapped effects once, then selects only the needed unused jobs through indexed anti-joins. Context reclamation runs only when capacity needs space and stops after enough trusted terminal contexts; below capacity it reads no old sessions. At a full context cap with no terminal sessions it may inspect every retained context once; D12 must supply a bounded synchronous job-state lookup. d5-challenge-retention.test.mjs T14 verifies that challenge cleanup stops inspecting terminal sessions once capacity is available, and T2 that a full-capacity refusal makes no SQL mutation; no test pins the query plans or statement counts.
+
+The host supplies participant enrollment through `participantImplementations`; this package supplies none. The pair from `createNodeAuthorityReader`
+decides the connection scope alone; the staged seller reader's `readParticipantEvidence({ claim, sessionId, signal })` reads the enrollment on every job read.
 
 Run the seller checks from the repository root after building the core:
 

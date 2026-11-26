@@ -4,10 +4,11 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { contentHash, paymentEvidenceAddress } from '@kynesyslabs/dacs';
+import { canonicalize, contentHash, paymentEvidenceAddress } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { createSellerNodeWallet, fixtureClaim, inWalletPass, keyRecordBytes, privateDataDirectory, replayNode, sellerWalletWorld, T0 } from './seller-node-wallet-world.mjs';
 import { agreementHash, artifactAuthority, buyer, deliveredHashFor, JOBS, pin, PAYMENT_TX_REF, requestFor, sourceBinding as fixtureBinding } from './d5-policy-fixtures.mjs';
+import { journalOverAdapter } from './payment-evidence-test-journals.mjs';
 
 const { composeSellerApproval, createExactOperatorApproval, heldPolicyBudget, parsePolicyLedger } = await import('../../src/devnet-demo/operator-approval.mjs');
 
@@ -17,6 +18,8 @@ const OPERATOR_MAX_TOTAL_OS = '50000000000';
 const PAYMENT_PHASE_INDEX = 2;
 const SIGN_FORMAT = 'dacs-node2-seller-policy-sign-authorization/v1';
 const RETAINED_CALLS = ['prepare', 'open', 'reopen', 'confirm', 'settle'];
+// The binding members a buyer's Agreement shares with the seller's source binding.
+const SHARED_BINDING_MEMBERS = ['network', 'chainIdentity', 'pinVersion', 'bindingVersion'];
 
 /** The job ids the evidence inputs use. */
 export { JOBS };
@@ -66,6 +69,20 @@ export async function ledgerWorld(t, { limits = {}, node = replayNode(), directo
   };
 
   const world = await sellerWalletWorld(t, { directory, node, options: { approve: openApproval() } });
+  // The policy's source binding is the seller transport's own, whole. The buyer's Agreement binding keeps the buyer's endpoint and
+  // authority and shares only the tuple with it. The fixture binding above only lets the policy be constructed before the wallet.
+  const sellerBinding = JSON.parse(canonicalize(world.wallet.sourceCapability.transportBinding));
+  policyInputs.sourceBinding = sellerBinding;
+  paid.sourceBinding = { ...fixtureBinding, ...Object.fromEntries(SHARED_BINDING_MEMBERS.map(key => [key, sellerBinding[key]])) };
+  const assertBindings = () => {
+    const transportBinding = canonicalize(world.wallet.sourceCapability.transportBinding);
+    assert.equal(canonicalize(policyInputs.sourceBinding), transportBinding, 'the policy binds the seller transport');
+    assert.equal(canonicalize(world.sourceBinding), transportBinding);
+    const buyerBinding = state.paid.sourceBinding, seller = policyInputs.sourceBinding;
+    assert.ok(SHARED_BINDING_MEMBERS.every(key => buyerBinding[key] === seller[key]), 'the buyer shares the tuple');
+    assert.ok(buyerBinding.endpoint !== seller.endpoint && buyerBinding.transportAuthority !== seller.transportAuthority, 'the buyer keeps its own endpoint and authority');
+    assert.deepEqual(Object.keys(buyerBinding).sort(), Object.keys(fixtureBinding).sort(), 'the buyer binding has no seller publication member');
+  };
   const text = () => readFile(evidencePath, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
   const rows = async () => parsePolicyLedger(await text()).rows;
   const ledger = {
@@ -79,17 +96,20 @@ export async function ledgerWorld(t, { limits = {}, node = replayNode(), directo
     budget: async () => heldPolicyBudget(await rows(), state.now),
   };
   Object.assign(world, {
-    claim, address, sourceBinding, ledger, evidenceInput: job => evidenceInputFor(claim, job), purchaseState: state, confirmations: state.confirmations, retainedCalls: state.retainedCalls,
+    claim, address, sourceBinding: sellerBinding, ledger, evidenceInput: job => evidenceInputFor(claim, job), purchaseState: state, confirmations: state.confirmations, retainedCalls: state.retainedCalls,
     faults: state.faults,
-    anchor: input => inWalletPass(world, () => world.wallet.paymentEvidence.anchorEvidence(input)),
-    reconcile: input => inWalletPass(world, () => world.wallet.paymentEvidence.reconcilePaymentEvidence(input)),
+    anchor: input => inWalletPass(world, () => journalOverAdapter(world).anchorEvidence(input)),
+    reconcile: input => inWalletPass(world, () => journalOverAdapter(world).reconcilePaymentEvidence(input)),
     reopen: async () => {
+      for (const journal of world.journals.splice(0)) journal.close();
       await world.wallet.close();
       world.approve = openApproval();
       world.options = { ...world.options, approve: world.approve };
       world.approval = world.approve.retained;
       world.wallet = await createSellerNodeWallet({ ...world.options, journalMode: 'open', keyRecord: keyRecordBytes() });
+      assertBindings();
     },
   });
+  assertBindings();
   return world;
 }

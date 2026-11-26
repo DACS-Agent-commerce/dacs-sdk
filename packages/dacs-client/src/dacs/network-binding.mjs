@@ -26,6 +26,7 @@
 // owner must hold its connection/endpoint fence through those external actions.
 import { createHash } from 'node:crypto';
 import { types } from 'node:util';
+import { canonicalNodeEndpoint } from '@kynesyslabs/dacs/wire/node-endpoint';
 
 export const DEMOS_NETWORK_BINDING_VERSION = 'dacs-demos-network-binding/v1';
 const HASH = /^(?:0x)?([0-9a-f]{64})$/;
@@ -72,14 +73,27 @@ function identity(value, code = 'malformed_observation') {
   return match[1];
 }
 
-function endpoint(value, code) {
-  let parsed;
-  try { parsed = new URL(value); } catch { fail(code, 'A canonical HTTPS endpoint is required'); }
-  if (typeof value !== 'string' || parsed.href !== value || parsed.protocol !== 'https:'
-    || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    fail(code, 'A canonical HTTPS endpoint without credentials, query or fragment is required');
+// The pin's endpoint, by the wire's one rule under the pinned chain identity.
+function endpoint(value, code, chainIdentity) {
+  if (canonicalNodeEndpoint(value, { chainIdentity }) === null) {
+    fail(code, 'A canonical root endpoint is required: https, or plain http on the approved testnet chain only; no path, credentials, query or fragment');
   }
   return value;
+}
+
+/**
+ * Checks a configured node RPC URL by the wire's one endpoint rule and returns it unchanged: a canonical https root
+ * under any label, or a canonical plain-http root only for `network: 'testnet'` with the approved testnet
+ * `chainIdentity`. Under any other or missing label no chain identity is passed on, so plain http is refused.
+ * It reads nothing from the network and grants no payment; a purchase still binds to the chain before it pays.
+ * Throws NetworkBindingError(rpc_endpoint_invalid) for anything else, with no URL or credential in its message.
+ */
+export function assertNodeRpcEndpoint({ rpcUrl, network, chainIdentity } = {}) {
+  const root = canonicalNodeEndpoint(rpcUrl, network === 'testnet' ? { chainIdentity } : {});
+  if (root === null) {
+    fail('rpc_endpoint_invalid', 'The node RPC URL must be a canonical root: https, or plain http on testnet under the approved chain identity; no path, credentials, query or fragment');
+  }
+  return root;
 }
 
 function identifier(value, code) {
@@ -92,11 +106,11 @@ function timestamp(value, code) {
   return value;
 }
 
-function contextOf(value) {
+function contextOf(value, chainIdentity) {
   const context = record(value, 'transport_mismatch');
   exactKeys(context, CONTEXT_KEYS, 'transport_mismatch');
   if (!exactMatch(NETWORK, context.network)) fail('transport_mismatch', 'Transport network label is malformed');
-  endpoint(context.endpoint, 'transport_mismatch');
+  endpoint(context.endpoint, 'transport_mismatch', chainIdentity);
   identifier(context.transportAuthority, 'transport_mismatch');
   identifier(context.connectionId, 'transport_mismatch');
   return Object.freeze(context);
@@ -242,7 +256,7 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
   if (!exactMatch(NETWORK, expected.network)) fail('unpinned_network', 'An exact reviewed network label is required');
   expected.chainIdentity = identity(expected.chainIdentity, 'unpinned_network');
   identifier(expected.pinVersion, 'unpinned_network');
-  endpoint(expected.endpoint, 'unpinned_network');
+  endpoint(expected.endpoint, 'unpinned_network', expected.chainIdentity);
   identifier(expected.transportAuthority, 'unpinned_network');
   Object.freeze(expected);
   if (!reader || typeof reader.getContext !== 'function' || typeof reader.getBlockByNumber !== 'function'
@@ -291,7 +305,7 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
   async function context(deadline) {
     let actual;
     try { actual = await bounded(() => reader.getContext(), deadline); } catch (error) { fail('unavailable', 'Transport context is unavailable', error); }
-    const value = contextOf(actual);
+    const value = contextOf(actual, expected.chainIdentity);
     if (value.network !== expected.network || value.endpoint !== expected.endpoint
       || value.transportAuthority !== expected.transportAuthority) fail('transport_mismatch', 'The active transport differs from the reviewed network, endpoint or authority');
     return value;
@@ -310,7 +324,7 @@ export function createDemosNetworkBinder({ expected: input, reader, fallback = n
     exactKeys(read, ['value', 'context', 'observedAt', 'fromCache', 'redirected'], 'malformed_observation');
     if (read.fromCache !== false) fail('cached_observation', 'Cached or unspecified-cache identity reads are rejected');
     if (read.redirected !== false) fail('redirected_observation', 'Redirected or unspecified-route identity reads are rejected');
-    const readContext = contextOf(read.context);
+    const readContext = contextOf(read.context, expected.chainIdentity);
     if (!sameContext(readContext, connection)) fail('transport_mismatch', 'The read receipt differs from the active transport');
     fresh(read.observedAt, clock());
     if (read.observedAt < requestedAt) fail('stale_observation', 'The identity read predates this request');

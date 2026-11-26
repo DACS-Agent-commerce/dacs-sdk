@@ -8,12 +8,13 @@ import { join } from 'node:path';
 import { api, createSellerNodeWallet, evidenceInput, inWalletPass, jsonResponse, keyRecordBytes, nodeConnection, ok, privateDataDirectory, replayNode,
   replyTo, restartedWorld, runWalletChild, sellerWalletWorld, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { evidenceInput as chainEvidenceInput, walletChain } from './helpers/payment-evidence-wallet-chain.mjs';
+import { journalOverAdapter } from './helpers/payment-evidence-test-journals.mjs';
 
 const { createPaymentEvidenceWalletJournal, isPaymentEvidenceWalletJournalPair } = await import('../src/dacs/payment-evidence-wallet-journal.mjs');
 
 const JOURNAL_READ_TIMEOUT_MS = 10_000;
-const anchor = (world, input = evidenceInput(world)) => inWalletPass(world, () => world.wallet.paymentEvidence.anchorEvidence(input));
-const reconcile = (world, input = evidenceInput(world)) => inWalletPass(world, () => world.wallet.paymentEvidence.reconcilePaymentEvidence(input));
+const anchor = (world, input = evidenceInput(world)) => inWalletPass(world, () => journalOverAdapter(world).anchorEvidence(input));
+const reconcile = (world, input = evidenceInput(world)) => inWalletPass(world, () => journalOverAdapter(world).reconcilePaymentEvidence(input));
 const spentIds = world => [...world.approval.settled].filter(([, outcome]) => outcome === 'spent').map(([id]) => id);
 const sentBytes = world => world.node.broadcasts.map(tx => JSON.stringify(tx));
 // A broadcast the node acknowledges but never includes.
@@ -110,7 +111,7 @@ test('overlapping retries across two journal handles reuse the winning signature
   const first = await sellerWalletWorld(t);
   // A second wallet over the same files and lock, on its own connection, so the two passes do not queue on one fence.
   const connection = await nodeConnection(first.node);
-  const second = { owner: connection.owner, wallet: await createSellerNodeWallet({ ...first.options, owner: connection.owner, admission: connection.admission, journalMode: 'open', keyRecord: keyRecordBytes() }) };
+  const second = { owner: connection.owner, directory: first.directory, options: first.options, wallet: await createSellerNodeWallet({ ...first.options, owner: connection.owner, admission: connection.admission, journalMode: 'open', keyRecord: keyRecordBytes() }) };
   t.after(async () => { await second.wallet.close(); await connection.owner.close(); });
   const input = evidenceInput(first);
   const [one, two] = await Promise.all([anchor(first, input), anchor(second, input)]);
@@ -133,8 +134,8 @@ test('an unknown confirmation keeps the CREATE live and it is never reported uns
 });
 
 test('the journal passes the kept row\'s projection, nonce and signal to readTransactionState, and the anchorEvidence/reconcilePaymentEvidence pair stays registered', async t => {
-  const world = await sellerWalletWorld(t), { paymentEvidence } = world.wallet;
-  assert.equal(isPaymentEvidenceWalletJournalPair(paymentEvidence.anchorEvidence, paymentEvidence.reconcilePaymentEvidence), true, 'the wallet\'s journal pair is registered');
+  const world = await sellerWalletWorld(t), paymentEvidence = journalOverAdapter(world);
+  assert.equal(isPaymentEvidenceWalletJournalPair(paymentEvidence.anchorEvidence, paymentEvidence.reconcilePaymentEvidence), true, 'the journal pair over the wallet\'s adapter is registered');
   const node = walletChain(), asked = [], directory = privateDataDirectory(t);
   const journal = createPaymentEvidenceWalletJournal({ path: join(directory, 'journal.sqlite'), signCreate: input => node.signCreate(input), broadcast: async () => {},
     readAccountNonce: async options => { asked.push(['nonce', options]); return { nonce: 0, blockHeight: 0 }; },
@@ -194,12 +195,12 @@ test('withdraw evidence authorization during nonce read and pre-broadcast microt
   const pass = { context: api.passContext({ operationClass: 'payment-evidence',
     currentAuthorization: () => { if (!current) throw Object.assign(new Error('TEST-authorization-withdrawn'), { code: 'TEST-withdrawn' }); return true; } }) };
   replyTo(world.node, 'getAddressNonce', () => { current = false; return undefined; });
-  const withdrawn = await inWalletPass(world, () => world.wallet.paymentEvidence.anchorEvidence(evidenceInput(world)), pass).then(() => null, error => error);
+  const withdrawn = await inWalletPass(world, () => journalOverAdapter(world).anchorEvidence(evidenceInput(world)), pass).then(() => null, error => error);
   assert.ok(withdrawn, 'the anchor withdrawn during its nonce read is refused');
   assert.equal(world.node.confirms.length + world.node.broadcasts.length, 0, 'nothing was confirmed or sent');
   current = true; world.node.reply = null;
   replyTo(world.node, 'confirmTx', () => { queueMicrotask(() => { current = false; }); return undefined; });
-  const late = await inWalletPass(world, () => world.wallet.paymentEvidence.anchorEvidence(evidenceInput(world)), pass).then(answer => answer, error => error);
+  const late = await inWalletPass(world, () => journalOverAdapter(world).anchorEvidence(evidenceInput(world)), pass).then(answer => answer, error => error);
   assert.equal(world.node.broadcasts.length, 0, `withdrawn before the broadcast: nothing sent (${late?.code ?? late?.status})`);
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(unhandled, [], 'both refusals were handled: the process survives');

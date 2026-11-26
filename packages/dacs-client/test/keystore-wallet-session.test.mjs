@@ -230,7 +230,7 @@ test("keystore-file.mjs and keystore-wallet-opener.mjs import no file-writing, S
     assert.doesNotMatch(source, /\bimport\s*\(|\brequire\s*\(|\bfetch\s*\(|\bconsole\.|process\.std(out|err)|writeFile|appendFile|sqlite|journal\.(put|appendUnderLock)/i, file);
   }
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  assert.equal(Object.keys(manifest.exports).length, 5);
+  assert.equal(Object.keys(manifest.exports).length, 7);
   for (const [entry, path] of Object.entries(manifest.exports)) {
     const names = Object.keys(await import(new URL('../' + path, import.meta.url).href));
     assert.ok(!names.includes('readKeystorePhrase') && !names.includes('createKeystoreWalletOpener'), entry);

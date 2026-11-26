@@ -13,4 +13,4 @@ const killedOnceJournalsOpen = { path: world.lock.path, release: () => world.loc
   if (existsSync(join(directory, COMPOSITION_JOURNAL))) process.kill(process.pid, 'SIGKILL');
   return world.lock.held();
 } };
-await world.stages.finalize({ dataDirectory: directory, stopped: async () => false, stateLock: killedOnceJournalsOpen });
+await world.stages.finalize({ dataDirectory: directory, stopped: () => false, stateLock: killedOnceJournalsOpen });
