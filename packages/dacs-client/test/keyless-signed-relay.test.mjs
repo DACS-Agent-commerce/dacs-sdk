@@ -700,3 +700,50 @@ test('a keyless relay refuses a signed payment whose fee field is missing or not
   assert.equal(sent.answer.result, 200);
   assert.deepEqual(posts(w), [1, 1]);
 });
+
+test('a keyless relay refuses a wallet request with a hidden, symbol or accessor member before any node request', async t => {
+  const { w, wallet, open } = await relayWorld(t);
+  const relay = await open(), { address } = wallet, hash = 'a'.repeat(64);
+  const transfer = { nonce: 1, to: PAYEE, amountOs: AMOUNT_OS, payloadDigest: 'b'.repeat(64) };
+  const wallets = [{ phase: 'bind', address }, { phase: 'signature', address, binding: {} }, { phase: 'signature', address, binding: {}, transfer },
+    { phase: 'broadcast', address, leaseId: 'TEST-lease', hash }, { phase: 'release', address, leaseId: 'TEST-lease' }, { phase: 'readback', address, hash }];
+  // Each disguise leaves the request's enumerable string members exactly as a valid request has them.
+  const disguises = [
+    ['hidden proof', base => Object.defineProperty({ ...base }, 'writeProof', { value: { disposition: 'included' }, enumerable: false })],
+    ['hidden proof on the transfer', base => (base.transfer ? { ...base, transfer: Object.defineProperty({ ...base.transfer }, 'writeProof', { value: {}, enumerable: false }) } : null)],
+    ['symbol member', base => ({ ...base, [Symbol('TEST-member')]: 1 })],
+    ['symbol member on the transfer', base => (base.transfer ? { ...base, transfer: { ...base.transfer, [Symbol('TEST-member')]: 1 } } : null)],
+    ['accessor phase', base => Object.defineProperty({ ...base }, 'phase', { get: () => base.phase, enumerable: true })],
+    ['accessor transfer member', base => (base.transfer ? { ...base, transfer: Object.defineProperty({ ...base.transfer }, 'amountOs', { get: () => AMOUNT_OS, enumerable: true }) } : null)],
+  ];
+  const before = w.node.calls.length;
+  for (const base of wallets) {
+    for (const [name, disguise] of disguises) {
+      const request = disguise(base);
+      if (request === null) continue;
+      const row = `${base.phase} ${base.transfer ? 'with transfer ' : ''}${name}`;
+      await assert.rejects(relay.walletBinding(request, wallet.headers()), isCode(REFUSED), row);
+      if (base.phase === 'readback') await assert.rejects(relay.binding(request), isCode(REFUSED), `binding ${row}`);
+    }
+  }
+  assert.equal(w.node.calls.length, before, 'no node request for a refused request');
+});
+
+test('a keyless relay refuses a preparation read that gets no reply at the 10 second deadline', async t => {
+  const { w, open } = await relayWorld(t);
+  const relay = await open();
+  // Each deadline the client sets is recorded and held by the test, so the wait is not real time.
+  const deadlines = [];
+  t.mock.method(AbortSignal, 'timeout', ms => { const controller = new AbortController(); deadlines.push({ ms, controller }); return controller.signal; });
+  const hung = oneShotGate();
+  hung.armed = true;
+  w.node.intercept = async row => {
+    if (row.body?.params?.[0]?.message !== 'getNetworkParameters') return undefined;
+    deadlines.at(-1).controller.abort(new DOMException('TEST-deadline', 'TimeoutError'));
+    await hung.pass();
+    return undefined;
+  };
+  await assert.rejects(relay.rpc(nodeCall('getNetworkParameters'), {}), error => error.kind === 'timeout' && error.message === 'request timed out');
+  assert.equal(deadlines.at(-1).ms, 10_000, 'the preparation read has a 10 second deadline');
+  hung.release();
+});

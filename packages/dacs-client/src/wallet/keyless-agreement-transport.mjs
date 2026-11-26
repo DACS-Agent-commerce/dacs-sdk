@@ -1,7 +1,7 @@
 // A key-free Agreement relay view over a caller's transport owner and journal, and the pure public Agreement profile.
 import { notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
 import { normalizeDemosAddress } from '../signatures.mjs';
-import { approvedPins, approvedSourcePolicy, checkAdmission, checkConstruction, fail, readExpectedPins } from './approved-record-pins.mjs';
+import { approvedPins, approvedSourcePolicy, checkAdmission, checkConstruction, fail, hasOnlyDataMembers, readExpectedPins } from './approved-record-pins.mjs';
 import { agreementProfileFor, createDevnetAgreementTransport, registerHeldTransportFacade, BOUNDARY_METHODS } from './devnet-native-transport.mjs';
 import { JOURNAL_METHODS } from './keystore-wallet-opener.mjs';
 
@@ -9,8 +9,8 @@ const KEYLESS_OPTION_NAMES = ['admission', 'owner', 'journal', 'walletAddress'];
 const KEYLESS_OWNER_METHODS = ['currentLocal', 'getContext', 'acquireConnectionFence', 'fetchImpl'];
 const READBACK_PHASE = 'readback';
 const RELEASE_PHASE = 'release';
-const KEYLESS_READBACK_KEYS = 'address,hash,phase';
-const KEYLESS_RELEASE_KEYS = 'address,leaseId,phase';
+const KEYLESS_READBACK_KEYS = ['phase', 'address', 'hash'];
+const KEYLESS_RELEASE_KEYS = ['phase', 'address', 'leaseId'];
 const KEYLESS_NODE_READS = ['getNetworkInfo', 'getNetworkParameters', 'getAddressNonce'];
 const KEYLESS_WRITE_REFUSED = 'keyless_transport_write_refused';
 
@@ -37,9 +37,9 @@ function checkKeylessOptions(options) {
 // A request the relay may forward: exactly a readback or a release of the bound wallet, rebuilt from the checked values.
 function checkKeylessRequest(request, walletAddress) {
   if (request === null || typeof request !== 'object') fail(KEYLESS_WRITE_REFUSED);
-  const { phase, address, hash, leaseId } = request, keys = Object.keys(request).sort().join();
-  const shaped = (phase === READBACK_PHASE && keys === KEYLESS_READBACK_KEYS && typeof hash === 'string')
-    || (phase === RELEASE_PHASE && keys === KEYLESS_RELEASE_KEYS && typeof leaseId === 'string');
+  const { phase, address, hash, leaseId } = request;
+  const shaped = (phase === READBACK_PHASE && hasOnlyDataMembers(request, KEYLESS_READBACK_KEYS) && typeof hash === 'string')
+    || (phase === RELEASE_PHASE && hasOnlyDataMembers(request, KEYLESS_RELEASE_KEYS) && typeof leaseId === 'string');
   if (!shaped || address !== walletAddress) fail(KEYLESS_WRITE_REFUSED);
   return phase === READBACK_PHASE ? { phase, address, hash } : { phase, address, leaseId };
 }

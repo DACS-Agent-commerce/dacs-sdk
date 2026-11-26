@@ -2,7 +2,7 @@
 // RPC authentication; the relay checks them and confirms and broadcasts the exact signed bytes through the client's effect
 // boundary. It holds no key, signs nothing and loads no demosdk.
 import { POSITIVE_OS_AMOUNT } from '../public-admission.mjs';
-import { approvedSourcePolicy, checkAdmission, checkConstruction, fail, readExpectedPins } from './approved-record-pins.mjs';
+import { approvedSourcePolicy, checkAdmission, checkConstruction, fail, hasOnlyDataMembers, readExpectedPins } from './approved-record-pins.mjs';
 import { createDevnetAgreementTransport, registerHeldTransportFacade } from './devnet-native-transport.mjs';
 import { createHeldTransportFacade } from './held-transport-facade.mjs';
 import { JOURNAL_METHODS } from './keystore-wallet-opener.mjs';
@@ -37,10 +37,10 @@ function checkRelayOptions(options) {
 function checkWalletRequest(request, phases) {
   const keys = request !== null && typeof request === 'object' && phases.includes(request.phase) ? WALLET_PHASE_KEYS[request.phase] : null;
   if (!keys) fail(WRITE_REFUSED);
-  const { transfer, ...checked } = request, named = Object.hasOwn(request, 'transfer');
-  if (!hasKeys(checked, keys) || (named && (request.phase !== 'signature' || !hasKeys(transfer, TRANSFER_KEYS)))
-    || ['leaseId', 'hash'].some(name => Object.hasOwn(checked, name) && typeof checked[name] !== 'string')) fail(WRITE_REFUSED);
-  return named ? { ...checked, transfer: { ...transfer } } : checked;
+  const named = Object.hasOwn(request, 'transfer');
+  if (!hasOnlyDataMembers(request, named ? [...keys, 'transfer'] : keys) || (named && (request.phase !== 'signature' || !hasOnlyDataMembers(request.transfer, TRANSFER_KEYS)))
+    || ['leaseId', 'hash'].some(name => Object.hasOwn(request, name) && typeof request[name] !== 'string')) fail(WRITE_REFUSED);
+  return named ? { ...request, transfer: { ...request.transfer } } : { ...request };
 }
 
 // Whether `body` is one of the three preparation reads (taking no relay check) or else one confirmTx or broadcastTx (taking at most one).
