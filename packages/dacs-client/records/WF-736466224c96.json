@@ -1,0 +1,32 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged signed relay export with the paid-write approval and the node endpoint rule",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "d119b9a02256ef5c977c9730688e74b7f519cbe2",
+      "after": "d119b9a02256ef5c977c9730688e74b7f519cbe2"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "94c64ec6690261700ce92f27230ae63b85915adb",
+      "after": "94c64ec6690261700ce92f27230ae63b85915adb"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "e9ed33e4cdc767992870c86ea5468b3722b687ce",
+      "after": "e9ed33e4cdc767992870c86ea5468b3722b687ce"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "3c78d26512e160548383f2de4c4c43f9b61792ae",
+      "after": "3c78d26512e160548383f2de4c4c43f9b61792ae"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-736466224c96.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies. The package file lists keep both new modules, the held transport facade and the paid-write approval. The node wallet session keeps the paid-write approval and the node endpoint rule, takes the positive OS amount pattern from the public admission module, and re-exports the held facade from its own module. The root export of the keyless signed relay and the public API test merged without conflict. No file other than this record changes."
+}
