@@ -54,8 +54,13 @@ type Settings = Readonly<DacsWalletSpendTestnetAuthoritySettingsV1>;
 
 const BUYER_ROLE = "buyer";
 const OWNER = "dacs-wallet-spend-testnet-authority";
-/** Operations the log keeps; once full, the oldest completed one is dropped for a new claim. */
+/**
+ * Operations the log keeps; once full, the oldest completed one is dropped for a
+ * new claim, but not before it has been kept long enough for a client that lost
+ * the reply to query it (the client's request timeout is at most one minute).
+ */
 const RETAINED_OPERATIONS = 50_000;
+const RETAINED_OPERATION_MIN_MS = 5 * 60_000;
 const HEADERS_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const STOP_GRACE_MS = 5_000;
@@ -279,7 +284,9 @@ function composeHandler({ settings, tokenDigest, lanes }: Readonly<{
         dependencies: { ...lane.dependencies, owner: OWNER },
       });
     },
-    operations: createRetainingDacsWalletSpendOperationLogV1(RETAINED_OPERATIONS),
+    operations: createRetainingDacsWalletSpendOperationLogV1(
+      RETAINED_OPERATIONS, RETAINED_OPERATION_MIN_MS,
+    ),
   });
 }
 
