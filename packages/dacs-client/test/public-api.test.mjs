@@ -42,7 +42,8 @@ const ROOT = {
     'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence',
     'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport', 'createSellerSessionKeys',
     'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'createAuthorityReader', 'createPublicSellerClient',
-    'createPurchaseOperations', 'isPurchaseOperationId', 'createPurchaseChallenges', 'purchaseApprovalChallengeText', 'createLocalPurchaseAccount'],
+    'createPurchaseOperations', 'isPurchaseOperationId', 'createPurchaseChallenges', 'purchaseApprovalChallengeText', 'createLocalPurchaseAccount',
+    'verifyDealPassive', 'withCheckedOperationHistory'],
   classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
     'SellerRefusedError', 'SellerUnavailableError', 'SellerTlsUnusableError', 'DemosSr2BridgeError', 'DemosSr2Error', 'NetworkBindingError', 'BuyerChainReadbackUnsupported', 'WalletFormatError'],
   values: ['PURCHASE_STATE_SCHEMA', 'PURCHASE_STATUS_HELP', 'DEM_DECIMAL', 'OS_INTEGER', 'vetNotPerformedRef', 'AGREEMENT_CONTEXT_SOURCE', 'DEM_DELIVERY_CONTEXT_SOURCE',
@@ -86,7 +87,8 @@ const modules = {
   "util/ids.mjs": "isPurchaseOperationId",
   "host/purchase-challenges.mjs": "createPurchaseChallenges purchaseApprovalChallengeText",
   "host/local-account.mjs": "createLocalPurchaseAccount",
-  "index.mjs": "PAID_WRITE_FEE_CEILING_OS"
+  "wallet/effect-history.mjs": "withCheckedOperationHistory",
+  "index.mjs": "PAID_WRITE_FEE_CEILING_OS verifyDealPassive"
 };
 
 for (const name of [...ROOT.functions, ...ROOT.classes, ...ROOT.values]) {
@@ -146,7 +148,7 @@ test('candidate manifest uses release metadata and the exact public boundary', a
   assert.deepEqual(client.peerDependencies, { '@kynesyslabs/dacs': core.version });
   assert.deepEqual(client.exports, { '.': './src/index.mjs', './wallet/durable-journal': './src/wallet/durable-journal.mjs', './node-wallet': './src/wallet/node-wallet-session.mjs',
     './substrate/demos': './src/substrate/demos.mjs', './purchase/evidence-recorder': './src/passive-evidence-recorder.mjs',
-    './purchase/wallet-bridge': './src/purchase/wallet-bridge.mjs' });
+    './purchase/wallet-bridge': './src/purchase/wallet-bridge.mjs', './wallet/effect-history': './src/wallet/effect-history-public.mjs' });
   assert.equal(client.publishConfig, undefined, 'release-set admission is pending');
   assert.deepEqual(client.repository, { type: 'git', url: core.repository.url, directory: 'packages/dacs-client' });
   assert.equal(client.bugs.url, core.bugs.url);
@@ -160,7 +162,7 @@ test('the client manifest declares exactly demosdk ^4.0.16 and dacs-node and @sc
   assert.equal(client.dependencies['@kynesyslabs/demosdk'], '^4.0.16');
   assert.equal(client.dependencies['@kynesyslabs/dacs-node'], core.version);
   assert.match(client.dependencies['@scure/bip39'], /^\d+\.\d+\.\d+$/);
-  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder', './purchase/wallet-bridge'], 'no export is added for the loading modules');
+  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder', './purchase/wallet-bridge', './wallet/effect-history'], 'no export is added for the loading modules');
   const script = `import * as module from 'node:module';
     const refuse = (specifier, context, next) => {
       if (/demosdk|demos-loader|demos-quiet-hooks|node-demos-loading/.test(specifier)) throw new Error('unexpected import of ' + specifier);
@@ -253,7 +255,7 @@ test('the complete public protocol method set refuses actions before host effect
 });
 
 const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'assertSellerReceiptReservation', 'readRetainedNativePaymentLane']);
-const PASSIVE_SERVICE_METHODS = new Set(['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning', 'nativePaymentLaneRead']);
+const PASSIVE_SERVICE_METHODS = new Set(['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning', 'nativePaymentLaneRead', 'verifyDealPassive']);
 const refusesAsPromise = (member, name) => {
   const result = member({});
   assert.ok(result instanceof Promise, `${name} returns a Promise`);
@@ -298,7 +300,7 @@ test('every active method returns a Promise and every passive method keeps its s
   await refusesAsPromise(verifier.verify, 'verify');
 });
 
-test('every purchase-service member outside the passive list (status, portalOperation, portalEvidence, verifyDeal, planRunning, nativePaymentLaneRead) rejects profile_not_admitted with seller, signer, broadcast and row writes 0, and so does every active member of the Listing verifier, and every function member of the object the public createProtocolPurchases returns outside PASSIVE_PROTOCOL_METHODS (holdChainReadback, keepChainPointers and the native payment helpers such as cancelNativePayment included), with ops.transition and every other host write counter at 0', async (t) => {
+test('every purchase-service member outside the passive list (status, portalOperation, portalEvidence, verifyDeal, planRunning, nativePaymentLaneRead, verifyDealPassive) rejects profile_not_admitted with seller, signer, broadcast and row writes 0, and so does every active member of the Listing verifier, and every function member of the object the public createProtocolPurchases returns outside PASSIVE_PROTOCOL_METHODS (holdChainReadback, keepChainPointers and the native payment helpers such as cancelNativePayment included), with ops.transition and every other host write counter at 0', async (t) => {
   const { service, protocol, verifier, writes, rows, close } = await heldPublicObjects();
   t.after(close);
   const before = rows();
@@ -328,6 +330,22 @@ test('the README method inventory equals each factory\'s own method list and its
     const namesWhere = (wrapped) => methods.filter(([, method]) => (method.name === WRAPPED_ACTION_NAME) === wrapped).map(([name]) => name).sort();
     assert.deepEqual(readmeInventory(factory), { active: namesWhere(true), passive: namesWhere(false) }, factory);
   }
+});
+
+test('root and service passive verifier names stay exact under held admission', async (t) => {
+  const client = await import('@kynesyslabs/dacs-client');
+  const effectHistory = await import('@kynesyslabs/dacs-client/wallet/effect-history');
+  assert.equal(client.withCheckedOperationHistory, effectHistory.withCheckedOperationHistory);
+  assert.deepEqual(Object.keys(effectHistory).sort(), ['classifyDispatchHistory', 'createEffectHistoryReader', 'isNativeWalletLaneKey', 'nativeWalletLaneKey', 'withCheckedOperationHistory']);
+  const { service, close } = await heldPublicObjects();
+  t.after(close);
+  assert.notEqual(service.verifyDealPassive.name, WRAPPED_ACTION_NAME, 'the service reader is passive');
+  assert.ok(readmeInventory('createPurchaseService').passive.includes('verifyDealPassive'));
+  // The held service is registered with the root reader: its own refusal answers, not passive_service_invalid.
+  await assert.rejects(client.verifyDealPassive({ service, accountId: 'TEST-account', operationId: 'TEST-operation', stage: 'payment' }),
+    error => error instanceof client.OperationError && error.code === 'not_found');
+  await assert.rejects(client.verifyDealPassive({ service: { ...service }, accountId: 'TEST-account', operationId: 'TEST-operation', stage: 'payment' }),
+    { name: 'TypeError', message: 'passive_service_invalid' });
 });
 
 test('the README documents the admission option and each construction and call refusal', () => {

@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { installPackedPair } from './helpers/packed-install.mjs';
 import { LOADING_MODULES, entryPointClosure, packageDir } from './helpers/entry-point-closure.mjs';
 
-test('npm pack ships the six entry points, their reviewed import closure and the quiet loading hook', t => {
+test('npm pack ships the seven entry points, their reviewed import closure and the quiet loading hook', t => {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-pack-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const path of ['src', 'package.json', 'README.md', 'LICENSE']) {
@@ -46,6 +46,24 @@ test('the packed client ships the purchase wallet bridge entry and its reviewed 
   const client = policy.packages.find(entry => entry.name === manifest.name);
   assert.ok(client.requiredExports.includes('./purchase/wallet-bridge'));
   assert.ok(client.allow.includes('src/**/*.mjs'));
+});
+
+test('packed client contains the wallet history entry and its reachable closure', t => {
+  const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
+  assert.equal(manifest.exports['./wallet/effect-history'], './src/wallet/effect-history-public.mjs');
+  const closure = entryPointClosure();
+  for (const path of ['src/wallet/effect-history-public.mjs', 'src/wallet/effect-history.mjs', 'src/wallet/journal-identity.mjs', 'src/wallet/native-dispatch-history.mjs', 'src/util/deep-freeze.mjs']) {
+    assert.ok(closure.includes(path), `${path} is reached from an entry point`);
+    assert.ok(manifest.files.includes(path), `${path} ships`);
+  }
+  const { app, run } = installPackedPair(t);
+  writeFileSync(join(app, 'history.mjs'), `
+    import assert from 'node:assert/strict';
+    const entry = await import('@kynesyslabs/dacs-client/wallet/effect-history');
+    assert.deepEqual(Object.keys(entry).sort(), ['classifyDispatchHistory', 'createEffectHistoryReader', 'isNativeWalletLaneKey', 'nativeWalletLaneKey', 'withCheckedOperationHistory']);
+    assert.throws(() => import.meta.resolve('@kynesyslabs/dacs-client/wallet/effect-history.mjs'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
+  `);
+  run(process.execPath, ['history.mjs'], app);
 });
 
 test('the packed archive offers no admission bypass and every packed module sees PURCHASE_ADMISSION held', t => {

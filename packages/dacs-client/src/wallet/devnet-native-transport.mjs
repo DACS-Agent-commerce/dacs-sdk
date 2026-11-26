@@ -12,7 +12,7 @@ import { createDemosNetworkBinder } from '../dacs/network-binding.mjs';
 import { chainIdentityRead } from './chain-identity-read.mjs';
 import { fetchBoundedJson, observeWithDeadline, settleOnAbort } from '../util/http.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
-import { createEffectHistory } from './effect-history.mjs';
+import { canonicalChainIdentity, createEffectHistory, nativeWalletLaneKey } from './effect-history.mjs';
 import { assertCurrentAuthorization, currentPassContext, insideEffectPass, runInPassContext } from './pass-context.mjs';
 import { classifyDispatchHistory, nothingSent } from './native-dispatch-history.mjs';
 import { signerReservationKey } from './signer-reservation.mjs';
@@ -162,14 +162,8 @@ export function registerHeldTransportFacade(facade, inner) {
   set.add(facade);
 }
 
-const BARE_CHAIN_IDENTITY = /^(?:0x)?([0-9a-f]{64})$/;
-// A lower-case 64-hex chain identity, with or without 0x, is returned bare. Any
-// other value is returned unchanged, never lower-cased or trimmed, so the
-// network binder refuses it with its own cause.
-const canonicalChainIdentity = (chainIdentity) => (typeof chainIdentity === 'string' ? BARE_CHAIN_IDENTITY.exec(chainIdentity)?.[1] ?? chainIdentity : chainIdentity);
-
-/** Returns the journal key of the native write lane for `address` on the pinned network and chain. The chain identity is keyed in its bare lower-case form, with or without a 0x prefix. */
-export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `devnet/native-wallet/${JSON.stringify([network, canonicalChainIdentity(chainIdentity), address])}`;
+/** nativeWalletLaneKey(pins, address) returns the journal key of the native write lane every native write of `address` takes (effect-history.mjs). */
+export { nativeWalletLaneKey };
 
 // transportOwner owns the ACTUAL endpoint/connection. acquireConnectionFence()
 // returns { context, release() }, holding that connection until release; its
