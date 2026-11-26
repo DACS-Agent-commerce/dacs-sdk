@@ -34,7 +34,8 @@ export function assertWithinFeeCeiling(feeCeilingOs, amountOs, fee) {
 
 /**
  * assertWriteWithinFeeCeiling(feeCeilingOs, amountOs, chain) reads the network fee once with `chain.getTransactionFees()` and applies
- * assertWithinFeeCeiling. A fee that cannot be read refuses OperationError(write-fee-cap) with the read's error as its cause.
+ * assertWithinFeeCeiling, then returns the fee it read (a bigint, in OS). A fee that cannot be read refuses OperationError(write-fee-cap)
+ * with the read's error as its cause.
  */
 export async function assertWriteWithinFeeCeiling(feeCeilingOs, amountOs, chain) {
   let fee;
@@ -44,6 +45,7 @@ export async function assertWriteWithinFeeCeiling(feeCeilingOs, amountOs, chain)
     throw new OperationError('write-fee-cap', 'effect refused: write-fee-cap', undefined, { cause: error });
   }
   assertWithinFeeCeiling(feeCeilingOs, amountOs, fee);
+  return fee;
 }
 
 /** Whether the one hold constant currently admits purchase actions; read live on every call. */

@@ -16,7 +16,8 @@ import { DacsWalletSpendTestnetAuthorityError } from "./walletSpendTestnetSettin
 /** Bounded reads of the policy's DEM wallet on the Demos testnet. */
 export interface DacsWalletSpendDemosReaderV1 {
   /** Start check: `bindTp1Profile` binds the node to the approved testnet record, else rejects
-   * `wallet-spend-testnet-authority-demos-network-mismatch` or `-demos-node-unavailable`. */
+   * `wallet-spend-testnet-authority-demos-network-mismatch` or `-demos-node-unavailable`. A node
+   * address that is not https is refused `-demos-node-unavailable` before any read. */
   assertNetwork(): Promise<void>;
   /** The policy wallet's DEM balance in OS, as a decimal string. */
   readBalance: WalletSpendAuthorityDependenciesV1["readBalance"];
@@ -211,9 +212,11 @@ export function createDacsWalletSpendDemosReaderV1(input: Readonly<{
 
   async function assertNetwork(): Promise<void> {
     try {
+      const url = new URL(rpcUrl);
+      // The binding allows plain http on the approved testnet record; this money path stays https only.
+      if (url.protocol !== "https:") throw new WireError("tp1_local_binding_invalid", 500);
       const { DemosAdapter } = await import("@kynesyslabs/dacs/substrate");
       const node = new DemosAdapter({ rpc: rpcUrl });
-      const url = new URL(rpcUrl);
       const connectionId = randomUUID();
       await bindTp1Profile({
         record: TP1_APPROVED_IDENTITY_RECORD,

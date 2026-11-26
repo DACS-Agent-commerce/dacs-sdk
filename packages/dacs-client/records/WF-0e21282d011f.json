@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "fix(client): count the sixth package entry in the keystore import test",
+  "sha": "0e21282d011fadb2f41ef9802a7e59737d42f07c",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+      "before": "def522dd3544c465818c54bd50d90df3d876f3f1",
+      "after": "849da02ffab8aadd9f61529084c48f4db12fd26b"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/test/keystore-wallet-session.test.mjs"
+  ],
+  "note": "The test pinned the package manifest to five entries; the purchase wallet bridge subpath makes six. Only the expected count changes."
+}

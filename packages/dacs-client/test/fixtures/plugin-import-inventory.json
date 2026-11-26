@@ -42,6 +42,7 @@
   {"name": "DurableWalletJournalError", "disposition": "client-journal", "owner": "client", "entry": "wallet/durable-journal"},
   {"name": "DURABLE_WALLET_JOURNAL_FORMAT", "disposition": "client-journal", "owner": "client", "entry": "wallet/durable-journal"},
   {"name": "DURABLE_WALLET_JOURNAL_VERSION", "disposition": "client-journal", "owner": "client", "entry": "wallet/durable-journal"},
+  {"name": "createPurchaseWalletBridge", "disposition": "client-wallet-bridge", "owner": "client", "entry": "purchase/wallet-bridge"},
   {"name": "OFFLINE_AGREEMENT_MODE", "disposition": "p52b-export", "owner": "P52b", "entry": "root"},
   {"name": "isOfflineWalletAgreement", "disposition": "p52b-export", "owner": "P52b", "entry": "root"},
   {"name": "deriveStorageAddress", "disposition": "p52b-export", "owner": "P52b", "entry": "root"},

@@ -1,9 +1,10 @@
 // The seller receipt gate: an authenticated ordinary commit answer declares the most the buyer reserves for the purchase,
-// and the buyer opens Pay only when that declaration equals its own price plus Pay and anchor fee ceilings and stays
-// within its mandate cap. Every refusal counts zero native payment payloads, wallet guards and wallet signatures.
+// and the buyer opens Pay only when that declaration covers the Pay debit (price plus the chain's network fee) and stays
+// within both its own price plus Pay and anchor fee ceilings and its mandate cap. Every refusal counts zero native
+// payment payloads, wallet guards and wallet signatures.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { receiptWorld, osText, EXACT_SUM_OS, PRICE_OS, PAY_FEE_OS, ANCHOR_FEE_OS } from './helpers/seller-receipt-reservation-world.mjs';
+import { receiptWorld, osText, EXACT_SUM_OS, PRICE_OS, PAY_FEE_OS, ANCHOR_FEE_OS, NETWORK_FEE_OS } from './helpers/seller-receipt-reservation-world.mjs';
 import { FIXTURE_RECEIPT_LIMITS } from './helpers/wire-client-fixture.mjs';
 const { OperationError, createProtocolPurchases, createSqlitePurchaseStore } = await import('../src/index.mjs');
 
@@ -53,17 +54,73 @@ test('an authenticated seller receipt at price plus Pay and anchor ceilings open
   assert.deepEqual(paymentEffects(world), { payloads: 1, guards: 1, signatures: 1 });
 });
 
-test('an authenticated seller receipt short by one OS in price, Pay ceiling or anchor ceiling refuses before any payment request or signature', async (t) => {
-  // Each world raises one addend by one OS and the seller still signs the prior total, so each threshold is one OS higher.
-  for (const [label, raised] of [['price', { priceOs: PRICE_OS + 1n }], ['Pay ceiling', { payFeeOs: PAY_FEE_OS + 1n }], ['anchor ceiling', { anchorFeeOs: ANCHOR_FEE_OS + 1n }]]) {
-    const world = await receiptWorld(t, raised);
-    await assertHandoffRefused(world, label);
-    assert.equal(protocolOf(world).sellerReceipt.reservedMaximumOs, osText(EXACT_SUM_OS), label);
-    assert.equal(protocolOf(world).sellerReceipt.agreementHash, world.made.agreementHash, label);
-  }
-  // A seller cannot lower the maximum itself: one OS below the exact sum, correctly signed and bound.
-  const lowered = await receiptWorld(t, { receipt: (agreementHash) => ({ agreementHash, reservedMaximumOs: osText(EXACT_SUM_OS - 1n) }) });
-  await assertHandoffRefused(lowered, 'below the exact sum');
+test('an authenticated seller receipt one OS below the Pay debit of price plus network fee refuses before any payment request or signature', async (t) => {
+  // The seller signs exactly the debit less one OS.
+  const lowered = await receiptWorld(t, { receipt: (agreementHash) => ({ agreementHash, reservedMaximumOs: osText(PRICE_OS + NETWORK_FEE_OS - 1n) }) });
+  await assertHandoffRefused(lowered, 'one OS below the debit');
+  // The buyer's price is the seller's whole total, so the network fee takes the debit one OS over it.
+  const raised = await receiptWorld(t, { priceOs: EXACT_SUM_OS, payFeeOs: 0n, anchorFeeOs: 0n });
+  await assertHandoffRefused(raised, 'price equal to the receipt');
+  assert.equal(protocolOf(raised).sellerReceipt.reservedMaximumOs, osText(EXACT_SUM_OS));
+});
+
+test('a seller receipt with smaller fee ceilings than the buyer opens exactly one native payment request when it covers the Pay debit', async (t) => {
+  // The seller's ceilings differ from the buyer's: its total is exactly the price plus the network fee.
+  const smaller = await receiptWorld(t, { receipt: (agreementHash) => ({ agreementHash, reservedMaximumOs: osText(PRICE_OS + NETWORK_FEE_OS) }) });
+  await smaller.commit();
+  assert.ok((await smaller.approve()).payload, 'the handoff offers the payment payload');
+  await smaller.pay();
+  assert.deepEqual(paymentEffects(smaller), { payloads: 1, guards: 1, signatures: 1 });
+  // A buyer whose own ceilings are far above the seller's also pays the seller's exact total.
+  const larger = await receiptWorld(t, { payFeeOs: 1000n * PAY_FEE_OS, anchorFeeOs: 1000n * ANCHOR_FEE_OS });
+  await larger.commit();
+  assert.ok((await larger.approve()).payload, 'the handoff offers the payment payload');
+  await larger.pay();
+  assert.deepEqual(paymentEffects(larger), { payloads: 1, guards: 1, signatures: 1 });
+});
+
+test('a network fee that takes the Pay debit above the seller receipt and mandate cap refuses before any payment request or signature', async (t) => {
+  // One DEM price; seller and buyer share the ceilings 0.007000013 and 0.000300007 DEM; the mandate cap is the receipt.
+  const oneDem = 1000000000n, payCeiling = 7000013n, anchorCeiling = 300007n, receiptTotal = oneDem + payCeiling + anchorCeiling;
+  const limits = { priceOs: oneDem, payFeeOs: payCeiling, anchorFeeOs: anchorCeiling, capOs: receiptTotal,
+    receipt: (agreementHash) => ({ agreementHash, reservedMaximumOs: osText(receiptTotal) }) };
+  // The chain's fee for a native Pay: the wallet's 1 DEM gas plus 1 DEM network and 1 DEM RPC fee.
+  const live = await receiptWorld(t, limits);
+  live.hooks.networkFee = async () => 3n * oneDem;
+  await assertHandoffRefused(live, 'live network fee');
+  // The fee that fills the receipt exactly still opens Pay; one OS more refuses.
+  const exact = await receiptWorld(t, limits);
+  exact.hooks.networkFee = async () => payCeiling + anchorCeiling;
+  await exact.commit();
+  assert.ok((await exact.approve()).payload, 'a debit equal to the receipt is handed off');
+  const over = await receiptWorld(t, limits);
+  over.hooks.networkFee = async () => payCeiling + anchorCeiling + 1n;
+  await assertHandoffRefused(over, 'one OS over the receipt');
+});
+
+test('a network fee that rises above the seller receipt after handoff refuses the one time wallet guard', async (t) => {
+  const world = await receiptWorld(t);
+  await world.commit();
+  assert.ok((await world.approve()).payload, 'the handoff offers the payment payload');
+  world.hooks.networkFee = async () => PAY_FEE_OS + ANCHOR_FEE_OS + 1n;
+  await assert.rejects(world.pay(), refused());
+  assert.equal(protocolOf(world).nativePaymentLaneIssued ?? false, false, 'the once-only issue bit is unchanged');
+  assert.deepEqual(paymentEffects(world), { payloads: 1, guards: 0, signatures: 0 });
+  // Once the fee is back within the receipt, the guard is issued once.
+  world.hooks.networkFee = async () => NETWORK_FEE_OS;
+  await world.pay();
+  assert.deepEqual(paymentEffects(world), { payloads: 1, guards: 1, signatures: 1 });
+});
+
+test('a network fee read that fails at the wallet guard leaves the guard unissued and keeps the read error', async (t) => {
+  const world = await receiptWorld(t);
+  await world.commit();
+  assert.ok((await world.approve()).payload, 'the handoff offers the payment payload');
+  const cause = new Error('TEST fee read timed out');
+  world.hooks.networkFee = async () => { throw cause; };
+  await assert.rejects(world.pay(), (error) => refused('write-fee-cap')(error) && error.cause === cause);
+  assert.equal(protocolOf(world).nativePaymentLaneIssued ?? false, false, 'the once-only issue bit is unchanged');
+  assert.deepEqual(paymentEffects(world), { payloads: 1, guards: 0, signatures: 0 });
 });
 
 test('a missing, malformed or differently bound seller receipt refuses before any payment request or signature', async (t) => {
@@ -141,7 +198,7 @@ test('a restart rechecks the retained receipt before handoff and before the one 
   world.restart();
   assert.ok((await world.approve()).payload, 'the reloaded row hands off');
   const kept = protocolOf(world).sellerReceipt;
-  world.change({ sellerReceipt: { ...kept, reservedMaximumOs: osText(EXACT_SUM_OS - 1n) } });
+  world.change({ sellerReceipt: { ...kept, reservedMaximumOs: osText(PRICE_OS) } });
   world.restart();
   await assert.rejects(world.pay(), refused());
   assert.equal(protocolOf(world).nativePaymentLaneIssued ?? false, false, 'the once-only issue bit is unchanged');
@@ -191,20 +248,20 @@ test('missing fee ceilings refuse native payment composition and fixture only co
   const nativeOnly = new Set(['nativeAgreementPayment', 'nativePaymentEvidence', 'sellerTransport']);
   const fixtureOnly = Object.fromEntries(Object.entries(world.p.config).filter(([name]) => !nativeOnly.has(name)));
   const fixture = createProtocolPurchases({ ...options, dacsProtocol: fixtureOnly });
-  assert.throws(() => fixture.assertSellerReceiptReservation(world.get()), refused());
+  assert.throws(() => fixture.assertSellerReceiptReservation(world.get(), NETWORK_FEE_OS), refused());
   await assert.rejects(fixture.readNativePaymentLane(world.get(), 'TEST-wallet-key'), refused('dacs_protocol_unavailable'));
   assert.deepEqual(paymentEffects(world), NO_PAYMENT);
 });
 
-test('an authenticated seller receipt above the buyer exact sum refuses with no native payment effect', async (t) => {
+test('an authenticated seller receipt above the buyer price plus both fee ceilings refuses with no native payment effect', async (t) => {
   const world = await receiptWorld(t, { receipt: (agreementHash) => ({ agreementHash, reservedMaximumOs: osText(EXACT_SUM_OS + 1n) }) });
   await assertHandoffRefused(world, 'one OS above the exact sum');
-  assert.throws(() => world.protocol.assertSellerReceiptReservation(world.get()), refused());
+  assert.throws(() => world.protocol.assertSellerReceiptReservation(world.get(), NETWORK_FEE_OS), refused());
 });
 
 test('an authenticated seller receipt above the buyer mandate cap refuses with no native payment effect', async (t) => {
   const world = await receiptWorld(t, { capOs: EXACT_SUM_OS - 1n });
   await assertHandoffRefused(world, 'the exact sum one OS above the mandate cap');
   assert.deepEqual(protocolOf(world).sellerReceipt, world.receiptFor(osText(EXACT_SUM_OS)));
-  assert.throws(() => world.protocol.assertSellerReceiptReservation(world.get()), refused());
+  assert.throws(() => world.protocol.assertSellerReceiptReservation(world.get(), NETWORK_FEE_OS), refused());
 });
