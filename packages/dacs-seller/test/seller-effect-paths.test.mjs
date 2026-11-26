@@ -4,13 +4,18 @@
 // The agent's signatures and the answer that carries its Agreement co-signature, through the host's effect boundary.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import * as core from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, TP1_APPROVED_IDENTITY_RECORD, WireError, bindTp1Profile } from '@kynesyslabs/dacs/wire';
-import { T0, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
+import { T0, evidenceInput, inWalletPass, jsonResponse, privateDataDirectory, replyTo, runWalletChild, sellerApproval, sellerWalletWorld,
+  spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
+import { approvingChainJournal, causeCodes, heldOperator, holdableStop, journalOverAdapter, journalOverPass, manualSellerApproval,
+  PAYMENT_EVIDENCE_JOURNAL } from './helpers/payment-evidence-test-journals.mjs';
+import { evidenceInput as chainEvidenceInput, newWalletChainState, walletChain } from './helpers/payment-evidence-wallet-chain.mjs';
+import { recordingApproval } from '../../dacs-client/test/helpers/payment-evidence-approval-double.mjs';
 
 // Static imports are all resolved before any module runs, so a module that reaches the client's admission state must be imported
 // after the world helper above has installed the purchase-admission hook.
@@ -774,7 +779,38 @@ test('zero signatures and transmissions on every seller inventory path, returned
     }
     guard.setKitOperationGuardForTest('testnet-tp1');
   }
+  await paymentEvidenceRefusals(t);
 });
+
+// The payment-evidence entries of the inventory: the journal's ensureEvidence (signature and send) and the pass's signature and
+// send, for each refused record and after a re-hold, over the real wallet; then the session's journal with its stop flag set.
+async function paymentEvidenceRefusals(t) {
+  const signatures = await spyTransactionSignatures(t.mock), signal = new AbortController().signal, authorize = () => true;
+  const conditions = [...REFUSED_RECORDS.map(([label, record]) => [label, record]), ['a re-hold', null]];
+  for (const [condition, record] of conditions) {
+    const world = await sellerWalletWorld(t), input = evidenceInput(world), ledger = world.approval;
+    const binding = record === null ? world.admission.binding : { ...structuredClone(world.admission.binding), recordDigest: core.sha256Hex(core.canonicalize(record)) };
+    const { journal, pass } = journalOverPass(world, { binding });
+    if (record === null) guard.setKitOperationGuardForTest('off');
+    const entries = { ensureEvidence: () => evidenceAt(journal, input), 'paymentEvidence.signCreate': () => pass.signCreate(input, { signal, approval: STAND_IN_HOLD, authorize }),
+      'paymentEvidence.broadcast': () => pass.broadcast(STAND_IN_RETAINED, { signal, approval: STAND_IN_HOLD, authorize, jobId: input.jobId }) };
+    for (const [entry, run] of Object.entries(entries)) assert.ok((await settled(run())).error, `${condition}, ${entry}: refused`);
+    guard.setKitOperationGuardForTest('testnet-tp1');
+    assert.deepEqual({ signatures: signatures.length, ...executeCounts(world.node) }, { signatures: 0, confirmTx: 0, broadcastTx: 0 }, `${condition}: zero signatures and transmissions`);
+    // The approval is asked ahead of the pass, outside every fence; under a refused record the pass then refuses and the hold is released unused.
+    const asked = record === null ? { asked: 0, released: 0 } : { asked: 1, released: 1 };
+    assert.deepEqual({ asked: ledger.prepared.length, released: releasesOf(ledger, 'TEST-ledger-1') }, asked, `${condition}: approvals`);
+    await world.wallet.close();
+  }
+  let stopped = false;
+  const stopping = await walletSessionWorld(t);
+  const { session } = await stopping.finalize(() => stopped);
+  stopped = true;
+  const input = evidenceInput({ wallet: session });
+  for (const run of [() => evidenceAt(session.paymentEvidence, input), () => session.paymentEvidence.anchorEvidence(input)]) assert.ok((await settled(run())).error, 'the stop flag refuses');
+  assert.deepEqual({ signatures: signatures.length, asked: stopping.options.approve.retained.prepared.length, ...executeCounts(stopping.node) },
+    { signatures: 0, asked: 0, confirmTx: 0, broadcastTx: 0 }, 'with the stop flag set nothing is asked, signed or sent');
+}
 
 test('the approved record signs and transmits on every seller inventory path', async (t) => {
   for (const row of await inventory(t, passOver())) {
@@ -785,6 +821,20 @@ test('the approved record signs and transmits on every seller inventory path', a
   const { posts, client } = countingClient();
   await client.propose({});
   assert.equal(posts.count, 1, 'the kit client\'s returned method sends');
+
+  // The payment-evidence lane: the journal signs and sends once, and so do the pass's four members called in turn.
+  const signatures = await spyTransactionSignatures(t.mock), signal = new AbortController().signal, authorize = () => true;
+  for (const through of ['the journal', 'the pass']) {
+    const world = await sellerWalletWorld(t), input = evidenceInput(world), { journal, pass } = journalOverPass(world), before = signatures.length;
+    if (through === 'the journal') await evidenceAt(journal, input);
+    else {
+      const signed = await pass.signCreate(input, { signal, approval: (await pass.approveAhead(input, { signal, authorize })).approval, authorize });
+      const retained = { signedTransaction: signed.signedTransaction, txHash: signed.txHash };
+      await pass.broadcast(retained, { signal, approval: (await pass.approveSendAhead(retained, { signal, authorize })).approval, authorize, jobId: input.jobId });
+    }
+    assert.deepEqual({ signatures: signatures.length - before, ...executeCounts(world.node) }, { signatures: 1, confirmTx: 1, broadcastTx: 1 }, `${through}: signed and sent once`);
+    await world.wallet.close();
+  }
 });
 
 test('with the guard off, every seller effect path refuses kit_operation_guard_off before any read; effect, permitted read-only and integrity signatures are counted separately', async (t) => {
@@ -802,6 +852,10 @@ test('with the guard off, every seller effect path refuses kit_operation_guard_o
   const { posts, client } = countingClient();
   const op = { runCreate, operationId: 'TEST-off', lane: 'TEST-off', operationClass: 'job-create', currentAuthorization: () => true };
   const discoveryBinding = await keyTestBinding();
+  // The payment-evidence lane, built while the guard is on: the pass's and the wallet adapter's four effect members, and the journal's entries.
+  const evidenceWorld = await sellerWalletWorld(t), evidence = evidenceInput(evidenceWorld), { journal: evidenceJournal, pass: evidencePass } = journalOverPass(evidenceWorld);
+  const evidenceCall = { signal: new AbortController().signal, approval: STAND_IN_HOLD, authorize: () => true, jobId: evidence.jobId };
+  const evidenceReads = evidenceWorld.node.reads.length;
   guard.setKitOperationGuardForTest('off');
   const refusals = {
     'agreementContextProvider.resolveBuyer': () => provider.resolveBuyer(f.input, { writable: () => true }),
@@ -813,6 +867,11 @@ test('with the guard off, every seller effect path refuses kit_operation_guard_o
     'signAnswer (effectBoundary)': () => answers.signAnswer(EFFECT_ANSWER, (signer) => signer.sign(Buffer.from('TEST-answer'))),
     ...Object.fromEntries(['propose', 'agreementState', 'commit', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy', 'agreementContext', 'contextChallenge']
       .map((method) => [`sellerAgentClient.${method}`, () => client[method]({})])),
+    ...Object.fromEntries(['approveAhead', 'signCreate', 'approveSendAhead', 'broadcast'].flatMap((member) => [
+      [`paymentEvidence.${member}`, () => evidencePass[member](evidence, evidenceCall)],
+      [`paymentEvidenceAdapter.${member}`, () => evidenceWorld.wallet.paymentEvidenceAdapter[member](evidence, evidenceCall)]])),
+    ...Object.fromEntries(['anchorEvidence', 'ensureEvidence', 'reconcilePaymentEvidence']
+      .map((entry) => [entry, () => evidenceJournal[entry]({ ...evidence, expectedJournalId: evidenceJournal.journalId, authorize: () => true })])),
   };
   for (const [entry, run] of Object.entries(refusals)) {
     const outcome = await settled(Promise.resolve().then(run));
@@ -820,6 +879,8 @@ test('with the guard off, every seller effect path refuses kit_operation_guard_o
   }
   assert.deepEqual({ ...reads, posts: posts.count, effect: roles.counts.effect }, { store: 0, scans: 0, posts: 0, effect: 0 },
     'refused before any read, POST or signature');
+  assert.deepEqual({ nodeReads: evidenceWorld.node.reads.length - evidenceReads, asked: evidenceWorld.approval.prepared.length }, { nodeReads: 0, asked: 0 },
+    'the payment-evidence entries refused before any read or approval');
   roles.integritySigner.sign(Buffer.concat([Buffer.from(SELLER_STATE_SIGNING_DOMAIN), Buffer.from('TEST-journal-record')]));
   await (await roles.readOnlyAnswerSigner({ purpose: 'discovery', binding: discoveryBinding, local: KEY_LOCAL }))
     .sign(wireApi.discoverySigningBytes(discoveryPayload(discoveryBinding, { seller: roles.key.claim })));
@@ -1115,5 +1176,309 @@ test('an answer carrying the co-signature is withheld when the context session e
       assert.equal((await laneStates(unsent.f.effectsDirectory, unsent.jobId)).includes('dispatch-acknowledged'), false, `${terminal}: never acknowledged as sent`);
       assert.equal(unsent.agreementSignatures(), 1, terminal);
     }
+  }
+});
+
+// ---- The payment-evidence lane through the boundary ----
+
+// An authorized ensureEvidence of `journal` for `input`.
+const evidenceAt = (journal, input, authorize = () => true) => journal.ensureEvidence({ ...input, expectedJournalId: journal.journalId, authorize });
+const executeCounts = (node) => Object.fromEntries(['confirmTx', 'broadcastTx'].map((stage) => [stage, node.reads.filter((read) => read === stage).length]));
+const REFUSED_BROADCAST = () => jsonResponse({ result: 400, response: 'TEST-refused' });
+// Runs `call` while the node refuses every broadcast, so the CREATE it signs is kept and unsent.
+async function keptUnsent(node, call) {
+  replyTo(node, 'broadcastTx', REFUSED_BROADCAST);
+  await settled(call());
+  node.reply = null;
+}
+const releasesOf = (ledger, ledgerId) => ledger.settlements.filter((entry) => entry.ledgerId === ledgerId && entry.outcome === 'released').length;
+// A hold no adapter issued: the pass accepts its shape, and the boundary or the adapter refuses it before any signature or send.
+const STAND_IN_HOLD = Object.freeze({ revision: () => 'TEST-hold', release: async () => {} });
+const STAND_IN_RETAINED = Object.freeze({ signedTransaction: '{}', txHash: 'a'.repeat(64) });
+const REPLACEMENT_CHILD = new URL('./helpers/payment-evidence-replacement-child.mjs', import.meta.url);
+// The node answers each block read as another chain's node.
+const otherChainBlocks = (row) => (row.body?.params[0].message === 'getBlockByNumber'
+  ? jsonResponse({ result: 200, response: { number: row.body.params[0].data.blockNumber, status: 'confirmed', hash: 'd'.repeat(64), content: { previousHash: 'd'.repeat(64) } } }) : undefined);
+// Inner transaction signatures, counted beneath the client gate.
+async function innerTransactionSignatures(t) {
+  const counted = { signatures: 0 };
+  await spyTransactionSignatures(t.mock, () => {}, { onInnerSign: ({ inTransaction }) => { if (inTransaction) counted.signatures++; } });
+  return counted;
+}
+
+test('the payment-evidence journal runs the boundary\'s tail inside signCreate and the final check inside the adapter broadcast reaches, with no microtask between the final check and the call', async (t) => {
+  const events = [], late = [];
+  let microtaskRan = true;
+  const effect = (label) => { if (microtaskRan) late.push(label); events.push(label); };
+  await spyTransactionSignatures(t.mock, () => {}, { onInnerSign: ({ inTransaction }) => { if (inTransaction) effect('inner-sign'); } });
+  const world = await walletSessionWorld(t);
+  // The scripted fetch records each request in its first step after the body parse, reached with no await from the gate.
+  const calls = world.node.calls, push = calls.push;
+  calls.push = (row) => {
+    const call = row.body?.params?.[0];
+    const transaction = call?.extra === 'confirmTx' ? call.data : call?.extra === 'broadcastTx' ? call.data.response.data.transaction : null;
+    if (transaction?.content?.type === 'storageProgram') effect(call.extra);
+    return Reflect.apply(push, calls, [row]);
+  };
+  const { session } = await world.finalize();
+  const authorize = () => { events.push('authorization'); microtaskRan = false; queueMicrotask(() => { microtaskRan = true; }); return true; };
+  assert.equal((await evidenceAt(session.paymentEvidence, evidenceInput({ wallet: session }), authorize)).status, 'submitted');
+  const effects = events.filter((event) => event !== 'authorization');
+  assert.deepEqual(effects, ['inner-sign', 'confirmTx', 'broadcastTx'], 'one signature, one confirmation and one broadcast');
+  for (const label of effects) assert.equal(events[events.indexOf(label) - 1], 'authorization', `${label} comes right after the pass's last authorization check`);
+  assert.deepEqual(late, [], 'no microtask ran between the last check and the signer or the request');
+});
+
+test('the payment-evidence lane sends again only the exact retained CREATE under fresh checks, and the wallet CREATE lane never resends a native broadcast; after an authenticated applied observation both retry paths make zero broadcast calls, a duplicate-rejecting broadcaster is called once in total, and the row and hash stay unchanged; an unobserved or pending CREATE still replays its exact bytes once; a refusal before sending (the node\'s chain check, journal-busy) leaves the row unchanged and counts as nothing sent', async (t) => {
+  // The applied skip, the chain-check refusal and the native-broadcast half rest on rules this lane does not change: regression coverage.
+  const world = await walletSessionWorld(t);
+  const { session } = await world.finalize();
+  const journal = session.paymentEvidence, input = evidenceInput({ wallet: session }), ledger = world.options.approve.retained;
+  await keptUnsent(world.node, () => evidenceAt(journal, input));
+  const kept = await journal.readSignedProjection(input);
+  const counts = () => ({ ...executeCounts(world.node), asked: ledger.prepared.length });
+  const before = counts();
+  assert.equal((await journal.reconcilePaymentEvidence(input)).status, 'pending', 'the reconcile resend has no authorization check: pending');
+  assert.deepEqual(counts(), before, 'it asked and sent nothing');
+  world.node.reply = otherChainBlocks;
+  assert.ok((await settled(evidenceAt(journal, input))).error, 'the node\'s chain check refuses before sending');
+  world.node.reply = null;
+  assert.deepEqual(executeCounts(world.node), { confirmTx: before.confirmTx, broadcastTx: before.broadcastTx }, 'nothing was sent');
+  assert.deepEqual(await evidenceAt(journal, input), { status: 'submitted', txHash: kept.hash }, 'under fresh checks the kept CREATE goes out again');
+  assert.deepEqual(executeCounts(world.node), { confirmTx: before.confirmTx + 1, broadcastTx: before.broadcastTx + 1 }, 'once');
+  assert.deepEqual(world.node.broadcasts.at(-1), kept, 'as its exact bytes');
+  let duplicates = 0;
+  replyTo(world.node, 'broadcastTx', () => { duplicates++; return jsonResponse({ result: 400, response: 'TEST-duplicate' }); });
+  const applied = counts();
+  assert.deepEqual(await evidenceAt(journal, input), { status: 'applied', txHash: kept.hash });
+  assert.deepEqual(await journal.reconcilePaymentEvidence(input), { status: 'applied', txHash: kept.hash });
+  assert.deepEqual({ ...counts(), duplicates }, { ...applied, duplicates: 0 }, 'after the applied observation neither retry path broadcasts');
+  assert.deepEqual(await journal.readSignedProjection(input), kept, 'the row and hash are unchanged');
+  assert.ok(world.node.broadcasts.every((transaction) => transaction.content.type === 'storageProgram'), 'every broadcast was a storage CREATE, never a native transfer');
+  await session.close();
+
+  // The send is bound to the exact live kept row: each case holds the send pass at its final stop, the last await before the
+  // gate's synchronous run, and changes the row's file. Every other check passes there (the hold, the binding, the stop and the
+  // caller's check), so without the live-row check confirmTx would be called once.
+  const cases = [['superseded', (raw, hash) => raw.prepare('UPDATE evidence_creates SET superseded_at = 1 WHERE tx_hash = ?').run(hash), 'wallet_journal_conflict'],
+    ['busy', (raw) => raw.exec('BEGIN EXCLUSIVE'), 'wallet_journal_busy']];
+  for (const [label, change, code] of cases) {
+    const sellerWorld = await sellerWalletWorld(t), stop = holdableStop(), evidence = evidenceInput(sellerWorld);
+    const { journal: direct } = journalOverPass(sellerWorld, { stopped: stop.stopped });
+    const held = stop.holdNext(1);
+    const call = settled(evidenceAt(direct, evidence));
+    const { release } = await held;
+    const row = await direct.readSignedProjection(evidence), sent = executeCounts(sellerWorld.node);
+    const raw = new Database(join(sellerWorld.directory, PAYMENT_EVIDENCE_JOURNAL));
+    change(raw, row.hash);
+    release();
+    assert.ok(causeCodes((await call).error).includes(code), `${label}: refused ${code}`);
+    assert.deepEqual(executeCounts(sellerWorld.node), sent, `${label}: nothing was confirmed or sent`);
+    if (label === 'busy') {
+      raw.exec('ROLLBACK');
+      assert.deepEqual(await direct.readSignedProjection(evidence), row, 'busy: the row is unchanged');
+      assert.deepEqual(await evidenceAt(direct, evidence), { status: 'submitted', txHash: row.hash }, 'busy: the next authorized call sends the kept bytes');
+      assert.deepEqual(executeCounts(sellerWorld.node), { confirmTx: sent.confirmTx + 1, broadcastTx: sent.broadcastTx + 1 }, 'busy: once');
+    }
+    raw.close();
+    await sellerWorld.wallet.close();
+  }
+});
+
+test('a payment-evidence signature pass that waits for the effect fence past the journal\'s deadline signs nothing: its approval is released, and the next authorized call asks the ledger once more and signs once', async (t) => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  const world = await sellerWalletWorld(t), input = evidenceInput(world), ledger = world.approval;
+  const { journal, runCreate } = journalOverPass(world, { readTimeoutMs: 300 });
+  // Another runCreate of the same boundary holds its one fence (one per boundary, not per lane) until the row frees it.
+  let free, holding;
+  const holds = new Promise((resolve) => { holding = resolve; });
+  const holder = runCreate({ operationId: 'TEST-fence-holder', lane: 'TEST-fence-holder', operationClass: 'job-create', currentAuthorization: () => true },
+    () => { holding(); return new Promise((resolve) => { free = resolve; }); });
+  await holds;
+  assert.equal((await settled(evidenceAt(journal, input))).error?.code, 'wallet_sign_timeout');
+  assert.deepEqual({ signatures: signatures.length, asked: ledger.prepared.length, released: releasesOf(ledger, 'TEST-ledger-1') }, { signatures: 0, asked: 1, released: 1 },
+    'asked once outside the fence, signed nothing, and the untaken approval was released once');
+  // Granted the fence late, the pass stops at its work's first step: its signal was aborted, so the adapter is never reached.
+  free();
+  await holder;
+  assert.equal((await evidenceAt(journal, input)).status, 'submitted');
+  assert.deepEqual({ signatures: signatures.length, asked: ledger.prepared.length, ...executeCounts(world.node) }, { signatures: 1, asked: 2, confirmTx: 1, broadcastTx: 1 });
+});
+
+test('a payment-evidence signature that finishes after the journal\'s deadline grants no send: the late signature is dropped, its reservation is retired and its approval released once, the journal keeps nothing, and the next authorized call asks the ledger once more, signs once at the same nonce and sends once', async (t) => {
+  // The adapter's drop of a late signature is the client's rule: that half is regression coverage.
+  let hold = null;
+  const signatures = await spyTransactionSignatures(t.mock, () => { const held = hold; hold = null; return held; });
+  const world = await sellerWalletWorld(t), input = evidenceInput(world), ledger = world.approval;
+  const { journal } = journalOverPass(world, { readTimeoutMs: 300 });
+  let finish;
+  hold = new Promise((resolve) => { finish = resolve; });
+  assert.equal((await settled(evidenceAt(journal, input))).error?.code, 'wallet_sign_timeout', 'the first signature finishes after the deadline');
+  assert.equal(await journal.readSignedProjection(input), null, 'the journal kept nothing');
+  // The first call's retirement runs in the adapter's queue ahead of the next call's ask, so it is asserted once that ask is made.
+  const asked = new Promise((resolve) => { ledger.script.push(() => resolve()); });
+  const next = settled(evidenceAt(journal, input));
+  await asked;
+  assert.equal(releasesOf(ledger, 'TEST-ledger-1'), 1, 'the late signature\'s reservation was retired and its approval released once');
+  finish();
+  assert.equal((await next).value?.status, 'submitted');
+  assert.equal(ledger.prepared.length, 2, 'the next call asked the ledger once more');
+  assert.equal(signatures.length, 2, 'two transaction signatures');
+  assert.equal(signatures[0], signatures[1], 'both at the same nonce');
+  assert.deepEqual(executeCounts(world.node), { confirmTx: 1, broadcastTx: 1 }, 'only the next call\'s CREATE was sent');
+});
+
+test('a failed or lost commit between signCreate and the stored row sends nothing; a committed row is replayed only as the identical CREATE under fresh authorization', async (t) => {
+  let path = null, reader = null;
+  // From inside the signature, a raw handle starts a read transaction on the journal file, so the round's commit fails busy.
+  const signatures = await spyTransactionSignatures(t.mock, () => {
+    if (path === null || reader !== null) return;
+    reader = new Database(path, { readonly: true });
+    reader.exec('BEGIN');
+    reader.prepare('SELECT COUNT(*) AS kept FROM evidence_creates').get();
+  });
+  const world = await sellerWalletWorld(t), input = evidenceInput(world), ledger = world.approval;
+  const { journal } = journalOverPass(world);
+  path = join(world.directory, PAYMENT_EVIDENCE_JOURNAL);
+  assert.ok((await settled(evidenceAt(journal, input))).error, 'the round\'s commit failed');
+  reader.exec('COMMIT');
+  reader.close();
+  assert.equal(await journal.readSignedProjection(input), null, 'no row was kept');
+  assert.deepEqual(executeCounts(world.node), { confirmTx: 0, broadcastTx: 0 }, 'nothing was sent');
+  // The next call takes the bytes the adapter stored: no new ask and no new signature. The node refuses its broadcast.
+  const asked = ledger.prepared.length;
+  await keptUnsent(world.node, () => evidenceAt(journal, input));
+  const kept = await journal.readSignedProjection(input);
+  assert.ok(kept, 'the stored bytes are kept');
+  assert.deepEqual({ asked: ledger.prepared.length, signatures: signatures.length }, { asked, signatures: 1 }, 'no ledger ask and no new signature');
+  assert.deepEqual(await evidenceAt(journal, input), { status: 'submitted', txHash: kept.hash }, 'the committed row is sent again under fresh authorization');
+  assert.deepEqual(world.node.broadcasts, [kept, kept], 'as the identical CREATE each time');
+  assert.equal(signatures.length, 1);
+});
+
+test('an applied row never broadcasts again; supersession needs complete nonce-fenced absence; a crash during replacement leaves at most one executable CREATE', async (t) => {
+  // Regression coverage of the journal's unchanged rules, through its approve-ahead rounds over the stand-in wallet chain: the client
+  // adapter's readback never proves that a kept CREATE will not execute, so the session's journal never supersedes one.
+  const directory = privateDataDirectory(t), path = join(directory, PAYMENT_EVIDENCE_JOURNAL), chainFile = join(directory, 'chain.json');
+  writeFileSync(chainFile, JSON.stringify(newWalletChainState()));
+  let wallet;
+  const reopen = () => { wallet = walletChain({ file: chainFile }); return approvingChainJournal(path, wallet); };
+  const sent = () => wallet.chain.sent ?? [];
+  let journal = reopen();
+  const appliedInput = chainEvidenceInput(wallet.claim, { logicalAddress: 'dacs4:payment:TEST-applied:demos-native:DEM:2', jobId: 'TEST-applied' });
+  const landed = await evidenceAt(journal, appliedInput);
+  wallet.land(landed.txHash);
+  const sends = sent().length;
+  assert.deepEqual(await evidenceAt(journal, appliedInput), { status: 'applied', txHash: landed.txHash });
+  assert.deepEqual(await journal.reconcilePaymentEvidence(appliedInput), { status: 'applied', txHash: landed.txHash });
+  assert.equal(sent().length, sends, 'an applied row is never broadcast again');
+
+  const input = chainEvidenceInput(wallet.claim);
+  const original = await evidenceAt(journal, input);
+  assert.deepEqual(await evidenceAt(journal, input), original, 'while its nonce is free, a fenced absence supersedes nothing: the same CREATE goes out again');
+  wallet.other();
+  journal.close();
+  const replace = (cut) => runWalletChild(cut, directory, directory, { child: { url: REPLACEMENT_CHILD, args: [cut, path, chainFile] } });
+  for (const cut of ['update', 'insert']) {
+    const child = await replace(cut);
+    assert.equal(child.signal, 'SIGKILL', `${cut}: ${child.stderr}`);
+    journal = reopen();
+    assert.equal((await journal.readSignedProjection(input)).hash, original.txHash, `${cut}: the killed transaction left the original CREATE live`);
+    assert.deepEqual(sent().filter((hash) => ![landed.txHash, original.txHash].includes(hash)), [], `${cut}: no successor was sent`);
+    journal.close();
+  }
+  const committed = await replace('kept');
+  assert.equal(committed.signal, 'SIGKILL', committed.stderr);
+  journal = reopen();
+  const successor = await journal.readSignedProjection(input);
+  assert.notEqual(successor.hash, original.txHash, 'after the commit the replacement is the live CREATE');
+  assert.equal(sent().includes(successor.hash), false, 'and it was not sent');
+  assert.deepEqual(await evidenceAt(journal, input), { status: 'submitted', txHash: successor.hash });
+  const executable = [...new Set(sent())].filter((hash) => wallet.chain.signed[hash] > wallet.accountNonce());
+  assert.deepEqual(executable, [successor.hash], 'at most one executable CREATE was sent: the committed replacement, as its exact bytes');
+  assert.equal(sent().filter((hash) => hash === successor.hash).length, 1, 'sent once');
+  journal.close();
+});
+
+test('the operator\'s payment-evidence approval is asked before the effect pass opens: an approval that waits longer than the pass window holds no effect fence and still signs once it is given', async (t) => {
+  // While the operator decides no lock is held and nothing waits on this call, as the client's default reads "no lane held";
+  // the signer's next nonce stays reserved. The port's clock moves 30 s while the answer is pending: a pass open across it
+  // would be refused as late.
+  const signatures = await spyTransactionSignatures(t.mock);
+  const directory = privateDataDirectory(t), operator = heldOperator();
+  let offset = 0;
+  const clock = { now: () => T0 + offset };
+  const world = await walletSessionWorld(t, { directory, options: { approvalMode: 'manual', clock,
+    approve: manualSellerApproval({ directory, operator: operator.operator, now: clock.now, t }) } });
+  const { session } = await world.finalize();
+  const asked = operator.nextAsk();
+  const call = settled(evidenceAt(session.paymentEvidence, evidenceInput({ wallet: session })));
+  await asked;
+  const other = { operationId: 'TEST-other', lane: 'TEST-other', operationClass: 'job-create', currentAuthorization: () => true };
+  assert.equal(await world.port.runCreate(other, async () => 'TEST-granted'), 'TEST-granted', 'another operation is granted the kit fence');
+  (await session.acquireConnectionFence()).release();
+  const raw = new Database(join(directory, PAYMENT_EVIDENCE_JOURNAL), { timeout: 0 });
+  raw.exec('BEGIN IMMEDIATE; COMMIT');
+  raw.close();
+  offset += 30_000;
+  operator.asked[0].answer(true);
+  assert.equal((await call).value?.status, 'submitted', 'the CREATE signs once the operator answers, in a pass that meets its deadline');
+  assert.deepEqual({ signatures: signatures.length, asked: operator.asked.length }, { signatures: 1, asked: 1 });
+});
+
+test('an approval taken while another journal handle keeps a CREATE for the same evidence is released unused: one signature, one kept row, and the approval\'s authorization released once', async (t) => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  // World 1's operator decides alone and answers only when the row says so.
+  const operator = recordingApproval({ manual: true });
+  let answer, asking;
+  const asked = new Promise((resolve) => { asking = resolve; });
+  operator.script.push(async () => { asking(); await new Promise((resolve) => { answer = resolve; }); });
+  const world1 = await sellerWalletWorld(t, { options: { approvalMode: 'manual', approve: sellerApproval(operator) } });
+  const world2 = await sellerWalletWorld(t, { node: world1.node });
+  const input = evidenceInput(world1), path = join(world1.directory, PAYMENT_EVIDENCE_JOURNAL);
+  const { journal } = journalOverPass(world1);
+  const first = settled(evidenceAt(journal, input));
+  await asked;
+  // Meanwhile a second handle on the same file, over world 2's wallet with its own signer reservation, keeps a CREATE unsent.
+  await keptUnsent(world1.node, () => inWalletPass(world2, () => journalOverAdapter(world2, { path }).anchorEvidence(input)));
+  const kept = await journal.readSignedProjection(input);
+  answer();
+  const { error } = await first;
+  assert.ok(causeCodes(error).includes('retained_transaction_invalid'), `world 1's adapter does not hold those bytes, so nothing is sent: ${causeCodes(error)}`);
+  assert.equal(signatures.length, 1, 'one signature in total, world 2\'s');
+  const raw = new Database(path, { readonly: true });
+  assert.equal(raw.prepare('SELECT COUNT(*) AS kept FROM evidence_creates').get().kept, 1, 'one kept row');
+  raw.close();
+  assert.deepEqual(await journal.readSignedProjection(input), kept);
+  assert.deepEqual(operator.settlements.map(({ outcome }) => outcome), ['released'], 'the unused approval was released once');
+});
+
+test('a payment-evidence approval withdrawn at the ledger while the signature pass awaits its final stop makes no inner signature, and neither does a release of another binding started at its final stop: the gate\'s last synchronous run refuses it, nothing is kept, and the next authorized call asks the ledger once more and signs once', async (t) => {
+  const counted = await innerTransactionSignatures(t);
+  // Only the last synchronous run can see the release: the refresh compares the approval's revision before the binding's await,
+  // and the final stop comes after the refresh.
+  for (const withdrawn of ['the evidence approval', 'another binding']) {
+    const world = await sellerWalletWorld(t), stop = holdableStop(), input = evidenceInput(world), ledger = world.approval;
+    const { journal } = journalOverPass(world, { stopped: stop.stopped });
+    // A release of another binding refuses too: the ledger's count of started releases is ledger-wide, the giver's conservative
+    // contract. In shipped flows it moves only on this lane's own releases.
+    const unrelated = withdrawn === 'another binding' ? (await ledger.prepare({ content: { kind: 'TEST-unrelated' } })).ledgerId : null;
+    const before = counted.signatures;
+    const held = stop.holdNext();
+    const call = settled(evidenceAt(journal, input));
+    const { release } = await held;
+    const evidenceLedgerId = ledger.entries.find((entry) => entry.ledgerId !== unrelated).ledgerId;
+    await ledger.settle(ledger.bindingOf(unrelated ?? evidenceLedgerId), 'released', 'TEST-operator');
+    release();
+    const { error } = await call;
+    assert.ok(causeCodes(error).includes('write-fee-cap'), `${withdrawn}: refused at the last synchronous run: ${causeCodes(error)}`);
+    assert.equal(counted.signatures, before, `${withdrawn}: no inner signature`);
+    assert.equal(await journal.readSignedProjection(input), null, `${withdrawn}: nothing was kept`);
+    assert.equal(executeCounts(world.node).confirmTx, 0, `${withdrawn}: nothing was confirmed`);
+    if (unrelated) assert.equal(releasesOf(ledger, evidenceLedgerId), 1, 'the evidence approval was released once, by the adapter\'s retirement');
+    const asks = ledger.prepared.length;
+    assert.equal((await evidenceAt(journal, input)).status, 'submitted', `${withdrawn}: the next authorized call signs and sends`);
+    assert.deepEqual({ asked: ledger.prepared.length - asks, signed: counted.signatures - before }, { asked: 1, signed: 1 }, `${withdrawn}: asked once more and signed once`);
+    await world.wallet.close();
   }
 });

@@ -218,11 +218,13 @@ const CHILD_TIMEOUT_MS = 120_000;
 
 /**
  * Runs seller-node-wallet-child.mjs in MODE and resolves `{code, signal, stdout, stderr}` once it exits. With `killWhenReady`,
- * the child is killed (SIGKILL) once it prints `ready`. Rejects when the child neither exits nor gets ready in time.
+ * the child is killed (SIGKILL) once it prints `ready`. With `child` (`{ url, args }`), that module runs with those arguments
+ * instead. Rejects when the child neither exits nor gets ready in time.
  */
-export function runWalletChild(mode, directory, stateDirectory, { journalMode = 'create', killWhenReady = false } = {}) {
+export function runWalletChild(mode, directory, stateDirectory, { journalMode = 'create', killWhenReady = false, child: script = null } = {}) {
+  const [url, args] = script === null ? [CHILD, [mode, directory, stateDirectory, journalMode]] : [script.url, script.args];
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [fileURLToPath(CHILD), mode, directory, stateDirectory, journalMode], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [fileURLToPath(url), ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`the child ${mode} did not finish\n${stderr}`)); }, CHILD_TIMEOUT_MS);
     child.stdout.on('data', chunk => { stdout += chunk; if (killWhenReady && stdout.includes('ready\n')) child.kill('SIGKILL'); });
