@@ -71,7 +71,7 @@ worst case. Lease expiry does not release it or authorize another effect.
 `authority.reconcile()` releases it only after the injected rail authenticator
 accepts an exact finalized settlement or authoritative absence proof. For an
 absence it passes the authenticator the stored hold's generation and expiry, and
-the release applies only while that generation is still the stored one.
+the release applies only while both are still the stored ones.
 
 ## Durable stores
 
@@ -189,12 +189,18 @@ runtime user that owns the secret files:
    buyer too.
 7. The x402 lane counts a payment only when the chain shows the purchase's
    authorization nonce used in a final transaction that moves exactly the
-   agreed amount to the agreed payee. When it records a hold, it sets the
+   agreed amount to the agreed payee. Holds for one job phase on different
+   rails share that nonce, so a payment counts for one of them only: it is
+   refused while another rail's hold for the job phase is held or settled.
+   When it records a hold, it sets the
    authorization's `validBefore` from the chain's time, at most 24 hours later;
    the generated buyer asks for 120 seconds. An interrupted purchase keeps its
-   hold until the chain shows the authorization cancelled, or the chain's time
-   is past that `validBefore` with the authorization unused, and the 5-minute
-   hold lease has ended; the buyer's next request then releases it.
+   hold until a block 64 blocks deep (about two minutes) shows the
+   authorization cancelled, or has a time past that `validBefore` with the
+   authorization unused, and the 5-minute hold lease has ended; the buyer's
+   next request then releases it. The buyer's declared finality cannot lower
+   that depth, so a short reorg cannot undo a release. A hold that declares a
+   finality deeper than 4,096 blocks is refused before it is recorded.
    The DEM lane counts a payment only when the chain shows that transfer
    executed from the policy wallet to the agreed payee for the exact amount,
    with the fee the chain record shows, and it keeps one claim per transfer in
