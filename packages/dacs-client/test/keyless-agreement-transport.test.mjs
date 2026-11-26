@@ -277,3 +277,21 @@ test('a pure keyless Agreement profile matches the inner transport without a buy
   }
   assert.throws(() => api.keylessAgreementProfile(), isRefusal('admission_required'));
 });
+
+test('a keyless relay refuses a request with a hidden, symbol or accessor member before a journal or node call', async t => {
+  const w = await world(t);
+  const address = walletOf(w), hash = 'a'.repeat(64);
+  const { relay, watch } = await openRelay(t, w);
+  const before = w.node.calls.length;
+  for (const base of [readback(address, hash), release(address)]) {
+    const requests = [
+      Object.defineProperty({ ...base }, 'writeProof', { value: { disposition: 'included' }, enumerable: false }),
+      { ...base, [Symbol('TEST-member')]: 1 },
+      Object.defineProperty({ ...base }, 'phase', { get: () => base.phase, enumerable: true }),
+    ];
+    for (const request of requests) {
+      for (const method of ['binding', 'walletBinding']) await assert.rejects(relay[method](request, {}), isRefusal(REFUSED), `${method} ${base.phase}`);
+    }
+  }
+  assertUntouched(w, watch, before);
+});

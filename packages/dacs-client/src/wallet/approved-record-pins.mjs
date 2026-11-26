@@ -13,6 +13,14 @@ const IDENTITY_RECORD_DIGEST = createHash('sha256').update(canonicalize(TP1_APPR
 /** Throws an `OperationError` whose code and message are `code`, with `cause` when one is given. */
 export const fail = (code, cause) => { throw new OperationError(code, code, undefined, cause === undefined ? undefined : { cause }); };
 
+// Whether `value` is an object whose own members, hidden and symbol-keyed ones included, are exactly `keys`, each a plain data member.
+export function hasOnlyDataMembers(value, keys) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const own = Reflect.ownKeys(value);
+  return own.length === keys.length && keys.every(name => own.includes(name))
+    && Object.values(Object.getOwnPropertyDescriptors(value)).every(descriptor => descriptor.enumerable && Object.hasOwn(descriptor, 'value'));
+}
+
 // Runs one authority or node read under the 10 s deadline; a timeout is tp1_authority_timeout with the timer's error as cause.
 export async function withinAuthorityDeadline(read, signal) {
   try { return await observeWithDeadline(read, { timeoutMs: AUTHORITY_READ_DEADLINE_MS, signal }); }
