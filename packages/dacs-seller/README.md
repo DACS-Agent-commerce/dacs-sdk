@@ -9,11 +9,11 @@ own TLS; see "Listener modes"). The agent runs negotiation (DACS-3), the finaliz
 evidence and native DEM delivery capabilities, which the host requires. This
 is the devnet-demo seller kit, ported from the plugin seller kit (see
 [SOURCES.md](SOURCES.md)). It builds its Node wallet through the client's held
-Node composition, which the kit guard and the client hold keep off. Its
-packaged native readers are **fixture-only**:
-the native DEM delivery capability and the DEM delivery context accept only a
-`TEST-` authority (`src/dacs/native-dem-delivery-consumer.mjs`,
-`src/dacs/dem-delivery-context-consumer.mjs`), and
+Node composition, which the kit guard and the client hold keep off. The
+native DEM delivery capability and the DEM delivery context accept a fixture
+`TEST-` authority, or a TP-1 token admitted for the composition's own binding
+(`src/dacs/native-dem-delivery-consumer.mjs`,
+`src/dacs/dem-delivery-context-consumer.mjs`); they keep only the label string.
 `createNativePaymentEvidenceConsumer` accepts only a literal `127.0.0.1` RPC
 origin (`src/dacs/native-payment-evidence-consumer.mjs`). The host checks
 `agreementAnchor` and `artifactAnchor` only by shape, and the wallet journal's
@@ -462,6 +462,14 @@ the seller declares now. An early `commitment-held` answer carries none. The
 receipt is a declaration on the wire answer only: the Agreement, the commitment
 record and every transaction are unchanged. The host refuses to start without
 both ceilings; the SDK sets no default and infers none.
+
+The buyer opens Pay only when the Pay's debit, the price plus the network's
+current fee for one native write (the wallet's 1 DEM gas plus the node's
+fees), is no more than `reservedMaximumOs`. So `payFeeCeilingOs` should cover
+that fee; if the two ceilings together are below it, every Pay is refused.
+The buyer also refuses a receipt above its
+own price plus fee ceilings, or above its mandate cap. Its ceilings need not
+equal the seller's.
 
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
@@ -1171,8 +1179,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   chain (`settlement_profile_unavailable`), and takes payment only as native
   payment evidence (`native_evidence_required`), so these capabilities and the supported Listing size are checked before
   commitment or payment intake. Actual delivery still depends on valid producer
-  output and available operator capabilities. These
-  capabilities accept only `TEST-` authorities and a loopback fixture node.
+  output and available operator capabilities. The delivery capabilities
+  accept a `TEST-` authority or a bound TP-1 token, and native payment evidence only a loopback fixture node.
   The host checks `agreementAnchor` and `artifactAnchor` only by shape, and
   the wallet journal's `broadcast` is the operator's own callback, so those
   can still reach a real node; keep them on the fixture too (see the start of
@@ -1259,8 +1267,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `not-authorized` with nothing signed or sent. A signature or send is also
   refused while the kit
   operation guard is off or the client's purchase hold is held, which is how
-  both ship. `start` does not build the wallet. Native DEM delivery and the
-  DEM delivery context accept only `TEST-` authorities, as in the source kit.
+  both ship. `start` does not build the wallet. The delivery constructors take a `TEST-` label or a TP-1 token with
+  the composition's own `binding`; a token is refused in that same state, and a `TP1-` label string grants nothing.
   Native writes also need a
   qualified node deployment (`QUALIFIED_NODE_COMMITS`).
 - `createSellerWalletSession` (`src/devnet-demo/seller-wallet-session.mjs`) is
@@ -1270,7 +1278,9 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `publications` and `diagnostics` it passes unchanged to
   `createSellerNodeWallet`, a wall `clock` (`Date.now` by default) and the
   anchor's `buyerAccess` (`null` by default, which refuses every job's write
-  and read with `buyer_access_closed`); any other option is a TypeError. Its
+  and read with `buyer_access_closed`); any other option is a TypeError. The
+  `endpoint` is an https root (plain http refuses `transport_mismatch`). Its read-only pair comes from `createNodeAuthorityReader({ owner, claim })`.
+  At finalize a publication naming the binding's own `TP1-` label gets a token for that binding; the anchor keeps the label. Its
   `artifactAnchor` is the one handle the operator gives the host, the Vet
   provider and the delivery capability. Until the host finalizes the port
   under the state lock, every anchor method refuses
@@ -1309,6 +1319,14 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   The provider's `resolveBuyer`, `recoverBuyer` and `resolveSeller` and each
   method of the kit client `createSellerAgentClient` check the kit operation
   guard at each call.
+- Each job read calls the seller reader's `readParticipantEvidence({ claim, sessionId, signal })`, which reads
+  `participantImplementations.entriesFor(claim, { sessionId, signal })` for a buyer the job relates to this seller
+  and Listing, before the connection; the stages abort `signal` when the read ends or times out.
+- `openDoctorNode({ rpcUrl, sellerClaim, fetchImpl })` opens one read-only
+  connection (`{ owner, readAuthority, observer, close() }`, transport authority
+  `SELLER_TRANSPORT_AUTHORITY`; http only for the approved TP-1 testnet), and
+  `readSellerBalance({ owner, address, signal })` reads an exact OS balance in
+  65,536 bytes and 10,000 ms. Neither opens a wallet, key or journal.
 - Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).

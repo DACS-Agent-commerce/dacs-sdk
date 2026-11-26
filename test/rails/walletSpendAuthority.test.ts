@@ -1390,6 +1390,43 @@ describe("an absence claim is released only against the hold it was checked on",
     });
   }
 
+  test("refuses the release when the hold's expiry changed during the check under the same generation", async () => {
+    const lineage = "expiry-lineage";
+    const memory = createInMemoryWalletSpendStateStore();
+    const clock = { value: 1_000 };
+    const wallet = createWalletSpendAuthorityV1(policy(), {
+      store: { ...memory, lineageScope: () => lineage },
+      readBalance: async () => "1000",
+      authenticateRecovery: async () => {
+        await memory.transact(lineage, (current) => {
+          if (current === null) throw new Error("expected state");
+          return {
+            state: {
+              ...current,
+              reservations: current.reservations.map((row) => ({
+                ...row, authorizationValidBefore: (row.authorizationValidBefore ?? 0) + 60,
+              })),
+            },
+            value: undefined,
+          };
+        });
+        return true;
+      },
+      bindAuthorizationValidBefore: async () => 1_900_001_000,
+      now: () => clock.value,
+      owner: "worker-1",
+      leaseDurationMs: 100,
+    });
+    const item = reservation("one");
+    const claim = await wallet.reserve(item, { authorizationWindowSeconds: 120 });
+    if (claim.status !== "reserved") throw new Error("expected reservation");
+    clock.value = 1_101;
+
+    await expect(wallet.reconcile(item, absence))
+      .rejects.toThrow("wallet spend absence was checked against another hold");
+    expect((await wallet.inspect()).activeEffects).toBe(1);
+  });
+
   test("a check that finds the hold already released by the same evidence still answers existing", async () => {
     const { wallet, clock } = recording();
     const item = reservation("one");

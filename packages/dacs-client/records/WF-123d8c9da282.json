@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF list the buyer wallet bridge subpath in the public API manifest test after merging the base into the keyless signed relay part",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "b9f9d28a1f6cc86f9b7c809b7b62f6f511c8c9fd",
+      "after": "acc22018bd35a719cb57c1f6a87aa9131db2d045"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-123d8c9da282.json",
+    "packages/dacs-client/test/public-api.test.mjs"
+  ],
+  "note": "The base exports ./purchase/wallet-bridge, so the merged package manifest test expects that subpath next to the keyless signed relay export."
+}

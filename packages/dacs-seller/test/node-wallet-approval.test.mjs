@@ -2,13 +2,21 @@
 // attempt, and each request the approver accepted is settled in its ledger by what the request wrote to the journals.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
-import { artifactWrite, jsonResponse, ok, outcomes, preparedWrite, refuseConfirmation, replyTo, sendWrite, settlingApproval, settlingWorld, spyTransactionSignatures,
-  writesOf } from './helpers/seller-node-wallet-world.mjs';
+import { createHash, createPrivateKey, sign } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { readdir, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
+import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+import { artifactWrite, FIXTURE_MNEMONIC, jsonResponse, ok, outcomes, preparedWrite, refuseConfirmation, replayNode, replyTo, sendWrite, settlingApproval, settlingWorld,
+  spyTransactionSignatures, T0, writesOf } from './helpers/seller-node-wallet-world.mjs';
 import { JOBS, ledgerWorld } from './helpers/seller-node-wallet-ledger-world.mjs';
-import { confirmationFor, PAYMENT_TX_REF, requestFor } from './helpers/d5-policy-fixtures.mjs';
+import { artifactAuthority, confirmationFor, deliveredHashFor, PAYMENT_TX_REF, pin, requestFor } from './helpers/d5-policy-fixtures.mjs';
+import { liveAdapter } from './helpers/sr2-live-fixture.mjs';
 
-const { OPERATOR_CLOSING } = await import('../src/devnet-demo/operator-approval.mjs');
+const { OPERATOR_CLOSING, confirmedWriteOs, createExactOperatorApproval } = await import('../src/devnet-demo/operator-approval.mjs');
+const { deriveWalletIdentity } = await import('../src/cli/node-identity.mjs');
+const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
 const { sellerDiagnostic } = await import('../src/seller-diagnostics.mjs');
 
 // The transport's inclusion poll sleeps 500 ms between reads, up to 240 times.
@@ -512,7 +520,7 @@ test('the ledger refuses a payment-evidence-storage-create request whose values 
     'another envelope hash': inContent({ envelopeHash: '1'.repeat(64) }),
     'a CREATE that is not JSON': inContent({ exactCreate: 'TEST-not-json' }),
     'a CREATE storing another artifact': inCreate({ data: { ...create.data, observedAt: create.data.observedAt + 1 } }),
-    'a CREATE with other metadata': inCreate({ metadata: { ...create.metadata, networkBinding: world.sourceBinding } }),
+    'a CREATE with an extra metadata key': inCreate({ metadata: { ...create.metadata, TEST_extra: 'TEST' } }),
     'a debit amount that is not a canonical number': inDebit({ rpcFeeOs: '01' }),
     'a debit total that is not the sum': inDebit({ totalOs: String(BigInt(request.content.debit.totalOs) + 1n) }),
     'another SDK gas': inDebit({ gasOs: '2000000000', totalOs: String(BigInt(request.content.debit.totalOs) + 1_000_000_000n) }),
@@ -592,4 +600,153 @@ test('under the L4 testnet policy a payment-evidence-storage-create decision is 
   assert.equal(refusal.requestBytes, sign.requestBytes, 'the refusal line holds the exact request bytes');
   assert.equal(refusal.approvalHash, sign.approvalHash, 'and their hash');
   assert.equal((await world.ledger.signLines()).length, 1, 'a refused decision holds nothing');
+});
+
+const SOURCE_PIN_REFUSAL = 'signed Agreement metadata does not bind the exact source pin';
+const appliedCreate = world => [...world.node.applied.values()].find(tx => tx.content.data?.[0] === 'storageProgram');
+
+/**
+ * The replay node with the reads a source-bound SR-2 readback makes of the applied CREATE: a confirmed block one with a timestamp,
+ * the pinned chain as its previous hash and validation data and every applied hash in its order, and the first applied CREATE in
+ * the exact-name index. The transaction and storage program reads are the replay node's own.
+ */
+function sourceBoundReplayNode() {
+  const node = replayNode(), chainIdentity = TP1_APPROVED_IDENTITY_RECORD.chainIdentity;
+  const created = () => [...node.applied.values()].find(tx => tx.content.data?.[0] === 'storageProgram');
+  node.reply = row => {
+    const call = row.body?.params[0];
+    if (!created()) return undefined;
+    if (call?.message === 'getBlockByNumber' && call.data.blockNumber === 1) {
+      return jsonResponse(ok({ number: 1, status: 'confirmed', hash: 'b'.repeat(64), content: { timestamp: T0 / 1000, previousHash: chainIdentity, ordered_transactions: [...node.applied.keys()] },
+        validation_data: { chainIdentity } }));
+    }
+    if (call?.message === 'searchStoragePrograms') return jsonResponse(ok([{ storageAddress: created().content.to, programName: created().content.data[1].programName }]));
+    return undefined;
+  };
+  return node;
+}
+
+/** The kit's source-bound SR-2 read of `input`'s CREATE through the wallet's own source capability, with `signed` as its signed projection. */
+const sourceBoundRead = (world, input, signed) => liveAdapter(world, world.wallet.sourceCapability).read(input.logicalAddress,
+  { expectedWriter: world.claim, expectedArtifactKind: input.artifactKind, signedProjection: signed, nativeAddress: signed.content.to });
+
+test('policy mode approves, signs and reads back the payment-evidence CREATE with its networkBinding', async t => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  const world = await ledgerWorld(t, { node: sourceBoundReplayNode() }), input = world.evidenceInput();
+  assertSent(await world.anchor(input));
+  const applied = appliedCreate(world), [sign] = await world.ledger.signLines();
+  assert.equal(signatures.length, 1, 'the exact CREATE was signed once');
+  assert.equal(JSON.parse(sign.requestBytes).content.exactCreate, JSON.stringify(applied.content.data[1]), 'the policy approved the exact CREATE');
+  const binding = canonicalize(world.wallet.sourceCapability.transportBinding);
+  assert.equal(canonicalize(applied.content.data[1].metadata.networkBinding), binding, 'the CREATE carries the composition transport binding');
+  const read = await sourceBoundRead(world, input, applied);
+  assert.equal(read.status, 'present');
+  assert.equal(JSON.parse(read.demosEvidence.finalityProof).chainIdentity, TP1_APPROVED_IDENTITY_RECORD.chainIdentity, 'the block proof names the pinned chain');
+  assert.equal(read.demosEvidence.transactionRef, applied.hash, 'the block lists the CREATE');
+  assert.equal(read.demosEvidence.nativeRead.metadataHash, sha256Hex(canonicalize(applied.content.data[1].metadata)), 'the program carries the exact metadata');
+  assert.equal(canonicalize(read.networkBinding), binding);
+});
+
+// The bytes of every file in the wallet's data directory except the approval ledger's.
+async function walletFiles(world) {
+  const names = (await readdir(world.directory, { recursive: true })).filter(name => !name.startsWith('approvals.jsonl')).sort();
+  return Promise.all(names.map(async name => [name, await readFile(join(world.directory, name)).catch(error => error.code)]));
+}
+
+/**
+ * Asks the ledger for `request` with its CREATE metadata changed by `change`, on the retained path the adapter uses (refused
+ * create-bytes, nothing appended) and on the shared slot (one rejected create-bytes line); neither adds an authorization, hold,
+ * send or wallet change.
+ */
+async function assertCreateBytesRefused(world, request, change) {
+  const create = JSON.parse(request.content.exactCreate);
+  const changed = { ...request, content: { ...request.content, exactCreate: JSON.stringify({ ...create, metadata: change(create.metadata) }) } };
+  const lines = await world.ledger.lines(), signs = await world.ledger.signLines(), open = await world.ledger.open(), files = await walletFiles(world);
+  const broadcasts = world.node.broadcasts.length;
+  await assert.rejects(prepareRetained(world, changed), { code: 'approval_refused', reason: 'create-bytes' });
+  assert.deepEqual(await world.ledger.lines(), lines, 'the retained refusal appends nothing');
+  assert.equal(await world.approve(changed), false);
+  assert.deepEqual((await world.ledger.lines()).slice(lines.length).map(line => [line.decision, line.policyReason]), [['rejected', 'create-bytes']]);
+  assert.deepEqual(await world.ledger.signLines(), signs, 'no new authorization');
+  assert.deepEqual(await world.ledger.open(), open, 'no new hold');
+  assert.equal(world.node.broadcasts.length, broadcasts, 'nothing was sent');
+  assert.deepEqual(await walletFiles(world), files, 'the wallet journals are unchanged');
+}
+
+test('policy mode refuses a payment-evidence CREATE with no networkBinding', async t => {
+  const world = await ledgerWorld(t), request = await adapterRequest(world);
+  assert.equal(request.content.kind, 'payment-evidence-storage-create');
+  await assertCreateBytesRefused(world, request, metadata => without(metadata, 'networkBinding'));
+});
+
+test('policy mode refuses a payment-evidence CREATE whose networkBinding differs from the policy source binding', async t => {
+  const world = await ledgerWorld(t), request = await adapterRequest(world);
+  await assertCreateBytesRefused(world, request, metadata => ({ ...metadata, networkBinding: { ...metadata.networkBinding, bindingId: 'f'.repeat(64) } }));
+});
+
+const causesOf = error => (error ? [error, ...causesOf(error.cause)] : []);
+/** Anchors `world`'s evidence under the scripted purchase `purchaseOf(paid)`: refused for the purchase before any signature, authorization or send. */
+async function assertPurchaseRefused(t, purchaseOf) {
+  const signatures = await spyTransactionSignatures(t.mock);
+  const world = await ledgerWorld(t);
+  world.purchaseState.purchase = purchaseOf(world.purchaseState.paid);
+  await assert.rejects(world.anchor(world.evidenceInput()), error => causesOf(error).some(cause => cause.code === 'approval_refused' && cause.reason === 'purchase'));
+  assert.deepEqual(signatures, [], 'nothing was signed');
+  assert.deepEqual(await world.ledger.signLines(), [], 'nothing was authorized');
+  assert.equal(world.node.confirms.length + world.node.broadcasts.length, 0, 'nothing was sent');
+}
+
+test('policy mode refuses a buyer binding with a different shared tuple', async t => {
+  await assertPurchaseRefused(t, paid => ({ ...paid, sourceBinding: { ...paid.sourceBinding, chainIdentity: 'f'.repeat(64) } }));
+});
+
+test('policy mode refuses a missing seller source binding', async t => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  const world = await ledgerWorld(t), evidencePath = join(world.directory, 'TEST-unbound-approvals.jsonl');
+  const policy = { address: world.address, seller: world.claim, artifactAuthority, listingPin: () => pin, paymentPhaseIndex: () => 2, deliveryPhaseIndex: () => 3,
+    deliveredPayloadHash: deliveredHashFor, resolvePurchase: async () => assert.fail('the purchase was read') };
+  assert.throws(() => createExactOperatorApproval({ maxTotalOs: '50000000000', evidencePath, sellerApproval: { mode: 'policy' }, policy }),
+    { name: 'TypeError', message: 'seller policy requires exact operator-owned purchase and source context' });
+  assert.equal(existsSync(evidencePath), false, 'no ledger was written');
+  assert.deepEqual(signatures, []);
+  assert.equal(world.node.confirms.length + world.node.broadcasts.length, 0);
+});
+
+test('policy mode refuses a missing buyer binding', async t => {
+  await assertPurchaseRefused(t, paid => ({ ...paid, sourceBinding: null }));
+});
+
+test('policy confirmation of a payment-evidence CREATE checks network and chain identity', async t => {
+  const world = await ledgerWorld(t), request = await adapterRequest(world), [signed] = world.node.confirms;
+  const confirmed = content => ({ result: 200, response: { data: { valid: true, reference_block: 1, message: 'TEST-valid', gas_operation: null, transaction: { ...signed, content } } } });
+  assert.equal(confirmedWriteOs(confirmed(signed.content), request), BigInt(request.content.debit.storageFeeOs) + BigInt(request.content.debit.gasOs));
+  for (const [label, content] of [['no network', without(signed.content, 'network')], ['no chain identity', without(signed.content, 'chainIdentity')],
+    ['another network', { ...signed.content, network: 'TEST-network' }], ['another chain identity', { ...signed.content, chainIdentity: 'f'.repeat(64) }]]) {
+    assert.equal(confirmedWriteOs(confirmed(content), request), null, label);
+  }
+});
+
+// Signs `content` with the seller's own key, as the wallet signs a CREATE: the bare transaction hash.
+async function sellerSigned(content) {
+  const { privateKey } = await deriveWalletIdentity(FIXTURE_MNEMONIC);
+  const key = createPrivateKey({ key: Buffer.concat([PKCS8_ED25519_PREFIX, Buffer.from(privateKey.subarray(0, 32))]), format: 'der', type: 'pkcs8' });
+  privateKey.fill(0);
+  const hash = sha256(JSON.stringify(content));
+  return { hash, content, signature: { type: 'ed25519', data: `0x${sign(null, Buffer.from(hash), key).toString('hex')}` } };
+}
+
+test('the kit readback refuses a signed payment-evidence CREATE whose content lacks network or chain identity', async t => {
+  const world = await ledgerWorld(t, { node: sourceBoundReplayNode() }), input = world.evidenceInput();
+  assertSent(await world.anchor(input));
+  const applied = appliedCreate(world), withoutBoth = content => without(without(content, 'network'), 'chainIdentity');
+  for (const [label, content] of [['no network', without(applied.content, 'network')], ['no chain identity', without(applied.content, 'chainIdentity')],
+    ['neither', withoutBoth(applied.content)]]) {
+    const signed = await sellerSigned(content);
+    assert.ok(signed.content.data[1].metadata.networkBinding, `${label}: the metadata still carries the binding`);
+    // Executed as the live node serves it (both members omitted), and as signed.
+    world.node.applied.set(signed.hash, { ...signed, content: withoutBoth(content) });
+    await assert.rejects(sourceBoundRead(world, input, signed), { code: 'invalid' }, `${label}: executed without both`);
+    world.node.applied.set(signed.hash, structuredClone(signed));
+    await assert.rejects(sourceBoundRead(world, input, signed), { code: 'invalid', message: SOURCE_PIN_REFUSAL }, `${label}: executed as signed`);
+  }
 });

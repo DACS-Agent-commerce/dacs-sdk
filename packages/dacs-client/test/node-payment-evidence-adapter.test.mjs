@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { canonicalize } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { agreementRequest, api, mnemonicBytes, ok, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
 import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
@@ -1235,6 +1236,115 @@ test("a broadcast that reaches its send while another holder has the signer lock
   await assert.rejects(broadcastIn(w, signed), { code: 'retained_transaction_invalid' });
   await holder;
   assert.equal(w.node.broadcasts.length, 0, 'no broadcastTx');
+});
+
+const withoutMembers = (record, ...names) => Object.fromEntries(Object.entries(record).filter(([key]) => !names.includes(key)));
+const APPROVAL_CONTENT_KEYS = ['kind', 'action', 'artifactKind', 'jobId', 'owner', 'wallet', 'logicalAddress', 'storageAddress', 'programName', 'contentHash', 'envelopeHash',
+  'exactCreate', 'nonce', 'timestamp', 'network', 'chainIdentity', 'debit'];
+
+test("the payment-evidence CREATE metadata carries the session's networkBinding", async t => {
+  const w = await adapterWorld(t), input = evidenceInput(w), binding = w.session.transport.transportBinding;
+  assert.ok(binding?.bindingId, 'the seller transport has an Agreement source binding');
+  const { content } = JSON.parse((await signIn(w, input)).signedTransaction);
+  assert.equal(content.network, TP1_APPROVED_IDENTITY_RECORD.network);
+  assert.equal(content.chainIdentity, TP1_APPROVED_IDENTITY_RECORD.chainIdentity);
+  const { networkBinding, ...metadata } = content.data[1].metadata;
+  assert.deepEqual(metadata, { logicalAddress: input.logicalAddress, artifactKind: input.artifactKind, contentHash: input.receiptContentHash, envelopeHash: sha(canonicalize(input.artifact)) });
+  assert.equal(canonicalize(networkBinding), canonicalize(binding), 'the metadata carries the session transport binding');
+  const [asked] = w.approval.prepared;
+  assert.deepEqual(Object.keys(asked.content), APPROVAL_CONTENT_KEYS, 'no approval content member is added');
+  assert.equal(asked.content.debit.totalOs, FULL_DEBIT_OS, 'the debit is unchanged');
+  assert.equal(canonicalize(JSON.parse(asked.content.exactCreate).metadata.networkBinding), canonicalize(binding), 'the approved CREATE carries the binding');
+});
+
+test("the payment-evidence adapter refuses construction without a transport binding", async t => {
+  const w = await adapterWorld(t), entriesBefore = JSON.stringify(await w.journal().entries());
+  let addressReads = 0;
+  const demos = { getAddress: () => { addressReads++; return signerOf(w); } };
+  const { createPaymentEvidenceCreateAdapter } = await import('../src/wallet/node-payment-evidence-adapter.mjs');
+  for (const transportBinding of [undefined, null, 'TEST-binding', []]) {
+    assert.throws(() => createPaymentEvidenceCreateAdapter({ approval: w.approval, demos, journal: w.journal(), pins: TP1_APPROVED_IDENTITY_RECORD, transportBinding }),
+      error => error instanceof TypeError && error.message === 'transport_binding_required', JSON.stringify(transportBinding) ?? 'undefined');
+  }
+  assert.equal(addressReads, 0, 'the wallet was not read');
+  assert.deepEqual(w.approval.prepared, [], 'nothing was asked');
+  assert.equal(w.signsInsideSign, 0, 'nothing was signed');
+  assert.equal(JSON.stringify(await w.journal().entries()), entriesBefore, 'the journal is unchanged');
+});
+
+test("a node that serves the evidence program without the networkBinding member is refused at readback", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w)), { content: created } = JSON.parse(signed.signedTransaction), operation = created.data[1];
+  applyWithoutBroadcast(w, signed);
+  const { networkBinding, ...withoutBinding } = operation.metadata;
+  assert.ok(networkBinding, 'the signed CREATE carries the binding');
+  w.node.intercept = row => (row.body === null ? responseOf({ success: true, data: operation.data, owner: created.from, programName: operation.programName,
+    storageAddress: created.to, metadata: withoutBinding }) : undefined);
+  const answer = await w.adapter.readTransactionState(signed);
+  assert.equal(answer.state, 'pending');
+  assert.equal(w.session.internalCauseOf(answer).code, 'readback_unverified');
+  assert.deepEqual(spentIds(w), [], 'nothing is spent');
+  assertNothingSent(w);
+});
+
+// The signed CREATE as an adapter that did not yet write the source binding planned it: four metadata members and no network or
+// chain identity in its content, signed by the same wallet.
+async function fourMemberPlan(w, current) {
+  const { network, chainIdentity, ...content } = JSON.parse(current.signedTransaction).content;
+  const { networkBinding, ...metadata } = content.data[1].metadata;
+  assert.ok(network && chainIdentity && networkBinding, 'the current CREATE carries all three members');
+  const operation = { ...content.data[1], metadata };
+  content.data = ['storageProgram', operation];
+  content.gcr_edits = content.gcr_edits.map(edit => (edit.type === 'storageProgram' ? { ...edit, context: { ...edit.context, data: { variables: operation, metadata } } } : edit));
+  const wallet = await signingWallet(w), hash = sha(JSON.stringify(content));
+  return { hash, content, signature: { type: 'ed25519', data: `0x${wallet.signBytes(Buffer.from(hash)).toString('hex')}` } };
+}
+
+test("a retained pre-change plan is replayed byte for byte", async t => {
+  const w = await replayWorld(t), current = await signIn(w, evidenceInput(w));
+  const [[key, record]] = (await w.journal().entries()).filter(([name]) => name.startsWith(RECORD_KEY_PREFIX));
+  const legacy = await fourMemberPlan(w, current), legacyText = JSON.stringify(legacy), asked = JSON.parse(record.active.approvalIntent);
+  const legacyRequest = JSON.stringify({ ...asked, content: { ...asked.content, exactCreate: JSON.stringify(legacy.content.data[1]) } });
+  w.approval.entries[0].requestText = legacyRequest;
+  await w.journal().put(key, { ...record, revision: record.revision + 1,
+    active: { ...record.active, approvalIntent: legacyRequest, signed: { ...record.active.signed, txHash: legacy.hash, projectionText: legacyText } } });
+  await w.restart();
+  const signaturesBefore = w.signsInsideSign, preparedBefore = w.approval.prepared.length;
+  assert.deepEqual(await broadcastIn(w, { signedTransaction: legacyText, txHash: legacy.hash }), { status: 'accepted', txHash: legacy.hash });
+  assert.deepEqual(w.node.broadcasts.map(tx => JSON.stringify(tx)), [legacyText], 'the retained bytes were sent once, unchanged');
+  assert.equal(w.signsInsideSign, signaturesBefore, 'nothing was signed again');
+  assert.equal(w.approval.prepared.length, preparedBefore, 'no new plan was asked for');
+  assert.equal((await recordOf(w)).active.signed.projectionText, legacyText, 'the reservation still holds the retained bytes');
+});
+
+test("the payment-evidence readback admits a node that omits network and chain identity and refuses one that changes them", async t => {
+  const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
+  applyWithoutBroadcast(w, signed);
+  const listed = liveBlock([signed.txHash]), executedWith = change => {
+    const executed = liveExecuted(signed);
+    return { ...executed, content: change({ ...executed.content }) };
+  };
+  const refused = {
+    'another network': content => ({ ...content, network: 'TEST-network' }),
+    'another chain identity': content => ({ ...content, chainIdentity: 'd'.repeat(64) }),
+    'no network and another chain identity': content => ({ ...withoutMembers(content, 'network'), chainIdentity: 'd'.repeat(64) }),
+  };
+  for (const [name, change] of Object.entries(refused)) {
+    serveReadback(w, executedWith(change), listed);
+    const answer = await w.adapter.readTransactionState(signed);
+    assert.equal(answer.state, 'pending', name); assert.equal(w.session.internalCauseOf(answer).code, 'readback_unverified', name);
+  }
+  assert.deepEqual(spentIds(w), []);
+  serveReadback(w, executedWith(content => withoutMembers(content, 'network', 'chainIdentity')), listed);
+  assert.equal((await w.adapter.readTransactionState(signed)).state, 'applied', 'an executed copy without both members');
+  assertNothingSent(w);
+
+  const dropping = await adapterWorld(t), original = dropping.nodeDemosPrototype.sign;
+  t.mock.method(dropping.nodeDemosPrototype, 'sign', function signWithoutNetwork(rawTx, options) {
+    return Reflect.apply(original, this, [{ ...rawTx, content: withoutMembers(rawTx.content, 'network') }, options]);
+  });
+  await assert.rejects(signIn(dropping, evidenceInput(dropping)), error => codes(error).includes('payload_mismatch'));
+  assert.equal(dropping.signsInsideSign, 0, 'nothing was signed'); assert.equal((await recordOf(dropping)).active, null);
+  assertNothingSent(dropping);
 });
 
 test("no socket or DNS lookup leaves the process in the adapter suite", () => {

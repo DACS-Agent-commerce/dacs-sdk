@@ -1,0 +1,27 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest, node wallet session and public API test after merging the re-cut part into the keyless purchase source part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "5ea30aee536e7078741b2378678ba462632e320a",
+      "after": "5ea30aee536e7078741b2378678ba462632e320a"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "668cf5a036ca01c82eb5521c44588939f4bd5f96",
+      "after": "668cf5a036ca01c82eb5521c44588939f4bd5f96"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "71137f3ec4d421e3c90d67a63450aca1ab01e316",
+      "after": "71137f3ec4d421e3c90d67a63450aca1ab01e316"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-60f046b9af3c.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's keyless purchase source and its export together with the re-cut part's node address balance read, capability authority label, buyer wallet bridge subpath and base changes."
+}

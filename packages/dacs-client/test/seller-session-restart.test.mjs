@@ -93,7 +93,29 @@ test('session_gone_reapprove from the commit and replayed-commit paths, which pr
     noSellerTraffic(seen.s);
   }
   const source = readFileSync(new URL('../src/dacs/protocol-purchases.mjs', import.meta.url), 'utf8');
-  assert.equal(source.match(/\bsellerFor\(/g).length, 6, 'a new sellerFor call site needs its catch reviewed for session_gone_reapprove');
+  assert.equal(source.match(/\bsellerFor\(/g).length, 7, 'a new sellerFor call site needs its catch reviewed for session_gone_reapprove');
+});
+
+test('session_gone_reapprove from a plan step\'s DEM context route after a restart is rethrown unchanged and records no note, attempt or seller request', async (t) => {
+  const { createDemDeliveryContextRouteCaller, DEM_DELIVERY_CONTEXT_SOURCE } = await import('../src/index.mjs');
+  const w = await sellerWorld(t), session = { keys: createSellerSessionKeys() };
+  const p = await purchase(t, w, { seller: challengeSeller(w), sessionSignerFor: (operation) => session.keys.signerFor(operation),
+    configureTerms: (terms) => { terms.protocol.agreementContext = DEM_DELIVERY_CONTEXT_SOURCE; } });
+  p.config.demDeliveryContext = createDemDeliveryContextRouteCaller({ authority: 'TEST-route-session' });
+  p.reopen();
+  session.keys.start(p.op.id);
+  const first = await identity(p);
+  const { message } = await p.service.agreementDelegation(first.operation, buyerSignsDelegation(w, first.delegation.payload));
+  // A new process: the delegation the seller challenge was answered under names a key only the earlier process held.
+  session.keys = createSellerSessionKeys();
+  session.keys.start(p.op.id);
+  p.reopen();
+  const before = eventCount(p), signs = w.state.signs.length;
+  await assert.rejects(p.service.planRequest(p.get(), w.buyer.sign(Buffer.from(message)).toString('base64url')),
+    (error) => error.code === 'session_gone_reapprove' && error.name === 'OperationError');
+  const protocol = protocolOf(p);
+  assert.deepEqual([protocol.planned, protocol.sellerRequests?.[wire.DACS_SELLER_HTTP_PATHS.context], w.state.signs.length - signs], [undefined, undefined, 0]);
+  assert.deepEqual(p.ops.history(p.op.id).slice(before).map((event) => event.type).filter((type) => SESSION_EVENTS.includes(type)), []);
 });
 
 test('after a restart, the payment evidence step of a paid purchase returns the purchase with a held attempt naming session_gone_reapprove, and sends and signs nothing', async (t) => {
