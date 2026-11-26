@@ -29,6 +29,7 @@ export function entryPointClosure() {
   visit('src/substrate/demos.mjs');
   visit('src/passive-evidence-recorder.mjs');
   visit('src/rpc-endpoint.mjs');
+  visit('src/purchase/wallet-bridge.mjs');
   for (const path of PACKED_UNREACHED_MODULES) files.add(path);
   return [...files].sort();
 }
