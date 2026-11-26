@@ -84,6 +84,10 @@
       "types": "./dist/wire/index.d.ts",
       "import": "./dist/wire/index.js"
     },
+    "./wire/node-endpoint": {
+      "types": "./dist/wire/node-endpoint.d.ts",
+      "import": "./dist/wire/node-endpoint.js"
+    },
     "./write-attempt-guard": {
       "types": "./dist/substrate/writeAttemptGuard.d.ts",
       "import": "./dist/substrate/writeAttemptGuard.js"

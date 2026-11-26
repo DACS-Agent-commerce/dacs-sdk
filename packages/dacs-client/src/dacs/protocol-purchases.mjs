@@ -146,15 +146,17 @@ export function assertAgreementPaymentHeld(operation) {
 }
 
 // The seller receipt: the seller's signed ordinary commit answer declares `sellerReceipt: {agreementHash, reservedMaximumOs}`, the
-// most the buyer reserves for this Agreement. It is a contract budget, not proof of held funds. Pay opens only when it equals the
-// buyer's own price plus its Pay and anchor fee ceilings and stays within the buyer's mandate cap.
+// most the buyer reserves for this Agreement. It is a contract budget, not proof of held funds. Pay opens only when the Pay's
+// debit (the price plus the chain's current network fee, gas included) fits within it, and it is no more than the buyer's own
+// price plus its Pay and anchor fee ceilings and no more than the buyer's mandate cap. The seller's ceilings need not equal
+// the buyer's.
 const RECEIPT_FEE_CEILING_NAMES = ['anchorFeeCeilingOs', 'payFeeCeilingOs'];
 const SELLER_RECEIPT_NAMES = ['agreementHash', 'reservedMaximumOs'];
 const AGREEMENT_HASH_TEXT = /^[0-9a-f]{64}$/;
 const isOsText = (value) => typeof value === 'string' && OS_INTEGER.test(value);
 const hasExactly = (value, names) => isRecord(value) && Object.keys(value).sort().join() === names.join();
 const receiptRefusal = () => new OperationError('seller_receipt_reservation_insufficient',
-  'the seller receipt is missing, malformed, bound to another Agreement, unequal to the price plus both fee ceilings, or above the mandate cap; nothing was reserved, offered or signed');
+  'the seller receipt is missing, malformed, bound to another Agreement, below the Pay debit (price plus network fee), above the price plus both fee ceilings, or above the mandate cap; nothing was reserved, offered or signed');
 // The native composition's two explicit ceilings and mandate cap, each canonical decimal OS text. Nothing is defaulted or inferred.
 function receiptLimitsConfig(receiptFeeCeilings, buyerMandateCapOs) {
   if (!hasExactly(receiptFeeCeilings, RECEIPT_FEE_CEILING_NAMES) || !RECEIPT_FEE_CEILING_NAMES.every((name) => isOsText(receiptFeeCeilings[name]))) {
@@ -557,14 +559,15 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   if (nativeEvidence && nativeEvidence.rpcOrigin !== new URL(walletConfig.rpcUrl).origin) throw new TypeError('native evidence and the approved native wallet must use the same owned fixture origin');
   const receiptLimits = dacsProtocol?.nativeAgreementPayment ? receiptLimitsConfig(receiptFeeCeilings, buyerMandateCapOs) : null;
   // Synchronous and read-only: refuses unless this native composition's operation carries a seller receipt bound to its Agreement
-  // that equals its approved price plus both fee ceilings and stays within the mandate cap.
-  function assertSellerReceiptReservation(operation) {
-    if (!receiptLimits || !usesNativeAgreementPayment(operation)) throw receiptRefusal();
+  // that covers the Pay debit, its approved price plus `networkFeeOs` (the fee the chain reports now, a non-negative bigint), and
+  // is no more than its price plus both fee ceilings and no more than the mandate cap.
+  function assertSellerReceiptReservation(operation, networkFeeOs) {
+    if (!receiptLimits || !usesNativeAgreementPayment(operation) || typeof networkFeeOs !== 'bigint' || networkFeeOs < 0n) throw receiptRefusal();
     const p = operation.state?.protocol, priceOs = operation.terms.price?.amountOs;
     const receipt = boundSellerReceipt(p?.sellerReceipt, p?.agreement?.hash);
     if (!receipt || !isOsText(priceOs)) throw receiptRefusal();
-    const reservedOs = BigInt(receipt.reservedMaximumOs);
-    if (reservedOs !== BigInt(priceOs) + receiptLimits.payFeeOs + receiptLimits.anchorFeeOs || reservedOs > receiptLimits.capOs) throw receiptRefusal();
+    const reservedOs = BigInt(receipt.reservedMaximumOs), price = BigInt(priceOs);
+    if (price + networkFeeOs > reservedOs || reservedOs > price + receiptLimits.payFeeOs + receiptLimits.anchorFeeOs || reservedOs > receiptLimits.capOs) throw receiptRefusal();
   }
   const anchors = null; // No fixture substrate remains.
   const unavailable = () => new OperationError('dacs_protocol_unavailable', 'source-bound DACS protocol purchases are not configured on this server; nothing was prepared');
@@ -1893,7 +1896,8 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       return nativePayment.withWorkflow(operation, () => nativePayment.withPaymentLane(operation, async () => {
         const current = ops.get(operation.accountId, operation.id);
         if (current.state.protocol.nativePaymentLaneIssued) throw new OperationError('native_payment_already_issued', 'the wallet guard was delivered once; readback only, never resend');
-        assertSellerReceiptReservation(current);
+        // The fee is read now, so the debit the wallet is about to sign is held within the receipt and the host's ceiling.
+        assertSellerReceiptReservation(current, await assertWriteWithinFeeCeiling(feeCeilingOs, chain));
         const record = await nativePayment.readLane(current, key);
         // Consume before releasing this read to the packaged wallet. A lost
         // response or rejected/unknown wallet result never grants another send.
