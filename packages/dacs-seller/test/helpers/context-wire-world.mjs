@@ -69,7 +69,7 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   };
   const admission = createContextAdmissionTransaction({ store: w.store, policy, capacity,
     effectEvidence: async (row) => [row.vetAddresses.buyer, row.vetAddresses.seller].map((address) => ({ address, kind: behaviour.evidenceKind })),
-    inspectContextOutcome: operationOf, completeWire, now, ready: () => state.ready(), deadlines: { policyMs: POLICY_DEADLINE_MS } });
+    inspectContextOutcome: operationOf, completeWire, now, ready: () => state.ready(), stopped: () => false, deadlines: { policyMs: POLICY_DEADLINE_MS } });
   const coordinator = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target), admissionTransaction: admission });
   const reserved = { calls: 0, ownerships: [], effects: [] };
   const reserveCoordinated = coordinator.reserveCoordinated.bind(coordinator);

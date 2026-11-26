@@ -63,7 +63,7 @@ function world(t, { maxRecords = 1000, commitOnSignature = false, sessionState =
       ready: () => control.ready && w.capacity?.fitsNewPurchase() === true, contextSessionState: input => control.state(input), ...storeOptions });
     w.internals = sellerStoreInternals(w.store);
     w.capacity = createPurchaseCapacity({ store: w.store, now: () => control.clock, maxRecords: limit, commitOnSignature, sessionState: w.internals.sessionState });
-    w.admission = createContextAdmissionTransaction({ store: w.store, capacity: w.capacity, now: () => control.clock, ready: () => control.ready,
+    w.admission = createContextAdmissionTransaction({ store: w.store, capacity: w.capacity, now: () => control.clock, ready: () => control.ready, stopped: () => false,
       policy: { async reserve({ hold }) { holds.add(hold); return null; }, async release({ hold }) { holds.delete(hold); } },
       effectEvidence: async record => [record.vetAddresses.buyer, record.vetAddresses.seller].map(address => ({ address, kind: 'no-intent' })),
       inspectContextOutcome: jobId => control.inspect(jobId), completeWire: () => {}, deadlines: { policyMs: 10000 } });
@@ -436,7 +436,7 @@ test('capacity-current-allocation-within-return', t => {
 
 test('capacity-admission-port-required', async t => {
   const w = world(t, { maxRecords: 300 }), other = world(t, { maxRecords: 300 });
-  const options = capacity => ({ store: w.store, capacity, now: () => T0, ready: () => true, policy: { reserve: async () => null, release: async () => {} }, effectEvidence: async () => [],
+  const options = capacity => ({ store: w.store, capacity, now: () => T0, ready: () => true, stopped: () => false, policy: { reserve: async () => null, release: async () => {} }, effectEvidence: async () => [],
     inspectContextOutcome: () => view.none, completeWire: () => {}, deadlines: { policyMs: 10000 } });
   const doubles = { fitsNewPurchase: () => true, allocateWithin() {} };
   for (const capacity of [undefined, null, doubles, other.capacity, { ...w.capacity }]) assert.throws(() => createContextAdmissionTransaction(options(capacity)), TypeError);
