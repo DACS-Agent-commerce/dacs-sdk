@@ -196,10 +196,15 @@ test('a diagnostic projection, a foreign stage proof and a mismatched chain iden
   // Each proof member changed alone, from a set that alone answers verified, so the verifier's own comparison answers.
   const members = [
     ['the agreeing control', {}],
+    ['the agreeing body amount as an OS number', { content: { amount: Number(PRICE_OS) } }],
+    ['the agreeing send argument amount', { content: { data: ['native', { nativeOperation: 'send', args: ['TEST-payee', PRICE_OS] }] } }],
     ['the observed payer', { observation: { payer: OTHER_ADDRESS } }],
     ['the body nonce', { content: { nonce: NONCE + 1 } }],
     ['the observed amount', { observation: { amountOs: '2500000001' } }],
     ['the observed and body payee', { payee: OTHER_ADDRESS }],
+    ['the body amount', { content: { amount: '1000000000' } }],
+    ['the body amount as an OS number', { content: { amount: 1000000000 } }],
+    ['the body send argument amount', { content: { data: ['native', { nativeOperation: 'send', args: ['TEST-payee', '1000000000'] }] } }],
     ['the body hash', { body: { hash: OTHER_HASH } }],
     ['the body status', { body: { status: 'pending' } }],
     ['the body block', { body: { blockNumber: BLOCK + 1 } }],
@@ -207,7 +212,7 @@ test('a diagnostic projection, a foreign stage proof and a mismatched chain iden
   for (const [label, overrides] of members) {
     const { world, operation, ask } = await paidWorld(t);
     const { counts } = decisiveReads(world, [transfer(world, operation, overrides)]);
-    assert.deepEqual(await ask(), label === 'the agreeing control' ? verified(operation) : unavailable(operation), label);
+    assert.deepEqual(await ask(), label.startsWith('the agreeing') ? verified(operation) : unavailable(operation), label);
     assert.deepEqual([counts.observePassiveTransfer, counts.getTransaction], [1, 1], label);
   }
 });
@@ -224,6 +229,7 @@ test('unused needs a confirmed other transaction at the reserved nonce with acco
     ['an unreadable taker', proven, (world, operation) => takerReads(world, operation, { observation: { status: 'unavailable', reason: 'TEST-unreadable' } })],
     ['a taker whose read rejects', proven, (world, operation) => { takerReads(world, operation); world.chain.observePassiveTransfer = async () => { throw new Error('TEST-read-failed'); }; }],
     ['a taker whose body did not execute', proven, (world, operation) => takerReads(world, operation, { body: { status: 'failed' } })],
+    ['a taker whose body amount differs from its observation', proven, (world, operation) => takerReads(world, operation, { content: { amount: PRICE_OS } })],
     ['a taker whose body pays another address than its observation', proven, (world, operation) => takerReads(world, operation, { content: { to: world.wallet.address } })],
     ['a merely advanced nonce', proven, (world, operation) => takerReads(world, operation, {}, { slot: { status: 'not-found' } })],
     ['the default setting', { reported: null }, (world, operation) => takerReads(world, operation)],
@@ -233,6 +239,19 @@ test('unused needs a confirmed other transaction at the reserved nonce with acco
     reads(world, operation);
     assert.deepEqual(await ask(), unavailable(operation), label);
   }
+});
+
+test('unused is answered over the native source reader when another retained transfer took the reserved nonce', async (t) => {
+  admitted(t);
+  const taken = await paidWorld(t, { reported: null, nonceSlotProof: 'account', native: ({ payer }) => passiveNativeWorld({ payer, payee: OTHER_ADDRESS, amount: '1000000000' }) });
+  const { native } = taken.world;
+  t.after(() => native.source.close());
+  await native.seed();
+  const reader = native.source.chainReader();
+  for (const name of READS) taken.world.chain[name] = reader[name].bind(reader);
+  assert.deepEqual(await taken.ask(), { status: 'unused', stage: 'payment', operationId: taken.operation.id, evidence: { reservedNonce: NONCE, consumingTxHash: HASH, chainIdentity: IDENTITY } });
+  assert.deepEqual(native.writes, []);
+  assertNoEffects(taken.world);
 });
 
 test('the anchor stage answers unavailable after authentication with no chain read', async (t) => {

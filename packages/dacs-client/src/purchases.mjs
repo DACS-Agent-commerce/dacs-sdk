@@ -1210,13 +1210,25 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
     return operation;
   }
 
+  // True when the body's amount, and a native send's own amount argument when it carries one, are the observed OS amount. The node
+  // projects content.amount as OS text or an OS number; a native argument is OS text or a whole-DEM number.
+  function slotBodyAmountAgrees(content, amountOs) {
+    const projected = content?.amount;
+    if (projected !== amountOs && !(Number.isSafeInteger(projected) && String(projected) === amountOs)) return false;
+    const args = content.type === 'native' && Array.isArray(content.data) && content.data[0] === 'native' ? content.data[1]?.args : undefined;
+    if (args === undefined) return true;
+    if (!Array.isArray(args) || args.length !== 2) return false;
+    const argument = args[1];
+    return argument === amountOs || (Number.isSafeInteger(argument) && argument > 0 && (BigInt(argument) * 1_000_000_000n).toString() === amountOs);
+  }
+
   // The included transfer `hash`, read passively, when its canonical body is the wallet's confirmed transaction at `nonce`, in
-  // the observed block, paying the observed payee; null otherwise.
+  // the observed block, paying the observed payee and amount; null otherwise.
   async function passiveSlotTransfer(hash, { wallet, nonce, allowUnretained, signal }) {
     const seen = transferObservationRecord(await chain.observePassiveTransfer(hash, { signal, allowUnretained }), hash);
     if (seen.status !== 'included') return null;
     const body = await chain.getTransaction(hash, { signal });
-    if (!slotBodyAgrees(body, seen, { hash, wallet, nonce }) || !same(body.content?.to, seen.payee)) return null;
+    if (!slotBodyAgrees(body, seen, { hash, wallet, nonce }) || !same(body.content?.to, seen.payee) || !slotBodyAmountAgrees(body.content, seen.amountOs)) return null;
     return body.blockNumber === undefined || body.blockNumber === seen.blockNumber ? seen : null;
   }
 

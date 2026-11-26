@@ -399,7 +399,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     return sourceRead(signal,async()=>{
       await makeBinder(false,signal).bind();
       if(path !== '/' && !/^\/storage-program\/stor-[0-9a-f]{40}$/.test(path)) fail('readonly_only','only bounded native storage reads are supported');
-      if(body !== undefined && (path !== '/' || body?.method !== 'nodeCall' || !['getBlockByNumber','getTxByHash','getTransactionStatus','getAddressNonce','getAddressInfo','searchStoragePrograms','getNetworkInfo','getNetworkParameters'].includes(body?.params?.[0]?.message))) fail('readonly_only','only source-bound preparation/inclusion reads are supported');
+      if(body !== undefined && (path !== '/' || body?.method !== 'nodeCall' || !['getBlockByNumber','getTxByHash','getTransactionStatus','getAddressNonce','getAddressInfo','getTransactionHistory','searchStoragePrograms','getNetworkInfo','getNetworkParameters'].includes(body?.params?.[0]?.message))) fail('readonly_only','only source-bound preparation/inclusion reads are supported');
       return fetchBoundedJson(path==='/'?pinned.endpoint:`${new URL(pinned.endpoint).origin}${path}`,{method:body===undefined?'GET':'POST',body,fetchImpl,timeoutMs,signal,maxBytes,expectedOrigin:new URL(pinned.endpoint).origin});
     });
   };

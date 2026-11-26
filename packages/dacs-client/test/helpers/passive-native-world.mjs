@@ -62,6 +62,8 @@ export function passiveNativeWorld({ onFetch = () => {}, onFence = () => {}, sta
       if (message === 'getBlockByNumber') return json(data.blockNumber === 0 ? { number: 0, status: 'confirmed', hash: IDENTITY } : world.block);
       if (message === 'getTransactionStatus') return json(world.statusAnswer);
       if (message === 'getTxByHash') return json(world.transaction);
+      if (message === 'getAddressNonce') return json(world.transaction.content.nonce + 1);
+      if (message === 'getTransactionHistory') return json([world.transaction]);
       throw new Error(`TEST-unexpected ${message}`);
     }) });
   return world;
