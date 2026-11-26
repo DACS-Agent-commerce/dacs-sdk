@@ -428,8 +428,8 @@ test('a fenced settlement whose answer the wire cannot sign is answered operatio
 test('the wire context is checked where it is made and where the handler takes it: a member of the wrong kind, an unbranded copy, no wire and another seller are each refused', async (t) => {
   const w = await world(t);
   const { binding, signer, journal, store, readCommitmentReceipt } = w.handle.wire;
-  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt };
-  const wrongKinds = { connection: { tp1Network: { connection: 1 } }, ready: { ready: 'yes' }, now: { now: NOW }, signer: { signer: { claim: seller.claim } }, store: { store: {} },
+  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, stopped: () => false, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt };
+  const wrongKinds = { connection: { tp1Network: { connection: 1 } }, ready: { ready: 'yes' }, 'no stop check': { stopped: undefined }, now: { now: NOW }, signer: { signer: { claim: seller.claim } }, store: { store: {} },
     agent: { agent: {} }, continuationEvidence: { agent: { transportAgreementOf: () => null } }, readCommitmentReceipt: { readCommitmentReceipt: 'reader' },
     requireDelegation: { requireDelegation: 'no' }, binding: { binding: null }, journal: { journal: undefined },
     'a signer without the read-only role': { signer: { claim: seller.claim, sign: seller.signBytes } }, 'no effect boundary': { effectBoundary: undefined },
@@ -447,7 +447,7 @@ test('the wire context is checked where it is made and where the handler takes i
 test('a wire context is refused over a transport store that belongs to another seller or another Listing', async (t) => {
   const w = await world(t);
   const { binding, signer, journal, store, readCommitmentReceipt } = w.handle.wire;
-  const contextWith = (overrides) => createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt, ...overrides });
+  const contextWith = (overrides) => createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, stopped: () => false, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt, ...overrides });
   const BELONGS_ELSEWHERE = /belongs to another seller, Listing or schema/;
   assert.doesNotThrow(() => contextWith({}), 'the store of the same seller and Listing');
   assert.throws(() => contextWith({ signer: BUYER_ROLES }), BELONGS_ELSEWHERE, 'another seller');
@@ -467,7 +467,7 @@ test('a delegated wire needs the agent\'s retained Agreement scope when the hand
   const w = await world(t);
   const { binding, signer, journal, store, readCommitmentReceipt } = w.handle.wire;
   const agent = { ...w.agent };
-  const delegated = createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, now: w.clock, agent, requireDelegation: true, readCommitmentReceipt });
+  const delegated = createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, stopped: () => false, now: w.clock, agent, requireDelegation: true, readCommitmentReceipt });
   assert.doesNotThrow(() => createSellerHttpHandler(agent, { wire: delegated }));
   delete agent.transportAgreementOf;
   assert.throws(() => createSellerHttpHandler(agent, { wire: delegated }), /retained Agreement scope/);
@@ -476,7 +476,7 @@ test('a delegated wire needs the agent\'s retained Agreement scope when the hand
 test('the handler takes a wire context only for the agent it was made for', async (t) => {
   const w = await world(t);
   const { binding, signer, journal, store, readCommitmentReceipt } = w.handle.wire;
-  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt };
+  const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, stopped: () => false, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt };
   const handlerWith = (wire, agent = w.agent) => createSellerHttpHandler(agent, { wire });
   const MADE_FOR = /made for the handler's agent/;
   assert.throws(() => handlerWith(createWireContext({ ...valid, agent: stubAgent() })), MADE_FOR, 'a context made for another agent');

@@ -64,10 +64,11 @@ export function createNodeAuthorityReader(inputs) {
 }
 
 // The one place the kit builds the artifact anchor over a finalized session, with the host's binding and connection reader.
-// Its wallet CREATEs and resends run through runCreate, the port's one pass over the host's effect boundary and this session.
-function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, binding, observeIdentity, runCreate }) {
+// Its wallet CREATEs and resends run through runCreate, the port's one pass over the host's effect boundary and this session;
+// `stopped`, the host's stop check, keeps a read under a stop to its readback.
+function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, binding, observeIdentity, runCreate, stopped }) {
   return createDevnetDemoArtifactAnchor({ sourceCapability: session.transport, journal: session.artifactJournal, walletFactory: session.walletFactory,
-    network: session.transport.pins.network, signer, buyerAccess, now: () => clock.now(), vetMode: VET_MODE, binding, observeIdentity, runCreate });
+    network: session.transport.pins.network, signer, buyerAccess, now: () => clock.now(), vetMode: VET_MODE, binding, observeIdentity, runCreate, stopped });
 }
 
 // The session's payment-evidence journal, which signs and sends only in runCreate passes and asks its approvals before them,
@@ -222,7 +223,7 @@ export function createSellerWalletSession(options) {
         const finalized = sessionOver(wallet);
         const { runCreate } = createSellerCreatePass({ effectBoundary, session: finalized, stopped, feeCeilingOs, clock });
         evidence = composeSellerPaymentEvidence({ runCreate, wallet, dataDirectory, clock, binding, observeIdentity: observeConnectionIdentity });
-        const composedAnchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity, runCreate });
+        const composedAnchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity, runCreate, stopped });
         const composed = withPaymentEvidence(finalized, evidence);
         anchor = composedAnchor;
         finalizedRunCreate = runCreate;

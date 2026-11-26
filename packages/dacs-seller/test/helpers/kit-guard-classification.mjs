@@ -97,6 +97,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/wallet-signature-pass.mjs': { effect: { signInPass: ['effectBoundary'], signRetainedInPass: ['effectBoundary'] }, pure: [] },
   'src/devnet-demo/write-exclusion.mjs': { effect: {  }, pure: ['createWriteExclusionRule'] },
   'src/host.mjs': { effect: { startSellerHost: ['startSellerHost'] }, pure: [] },
+  'src/kill-switch.mjs': { effect: {}, pure: ['createStopCheck', 'killState', 'readStopPredicate'] },
   'src/kit-operation-guard.mjs': { effect: {}, pure: ['KitOperationGuardError', 'assertKitOperationAdmitted', 'kitOperationAdmitted'] },
   'src/mcp/seller-content.mjs': { effect: {  }, pure: ['escapeJson', 'sellerData'] },
   'src/operations.mjs': { effect: {  }, pure: ['OperationError'] },

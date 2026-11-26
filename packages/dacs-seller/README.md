@@ -501,6 +501,13 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
 
 ## What the host does and does not do
 
+- It stops every effect while an entry named `KILL` exists in the data directory
+  (`<dataDirectory>/KILL`; any entry type, contents never read). Effect signatures and
+  transmissions, challenge issuance and attempts, read-time CREATE resends, sweep row
+  visits and every effect route refuse, the routes with a signed `seller_stopped` 503.
+  Signed reads, discovery, refusals and readback stay available. A state read whose answer
+  carries the Agreement co-signature answers the signed `seller_stopped` refusal instead.
+  An entry the host cannot inspect counts as present.
 - It fails closed on configuration: unknown options, a missing capability, a
   malformed `listener` (proxy mode on a non-loopback host, a `publicOrigin` that is not the
   Listing's endpoint), a relative, shared or symlinked data directory, or a
@@ -1247,8 +1254,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `POST /dacs/v1/agreements/context/challenge` through the SDK's `./wire` when the
   `wire` context (`createWireContext`, from
   `@kynesyslabs/dacs-seller/src/dacs/seller-wire-requests.mjs`) carries the host's
-  `stopped` predicate; without
-  one the handler refuses construction. No Agreement exists yet and the wire journal is never
+  `stopped` predicate. Every handler needs it, with or without a context route:
+  without it the wire context and the handler refuse construction. No Agreement exists yet and the wire journal is never
   written. The seller refuses in this order: the body (64 KiB, one JSON value, no duplicate
   members or lossy numbers: `body_too_large`, `bad_json`; unsigned, like the envelope's
   refusals); the envelope (the wire's refusals); the signed path (`peer_request_mismatch`) and

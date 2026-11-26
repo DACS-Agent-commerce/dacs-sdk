@@ -127,7 +127,7 @@ function admitAnswerText(text) {
  * through), `completion` (the completion port that ends the attempts it issued), `readCommitmentReceipt` and `requireDelegation` are
  * values. `admitPresentation(input)` is the agent's first admission of a presentation (its Listing revocation check and profile
  * admission), which the context route's validation calls; it is `null` for an agent without one. `stopped()` is the host's stop
- * check, which the challenge route (`context` with `wire`) requires: it is `null` when none is given. `bindPlannedAgreementReader(reader)` is how
+ * check, which every handler requires: the effect routes and the challenge route refuse `seller_stopped` while it answers true. `bindPlannedAgreementReader(reader)` is how
  * the context route gives the context one reader of a job's planned Agreement (once; a TypeError for a second or a non-function; it returns the reader), and
  * `plannedAgreementOf(jobId)` calls it, or answers null while none is bound. `publicEndpoint` is the origin
  * the handler's discovery document names; it is `null` when none is given, and then no discovery document is served. `bootstrap` is the
@@ -139,12 +139,12 @@ function admitAnswerText(text) {
  * for a member of the wrong kind (a signer without the read-only role, or a boundary not built over `binding`, included), and an
  * Error when `store` already belongs to another seller or Listing.
  */
-export function createWireContext({ binding, tp1Network, signer, effectBoundary, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, reservations, completion, stopped = null, publicEndpoint = null, bootstrap = null }) {
+export function createWireContext({ binding, tp1Network, signer, effectBoundary, store, journal, ready, now, agent, requireDelegation, signedListing, readCommitmentReceipt, capacity, reservations, completion, stopped, publicEndpoint = null, bootstrap = null }) {
   const callables = [tp1Network?.connection, signer?.sign, signer?.readOnlyAnswerSigner, store?.bind, store?.purchaseProfile, store?.sessionTerminal, store?.reservationAccounting?.reserveAccounted, ready, now, agent?.transportAgreementOf, agent?.continuationEvidenceOf, readCommitmentReceipt];
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
       [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer roles, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
   if (effectBoundaryBinding(effectBoundary) !== binding) throw new TypeError('the wire context\'s effectBoundary must be the host\'s, built over its binding');
-  if (stopped !== null && typeof stopped !== 'function') throw new TypeError('the wire context\'s stop check must be a function');
+  if (typeof stopped !== 'function') throw new TypeError('the wire context\'s stop check must be a function');
   if (publicEndpoint !== null && typeof publicEndpoint !== 'string') throw new TypeError('the wire context\'s public endpoint must be a string');
   if (bootstrap !== null && typeof bootstrap?.enter !== 'function') throw new TypeError('the wire context\'s bootstrap scopes need enter()');
   // The transport store belongs to one seller and Listing from its first bind on: a store made for another one is refused here.
@@ -156,7 +156,7 @@ export function createWireContext({ binding, tp1Network, signer, effectBoundary,
   const context = Object.freeze({ binding, signer, journal, store, reservations, completion, requireDelegation, readCommitmentReceipt, publicEndpoint, readSigner, answers, bootstrap,
     local: () => tp1Network.connection(), tuple: (jobId) => store.purchaseProfile(jobId), now: () => now(), ready: () => ready(),
     admitPresentation: typeof agent.admitSessionPresentation === 'function' ? (input) => agent.admitSessionPresentation(input) : null,
-    stopped: stopped === null ? null : () => stopped(),
+    stopped: () => stopped(),
     retainedFor: (input) => retainedFor(agent, input, { store, capacity }), continuationFor: (input) => continuationFor(agent, input, signedListing),
     bindPlannedAgreementReader: (reader) => {
       if (typeof reader !== 'function' || readPlannedAgreement !== null) throw new TypeError('the wire context takes one planned Agreement reader, a function');

@@ -226,7 +226,7 @@ function world(t) {
     internals = sellerStoreInternals(store);
     capacity = createPurchaseCapacity({ store, now: () => control.clock, sessionState: internals.sessionState });
     admission = createContextAdmissionTransaction({ store, policy, capacity, effectEvidence: row => { calls.evidence++; return createContextEffectEvidence(control.sources)(row); },
-      inspectContextOutcome: () => ({ state: 'none' }), completeWire: () => {}, now: () => control.clock, ready: () => true, deadlines: { policyMs: 10000 } });
+      inspectContextOutcome: () => ({ state: 'none' }), completeWire: () => {}, now: () => control.clock, ready: () => true, stopped: () => false, deadlines: { policyMs: 10000 } });
   }
   reopen();
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });

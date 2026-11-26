@@ -141,7 +141,7 @@ async function effectEntries() {
   const capacity = createPurchaseCapacity({ store: admissionStore, now: never('the clock'), sessionState: sellerStoreInternals(admissionStore).sessionState });
   const admission = createContextAdmissionTransaction({ store: admissionStore, capacity, policy: { reserve: never('the policy'), release: never('the policy') },
     effectEvidence: never('evidence'), inspectContextOutcome: never('the outcome inspection'), completeWire: never('the wire completion'),
-    now: never('the clock'), ready: never('readiness'), deadlines: { policyMs: 10000 } });
+    now: never('the clock'), ready: never('readiness'), stopped: never('the stop check'), deadlines: { policyMs: 10000 } });
   await attempt('begin', () => admission.begin());
   await attempt('runningCheck', () => admission.runningCheck());
   await attempt('reserveContext', () => admission.reserveContext());

@@ -93,7 +93,7 @@ function world(t, config = {}) {
     admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity,
       effectEvidence: async record => { calls.evidence.push(record.vetAddresses); return control.evidence ? control.evidence(record) : evidenceOf(record, 'no-intent'); },
       inspectContextOutcome: jobId => (control.inspect ? control.inspect(jobId) : publishedView(jobId)), completeWire: options.completeWire ?? doubleCompleteWire,
-      now: () => control.clock, ready: () => options.ready?.() ?? control.ready, deadlines: { policyMs: POLICY_MS } });
+      now: () => control.clock, ready: () => options.ready?.() ?? control.ready, stopped: () => false, deadlines: { policyMs: POLICY_MS } });
   }
   reopen();
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });

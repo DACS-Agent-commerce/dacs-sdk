@@ -676,7 +676,7 @@ test('createSellerAgent without readOnlyAnswerSigner, createWireContext with a s
   const bindings = [];
   const watched = { ...store, bind: (input) => { bindings.push(input); return store.bind(input); } };
   assert.throws(() => createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer: { claim: protocolSeller.claim, sign: protocolSeller.signBytes },
-    effectBoundary: w.effectBoundary, journal, store: watched, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt }), TypeError);
+    effectBoundary: w.effectBoundary, journal, store: watched, ready: () => true, stopped: () => false, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt }), TypeError);
   assert.deepEqual(bindings, [], 'the wire context bound no store');
 
   const host = await contextHostFixture(t);

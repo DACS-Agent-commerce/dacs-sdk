@@ -65,9 +65,34 @@ after(async () => {
 
 async function openSeller(events = []) {
   const approve = async () => { events.push('approval'); return true; };
-  const opened = await custody.openTestWalletCustody({ directory, role: 'seller', publicOrigin: ORIGIN, transactionTransport: TRANSPORT, approve });
+  const opened = await custody.openTestWalletCustody({ directory, role: 'seller', publicOrigin: ORIGIN, transactionTransport: TRANSPORT, approve, stopped: () => false });
   return opened.wallet;
 }
+
+// The adapter over a session stand-in that records the options it is constructed with, then refuses to open.
+const sessionStandIn = `
+const state = globalThis.${STATE_NAME};
+export const createDevnetAgreementWalletTransport = (transport) => transport;
+export function createSdkWalletSession(options) { state.sessionOptions.push(options); throw new Error('TEST session stand-in'); }
+`;
+async function adapterOverSessionStandIn() {
+  return privateModule(new URL('../src/devnet-demo/operator-custody.mjs', import.meta.url), [], (source) => source
+    .replace("'../../public/portal/embedded-wallet/sdk-provider.mjs'", quoted(dataUrl(sessionStandIn)))
+    .replace("'../wallet/demos-signature.mjs'", quoted(CLAIMS_URL.href))
+    .replace("'../../public/portal/embedded-wallet/demos-runtime.mjs'", quoted(dataUrl(demosRuntimeStandIn))));
+}
+
+test('the custody wallet with a transport needs the host stop check and hands that same function to its wallet session', async () => {
+  const adapter = await adapterOverSessionStandIn();
+  globalThis[STATE_NAME].sessionOptions = [];
+  const opening = { directory, role: 'seller', publicOrigin: ORIGIN, transactionTransport: TRANSPORT, approve: async () => true };
+  await assert.rejects(adapter.openTestWalletCustody(opening), { name: 'TypeError', message: 'stop_seam_invalid' });
+  assert.deepEqual(globalThis[STATE_NAME].sessionOptions, [], 'no session is constructed without the stop check');
+  const stopped = () => false;
+  await assert.rejects(adapter.openTestWalletCustody({ ...opening, stopped }), /TEST session stand-in/);
+  assert.equal(globalThis[STATE_NAME].sessionOptions.length, 1);
+  assert.equal(globalThis[STATE_NAME].sessionOptions[0].stopped, stopped, 'the session received the exact stop check');
+});
 const signMessage = { method: 'sign', params: ['TEST message'] };
 
 test('the custody wallet built with a transport tells callers it checks authorization right before signing', async () => {
