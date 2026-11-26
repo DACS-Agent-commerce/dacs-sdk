@@ -1,0 +1,70 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add the purchase wallet bridge subpath over the storage-anchor wallet bridge",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "d301638b1f48455779956d2baad1f21883609a2d",
+      "after": "623b9221bd5e07c35cc9ef88ce3b38580798fe9f"
+    },
+    {
+      "path": "packages/dacs-client/src/purchase/wallet-bridge.mjs",
+      "before": null,
+      "after": "a759ecacd8239ea5f51b9ea6afccbaed34f54c23"
+    },
+    {
+      "path": "packages/dacs-client/test/fixtures/plugin-import-inventory.json",
+      "before": "653d6a10cd366ea8f71d7d82fd5940c16447b6af",
+      "after": "f23f3c17884d439209b363e7361eff95ae3028f5"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+      "before": "61708f9f988302ebb41e5f78542b234704a5316e",
+      "after": "b988852023e7ab6077e3eb3c95fd85981571d62d"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+      "before": "27720e1d2f3fc057ac8d8d8088bd7ca924fcb9ea",
+      "after": "f7e67e4e00efd2fbc0f5f6ca5800d235e3ec0f04"
+    },
+    {
+      "path": "packages/dacs-client/test/package-contents.test.mjs",
+      "before": "30cfe566d9e17bbf3cefaa1dd75bd5a7d2ac7b38",
+      "after": "8824b36b990a9d5000aa8e493d649bb2ae2fa9d5"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api-inventory.test.mjs",
+      "before": "f83e3553639f67784ef7eb8c68a902ba2aa543a6",
+      "after": "682a17ddc7a47dc107aecbe2bd5887b1ea55e53c"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "8ed50e733139bf246206918c9c6543a465e8c7f2",
+      "after": "37ae79e007f531adbe0c185e696baaad368aa723"
+    },
+    {
+      "path": "packages/dacs-client/test/purchase-wallet-bridge.test.mjs",
+      "before": null,
+      "after": "e092bd706c1d0d4a805babb0be5f40893936b0fc"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-1c6ed112d5e0.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/src/purchase/wallet-bridge.mjs",
+    "packages/dacs-client/test/fixtures/plugin-import-inventory.json",
+    "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+    "packages/dacs-client/test/helpers/tp1-node-fixture.mjs",
+    "packages/dacs-client/test/package-contents.test.mjs",
+    "packages/dacs-client/test/public-api-inventory.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "packages/dacs-client/test/purchase-wallet-bridge.test.mjs",
+    "scripts/release-policy.json"
+  ],
+  "note": "New subpath ./purchase/wallet-bridge with createPurchaseWalletBridge({walletFactory}). The callback runs once at construction and returns {rpcUrl, network, journal, sourceCapability, requestWallet}; the bridge builds the existing storage-anchor wallet bridge from exactly those five values and returns a frozen {anchor, resume, verifyReceipt} that passes each argument and result through. It refuses with DemosSr2BridgeError wallet-required for a missing factory, a result without requestWallet, or a wallet factory that returns no packaged wallet. It holds no key and writes nothing itself. The manifest pin in scripts/check-hold.mjs gains the new export, re-pinned with pin-delta.mjs; the client entry joins requiredExports in scripts/release-policy.json with its manifest digest."
+}

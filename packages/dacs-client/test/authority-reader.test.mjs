@@ -285,7 +285,8 @@ test("a seam reply over the byte bound, a list over its bound, and a stalled or 
   const replies = [], w = readerWorld(t, { fetchImpl: async () => replies.shift() });
   for (const declared of [true, false]) {
     replies.push(sizedReply(4 * MIB + 1, { declared }));
-    await assert.rejects(w.authority.authorityRpc(RPC_BLOCK(0)), error => error.kind === 'invalid' && /exceeds byte limit/.test(error.message), `declared ${declared}`);
+    await assert.rejects(w.authority.authorityRpc(RPC_BLOCK(0)), error => error.code === 'authority_reply_too_large' && error.cause?.kind === 'invalid'
+      && error.cause.code === 'response_byte_limit' && /exceeds byte limit/.test(error.cause.message), `declared ${declared}`);
   }
   replies.push(jsonResponse(JSON.stringify(ok({ rows: new Array(LIST_LIMIT + 1).fill(0) }))));
   await assert.rejects(w.authority.authorityRpc(RPC_BLOCK(0)), { code: 'authority_list_too_large' });
@@ -355,8 +356,8 @@ test('failures injected through fetch, the response body and cancellation keep t
   t.mock.timers.tick(AUTHORITY_READ_DEADLINE_MS);
   const lateFailure = await stalled;
   assert.equal(lateFailure.code, 'tp1_authority_timeout');
-  assert.equal(oversized.kind, 'invalid');
-  assert.match(oversized.message, /exceeds byte limit/);
+  assert.equal(oversized.code, 'authority_reply_too_large');
+  assert.match(oversized.cause.message, /exceeds byte limit/);
   assert.notEqual(malformed.message, oversized.message, 'a malformed reply is not an oversized one');
   assert.equal(new Set([malformed, oversized, lateFailure].map(error => `${error.code ?? error.kind}:${error.message}`)).size, 3, 'malformed, oversized and late are three distinct failures');
 });
