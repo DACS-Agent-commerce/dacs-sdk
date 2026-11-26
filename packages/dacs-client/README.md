@@ -48,7 +48,7 @@ Delta records also check parent continuity against the newest ancestor records f
 
 ## Public API
 
-A plugin composes a purchase from the root names only. Each export's doc comment in `src/index.mjs` names what it returns and what it throws or rejects with; this section lists the factories' methods and the error contract.
+A plugin composes a purchase from the root names and the purchase subpaths below. Each root export's doc comment in `src/index.mjs`, and each subpath export's in its own module, names what it returns and what it throws or rejects with; this section lists the factories' methods and the error contract.
 
 The admission option: `admission: { binding, currentLocal }` is required by each factory below.
 - Construction throws `TypeError('admission_required')` without exactly those two members, `TypeError('admission_input_untrusted')` for a `profile`, `record`, `identityRecord` or `actionsAdmitted` option, and `OperationError('runtime_unsupported')` below the Node floor.
@@ -88,7 +88,13 @@ A composition with `dacsProtocol.nativeAgreementPayment` takes two more options,
 - `receiptFeeCeilings`: exactly `{ payFeeCeilingOs, anchorFeeCeilingOs }`, each canonical decimal OS text (`0` allowed, at most 78 digits). Anything else throws `OperationError('receipt_fee_ceilings_invalid')`.
 - `buyerMandateCapOs`: the buyer's approved mandate cap as canonical decimal OS text. Anything else throws `OperationError('buyer_mandate_cap_invalid')`. The ceilings are checked first.
 
-The seller's signed ordinary commit answer carries `sellerReceipt: { agreementHash, reservedMaximumOs }`. The protocol keeps it with the verified commitment only when it has exactly those members, is canonical and names this purchase's Agreement. `assertSellerReceiptReservation(operation)` reads only the operation it is given. It throws `OperationError('seller_receipt_reservation_insufficient')` unless the kept receipt's `reservedMaximumOs` equals the approved price plus both fee ceilings and is no more than the mandate cap. A composition without native payment always refuses. `prepareHandoff` checks it before the payment nonce is read and again on the saved row before the coordinates are written, and `readNativePaymentLane` checks it before the one-time wallet guard is issued. A refused handoff stays `approved` and offers no payload; a refused lane read leaves the guard unissued.
+The seller's signed ordinary commit answer carries `sellerReceipt: { agreementHash, reservedMaximumOs }`. The protocol keeps it with the verified commitment only when it has exactly those members, is canonical and names this purchase's Agreement. `assertSellerReceiptReservation(operation, networkFeeOs)` reads only the operation and the fee it is given. `networkFeeOs` is the network fee as a non-negative bigint in OS, as `chain.getTransactionFees()` returns it (the wallet's 1 DEM gas plus the node's fees). It throws `OperationError('seller_receipt_reservation_insufficient')` unless three things hold:
+
+- the Pay debit, the approved price plus `networkFeeOs`, is no more than the kept receipt's `reservedMaximumOs`;
+- `reservedMaximumOs` is no more than the price plus both of this buyer's fee ceilings;
+- `reservedMaximumOs` is no more than the mandate cap.
+
+The ceilings are the buyer's own limits. They need not equal the seller's, but a seller whose receipt is above them is refused. When the seller's two fee ceilings together are below the network fee, every Pay is refused. A composition without native payment always refuses. `prepareHandoff` reads the network fee once. It checks the receipt against that fee before the payment nonce is read, and again on the saved row before the coordinates are written. `readNativePaymentLane` reads the fee again and applies the per-write fee ceiling and the receipt check before the one-time wallet guard is issued; a fee that cannot be read refuses `write-fee-cap`. A refused handoff stays `approved` and offers no payload; a refused lane read leaves the guard unissued.
 
 ### createPurchaseService
 
@@ -125,6 +131,22 @@ Passive: `origin` (a string)
 - `recordWalletResult({ deliveryId, hash, nonce, state })` resolves `{ status, count }`. `hash` is 64 lowercase hex, `nonce` a non-negative safe integer, `state` one of `submitted`, `rejected` or `unknown`. The report is not rejected with an error when it is malformed: it resolves `{ status: 'invalid_report' }` and writes nothing, so check `status`. Otherwise `status` is `recorded`, `repeat` for a report identical to one kept (no slot used), or `evidence_limit` for a ninth distinct report (history unchanged). Journal errors, such as a busy lane, reject unchanged.
 - `resultHistory(deliveryId)` resolves the kept reports in the order they were accepted, each frozen with `verified: false`. A report is a pointer the wallet gave, never proof that a transfer happened or settled; check the chain before relying on it.
 - `openRetainedCreateJournal({ deliveryId })` resolves a frozen `{ deliveryId, records }` holding only the retained signed CREATEs that name `deliveryId`, whatever their journal key. The caller authenticates the delivery first. It refuses any other input, such as a `laneKey`, with `reader_input_invalid` before reading. It selects by shape, without verifying signatures or checking the chain, reads the whole journal once and has no write, lock or resume member.
+
+### createPurchaseWalletBridge
+
+`import { createPurchaseWalletBridge } from '@kynesyslabs/dacs-client/purchase/wallet-bridge'`. It builds the bridge that `createProtocolPurchases` takes from `dacsProtocol.walletAgreement.bridgeFor(operation)`, for one purchase. Build a new one, with its own callback, for each operation; nothing is cached between them.
+
+`createPurchaseWalletBridge({ walletFactory })` calls `walletFactory()` once, when it is built. The callback only gathers configuration: it must not sign, send or write. It returns `{ rpcUrl, network, journal, sourceCapability, requestWallet }`:
+- `rpcUrl` and `network` equal the `walletAgreement` values of the purchase service that receives the bridge, and `journal` and `sourceCapability` are the same objects. The journal is the buyer wallet's one durable journal from `./wallet/durable-journal`, shared by all of that wallet's purchases. The purchase service finds the verified Agreement CREATE there, and a wallet request still unresolved for one purchase refuses the next one on the same wallet with `wallet-fenced`.
+- `requestWallet({ anchorJournal })` returns this operation's packaged wallet `{ request, getPublicAccount, getWriteProfile }`. A wallet request factory alone is not enough: without the four values above there is no source to read the CREATE back from and no journal.
+- Other members are ignored. The bridge takes no `anchor`, `resume` or `verifyReceipt` from the host.
+
+It returns a frozen `{ anchor(input), resume(input), verifyReceipt(input) }`, the client's storage-anchor bridge built from that configuration. Each member passes its argument and result through unchanged.
+- `anchor` asks the wallet at most once for a prepared Agreement CREATE, then reads it back from the source; a retained plan is only read back. Only `status: 'native-read-visible'` means the CREATE was read back and verified; `indeterminate` and `rejected` carry a `code`. Every result says `finality: 'not-established'`.
+- `resume` reads a retained CREATE back and never asks the wallet. With nothing issued it throws `authorization-required`.
+- `verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter, artifactKind })` resolves `valid`, `invalid` or `indeterminate`. It reads the native record, its creating transaction and its block again through the source capability, so a receipt is never accepted on its own.
+
+Construction throws a `DemosSr2BridgeError` with code `wallet-required` before any wallet request, signature or write when `walletFactory` is not a function, its result has no `requestWallet` function, or `requestWallet` returns no packaged wallet. The storage-anchor bridge's own refusals keep their codes, such as `profile-held` for a missing source capability and `journal-required`. An error thrown by `walletFactory` reaches the caller unchanged.
 
 ### Other exports
 
@@ -429,7 +451,7 @@ The public diagnostics are `status`, `portalOperation`, `portalEvidence` and `ve
 
 ### Protocol
 
-The protocol pass-through methods are exactly `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`, `observeReportedPayment`, `assertSellerReceiptReservation` and `readRetainedNativePaymentLane`. The seller receipt reservation check is synchronous and refuses a missing, unequal or over-cap seller receipt with seller_receipt_reservation_insufficient. Methods outside this list refuse with `profile_not_admitted` before host effects. No caller option lifts the action hold.
+The protocol pass-through methods are exactly `assertBuyerAccess`, `supportsMode`, `readIssued`, `readIssuedPayment`, `observeReportedPayment`, `assertSellerReceiptReservation` and `readRetainedNativePaymentLane`. The last one is synchronous and refuses a missing seller receipt, one below the Pay debit, or one above the buyer's ceilings or mandate cap, with seller_receipt_reservation_insufficient. Methods outside this list refuse with `profile_not_admitted` before host effects. No caller option lifts the action hold.
 
 ### Writers
 
