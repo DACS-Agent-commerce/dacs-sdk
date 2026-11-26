@@ -67,7 +67,9 @@ function countedRoles(counts) {
 async function killHost(t) {
   const f = await commitmentFixture(t, { vetMode: ORCHESTRATOR_MODE, publicEndpoint: FIXTURE_ENDPOINT });
   const dataDirectory = realpathSync(await mkdtemp(join(tmpdir(), 'TEST-kill-host-')));
-  const { nativeArtifactAnchor, challengeLedger, durableDirectory, commitOnSignature, vetMode, ...config } = f.config;
+  // The host builds its own ledger and directory, fixes its Vet mode and has no early commit.
+  const { nativeArtifactAnchor, ...config } = f.config;
+  for (const name of ['challengeLedger', 'durableDirectory', 'commitOnSignature', 'vetMode']) delete config[name];
   const counts = { effect: 0, integrity: 0, readOnly: 0 };
   const node = scriptedNode();
   const hosts = [];

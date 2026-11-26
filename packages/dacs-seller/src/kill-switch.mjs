@@ -1,5 +1,5 @@
 // The operator's stop file: while an entry named KILL exists in the data directory, the seller makes no effect.
-// Light enough for status and diagnostic commands to import: it reads two lstat results and writes one closed log line.
+// It imports only node:fs, node:path, the shutdown flag and the diagnostic projection.
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { stopRequested } from './devnet-demo/stop-request.mjs';
