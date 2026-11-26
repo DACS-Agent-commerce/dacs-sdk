@@ -21,8 +21,17 @@ type Hex = `0x${string}`;
 
 /** The largest signing window, in seconds, that the reservation hook binds. */
 export const DACS_WALLET_SPEND_TESTNET_HOLD_EXPIRY_SECONDS = 86_400;
-/** The most parent links a check follows below the latest block; the SDK buyer's default depth. */
+/**
+ * The deepest finality a hold may declare, and the most blocks a check follows
+ * below its final head to a receipt. The x402 rail's default depth is 1.
+ */
 export const DACS_WALLET_SPEND_TESTNET_MAXIMUM_ANCESTRY_DEPTH = 4_096;
+/**
+ * The testnet service's release depth: a cancel or an expiry counts only at a
+ * head this many blocks deep (the latest block is 1), whatever depth the hold
+ * declares. On Base Sepolia's 2-second blocks this is about two minutes.
+ */
+export const DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS = 64;
 
 /** What the chain shows for one hold's authorization. */
 export type DacsWalletSpendTestnetChainVerdictV1 =
@@ -76,13 +85,14 @@ function nonceFor(jobId: string, phaseIndex: number): Hex {
 /**
  * Builds the chain rule's verdicts for the testnet wallet-spend authority. A
  * claim is accepted only when the chain shows it at a final head reached from
-<<<<<<< HEAD
- * the latest block by parent hash: `settled` needs the exact payment. Both
- * absence claims, `terminal-absent` and `not-invoked`, need a final cancel or
- * an unused nonce at a head whose time is past the hold's bound `validBefore`:
- * the service cannot see whether the buyer signed, and after that time no
- * signature for the nonce can pay. So a hold whose signed input the buyer
- * never stored is still released once it expires.
+ * the latest block by parent hash: `settled` needs the exact payment at the
+ * depth the hold declares. Both absence claims, `terminal-absent` and
+ * `not-invoked`, need a cancel or an unused nonce at a head at least
+ * `releaseFinalityBlocks` deep whose time is past the hold's bound
+ * `validBefore`: the service cannot see whether the buyer signed, and after
+ * that time no signature for the nonce can pay. So a hold whose signed input
+ * the buyer never stored is still released once it expires. A hold that
+ * declares a depth above 4,096 is refused, so no hold is bound for it.
  * After the chain walk the rule reads the lane's state once more. A payment is
  * refused while another rail's hold for the same job phase, which shares the
  * nonce, is reserved, effect-pending or settled. The hold itself must be in
@@ -102,6 +112,8 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
   /** The lane's current state; a check that cannot read it is refused. */
   readState(): Promise<Readonly<WalletSpendStateV1>>;
   report(line: Readonly<Record<string, string>>): void;
+  /** The fewest blocks deep a cancel or an expiry must be before a hold is released; the hold cannot lower it. */
+  releaseFinalityBlocks: number;
 }>): Readonly<{
   authenticateRecovery: WalletSpendAuthorityDependenciesV1["authenticateRecovery"];
   bindAuthorizationValidBefore: NonNullable<WalletSpendAuthorityDependenciesV1["bindAuthorizationValidBefore"]>;
@@ -140,7 +152,7 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
     if (debit === undefined || others.length > 0 || debit.purpose !== "service" || debit.asset !== asset ||
         !LOWERCASE_ADDRESS_RE.test(reservation.payee) || reservation.finality.model !== "confirmation-depth" ||
         depth === undefined || !Number.isSafeInteger(depth) || depth < 1 ||
-        reservation.reservationId !== expectedId) {
+        depth > DACS_WALLET_SPEND_TESTNET_MAXIMUM_ANCESTRY_DEPTH || reservation.reservationId !== expectedId) {
       throw new ChainCheckStop(HOLD_UNBOUND);
     }
     return {
@@ -167,12 +179,11 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
   async function finalHead(depth: number) {
     const latest = await reader.readBlock("latest");
     if (latest.number + 1 < depth) stopWith("unavailable");
-    if (depth - 1 > DACS_WALLET_SPEND_TESTNET_MAXIMUM_ANCESTRY_DEPTH) stopWith("unavailable", ANCESTRY_UNPROVEN);
     const top = await reader.readBlockByHash(latest.hash);
     if (top.number !== latest.number || top.timestamp !== latest.timestamp) {
       stopWith("unavailable", ANCESTRY_UNPROVEN);
     }
-    return { latestNumber: latest.number, final: await descend(top, latest.number - depth + 1) };
+    return descend(top, latest.number - depth + 1);
   }
 
   /** Fails the check unless the block at the final head's height is still the final head. */
@@ -210,9 +221,8 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
   /** Step 3b: the nonce is used at the final head; its one receipt must lie on the final chain. */
   async function usedVerdict(
     hold: BoundHold,
-    head: Readonly<{ latestNumber: number; final: Readonly<DacsWalletSpendEvmBlockLinkV1> }>,
+    final: Readonly<DacsWalletSpendEvmBlockLinkV1>,
   ): Promise<DacsWalletSpendTestnetChainVerdictV1> {
-    const { final } = head;
     const logs = await reader.readAuthorizationLogs({ nonce: hold.nonce, toBlock: final.number });
     const [log] = logs;
     if (log === undefined || logs.length !== 1) return stopWith("unavailable");
@@ -222,7 +232,7 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
         receipt.blockNumber > final.number || !receiptHoldsLog(receipt, log)) {
       return stopWith("unavailable");
     }
-    if (head.latestNumber - receipt.blockNumber > DACS_WALLET_SPEND_TESTNET_MAXIMUM_ANCESTRY_DEPTH ||
+    if (final.number - receipt.blockNumber > DACS_WALLET_SPEND_TESTNET_MAXIMUM_ANCESTRY_DEPTH ||
         (await descend(final, receipt.blockNumber)).hash !== receipt.blockHash) {
       stopWith("unavailable", ANCESTRY_UNPROVEN);
     }
@@ -265,16 +275,20 @@ export function createDacsWalletSpendTestnetRecoveryV1(input: Readonly<{
     return unchanged ? undefined : HOLD_CHANGED;
   }
 
-  /** Steps 1 to 3: the verdict for one bound hold. */
+  /**
+   * Steps 1 to 3: the verdict for one bound hold. A payment is judged at the
+   * hold's own depth; a release at least at the service's release depth.
+   */
   async function verdict(
     hold: BoundHold,
     disposition: "settled" | "absent",
     validBefore: number | undefined,
   ): Promise<DacsWalletSpendTestnetChainVerdictV1> {
-    const head = await finalHead(hold.depth);
-    const used = await reader.readAuthorizationState({ nonce: hold.nonce, blockHash: head.final.hash });
-    if (used) return usedVerdict(hold, head);
-    return disposition === "settled" ? "pending" : unusedVerdict(hold, head.final, validBefore);
+    const depth = disposition === "settled" ? hold.depth : Math.max(hold.depth, input.releaseFinalityBlocks);
+    const final = await finalHead(depth);
+    const used = await reader.readAuthorizationState({ nonce: hold.nonce, blockHash: final.hash });
+    if (used) return usedVerdict(hold, final);
+    return disposition === "settled" ? "pending" : unusedVerdict(hold, final, validBefore);
   }
 
   async function check(
