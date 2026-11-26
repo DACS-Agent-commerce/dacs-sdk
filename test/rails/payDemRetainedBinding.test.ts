@@ -501,6 +501,29 @@ describe("a retained pay-dem success is bound to the journal record and a fresh 
     expect(effects()).toEqual(NO_NEW_EFFECTS);
   });
 
+  it("keeps a payment journaled but never broadcast unfinished after a restart, even when reconciliation reports a success", async () => {
+    const request = requestFor("journaled-unsent");
+    const rail = await createPayDemRail({
+      rpc: `https://retained-binding-${rpcCounter}.test`,
+      secret: "test-secret",
+      journalPreparedTransfer: async (prepared: Readonly<PayDemPreparedTransfer>) => {
+        journal.push(prepared);
+        throw new Error("process died before broadcast");
+      },
+    });
+    const store = createIdempotencyStore(log, { now: () => CRASH_AT, leaseDurationMs: LEASE_MS });
+    await expect(payDemSettle(rail, {}, { store, reconcile: reconcileFromJournalAndNode, readPreparedTransfers: journalFor })(request))
+      .rejects.toThrow(/process died before broadcast/);
+    expect(journal).toHaveLength(1);
+
+    const recipe = await restartedBridge();
+    await expect(recipe.bridge(auditOf(request))).rejects.toThrow(/proof of absence/);
+    const misreporting = await restartedBridge({ reconcile: reconcileWithoutReading, timing: SHORT_READS, restartNumber: 2 });
+    await expect(misreporting.bridge(auditOf(request))).rejects.toThrow(/not confirmed by the node: inclusion was not observed/);
+    expect(misreporting.effects()).toEqual({ claims: 0, outcomes: 0, onces: 0, signed: 1, broadcastCalls: 0 });
+    expect(node.size).toBe(0);
+  });
+
   it("refuses a prepared-transfer reader that is an accessor or a proxy at construction, and calls the captured reader after the source method is replaced", async () => {
     const request = requestFor("captured-reader");
     await payAndLoseOutcome(request);
