@@ -1,0 +1,41 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF refuse a keyless wallet request that hides a member from the key check",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/approved-record-pins.mjs",
+      "before": "1dce079c6cc319604e9df109c31c47e6a40720b4",
+      "after": "b76cd03cc587a693416813c1367bf27ea3280080"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+      "before": "3cbc5fe072ce068a30c86af5c745b5bc754bb602",
+      "after": "fce439c73ccd0af4cf25f021f636461bc0c4c4b2"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-signed-relay.mjs",
+      "before": "d0871d6dc8d136e720b7a3161ec7fd130888da2b",
+      "after": "7dad611ee62bbf8bc126aa88d1dcfd85795bdfee"
+    },
+    {
+      "path": "packages/dacs-client/test/keyless-agreement-transport.test.mjs",
+      "before": "5f682fa5fb6a0cdb718a8df8c91df3f5ac76bfd6",
+      "after": "44b96ed089a4746a7382c7286455a8e917e4e22c"
+    },
+    {
+      "path": "packages/dacs-client/test/keyless-signed-relay.test.mjs",
+      "before": "bf3389baa56f9c11fe16248cdb6077f5098cc4f2",
+      "after": "e2e51be64d08617d8ffc0e3d17a94316b1fd3cdd"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-3847d28587b5.json",
+    "packages/dacs-client/src/wallet/approved-record-pins.mjs",
+    "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+    "packages/dacs-client/src/wallet/keyless-signed-relay.mjs",
+    "packages/dacs-client/test/keyless-agreement-transport.test.mjs",
+    "packages/dacs-client/test/keyless-signed-relay.test.mjs"
+  ]
+}

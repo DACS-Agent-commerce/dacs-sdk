@@ -1,12 +1,11 @@
 // A keyless relay of a buyer wallet's own signed TP-1 payment or Agreement CREATE. The wallet signs every transaction and every
 // RPC authentication; the relay checks them and confirms and broadcasts the exact signed bytes through the client's effect
 // boundary. It holds no key, signs nothing and loads no demosdk.
-import { fail } from './approved-record-pins.mjs';
+import { fail, hasOnlyDataMembers } from './approved-record-pins.mjs';
 import { registerHeldTransportFacade } from './devnet-native-transport.mjs';
 import { createHeldTransportFacade } from './held-transport-facade.mjs';
 import { openKeylessInnerTransport } from './keyless-inner-transport.mjs';
 import { relayPassContext } from './pass-context.mjs';
-import { hasKeys } from './payload-helpers.mjs';
 
 const RELAY_NODE_READS = ['getNetworkInfo', 'getNetworkParameters', 'getAddressNonce'];
 const RELAY_EXECUTE_STAGES = ['confirmTx', 'broadcastTx'];
@@ -23,10 +22,10 @@ const WRITE_REFUSED = 'keyless_relay_write_refused';
 function checkWalletRequest(request, phases) {
   const keys = request !== null && typeof request === 'object' && phases.includes(request.phase) ? WALLET_PHASE_KEYS[request.phase] : null;
   if (!keys) fail(WRITE_REFUSED);
-  const { transfer, ...checked } = request, named = Object.hasOwn(request, 'transfer');
-  if (!hasKeys(checked, keys) || (named && (request.phase !== 'signature' || !hasKeys(transfer, TRANSFER_KEYS)))
-    || ['leaseId', 'hash'].some(name => Object.hasOwn(checked, name) && typeof checked[name] !== 'string')) fail(WRITE_REFUSED);
-  return named ? { ...checked, transfer: { ...transfer } } : checked;
+  const named = Object.hasOwn(request, 'transfer');
+  if (!hasOnlyDataMembers(request, named ? [...keys, 'transfer'] : keys) || (named && (request.phase !== 'signature' || !hasOnlyDataMembers(request.transfer, TRANSFER_KEYS)))
+    || ['leaseId', 'hash'].some(name => Object.hasOwn(request, name) && typeof request[name] !== 'string')) fail(WRITE_REFUSED);
+  return named ? { ...request, transfer: { ...request.transfer } } : { ...request };
 }
 
 // Whether `body` is one of the three preparation reads (taking no relay check) or else one confirmTx or broadcastTx (taking at most one).
