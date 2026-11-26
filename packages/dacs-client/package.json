@@ -7,7 +7,8 @@
     "./wallet/durable-journal": "./src/wallet/durable-journal.mjs",
     "./node-wallet": "./src/wallet/node-wallet-session.mjs",
     "./substrate/demos": "./src/substrate/demos.mjs",
-    "./purchase/evidence-recorder": "./src/passive-evidence-recorder.mjs"
+    "./purchase/evidence-recorder": "./src/passive-evidence-recorder.mjs",
+    "./purchase/wallet-bridge": "./src/purchase/wallet-bridge.mjs"
   },
   "scripts": {
     "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
@@ -35,7 +36,7 @@
     "src/devnet-demo/operator-approval.mjs", "src/devnet-demo/stop-request.mjs",
     "src/devnet-demo/storage-write-recovery.mjs", "src/diagnostic-projection.mjs",
     "src/index.mjs", "src/passive-evidence-recorder.mjs", "src/portal-capability.mjs", "src/purchase-limits.mjs",
-    "src/purchase-state-schema.mjs", "src/purchases.mjs",
+    "src/purchase-state-schema.mjs", "src/purchase/wallet-bridge.mjs", "src/purchases.mjs",
     "src/seams/purchase-store-not-wired.mjs", "src/seams/seller-integration-not-wired.mjs",
     "src/seams/wallet-actions-not-wired.mjs", "src/signatures.mjs",
     "src/substrate/demos.mjs",
@@ -43,7 +44,7 @@
     "src/util/sqlite-statement-boundary.mjs", "src/util/sqlite-write-lease.mjs",
     "src/util/http.mjs", "src/util/ids.mjs",
     "src/util/immutable-readbacks.mjs", "src/util/purchase-readback-cache.mjs",
-    "src/util/text.mjs", "src/wallet/authority-reader.mjs", "src/wallet/chain-identity-read.mjs", "src/wallet/demos-quiet-hooks.mjs", "src/wallet/devnet-native-transport.mjs",
+    "src/util/text.mjs", "src/wallet/approval-hold.mjs", "src/wallet/authority-reader.mjs", "src/wallet/chain-identity-read.mjs", "src/wallet/demos-quiet-hooks.mjs", "src/wallet/devnet-native-transport.mjs",
     "src/wallet/durable-journal.mjs", "src/wallet/effect-boundary.mjs", "src/wallet/effect-fence.mjs", "src/wallet/effect-history.mjs",
     "src/wallet/holder-incarnation.mjs", "src/wallet/keystore-file.mjs", "src/wallet/keystore-wallet-opener.mjs", "src/wallet/node-demos-loading.mjs",
     "src/wallet/native-dispatch-history.mjs", "src/wallet/node-wallet-session.mjs", "src/wallet/node-payment-evidence-adapter.mjs", "src/wallet/paid-approval.mjs", "src/wallet/pass-context.mjs", "src/wallet/read-queue.mjs", "src/wallet/signer-reservation.mjs", "src/wallet/withheld-reopen-grants.mjs", "src/public/portal/embedded-wallet/sdk-provider.mjs",

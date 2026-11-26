@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 
+import { DacsError } from "../../src/errors.js";
 import {
+  assignSealedEnvelopeRoles,
   buildCommitMessage,
   buildRevealMessage,
   runSealedEnvelopeCore,
@@ -592,6 +594,29 @@ describe("runSealedEnvelopeCore", () => {
     // against a live clock, so a normal invocation never spuriously throws.
     const res = await runSealedEnvelopeCore(input(), deps([a.commit], [a.reveal]));
     expect(res.ok).toBe(true);
+  });
+});
+
+describe("assignSealedEnvelopeRoles", () => {
+  test("an unresolvable auction mode is refused with its code", () => {
+    let thrown: unknown;
+    try {
+      assignSealedEnvelopeRoles({
+        auctionMode: "reverse",
+        listingPublisher: "did:demos:agent:seller",
+        winningBidderClaim: "did:demos:agent:bob",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(DacsError);
+    expect(thrown).toMatchObject({
+      code: "sealed.mode_unresolved",
+      category: "permanent",
+      message: "unresolvable-auctionMode",
+      name: "DacsError",
+    });
+    expect(Object.keys(thrown as object).sort()).toEqual(["category", "code", "name"]);
   });
 });
 

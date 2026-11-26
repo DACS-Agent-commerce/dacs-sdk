@@ -1,0 +1,72 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client files after merging the per-write fee ceiling base into the seller receipt gate",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "9cb9548bf59598d89ce2bba7350ceb7a8f19af6d",
+      "after": "9cb9548bf59598d89ce2bba7350ceb7a8f19af6d"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "83f566fb28788460065d7297492574b8a78b4632",
+      "after": "83f566fb28788460065d7297492574b8a78b4632"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "69de99bdf89f17e4bda7b78596d12986c5d9906e",
+      "after": "69de99bdf89f17e4bda7b78596d12986c5d9906e"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+      "before": "737521a887eee983da64419b0209bc4fa126b340",
+      "after": "737521a887eee983da64419b0209bc4fa126b340"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/stored-request-flows.mjs",
+      "before": "38dbc85a04865d92e0ae726a5a7dfc92dd51a616",
+      "after": "38dbc85a04865d92e0ae726a5a7dfc92dd51a616"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/wire-client-fixture.mjs",
+      "before": "03862eb5b04f3c4b91328a6606258a6b93417f3f",
+      "after": "03862eb5b04f3c4b91328a6606258a6b93417f3f"
+    },
+    {
+      "path": "packages/dacs-client/test/public-admission.test.mjs",
+      "before": "74e558425b985d6f2407279c4d66ba4236c083a6",
+      "after": "74e558425b985d6f2407279c4d66ba4236c083a6"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "a4e75357ded3e129bc311481b968093a0d818b41",
+      "after": "a4e75357ded3e129bc311481b968093a0d818b41"
+    },
+    {
+      "path": "packages/dacs-client/test/readback-review-decisions.test.mjs",
+      "before": "6ef6dc6f8abe5742d7d05fa264186d642c87d147",
+      "after": "6ef6dc6f8abe5742d7d05fa264186d642c87d147"
+    },
+    {
+      "path": "packages/dacs-client/test/readme-contract.test.mjs",
+      "before": "80f58a1503bcfdf9b30cd30203d145f96a8fe7a0",
+      "after": "80f58a1503bcfdf9b30cd30203d145f96a8fe7a0"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-suspension.test.mjs",
+      "before": "62bf169bdef39c1ab5da6e53921a73e4c14a82ad",
+      "after": "62bf169bdef39c1ab5da6e53921a73e4c14a82ad"
+    },
+    {
+      "path": "packages/dacs-client/test/stop-seam.test.mjs",
+      "before": "67345099fc82648f6a16de38f9cc51c2e5ad322e",
+      "after": "67345099fc82648f6a16de38f9cc51c2e5ad322e"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-095191d18cee.json"
+  ],
+  "note": "Both sides of the merge recorded these files; this record names the merged copies, which keep the base's per-write fee ceiling and the seller receipt gate on native Pay. No file other than this record changes."
+}

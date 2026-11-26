@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { agreementRequest, api, mnemonicBytes, ok, setPurchaseAdmission, T0 } from './helpers/tp1-node-fixture.mjs';
 import { buildNativeTransferPayload } from '../src/dacs/wallet-transactions.mjs';
-import { gateWorld, inPass, openPass, sellerPublications } from './helpers/effect-gate-world.mjs';
+import { inPass, openPass, sellerPublications } from './helpers/effect-gate-world.mjs';
+import { adapterWorld, assertNothingSent, evidenceInput, RECORD_KEY_PREFIX, recordOf, releasedIds, replayWorld, responseOf, signerOf, successfulConfirmation } from './helpers/payment-evidence-adapter-world.mjs';
 import { confirmThroughFacade, sha, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
 import { causeChain } from './helpers/node-wallet-signing-spy.mjs';
 import { recordingApproval } from './helpers/payment-evidence-approval-double.mjs';
@@ -24,31 +25,18 @@ const { createPaymentEvidenceWalletJournal } = await import('../../dacs-seller/s
 const egress = installNoEgress();
 test.after(() => egress.restore());
 
-const RECORD_KEY_PREFIX = 'devnet/signer-reservation/';
 const FIRST_NONCE = 1;
 // Network fee 1 DEM, RPC fee 0, one DEM of gas and one DEM of storage fee for a small artifact.
 const FULL_DEBIT_OS = '3000000000';
 const answerWith = value => new Response(JSON.stringify(ok(value)), { headers: { 'content-type': 'application/json' } });
 
-async function adapterWorld(t, options = {}) {
-  const approval = recordingApproval();
-  const w = await gateWorld(t, { ...options, sessionOptions: { paymentEvidenceApproval: approval, ...options.sessionOptions } });
-  Object.defineProperty(w, 'adapter', { get: () => w.session.paymentEvidenceAdapter });
-  return Object.assign(w, { approval });
-}
-const evidenceInput = (w, label = 'a', extra = {}) => ({ logicalAddress: `dacs4:payment:TEST-job-${label}:demos-native:DEM:2`, artifact: { TEST: `evidence-${label}` },
-  writer: `did:demos:agent:${w.session.wallet.getPublicAccount().address.slice(2)}`, artifactKind: 'SettlementEvidence', jobId: `TEST-job-${label}`, receiptContentHash: 'e1'.repeat(32), ...extra });
 const signIn = (w, input, options) => inPass(w, () => w.adapter.signCreate(input, options));
-const recordOf = async w => (await w.journal().entries()).find(([key]) => key.startsWith(RECORD_KEY_PREFIX))?.[1] ?? null;
 const sdkMessage = (w, message, respond) => { w.node.intercept = row => (row.body?.params[0].message === message ? respond(row) : undefined); };
-const releasedIds = w => w.approval.settlements.filter(call => call.outcome === 'released').map(call => call.ledgerId);
-const assertNothingSent = w => { assert.equal(w.node.confirms.length, 0, 'no confirmation'); assert.equal(w.node.broadcasts.length, 0, 'no broadcast'); };
 const codes = error => causeChain(error).map(link => link.code);
 const settle = () => new Promise(resolve => setImmediate(resolve));
 // A reservation instance over the world's journal, standing for a process that wrote its records and then died.
 const deadProcess = w => createSignerReservations({ journal: w.journal(), pins: TP1_APPROVED_IDENTITY_RECORD,
   openApproval: requestText => w.approval.open(requestText), settleApproval: (ledgerId, outcome, reason, requestText) => w.approval.settle({ ledgerId, requestText }, outcome, reason) });
-const signerOf = w => w.session.wallet.getPublicAccount().address;
 
 test("a plain signCreate in the default seller composition stores and returns one signed projection that passes the kit journal's projection rules", async t => {
   const w = await adapterWorld(t), dir = mkdtempSync(join(tmpdir(), 'payment-evidence-adapter-')), input = evidenceInput(w);
@@ -476,7 +464,7 @@ test("signCreate refuses an input that is not this signer's evidence CREATE, a l
 
 test("the hold refuses signCreate with profile_not_admitted and no node call, and the composition requires the whole approval ledger input", async t => {
   const w = await adapterWorld(t), callsBefore = w.node.calls.length;
-  assert.deepEqual(Object.keys(w.adapter).sort(), ['broadcast', 'readAccountNonce', 'readTransactionState', 'signCreate']);
+  assert.deepEqual(Object.keys(w.adapter).sort(), ['approveAhead', 'approveSendAhead', 'broadcast', 'readAccountNonce', 'readTransactionState', 'signCreate']);
   setPurchaseAdmission('held');
   await assert.rejects(signIn(w, evidenceInput(w)), { code: 'profile_not_admitted' });
   assert.equal(w.node.calls.length, callsBefore, '0 node calls'); assert.equal(await recordOf(w), null);
@@ -489,35 +477,11 @@ test("the hold refuses signCreate with profile_not_admitted and no node call, an
   }
 });
 
-// The replay half: a scripted node that answers a confirmation and a broadcast the way the serving node does, with `w.reply` as the hook that
-// changes any one answer.
+// The replay half runs over `replayWorld`'s scripted node, with `w.reply` as the hook that changes any one answer.
 const broadcastIn = (w, signed, options) => inPass(w, () => w.adapter.broadcast(signed, options));
-const successfulConfirmation = (tx, data = {}) => ok({ data: { valid: true, reference_block: 1, message: 'TEST-valid', gas_operation: null, transaction: tx, ...data },
-  signature: { type: 'ed25519', data: `0x${'5'.repeat(128)}` }, rpc_public_key: { type: 'ed25519', data: `0x${'6'.repeat(64)}` } });
-const responseOf = answer => new Response(JSON.stringify(answer), { headers: { 'content-type': 'application/json' } });
 const spentIds = w => [...w.approval.settled].filter(([, outcome]) => outcome === 'spent').map(([id]) => id);
 const applyWithoutBroadcast = (w, signed) => { w.node.applied.set(signed.txHash, JSON.parse(signed.signedTransaction)); w.node.nonce = signed.nonce; };
 const messageOf = row => row.body?.params[0].message || row.body?.params[0].extra;
-
-async function replayWorld(t, options) {
-  const w = await adapterWorld(t, options);
-  w.reply = null;
-  w.node.intercept = async row => {
-    const call = row.body?.params[0];
-    if (!call) return undefined;
-    if (call.extra === 'confirmTx') w.node.confirms.push(structuredClone(call.data));
-    if (call.extra === 'broadcastTx') w.node.broadcasts.push(structuredClone(call.data.response.data.transaction));
-    const changed = await w.reply?.(row);
-    if (changed) return changed;
-    if (call.extra === 'confirmTx') return responseOf(successfulConfirmation(call.data));
-    if (call.extra === 'broadcastTx') {
-      const tx = call.data.response.data.transaction;
-      w.node.applied.set(tx.hash, structuredClone(tx)); w.node.nonce = tx.content.nonce;
-      return responseOf(ok({ hash: tx.hash }));
-    }
-  };
-  return w;
-}
 const replyFor = (w, message, respond) => { w.reply = row => (messageOf(row) === message ? respond(row) : undefined); };
 
 test("signCreate signs the journal's three-member projection with one signature and no egress; the first broadcast confirms against the serving-node confirmation shape and dispatches the retained bytes once, byte-equal at the receiver; the positive fixture passes every validator in the path", async t => {

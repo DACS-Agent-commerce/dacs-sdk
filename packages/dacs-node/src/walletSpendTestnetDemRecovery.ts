@@ -3,8 +3,10 @@ import { join } from "node:path";
 
 import {
   canonicalize,
+  payDemConfirmedNonceSlot,
   payDemConfirmedTotalDebitOs,
   settlementKey,
+  type WalletSpendAbsenceObservationV1,
   type WalletSpendAuthorityDependenciesV1,
   type WalletSpendPolicyV1,
   type WalletSpendRecoveryObservationV1,
@@ -19,6 +21,8 @@ import type { DacsWalletSpendDemosReaderV1 } from "./walletSpendDemosReader.js";
 const BARE_HEX_32_RE = /^[0-9a-f]{64}$/;
 const FEE_MISMATCH = "wallet-spend-dem-fee-mismatch";
 const UNAVAILABLE = "wallet-spend-dem-unavailable";
+const RELEASE_PAID = "wallet-spend-dem-release-paid";
+const RELEASE_UNPROVEN = "wallet-spend-dem-release-unproven";
 const MAXIMUM_EVIDENCE_BYTES = 1024;
 type DemEvidenceStore = Readonly<{ claim(hash: string, reservationId: string): Promise<boolean> }>;
 
@@ -51,6 +55,9 @@ class DemCheckStop extends Error {
 
 const stop = (reasonCode: string): never => { throw new DemCheckStop(reasonCode); };
 
+/** A failed node read changes nothing. */
+const unavailable = (): never => stop(UNAVAILABLE);
+
 interface BoundHold { reservationId: string; payee: string; amount: string; feeReserved: boolean }
 
 function bindHold(reservation: Readonly<WalletSpendReservationV1>): BoundHold {
@@ -70,14 +77,21 @@ function bindHold(reservation: Readonly<WalletSpendReservationV1>): BoundHold {
 }
 
 /**
- * Authenticates an executed DEM transfer's wallet, payee, amount and fee, then claims it durably for
- * one hold. Supply the same evidence store across all instances and policies for a wallet.
- * Absence claims are refused: a signed DEM transfer has no expiry.
- * @returns The core authenticator and the same check with its reason code.
+ * Builds the chain rule for the testnet authority's Demos lane. `settled` is accepted only when the
+ * chain shows that transfer executed from the policy wallet to the hold's payee for the exact amount,
+ * at the hold's planned nonce when it has one, with the fee its confirmed record removed, and only for
+ * one hold per transfer, claimed durably in the evidence store. Supply the same evidence store across
+ * all instances and policies for a wallet. A signed DEM transfer carries no expiry, so neither time nor
+ * the buyer's word releases a hold. An absence claim releases one only when the chain shows the wallet's
+ * account nonce past the hold's planned nonce, the claimed transfer not on chain, and the wallet's own
+ * confirmed transaction at the planned nonce paying the payee nothing. A hold without a planned nonce
+ * is never released.
+ * @returns `authenticateRecovery` for the core, and `check`, the same decision with its reason code.
  */
 export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
   policy: Readonly<WalletSpendPolicyV1>;
-  reader: Pick<DacsWalletSpendDemosReaderV1, "observeTransfer">;
+  reader: Pick<DacsWalletSpendDemosReaderV1,
+    "observeTransfer" | "readAccountNonce" | "findTransactionAtNonce" | "readRecord">;
   readState(): Promise<Readonly<WalletSpendStateV1>>;
   /** Atomically retain one hold per transfer, durably before success; allow retries by that hold. */
   evidenceStore: DemEvidenceStore;
@@ -101,8 +115,8 @@ export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
     return stop(reasonCode);
   }
 
-  async function chainTotal(hold: BoundHold, hash: string): Promise<string> {
-    const seen = await input.reader.observeTransfer(hash).catch((): never => stop(UNAVAILABLE));
+  async function chainTotal(hold: BoundHold, hash: string, planned: number | undefined): Promise<string> {
+    const seen = await input.reader.observeTransfer(hash).catch(unavailable);
     const chain = seen.observation;
     if (chain.status === "unavailable") stop(UNAVAILABLE);
     if (chain.status === "failed" || chain.status === "invalid") stop("wallet-spend-dem-transfer-failed");
@@ -110,7 +124,8 @@ export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
         !Number.isSafeInteger(chain.nonce)) {
       return stop("wallet-spend-dem-transfer-pending");
     }
-    if (chain.txHash !== hash || chain.payer !== payer || chain.payee !== hold.payee || chain.amountOs !== hold.amount) {
+    if (chain.txHash !== hash || chain.payer !== payer || chain.payee !== hold.payee || chain.amountOs !== hold.amount ||
+        (planned !== undefined && chain.nonce !== planned)) {
       stopForOperator("wallet-spend-dem-transfer-mismatch", hold.reservationId, hash);
     }
     return payDemConfirmedTotalDebitOs(seen.record, {
@@ -122,13 +137,14 @@ export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
     hold: BoundHold,
     claim: Readonly<WalletSpendSettlementObservationV1>,
     state: Readonly<WalletSpendStateV1>,
+    planned: number | undefined,
   ): Promise<void> {
     const hash = claim.evidenceHash;
     if (!BARE_HEX_32_RE.test(hash)) stop("wallet-spend-dem-evidence-invalid");
     if (state.reservations.some((stored) => stored.reservationId !== hold.reservationId && stored.evidenceHash === hash)) {
       stopForOperator("wallet-spend-dem-evidence-reused", hold.reservationId, hash);
     }
-    const fee = (BigInt(await chainTotal(hold, hash)) - BigInt(hold.amount)).toString();
+    const fee = (BigInt(await chainTotal(hold, hash, planned)) - BigInt(hold.amount)).toString();
     if (!hold.feeReserved && fee !== "0") stop(FEE_MISMATCH);
     const expected: WalletSpendSettlementObservationV1 = {
       disposition: "settled",
@@ -144,17 +160,41 @@ export function createDacsWalletSpendTestnetDemRecoveryV1(input: Readonly<{
     }
   }
 
+  /**
+   * The one release: the account nonce is past the hold's planned nonce, the claimed transfer is not on
+   * chain, and the wallet's own confirmed transaction at the planned nonce pays the payee nothing. Then
+   * the hold's transfer, which may only carry the planned nonce, can never execute.
+   */
+  async function checkRelease(hold: BoundHold, claim: Readonly<WalletSpendAbsenceObservationV1>, planned?: number) {
+    if (planned === undefined) return stopForOperator("wallet-spend-dem-absence-refused", hold.reservationId);
+    if (!BARE_HEX_32_RE.test(claim.evidenceHash)) stop("wallet-spend-dem-evidence-invalid");
+    if (await input.reader.readAccountNonce().catch(unavailable) <= planned) {
+      stop("wallet-spend-dem-release-nonce-pending");
+    }
+    const claimed = (await input.reader.observeTransfer(claim.evidenceHash).catch(unavailable)).observation;
+    if (claimed.status === "unavailable") stop(UNAVAILABLE);
+    if (claimed.status === "included") stopForOperator(RELEASE_PAID, hold.reservationId, claim.evidenceHash);
+    if (claimed.status === "pending") stopForOperator(RELEASE_UNPROVEN, hold.reservationId, claim.evidenceHash);
+    const slot = await input.reader.findTransactionAtNonce(planned).catch(unavailable) ??
+      stopForOperator(RELEASE_UNPROVEN, hold.reservationId);
+    const record = await input.reader.readRecord(slot.hash).catch(unavailable);
+    const kind = payDemConfirmedNonceSlot(record, {
+      txHash: slot.hash, nonce: planned, blockNumber: slot.blockNumber, payer, payee: hold.payee,
+    });
+    if (kind !== "other") stopForOperator(kind === null ? RELEASE_UNPROVEN : RELEASE_PAID, hold.reservationId, slot.hash);
+  }
+
   const check: DemRecoveryCheck = async (reservation, observation) => {
     try {
       const hold = bindHold(reservation);
       const state = await input.readState();
-      if (!state.reservations.some((stored) => stored.reservationId === hold.reservationId)) {
+      const stored = state.reservations.find((row) => row.reservationId === hold.reservationId) ??
         stop("wallet-spend-dem-hold-missing");
-      }
       if (observation.disposition !== "settled") {
-        return stopForOperator("wallet-spend-dem-absence-refused", hold.reservationId);
+        await checkRelease(hold, observation, stored.plannedTransferNonce);
+        return { accepted: true, reasonCode: "wallet-spend-dem-released" };
       }
-      await checkSettled(hold, observation, state);
+      await checkSettled(hold, observation, state, stored.plannedTransferNonce);
       return { accepted: true, reasonCode: "wallet-spend-dem-paid" };
     } catch (error) {
       return { accepted: false, reasonCode: error instanceof DemCheckStop ? error.reasonCode : UNAVAILABLE };

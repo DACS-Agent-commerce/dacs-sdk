@@ -145,7 +145,8 @@ test('candidate manifest uses release metadata and the exact public boundary', a
   assert.equal(client.version, core.version);
   assert.deepEqual(client.peerDependencies, { '@kynesyslabs/dacs': core.version });
   assert.deepEqual(client.exports, { '.': './src/index.mjs', './wallet/durable-journal': './src/wallet/durable-journal.mjs', './node-wallet': './src/wallet/node-wallet-session.mjs',
-    './substrate/demos': './src/substrate/demos.mjs', './purchase/evidence-recorder': './src/passive-evidence-recorder.mjs' });
+    './substrate/demos': './src/substrate/demos.mjs', './purchase/evidence-recorder': './src/passive-evidence-recorder.mjs',
+    './purchase/wallet-bridge': './src/purchase/wallet-bridge.mjs' });
   assert.equal(client.publishConfig, undefined, 'release-set admission is pending');
   assert.deepEqual(client.repository, { type: 'git', url: core.repository.url, directory: 'packages/dacs-client' });
   assert.equal(client.bugs.url, core.bugs.url);
@@ -159,7 +160,7 @@ test('the client manifest declares exactly demosdk ^4.0.16 and dacs-node and @sc
   assert.equal(client.dependencies['@kynesyslabs/demosdk'], '^4.0.16');
   assert.equal(client.dependencies['@kynesyslabs/dacs-node'], core.version);
   assert.match(client.dependencies['@scure/bip39'], /^\d+\.\d+\.\d+$/);
-  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder'], 'no export is added for the loading modules');
+  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder', './purchase/wallet-bridge'], 'no export is added for the loading modules');
   const script = `import * as module from 'node:module';
     const refuse = (specifier, context, next) => {
       if (/demosdk|demos-loader|demos-quiet-hooks|node-demos-loading/.test(specifier)) throw new Error('unexpected import of ' + specifier);
@@ -251,7 +252,7 @@ test('the complete public protocol method set refuses actions before host effect
   assert.equal(effects, 0);
 });
 
-const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'readRetainedNativePaymentLane']);
+const PASSIVE_PROTOCOL_METHODS = new Set(['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'assertSellerReceiptReservation', 'readRetainedNativePaymentLane']);
 const PASSIVE_SERVICE_METHODS = new Set(['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning', 'nativePaymentLaneRead']);
 const refusesAsPromise = (member, name) => {
   const result = member({});
@@ -290,6 +291,8 @@ test('every active method returns a Promise and every passive method keeps its s
     await refusesAsPromise(member, name);
   }
   assert.deepEqual(passiveSeen.sort(), [...PASSIVE_PROTOCOL_METHODS].sort());
+  // The receipt check answers synchronously, held or not: a composition without native payment refuses every operation.
+  assert.throws(() => protocol.assertSellerReceiptReservation({ terms: {}, state: { protocol: {} } }), error => error instanceof client.OperationError && error.code === 'seller_receipt_reservation_insufficient');
   assert.deepEqual(Object.keys(service).filter(name => typeof service[name] === 'function' && PASSIVE_SERVICE_METHODS.has(name)).sort(), [...PASSIVE_SERVICE_METHODS].sort());
   assert.deepEqual(Object.keys(verifier).filter(name => typeof verifier[name] === 'function'), ['verify']);
   await refusesAsPromise(verifier.verify, 'verify');

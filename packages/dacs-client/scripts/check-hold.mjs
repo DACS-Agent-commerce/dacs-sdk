@@ -35,8 +35,8 @@ class UsageError extends Error {}
 export const DERIVED_RULE_MODULES = Object.freeze(["scripts/delta-freeze.mjs", "scripts/delta-assemble.mjs", "scripts/delta-map.mjs", "scripts/delta-record.mjs", "scripts/publication-text.mjs", "scripts/source-git.mjs"]);
 
 export const PINNED = Object.freeze({
-  holdSha256: "4387a110643d09c2bfb35325b1a3ebbedd696ece62f262393f4e4e7d4f37b478",
-  holdBytesSha256: "2e6b6b1dbc26ad84b23df4d50c47d0c2bba179efc9fe1e06673af9e467555dd9",
+  holdSha256: "e2ee39a36d752db7efe57eddb52cf75703d85edf01452f8eaf6d93cf84030908",
+  holdBytesSha256: "03ccc4002a9e1ae0dc2cd433d6139fabce7ab36c59b11fd76010d17a95da2152",
   schema: "dacs-client-hold/v1",
   package: PACKAGE,
   gate: "packages/dacs-client/scripts/check-hold.mjs",
@@ -50,7 +50,7 @@ export const PINNED = Object.freeze({
     name: PACKAGE,
     version: "0.1.0-alpha.0",
     description: "Buyer purchase services, protocol readers and host integration seams for DACS clients.",
-    exports: Object.freeze({ ".": "./src/index.mjs", "./wallet/durable-journal": "./src/wallet/durable-journal.mjs", "./node-wallet": "./src/wallet/node-wallet-session.mjs", "./substrate/demos": "./src/substrate/demos.mjs", "./purchase/evidence-recorder": "./src/passive-evidence-recorder.mjs" }),
+    exports: Object.freeze({ ".": "./src/index.mjs", "./wallet/durable-journal": "./src/wallet/durable-journal.mjs", "./node-wallet": "./src/wallet/node-wallet-session.mjs", "./substrate/demos": "./src/substrate/demos.mjs", "./purchase/evidence-recorder": "./src/passive-evidence-recorder.mjs", "./purchase/wallet-bridge": "./src/purchase/wallet-bridge.mjs" }),
     scripts: Object.freeze({ test: "node scripts/check-hold.mjs && node scripts/test.mjs" }),
     type: "module",
     engines: Object.freeze({ node: "^22.22.2 || ^24.15.0" }),
