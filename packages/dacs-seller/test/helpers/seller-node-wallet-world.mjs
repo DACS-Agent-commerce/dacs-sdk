@@ -117,24 +117,40 @@ export function persistedApproval(stateFile) {
 /**
  * Counts the inner transaction signatures of every Node composition built after the call, through `mocker` (a test's `t.mock`
  * or node:test's `mock`): the result lists the nonce of each transaction a composition's Demos signed. `onSigned(transaction)`
- * runs after each one.
+ * runs after each one. With `onInnerSign`, the SDK crypto's own `sign` (beneath the client gate) calls `onInnerSign({ inTransaction })`
+ * synchronously before each inner signature; `inTransaction` is true while a spied transaction signature runs.
  */
-export async function spyTransactionSignatures(mocker, onSigned = () => {}) {
+export async function spyTransactionSignatures(mocker, onSigned = () => {}, { onInnerSign } = {}) {
   const { Demos } = await (await import('../../../dacs-client/src/wallet/node-demos-loading.mjs')).loadNodeDemos();
   const spied = new WeakSet(), signatures = [], connectWallet = Demos.prototype.connectWallet;
+  let inTransaction = 0, cryptoSpied = false;
+  // The session's crypto is a proxy over the SDK's crypto, so its prototype is the SDK's own.
+  const spyInnerSigns = (demos) => {
+    if (cryptoSpied || !demos.crypto) return;
+    cryptoSpied = true;
+    const sdkCrypto = Object.getPrototypeOf(demos.crypto), innerSign = sdkCrypto.sign;
+    mocker.method(sdkCrypto, 'sign', function spyInnerSign(...signArgs) {
+      onInnerSign({ inTransaction: inTransaction > 0 });
+      return Reflect.apply(innerSign, this, signArgs);
+    });
+  };
   mocker.method(Demos.prototype, 'connectWallet', function spyConnectWallet(...args) {
     const prototype = Object.getPrototypeOf(this);
     if (prototype !== Demos.prototype && !spied.has(prototype)) {
       spied.add(prototype);
       const sign = prototype.sign;
       prototype.sign = async function spySign(transaction, ...rest) {
-        const signed = await Reflect.apply(sign, this, [transaction, ...rest]);
+        inTransaction++;
+        let signed;
+        try { signed = await Reflect.apply(sign, this, [transaction, ...rest]); } finally { inTransaction--; }
         signatures.push(transaction.content.nonce);
         await onSigned(transaction);
         return signed;
       };
     }
-    return Reflect.apply(connectWallet, this, args);
+    const connected = Reflect.apply(connectWallet, this, args);
+    if (onInnerSign) Promise.resolve(connected).then(() => spyInnerSigns(this), () => {});
+    return connected;
   });
   return signatures;
 }
@@ -175,13 +191,15 @@ export async function sellerWalletWorld(t, { held = false, directory = privateDa
   setPurchaseAdmission(held ? 'held' : 'testnet-tp1');
   const connection = await nodeConnection(node), stateLock = await acquireSellerStateLock(directory), diagnostics = [];
   const built = await walletOptions({ connection, directory, stateLock, diagnostics: entry => diagnostics.push(entry), ...options });
-  const world = { ...connection, directory, stateLock, diagnostics, options: built, approve: built.approve, approval: built.approve.retained };
+  const world = { ...connection, directory, stateLock, diagnostics, options: built, approve: built.approve, approval: built.approve.retained, journals: [] };
   world.wallet = await createSellerNodeWallet(built);
+  // The payment-evidence journals built over the wallet (payment-evidence-test-journals.mjs) close with it.
+  const closeWallet = async () => { for (const journal of world.journals.splice(0)) journal.close(); await world.wallet.close(); };
   world.restart = async () => {
-    await world.wallet.close();
+    await closeWallet();
     world.wallet = await createSellerNodeWallet({ ...built, journalMode: 'open', keyRecord: keyRecordBytes() });
   };
-  t.after(async () => { setPurchaseAdmission('held'); await world.wallet.close(); await connection.owner.close(); stateLock.release(); });
+  t.after(async () => { setPurchaseAdmission('held'); await closeWallet(); await connection.owner.close(); stateLock.release(); });
   return world;
 }
 

@@ -38,6 +38,7 @@ import { createEffectHistory } from '../../src/dacs/effect-history.mjs';
 import { createFixtureSettlement } from '../../src/dacs/fixture-settlement.mjs';
 import { createNativeDemDeliveryCapability } from '../../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer } from '../../src/dacs/native-payment-evidence-consumer.mjs';
+import { createPaymentEvidencePass } from '../../src/dacs/payment-evidence-pass.mjs';
 import { createPaymentEvidenceWalletJournal, createSignedCreateJournal, paymentEvidenceWalletJournalOf } from '../../src/dacs/payment-evidence-wallet-journal.mjs';
 import { takeLease } from '../../src/dacs/process-lease.mjs';
 import { commitmentReader } from '../../src/dacs/purchase-protocol.mjs';
@@ -178,6 +179,8 @@ export function capabilityBuilders(t) {
       return paymentEvidenceWalletJournalOf(journal.anchorEvidence);
     }],
     ['src/dacs/payment-evidence-wallet-journal.mjs#createSignedCreateJournal', () => onClose(createSignedCreateJournal({ ...journalOptions(directory(), 'creates.sqlite'), table: 'inventory_creates' }))],
+    ['src/dacs/payment-evidence-pass.mjs#createPaymentEvidencePass', () => createPaymentEvidencePass({ runCreate: never('runCreate'),
+      adapter: Object.fromEntries(['approveAhead', 'signCreate', 'approveSendAhead', 'broadcast', 'readAccountNonce', 'readTransactionState'].map((name) => [name, never(name)])) })],
     ['src/dacs/deliverable-wallet-journal.mjs#createDeliverableWalletJournal', () => onClose(createDeliverableWalletJournal(journalOptions(directory(), 'deliverable.sqlite')))],
     ['src/dacs/deliverable-wallet-journal.mjs#deliverableJournalFor', () => {
       const journal = onClose(createDeliverableWalletJournal(journalOptions(directory(), 'deliverable.sqlite')));

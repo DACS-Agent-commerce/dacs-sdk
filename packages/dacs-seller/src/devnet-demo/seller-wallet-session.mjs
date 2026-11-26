@@ -1,18 +1,23 @@
 // The seller's production wallet-session port for startSellerHost. Stage one opens the client's transport owner, its read-only
 // authority capability and its connection reader, which the host binds through. Under the state lock the host finalizes the
 // port with its binding and effect boundary: the port checks both, loads the key, builds the seller Node wallet over its own
-// owner and binds the one artifact anchor handle the operator gave the host.
+// owner, binds the one artifact anchor handle the operator gave the host and builds the payment-evidence journal over its passes.
+import { join } from 'node:path';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { WireError, assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { admitTp1Authority, createNodeTransportOwner, tp1AuthorityLabel } from '@kynesyslabs/dacs-client/node-wallet';
 import { boundedCall, isBoundedCallTimeout } from '../dacs/bounded-call.mjs';
 import { effectBoundaryBinding } from '../dacs/effect-boundary.mjs';
+import { createNativePaymentEvidenceConsumer } from '../dacs/native-payment-evidence-consumer.mjs';
+import { createPaymentEvidencePass } from '../dacs/payment-evidence-pass.mjs';
+import { createPaymentEvidenceWalletJournal } from '../dacs/payment-evidence-wallet-journal.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { OperationError } from '../operations.mjs';
 import { SellerKeyError } from '../seller-key.mjs';
 import { createDevnetDemoArtifactAnchor } from './artifact-anchor.mjs';
 import { createConnectionAuthorityReader } from './connection-authority.mjs';
 import { createSellerCreatePass, lateSellerCreatePass } from './create-pass.mjs';
+import { OPERATOR_CLOSING } from './operator-approval.mjs';
 import { createSellerNodeWallet } from './seller-node-wallet.mjs';
 
 const OPTIONS = Object.freeze(['endpoint', 'transportAuthority', 'fetchImpl', 'signer', 'loadKeyRecord', 'approve', 'approvalMode', 'journalMode', 'publications',
@@ -24,6 +29,8 @@ const ARTIFACT_SOURCE = 'dacs-devnet-demo-native-artifacts/v1';
 const VET_MODE = SELLER_FULFILMENT_VET_MODES.tp1G3Orchestrator;
 // The connection read the anchor's readback asks ends within this many milliseconds, as each of the host stages' authority reads does.
 const AUTHORITY_READ_TIMEOUT_MS = 10000;
+const PAYMENT_EVIDENCE_JOURNAL = 'seller-payment-evidence.sqlite';
+const APPROVALS_ENDED = 'the seller host is closing: no new payment-evidence approval or signature is made, and nothing was signed or kept for this call';
 const ports = new WeakSet();
 
 const sessionClosed = (cause) => Object.assign(new OperationError('wallet_session_closed', 'the wallet session is closed'), cause === undefined ? {} : { cause });
@@ -63,6 +70,31 @@ function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, bind
     network: session.transport.pins.network, signer, buyerAccess, now: () => clock.now(), vetMode: VET_MODE, binding, observeIdentity, runCreate });
 }
 
+// The session's payment-evidence journal, which signs and sends only in runCreate passes and asks its approvals before them,
+// and the native payment-evidence consumer that anchors through it. `endApprovalWaits()` ends every approval the journal waits
+// for and refuses later ones and every new signature; it is idempotent and never throws.
+function composeSellerPaymentEvidence({ runCreate, wallet, dataDirectory, clock, binding, observeIdentity }) {
+  const approvalsEnd = new AbortController();
+  const pass = createPaymentEvidencePass({ runCreate, adapter: wallet.paymentEvidenceAdapter });
+  const journal = createPaymentEvidenceWalletJournal({ path: join(dataDirectory, PAYMENT_EVIDENCE_JOURNAL), ...pass, approvalSignal: approvalsEnd.signal, now: () => clock.now() });
+  try {
+    const nativePaymentEvidence = createNativePaymentEvidenceConsumer({ rpcUrl: wallet.sourceCapability.pins.endpoint, sourceCapability: wallet.sourceCapability, binding, observeIdentity,
+      now: () => clock.now(), anchorEvidence: journal.anchorEvidence, readSignedProjection: journal.readSignedProjection });
+    const endApprovalWaits = () => approvalsEnd.abort(new OperationError(OPERATOR_CLOSING, APPROVALS_ENDED));
+    return { journal, nativePaymentEvidence, endApprovalWaits };
+  } catch (error) { journal.close(); throw error; }
+}
+
+// The finalized session with its payment-evidence pieces; its close() closes the journal once, then the wallet.
+function withPaymentEvidence(finalized, { journal, nativePaymentEvidence, endApprovalWaits }) {
+  let journalOpen = true;
+  const close = () => {
+    if (journalOpen) { journalOpen = false; journal.close(); }
+    return finalized.close();
+  };
+  return Object.freeze({ ...finalized, paymentEvidence: journal, nativePaymentEvidence, endApprovalWaits, close });
+}
+
 /**
  * Builds the seller's production wallet-session port. The guard is checked first; then the options, a closed set: `endpoint`,
  * `transportAuthority`, `fetchImpl` (the node connection), `signer` `{ claim, sign }` (the seller signer the host takes),
@@ -83,14 +115,21 @@ function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, bind
  *   gives a publication naming `tp1AuthorityLabel(binding)` one token for `binding` in the wallet build's copy (the anchor keeps the label),
  *   then calls `loadKeyRecord` once, zero-fills what it returned on every outcome, builds the seller Node wallet and resolves the
  *   frozen session `{ effectPass, runInEffectPass, walletFactory, transport, acquireConnectionFence, address, observer, artifactJournal,
- *   paymentEvidence, readBalance, close }`. The session's `close()` closes the handle and the wallet; the port keeps its owner.
+ *   paymentEvidence, nativePaymentEvidence, endApprovalWaits, readBalance, close }`:
+ *   - `paymentEvidence` is the session's payment-evidence journal. It signs and sends only in `runCreate` passes and asks the
+ *     operator's approval before each pass. `nativePaymentEvidence` is the native payment-evidence consumer anchoring through it;
+ *   - `endApprovalWaits()` ends every approval that journal waits for and refuses later ones and every new signature
+ *     (operator_closing), with the journal left open. A kept CREATE not yet sent stays unsent, and its call says so; a send whose
+ *     approval is held still runs;
+ *   - `close()` closes the journal and the wallet, once; the port keeps its owner.
  * - `close()` closes a live session, then the owner, once.
  * `endpoint` is a canonical root URL over https; a plain-http root refuses transport_mismatch. Binding then refuses a node whose
  * live chain is another before any key load or signature.
  * Throws KitOperationGuardError, TypeError naming a malformed option, or the client's transport_mismatch. `finalize` rejects with
  * KitOperationGuardError, wallet_session_finalize_once, wallet_session_closed (the wallet build's refusal as `cause` when it failed),
  * wallet_session_boundary_mismatch, the wire's tp1_* refusal (also the token admission's, before the key load), SellerKeyError(seller_key_format_invalid) for a key value that is not a
- * Uint8Array, the key loader's own error, or the seller Node wallet's refusal (authority_unbound, or profile_not_admitted while purchase actions are held).
+ * Uint8Array, the key loader's own error, the seller Node wallet's refusal (authority_unbound, or profile_not_admitted while purchase actions are held),
+ * or the payment-evidence journal's refusal (a TypeError for its file, wallet_journal_busy).
  */
 export function createSellerWalletSession(options) {
   assertKitOperationAdmitted('createSellerWalletSession');
@@ -156,7 +195,7 @@ export function createSellerWalletSession(options) {
         if (closed) throw sessionClosed();
         return owner.acquireConnectionFence();
       },
-      address: wallet.address, observer: wallet.observer, artifactJournal: wallet.artifactJournal, paymentEvidence: wallet.paymentEvidence, readBalance: wallet.readBalance,
+      address: wallet.address, observer: wallet.observer, artifactJournal: wallet.artifactJournal, readBalance: wallet.readBalance,
       close() {
         closed = true;
         sessionClosing ??= wallet.close();
@@ -178,14 +217,19 @@ export function createSellerWalletSession(options) {
       if (closed) throw sessionClosed();
       if (!(keyRecord instanceof Uint8Array)) throw new SellerKeyError('seller_key_format_invalid');
       const wallet = await buildWallet({ binding, stopped, feeCeilingOs, stateLock, dataDirectory, keyRecord, publications: walletPublications });
+      let evidence = null;
       try {
         const finalized = sessionOver(wallet);
         const { runCreate } = createSellerCreatePass({ effectBoundary, session: finalized, stopped, feeCeilingOs, clock });
-        anchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity, runCreate });
+        evidence = composeSellerPaymentEvidence({ runCreate, wallet, dataDirectory, clock, binding, observeIdentity: observeConnectionIdentity });
+        const composedAnchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity, runCreate });
+        const composed = withPaymentEvidence(finalized, evidence);
+        anchor = composedAnchor;
         finalizedRunCreate = runCreate;
-        session = finalized;
-        return finalized;
+        session = composed;
+        return composed;
       } catch (error) {
+        evidence?.journal.close();
         await wallet.close().catch(() => { /* the composition error is the one reported */ });
         throw error;
       }
