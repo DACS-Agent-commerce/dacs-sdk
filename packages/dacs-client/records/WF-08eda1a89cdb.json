@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest after carrying the moved base into the first part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "e9f1bae8e56e74fcac408bb64f94dd22ac0d9b6a",
+      "after": "e9f1bae8e56e74fcac408bb64f94dd22ac0d9b6a"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-08eda1a89cdb.json"
+  ],
+  "note": "Both sides of the merge recorded the manifest, so their newest records disagree; this record chooses the merged copy, which keeps this part's file list and the base's rpc-endpoint export together."
+}
