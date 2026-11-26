@@ -73,6 +73,12 @@ const liveLeases = new WeakSet();
 const passFence = new AsyncLocalStorage();
 // Each seller composition's signer reservations, over its own journal; never a member of the composition.
 const sellerReservations = new WeakMap();
+// Every owner `createNodeTransportOwner` has made.
+const transportOwners = new WeakSet();
+// Every qualification source `createQualificationObserverSource` has made, with the binding, currentLocal and observer it was made with.
+const qualificationSources = new WeakMap();
+// The publications a qualification source declares, as a registered demo transport declares them.
+const QUALIFICATION_PUBLICATIONS = Object.freeze(['settlementPublication', 'deliveryPublication', 'demoArtifactPublication']);
 
 const fail = (code, cause) => { throw new OperationError(code, code, undefined, cause === undefined ? undefined : { cause }); };
 
@@ -187,13 +193,15 @@ export function createNodeTransportOwner({ endpoint, transportAuthority, fetchIm
     liveLeases.add(lease); held.add(lease);
     return lease;
   }
-  return Object.freeze({ local, currentLocal, getContext: () => { currentLocal(); return context; }, acquireConnectionFence,
+  const owner = Object.freeze({ local, currentLocal, getContext: () => { currentLocal(); return context; }, acquireConnectionFence,
     fetchImpl(input, init) {
       currentLocal();
       if (new URL(input).origin !== url.origin) fail('transport_mismatch');
       return fetchImpl(input, { ...init, redirect: 'error' });
     },
     close() { closed = true; for (const lease of held) lease.release(); } });
+  transportOwners.add(owner);
+  return owner;
 }
 
 // Runs one authority or node read under the 10 s deadline; a timeout is tp1_authority_timeout with the timer's error as cause.
@@ -300,6 +308,34 @@ export async function admitTp1Authority({ binding, currentLocal } = {}) {
   const token = Object.freeze({ label: tp1AuthorityLabel(binding) });
   registerTp1Token(token, { binding, assertAdmitted: assertPurchaseActionsAdmitted });
   return token;
+}
+
+/**
+ * Resolves a frozen `{observer, source, currentLocal}` for a read-only qualification read over `owner`, an open owner from
+ * `createNodeTransportOwner`, once `admitTp1Authority` admits `binding` on its connection. `observer` is `createNodeObserver({owner, clock})`,
+ * `currentLocal` is `owner.currentLocal`, and `source` is a frozen declaration of the three publications, each `{authority}` with the
+ * admitted token's TP-1 label, registered for `isQualificationObserverSource`. The token goes to no effect capability, and nothing here loads
+ * a key, opens a wallet or journal, takes a lock or sends a write, so it works while purchase actions are held. Rejects transport_mismatch
+ * for any other owner, transport_closed, and admitTp1Authority's refusals (tp1_binding_required, the wire's binding codes,
+ * tp1_local_binding_changed, tp1_authority_timeout with cause); a refused construction registers nothing.
+ */
+export async function createQualificationObserverSource({ owner, binding, clock } = {}) {
+  if (!transportOwners.has(owner)) fail('transport_mismatch');
+  const { currentLocal } = owner;
+  const { label } = await admitTp1Authority({ binding, currentLocal });
+  const observer = createNodeObserver({ owner, clock });
+  const source = Object.freeze(Object.fromEntries(QUALIFICATION_PUBLICATIONS.map(name => [name, Object.freeze({ authority: label })])));
+  qualificationSources.set(source, Object.freeze({ binding, currentLocal, observer }));
+  return Object.freeze({ observer, source, currentLocal });
+}
+
+/**
+ * Returns true only for a `source` `createQualificationObserverSource` made, given the very `binding`, `currentLocal` and `observer`
+ * it was made with; a copy, another owner's or binding's members, or a demo transport is false. Grants no effect.
+ */
+export function isQualificationObserverSource(source, { binding, currentLocal, observer } = {}) {
+  const made = qualificationSources.get(source);
+  return made !== undefined && made.binding === binding && made.currentLocal === currentLocal && made.observer === observer;
 }
 
 export { isTp1AuthorityToken, authorityLabel as capabilityAuthorityLabel }; // the token module's rule a capability constructor admits its authority by
