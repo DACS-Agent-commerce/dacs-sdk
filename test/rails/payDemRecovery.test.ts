@@ -18,6 +18,12 @@ const request = (priorAttempts: readonly SettlementRecoveryAttempt[] = [prior()]
   rail: "pay-dem", phase: "pay-dem", phaseIndex: 0, jobId: "retained-native",
   amount: "1", asset: "DEM", payee: payeeClaim, expectedPayee: payeeClaim, priorAttempts,
 });
+/** The same request without recovery history. */
+const omitHistory = (req: SettleRequest): SettleRequest => {
+  const copy = { ...req };
+  delete copy.priorAttempts;
+  return copy;
+};
 const executed = () => ({
   ok: true as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
   blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" as const },
@@ -75,7 +81,7 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     const reconcile = vi.fn(async () => failed());
     const first = fixture(reconcile);
     const restarted = fixture(reconcile);
-    const { priorAttempts: _history, ...withoutHistory } = request([prior(true)]);
+    const withoutHistory = omitHistory(request());
     await expect(first.settle(request([prior(true)]))).rejects.toThrow(unresolved);
     await expect(first.settle({ ...withoutHistory, recoveryOnly: true })).rejects.toThrow(unresolved);
     await expect(first.settle(withoutHistory)).rejects.toThrow(unresolved);
@@ -89,9 +95,8 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
 
   test("keeps a hash unresolved when history records a success and then a failure for it", async () => {
     const f = fixture(vi.fn(async () => failed()));
-    const { priorAttempts: _history, ...withoutHistory } = request();
     await expect(f.settle(request([prior(true), prior(false)]))).rejects.toThrow(unresolved);
-    await expect(f.settle(withoutHistory)).rejects.toThrow(unresolved);
+    await expect(f.settle(omitHistory(request()))).rejects.toThrow(unresolved);
     expect(f.once).not.toHaveBeenCalled();
     expect(f.submit).not.toHaveBeenCalled();
   });
@@ -107,21 +112,21 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
 
   test("keeps a history success for one transaction unresolved when the store holds a permanent failure for another transaction under the same key", async () => {
     const otherHash = "34".repeat(32);
-    const otherFailure = () => ({
-      ...failed(), txHash: otherHash, failureProof: { ...failed().failureProof, txHash: otherHash },
-    });
-    const f = fixture(vi.fn(async () => otherFailure()));
-    const { amountOs: _amount, ...recorded } = otherFailure();
+    const recorded = {
+      ok: false as const, txHash: otherHash, payer, payee, chainId: "demos", blockNumber: 42,
+      txRefKind: "demos" as const, errorClass: "permanent" as const,
+      failureProof: { ...failed().failureProof, txHash: otherHash },
+    };
+    const f = fixture(vi.fn(async () => ({ ...recorded, amountOs: "1000000000" })));
     await f.store.once("pay-dem:retained-native:0", {
       bindingVersion: "1", railId: "pay-dem", jobId: "retained-native", phaseIndex: 0, phase: "pay-dem",
       amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM", payer, payee, network: "demos",
       finality: { model: "bft-final" },
     }, async () => recorded);
     f.once.mockClear();
-    const { priorAttempts: _history, ...withoutHistory } = request();
 
     await expect(f.settle(request([prior(true)]))).rejects.toThrow(/conflicts with the rail outcome/);
-    await expect(f.settle(withoutHistory)).rejects.toThrow(unresolved);
+    await expect(f.settle(omitHistory(request()))).rejects.toThrow(unresolved);
     expect(f.once).not.toHaveBeenCalled();
     expect(f.submit).not.toHaveBeenCalled();
   });

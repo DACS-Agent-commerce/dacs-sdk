@@ -14,7 +14,6 @@ import {
   snapshotWireJsonRead,
 } from "../canonical/snapshot.js";
 import { DacsError } from "../errors.js";
-import { hasKeys, isRecord } from "../wire/validate.js";
 import { createDemosClient } from "./demosClient.js";
 import { DEMOS_TRANSACTION_RECORD_MAX_BYTES, readDemosTransactionRecord } from "./demosRpc.js";
 import { demosAddressFromClaim, normalizeDemosNativeAddress } from "./demosAddress.js";
@@ -2489,10 +2488,14 @@ function retainedPreparedTransfer(
       `pay-dem prepared-transfer read must be an array of at most ${MAX_RETAINED_PAY_DEM_ATTEMPTS} entries`,
     );
   }
+  // After the snapshot every value is plain JSON.
   const entries = snapshotCanonicalJsonRead(reply, "pay-dem prepared-transfer read") as unknown[];
   let found: Record<string, unknown> | undefined;
-  for (const entry of entries) {
-    if (!isRecord(entry)) throw new DacsError("pay-dem prepared-transfer read has an entry that is not an object");
+  for (const value of entries) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new DacsError("pay-dem prepared-transfer read has an entry that is not an object");
+    }
+    const entry = value as Record<string, unknown>;
     if (canonicalDemosTxHash(entry.txHash) !== txHash) continue;
     if (found !== undefined && JSON.stringify(found) !== JSON.stringify(entry)) {
       throw new DacsError("pay-dem journal has conflicting prepared-transfer records for the retained transaction");
@@ -2518,9 +2521,11 @@ function retainedPreparedTransfer(
       normalizedDemosAccount(found.payee) !== normalizedDemosAccount(context.payee)) {
     throw new DacsError("pay-dem prepared-transfer record does not bind the requested payer, payee and amount");
   }
-  const recovery = found.recovery;
-  if (!hasKeys(recovery, RECOVERY_CONTEXT_KEYS) ||
-      !sameRecoveryContext(recovery as unknown as PayDemSettlementRecoveryContext, context)) {
+  const recovery = found.recovery as Readonly<PayDemSettlementRecoveryContext> | undefined;
+  if (recovery === null || typeof recovery !== "object" ||
+      Object.keys(recovery).length !== RECOVERY_CONTEXT_KEYS.length ||
+      !RECOVERY_CONTEXT_KEYS.every((key) => Object.hasOwn(recovery, key)) ||
+      !sameRecoveryContext(recovery, context)) {
     throw new DacsError("pay-dem prepared-transfer record does not bind this job's recovery context");
   }
   return found as unknown as PayDemPreparedTransfer;
