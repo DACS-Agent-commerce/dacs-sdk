@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged keyless signed relay after carrying the keyless signed relay fixes up into the second keyless part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-signed-relay.mjs",
+      "before": "6a808c45292b0c65d207257a6624e5666d7516bf",
+      "after": "6a808c45292b0c65d207257a6624e5666d7516bf"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-d3ddbdb48a21.json"
+  ],
+  "note": "Both sides of the merge recorded this file, so their newest records disagree; this record chooses the merged copy. It keeps the shared inner transport opening of the second part and checks a wallet request with the shared own-member check from the keyless signed relay fix. No file other than this record changes."
+}
