@@ -60,6 +60,9 @@ import { currentAuthorizationFor, lateSellerCreatePass } from '../../src/devnet-
 import { createDevnetPurchasedReportProducer } from '../../src/devnet-demo/deliverable.mjs';
 import { createDevnetDemoListingPublisher } from '../../src/devnet-demo/listing.mjs';
 import { createDevnetDemoDeliveryCapability } from '../../src/devnet-demo/native-delivery.mjs';
+import { createConnectionAuthorityReader } from '../../src/devnet-demo/connection-authority.mjs';
+import { openDoctorNode } from '../../src/devnet-demo/doctor-node.mjs';
+import { createNodeAuthorityReader } from '../../src/devnet-demo/seller-wallet-session.mjs';
 import { composeSellerApproval, createExactOperatorApproval, createSellerContextAdmission } from '../../src/devnet-demo/operator-approval.mjs';
 import { lateWriteWatchOpen } from '../../src/devnet-demo/late-write-watch.mjs';
 import { createInMemoryPartyVetStore, openPartyVetStore } from '../../src/devnet-demo/party-vet-store.mjs';
@@ -93,6 +96,9 @@ export function capabilityBuilders(t) {
     ['src/devnet-demo/agreement-context.mjs#createDevnetDemoAgreementContextProvider', (w) => w.provider],
     ['src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession', (w) => w.session.port],
     ['src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession.finalize()', async (w) => (await w.session.finalize()).session],
+    ['src/devnet-demo/seller-wallet-session.mjs#createNodeAuthorityReader', (w) => createNodeAuthorityReader({ owner: w.nodeWallet.owner, claim: () => seller.claim })],
+    ['src/devnet-demo/connection-authority.mjs#createConnectionAuthorityReader', (w) => createConnectionAuthorityReader({ owner: w.nodeWallet.owner, claim: () => seller.claim })],
+    ['src/devnet-demo/doctor-node.mjs#openDoctorNode', (w) => onClose(openDoctorNode({ rpcUrl: 'https://rpc.example.invalid/', sellerClaim: seller.claim, fetchImpl: w.nodeWallet.node.fetch }))],
     ['src/devnet-demo/listing.mjs#createDevnetDemoListingPublisher', () => createDevnetDemoListingPublisher({ anchor: { publish: async () => {}, read: async () => {}, verifyReceipt: async () => {} },
       sign: signer.sign, scanOwnListings: async () => ({ status: 'ok', anchors: [] }), loadRailResolution: async () => null, runCreate: testRunCreate().runCreate })],
     ['src/devnet-demo/create-pass.mjs#createSellerCreatePass', () => testRunCreate()],

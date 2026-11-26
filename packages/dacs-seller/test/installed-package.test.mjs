@@ -352,6 +352,45 @@ test('packed and installed outside the checkout, the kit contains src/dacs/autho
     'the installed host read the buyer\'s enrollment, and refuses its signed request once that enrollment is withdrawn');
 });
 
+test('the packed seller ships capability-authority.mjs, connection-authority.mjs, doctor-node.mjs, createNodeAuthorityReader, openDoctorNode, readSellerBalance and SELLER_TRANSPORT_AUTHORITY; its installed consumer gets the frozen two-member reader and the real held composition with TP1 publication declarations through the documented test seam, and the archive holds no seam', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
+  const packed = sellerPackFiles();
+  for (const file of ['src/dacs/capability-authority.mjs', 'src/devnet-demo/connection-authority.mjs', 'src/devnet-demo/doctor-node.mjs']) assert.ok(packed.includes(file), `${file} ships`);
+  assert.deepEqual(packed.filter((path) => /kit-guard-fixture|(?:^|\/)test\//.test(path)), [], 'the archive holds no test seam');
+  const app = preparedConsumer();
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-authority-')));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const script = `
+    import { createHash } from 'node:crypto';
+    import { canonicalize } from '@kynesyslabs/dacs';
+    import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+    import { createNodeTransportOwner, tp1AuthorityLabel } from '@kynesyslabs/dacs-client/node-wallet';
+    const { createNodeAuthorityReader, createSellerWalletSession } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-wallet-session.mjs');
+    const { openDoctorNode, readSellerBalance } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/doctor-node.mjs');
+    const { SELLER_TRANSPORT_AUTHORITY } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/connection-authority.mjs');
+    const { admitKitCapabilityAuthority } = await import('@kynesyslabs/dacs-seller/src/dacs/capability-authority.mjs');
+    const fetchImpl = async () => { throw new Error('TEST-offline'); };
+    const owner = createNodeTransportOwner({ endpoint: 'https://rpc.example.invalid/', transportAuthority: SELLER_TRANSPORT_AUTHORITY, fetchImpl });
+    const pair = createNodeAuthorityReader({ owner, claim: () => 'TEST-claim' });
+    const doctor = openDoctorNode({ rpcUrl: 'http://rpc.example.invalid/', sellerClaim: 'TEST-claim', fetchImpl });
+    const label = tp1AuthorityLabel({ recordDigest: createHash('sha256').update(canonicalize(TP1_APPROVED_IDENTITY_RECORD)).digest('hex') });
+    const publication = { authority: label, policy: 'TEST-policy', artifactKinds: [] };
+    const port = createSellerWalletSession({ endpoint: 'https://rpc.example.invalid/', transportAuthority: SELLER_TRANSPORT_AUTHORITY, fetchImpl,
+      signer: { claim: 'TEST-claim', sign: () => new Uint8Array(64) }, loadKeyRecord: async () => new Uint8Array(1), approve: async () => true, approvalMode: 'policy',
+      journalMode: 'create', publications: { demoArtifactPublication: publication } });
+    const unbound = await (async () => { try { admitKitCapabilityAuthority(label, { binding: undefined, refuse: () => { throw new TypeError('refused'); } }); return null; } catch (error) { return error.code; } })();
+    doctor.close();
+    const closed = await (async () => { try { await readSellerBalance({ owner: doctor.owner, address: '0x' + 'ab'.repeat(32) }); return null; } catch (error) { return error.code; } })();
+    await port.close();
+    owner.close();
+    process.stdout.write(JSON.stringify({ pair: Object.keys(pair).sort(), pairFrozen: Object.isFrozen(pair), doctor: Object.keys(doctor).sort(),
+      transportAuthority: SELLER_TRANSPORT_AUTHORITY, anchorAuthority: port.artifactAnchor.authority === label, unbound, closed }) + '\\n');`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS,
+    env: { PATH: process.env.PATH, TMPDIR: work, NODE_OPTIONS: kitGuardLoaderOptions(app, work) } });
+  assert.equal(child.status, 0, `the installed authority run failed\n${child.stdout}\n${child.stderr}`);
+  assert.deepEqual(JSON.parse(child.stdout.trim().split('\n').at(-1)), { pair: ['authority', 'connectionAuthority'], pairFrozen: true, doctor: ['close', 'observer', 'owner', 'readAuthority'],
+    transportAuthority: 'dacs-seller-tp1-node', anchorAuthority: true, unbound: 'authority_unbound', closed: 'transport_closed' });
+});
+
 test('from the packed archive with no hooks, a key opened while off yields its claim, and its returned sign refuses kit_operation_guard_off with zero cryptographic signer calls. (Round 4.) Its read-only role, given no current binding, signs nothing', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
   const preparedPath = process.env.DACS_SELLER_SMOKE_DIR;
   assert.ok(preparedPath, 'set DACS_SELLER_SMOKE_DIR to a directory made by npm run seller:prepare -- <dir>');
