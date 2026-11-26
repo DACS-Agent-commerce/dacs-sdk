@@ -1,0 +1,32 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client files after carrying the base up into the first part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "31f91ec8963d89a623a9c5b9dcf06843067476a9",
+      "after": "9b5f179df8c8eab541fede082b080baa34365103"
+    },
+    {
+      "path": "packages/dacs-client/src/util/http.mjs",
+      "before": "458dd317c87d5fabfa0be03c5a84665be20e7b5e",
+      "after": "64ba0c05e7fe05769280a5b30aafb018b587d75e"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "da8f88d6aae851c90d213cf477fb342549119210",
+      "after": "41000fa110c4686d311e54660f7aec9a5c0d1a75"
+    },
+    {
+      "path": "packages/dacs-client/test/read-only-listing-pure.test.mjs",
+      "before": "3ad9778bbae9f330276b7155b9ab063e4840ffbf",
+      "after": "179b9b21f08bbe8c133d56ad630c50d54cd010f9"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-3f4ba2bd94e0.json"
+  ],
+  "note": "The merge joined the base's node balance read, byte-limit code and capability label work with this part's plain-http refusal and read-only listing files. The manifest and node wallet session were merged by Git without a conflict; the bounded JSON transport keeps the base's response_byte_limit code (the read-only listing test now expects it) and the README sentence keeps both sides' additions. No file other than this record changes."
+}
