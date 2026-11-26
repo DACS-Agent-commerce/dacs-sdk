@@ -1240,10 +1240,10 @@ const declaredFees=(c)=>c?.kind===PAYMENT_EVIDENCE_CREATE_KIND?paymentEvidenceDe
 function expectedCreate(row,c,artifact,policy){
   let op;
   try{op=buildStorageProgramCreatePayload({from:c.wallet,storageAddress:c.storageAddress,programName:c.programName,logicalAddress:c.logicalAddress,signedListing:artifact,nonce:c.nonce,timestamp:c.timestamp}).content.data[1];}catch{return null;}
-  // The adapter's CREATE carries only these three members beside the logical address.
-  const bindings=c.kind===PAYMENT_EVIDENCE_CREATE_KIND?{}:{networkBinding:policy.sourceBinding,
+  // Every CREATE carries the seller's source binding. Beside it, the adapter's carries only the logical address, the artifact kind and two hashes.
+  const bindings={networkBinding:policy.sourceBinding,...(c.kind===PAYMENT_EVIDENCE_CREATE_KIND?{}:{
     ...(row.kind===DEVNET_DEMO_ARTIFACT_KIND?{artifactBinding:{version:'1',policy:DEVNET_DEMO_ARTIFACT_POLICY,authority:policy.artifactAuthority,artifactKind:c.artifactKind,jobId:c.jobId,logicalAddress:c.logicalAddress,writer:policy.seller}}:{}),
-    ...(c.artifactKind==='Deliverable'?{deliveryBinding:c.deliveryBinding}:{})};
+    ...(c.artifactKind==='Deliverable'?{deliveryBinding:c.deliveryBinding}:{})})};
   Object.assign(op.metadata,{contentHash:c.contentHash,envelopeHash:c.envelopeHash,artifactKind:c.artifactKind,...bindings});
   return op;
 }
@@ -1279,15 +1279,15 @@ const rowAdmits=(row,kind)=>row?.kind===kind||(row?.kind===SETTLEMENT_EVIDENCE_K
 // indeterminate (any other projection, or unknown payment authority). The
 // parties are the Agreement's primary claims, checked as the SDK compares
 // them: a canonical Demos agent buyer, this seller by CF-3 identity, and two
-// distinct identities. The Agreement's transport binding is the policy's, whole.
-// Payment names the transaction the observer verified, and only then.
+// distinct identities. The Agreement's transport binding is the buyer's own and shares only the policy's network, chain
+// identity, pin version and binding version (sharesBindingTuple). Payment names the transaction the observer verified, and only then.
 function purchaseState(p,policy,jobId){
   if(p===null)return 'none';
   if(p===false)return 'closed';
   if(!exact(p,PURCHASE_KEYS)||p.jobId!==jobId||canonicalDemosAgentPublicKey(p.buyer)===null||!sameCanonicalClaimIdentity(p.seller,policy.seller)||sameCanonicalClaimIdentity(p.buyer,p.seller)
     ||!same(p.listingPin,policy.listingPin())||typeof p.amountOs!=='string'||!POSITIVE_OS.test(p.amountOs)||![true,false,null].includes(p.prePaymentOpen))return 'indeterminate';
   if(p.agreementHash===null)return p.sourceBinding===null&&p.paymentObserved===null&&p.paymentTxRef===null?'draft':'indeterminate';
-  if(typeof p.agreementHash!=='string'||!HASH.test(p.agreementHash)||!same(p.sourceBinding,policy.sourceBinding)||typeof p.paymentObserved!=='boolean'
+  if(typeof p.agreementHash!=='string'||!HASH.test(p.agreementHash)||!sharesBindingTuple(p.sourceBinding,policy.sourceBinding)||typeof p.paymentObserved!=='boolean'
     ||(p.paymentObserved?!isPaymentTxRef(p.paymentTxRef):p.paymentTxRef!==null))return 'indeterminate';
   return p.paymentObserved?'paid':p.prePaymentOpen===false?'closed':'agreed-unpaid';
 }
@@ -1349,7 +1349,7 @@ export async function policyRefusal(request,policy,limits,{held=false}={}){
  * nonce step as decimal strings, and a gas_operation with exactly the declared fees, as the client reader accepts
  * (sdk-provider.mjs anchorContentMatches). Never rounds or coerces a fee. */
 export function confirmedWriteOs(validity,request){
-  const data=validity?.response?.data,tx=data?.transaction,c=tx?.content,r=request?.content,fees=declaredFees(r),adapter=r?.kind===PAYMENT_EVIDENCE_CREATE_KIND;
+  const data=validity?.response?.data,tx=data?.transaction,c=tx?.content,r=request?.content,fees=declaredFees(r);
   const postFork=c?.amount==='0',hashBound=typeof tx?.hash==='string'&&HASH.test(tx.hash);
   const wireOs=(value)=>postFork?(typeof value==='string'&&OS.test(value)?BigInt(value):null)
     :Number.isSafeInteger(value)&&value>=0&&!Object.is(value,-0)?BigInt(value)*OS_PER_DEM:null;
@@ -1357,8 +1357,8 @@ export function confirmedWriteOs(validity,request){
   const feesMatch=(value,keys)=>exact(value,keys)&&['network_fee','rpc_fee','additional_fee'].every((key,i)=>wireOs(value[key])===[fees[2],fees[3],0n][i]);
   if(fees===null||validity?.result!==200||data?.valid!==true||data.custom_charges!=null
     ||!(data.gas_operation==null||(exact(data.gas_operation,['fees'])&&feesMatch(data.gas_operation.fees,['network_fee','rpc_fee','additional_fee'])))
-    ||!exact(c,adapter?PAYMENT_EVIDENCE_CONFIRMED_CONTENT_KEYS:CONFIRMED_CONTENT_KEYS)||c.type!=='storageProgram'||!(postFork||c.amount===0)||c.from!==r.wallet||c.from_ed25519_address!==r.wallet
-    ||c.to!==r.storageAddress||!integer(c.nonce,r.nonce)||!integer(c.timestamp,r.timestamp)||(!adapter&&(c.network!==r.network||c.chainIdentity!==r.chainIdentity))
+    ||!exact(c,CONFIRMED_CONTENT_KEYS)||c.type!=='storageProgram'||!(postFork||c.amount===0)||c.from!==r.wallet||c.from_ed25519_address!==r.wallet
+    ||c.to!==r.storageAddress||!integer(c.nonce,r.nonce)||!integer(c.timestamp,r.timestamp)||c.network!==r.network||c.chainIdentity!==r.chainIdentity
     ||!Array.isArray(c.data)||c.data.length!==2||c.data[0]!=='storageProgram'||JSON.stringify(c.data[1])!==r.exactCreate
     ||!feesMatch(c.transaction_fee,['network_fee','rpc_fee','additional_fee','rpc_address'])||c.transaction_fee.rpc_address!==null)return null;
   return confirmedEditsMatch(c.gcr_edits,r,c.data[1].metadata,fees,wireOs,integer,hashBound?tx.hash:null)?fees[0]+fees[1]:null;
@@ -1439,10 +1439,14 @@ const DELIVERY_EVIDENCE_KEYS=['evidenceVersion','jobId','phase','outcome','dacsS
 // The purchase resolver's projection members (seller-purchase-source.mjs).
 const PURCHASE_KEYS=['jobId','seller','buyer','listingPin','sourceBinding','agreementHash','amountOs','paymentObserved','paymentTxRef','prePaymentOpen'];
 
-// The executed CREATE content keys (Node 61b8e75, as the client checks them). The payment-evidence adapter's signed
-// transaction carries no network or chain identity member: its request names them and the adapter checks the node's chain.
+// The executed CREATE content keys (Node 61b8e75, as the client checks them), the payment-evidence adapter's included.
 const CONFIRMED_CONTENT_KEYS=['type','from','from_ed25519_address','to','amount','data','nonce','timestamp','transaction_fee','network','chainIdentity','gcr_edits'];
-const PAYMENT_EVIDENCE_CONFIRMED_CONTENT_KEYS=CONFIRMED_CONTENT_KEYS.filter(key=>key!=='network'&&key!=='chainIdentity');
+
+// The members a buyer's Agreement binding shares with the seller's source binding: the SR-2 readback's tuple for another writer's
+// binding and the binding version. Each must be a non-empty string equal to the seller's; the buyer's endpoint, authority and
+// publications are its own.
+const SHARED_BINDING_MEMBERS=['network','chainIdentity','pinVersion','bindingVersion'];
+const sharesBindingTuple=(buyer,seller)=>SHARED_BINDING_MEMBERS.every(key=>typeof buyer?.[key]==='string'&&buyer[key].length>0&&buyer[key]===seller?.[key]);
 
 // Canonical equality; anything that is not JSON is unequal.
 const same=(a,b)=>{try{return canonicalize(a)===canonicalize(b);}catch{return false;}};

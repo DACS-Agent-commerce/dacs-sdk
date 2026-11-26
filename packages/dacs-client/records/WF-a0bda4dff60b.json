@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged node wallet session with the base node endpoint rule and paid approval and the payment evidence transport binding",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "5ec59d45a0b7c1f46d73a4b5cb446f4193898adb",
+      "after": "5ec59d45a0b7c1f46d73a4b5cb446f4193898adb"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-a0bda4dff60b.json"
+  ],
+  "note": "Both sides of the merge recorded this source; this record chooses the merged copy, which holds the base node endpoint rule and paid write approval and this side's seller transport binding for the payment evidence adapter."
+}
