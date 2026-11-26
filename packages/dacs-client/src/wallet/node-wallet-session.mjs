@@ -11,10 +11,10 @@ import { canonicalize } from '@kynesyslabs/dacs';
 import { assertTp1Binding, bindTp1Profile, canonicalNodeEndpoint, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { isTp1AuthorityLabel } from '../dacs/tp1-authority-label.mjs';
 import { assertPurchaseActionsAdmitted } from '../dacs/action-admission.mjs';
-import { isTp1AuthorityToken, registerTp1Token } from '../dacs/tp1-authority-token.mjs';
+import { authorityLabel, isTp1AuthorityToken, registerTp1Token } from '../dacs/tp1-authority-token.mjs';
 import { AUTHORITY_READ_DEADLINE_MS, POSITIVE_OS_AMOUNT, admitPublicFactory, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
 import { claimForAddress } from '../signatures.mjs';
-import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
+import { observeWithDeadline, OutboundError, RESPONSE_BYTE_LIMIT, settleOnAbort } from '../util/http.mjs';
 import { NODE_WALLET_NETWORK, approvedSourcePolicy, checkConstruction, fail, readExpectedPins, withinAuthorityDeadline } from './approved-record-pins.mjs';
 import { createAuthorityReader } from './authority-reader.mjs';
 import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade } from './devnet-native-transport.mjs';
@@ -245,10 +245,10 @@ function listsWithin(value, limit) {
  * Returns the session's stage-one authority capability for a node owner: `{authorityRpc(body, {signal}), claim(), context(),
  * connectionGeneration()}`, with no sign or send. `authorityRpc` sends one node read over the owner's current transport and resolves
  * the decoded reply. Only `getBlockByNumber` and `getNetworkInfo` are sent (readonly_only for anything else). It takes no connection fence,
- * journal lock or signer, so it works while an effect pass holds the fence. A reply is limited to 4 MiB before decoding and 1024
- * entries per array or object after (authority_list_too_large). At most four reads run at once; the rest queue inside the same 10 s deadline
- * (tp1_authority_timeout, cause kept). A caller's abort rejects with its own reason. A failed fetch, body read or decode rejects with
- * its original error. `claim` is read synchronously by the production reader; `connectionGeneration()` is the owner's connection id.
+ * journal lock or signer, so it works while an effect pass holds the fence. A reply is limited to 4 MiB before decoding (authority_reply_too_large,
+ * byte-limit OutboundError as cause) and 1024 entries per array or object after (authority_list_too_large). At most four reads run at once; the rest
+ * queue inside the same 10 s deadline (tp1_authority_timeout, cause kept). A caller's abort rejects with its own reason. Any other failed fetch, body
+ * read or decode rejects with its original error. `claim` is read synchronously by the production reader; `connectionGeneration()` is the owner's connection id.
  * Throws TypeError for an owner the observer refuses or a `claim` that is not a function.
  */
 export function createNodeAuthorityCapability({ owner, claim } = {}) {
@@ -259,7 +259,8 @@ export function createNodeAuthorityCapability({ owner, claim } = {}) {
     const request = body?.method === 'nodeCall' && body.params?.length === 1 ? body.params[0] : undefined;
     if (!AUTHORITY_READ_MESSAGES.includes(request?.message)) fail('readonly_only');
     const read = { method: 'nodeCall', params: [{ message: request.message, data: request.data }] };
-    const answer = await withinAuthorityDeadline(({ signal: stop }) => runQueued(() => source.post(read, {}, { signal: stop }), stop), signal);
+    const answer = await withinAuthorityDeadline(({ signal: stop }) => runQueued(() => source.post(read, {}, { signal: stop }), stop), signal)
+      .catch((error) => (error instanceof OutboundError && error.code === RESPONSE_BYTE_LIMIT ? fail('authority_reply_too_large', error) : Promise.reject(error)));
     if (!listsWithin(answer, AUTHORITY_READ_MAX_LIST_ENTRIES)) fail('authority_list_too_large');
     return answer;
   }
@@ -291,7 +292,8 @@ export async function admitTp1Authority({ binding, currentLocal } = {}) {
   return token;
 }
 
-export { isTp1AuthorityToken };
+export { isTp1AuthorityToken, authorityLabel as capabilityAuthorityLabel }; // the token module's rule a capability constructor admits its authority by
+export { readNodeAddressBalance } from './node-address-balance.mjs';
 
 /** Returns the label string of a token, or a canonical `TP1-` or `TEST-` label unchanged. Throws authority_unbound for anything else. */
 export function authorityLabelOf(value) {
@@ -755,7 +757,7 @@ async function buildNodeComposition(options, seller, requirePass = false) {
       await evidenceDemos.connectWallet(normalizeMnemonic(mnemonic), { algorithm: 'ed25519' });
     }
     const paymentEvidenceAdapter = seller ? createHeldAdapter(admission, createPaymentEvidenceCreateAdapter({ reservations, approval: paymentEvidenceApproval,
-      demos: evidenceDemos, observer, journal, pins: expected, clock, rpcUrl: transactionTransport.rpcUrl, isWalletLocked: () => session.isLocked(),
+      demos: evidenceDemos, observer, journal, pins: expected, transportBinding: transport.transportBinding, clock, rpcUrl: transactionTransport.rpcUrl, isWalletLocked: () => session.isLocked(),
       owner, fetchImpl, stamps, stopped, recordCause })) : null;
     const wallet = walletFactory();
     const composition = Object.freeze({ wallet, walletFactory, ...(paidApproval ? { preparePaidWrite: (...args) => wallet.preparePaidWrite(...args), authorizePaidWrite: (...args) => wallet.authorizePaidWrite(...args) } : {}), internalCauseOf, effectPass: gate.effectPass, runInEffectPass: gate.runInEffectPass, effectBoundary,

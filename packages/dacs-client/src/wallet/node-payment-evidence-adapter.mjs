@@ -77,7 +77,7 @@ const NODE_ADDRESS_PREFIX = 'did:demos:agent:';
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 const FINISHED_LANE_STAGES = ['observed', 'failed'];
 const INPUT_FIELDS = ['logicalAddress', 'artifact', 'writer', 'artifactKind', 'jobId', 'receiptContentHash'];
-const BUILT_CONTENT_MEMBERS = ['type', 'from', 'to', 'data', 'nonce', 'timestamp'];
+const BUILT_CONTENT_MEMBERS = ['type', 'from', 'to', 'data', 'nonce', 'timestamp', 'network', 'chainIdentity'];
 const FINAL_CONTENT_KEYS = [...BUILT_CONTENT_MEMBERS, 'amount', 'from_ed25519_address', 'transaction_fee', 'gcr_edits'].sort().join();
 
 const refuse = (code, cause) => new OperationError(code, code, undefined, cause === undefined ? undefined : { cause });
@@ -116,12 +116,15 @@ function debitOf(operation, networkFeeDem, rpcFeeDem) {
 }
 
 // The CREATE as the journal checks it, its approval request, and the closure that compares the SDK's finalized content with both.
-function planCreate(request, { signer, nonce, timestamp, postFork, networkFeeDem, rpcFeeDem, pins, assertUnlocked }) {
+// Like the SR-2 adapter's source writes, the CREATE names the pinned network and chain in its content and the source's transport
+// binding in its metadata, which the seller host's readback requires.
+function planCreate(request, { signer, nonce, timestamp, postFork, networkFeeDem, rpcFeeDem, pins, networkBinding, assertUnlocked }) {
   const storageAddress = deriveStorageAddress(signer, request.programName, nonce, '');
   const transaction = buildStorageProgramCreatePayload({ from: signer, storageAddress, programName: request.programName,
     logicalAddress: request.logicalAddress, signedListing: request.artifact, nonce, timestamp });
+  Object.assign(transaction.content, { network: pins.network, chainIdentity: pins.chainIdentity });
   const operation = transaction.content.data[1], envelopeHash = sha256Hex(canonicalize(request.artifact));
-  operation.metadata = { logicalAddress: request.logicalAddress, artifactKind: request.artifactKind, contentHash: request.receiptContentHash, envelopeHash };
+  operation.metadata = { logicalAddress: request.logicalAddress, artifactKind: request.artifactKind, contentHash: request.receiptContentHash, envelopeHash, networkBinding };
   const amountOf = dem => (postFork ? String(dem * OS_PER_DEM) : Number(dem));
   const { storageFeeDem, totalDebitOs } = debitOf(operation, networkFeeDem, rpcFeeDem);
   const fee = { network_fee: amountOf(networkFeeDem), rpc_fee: amountOf(rpcFeeDem), additional_fee: amountOf(0n), rpc_address: null };
@@ -156,7 +159,9 @@ function planCreate(request, { signer, nonce, timestamp, postFork, networkFeeDem
 /**
  * Creates the payment-evidence CREATE adapter over the composition's signer reservations and a Demos instance bound to the
  * seller's wallet. `owner`, `fetchImpl` and `stamps` are the composition's transport owner, its effect-gated fetch and its RPC
- * stamp source; `recordCause(answer, error)` keeps the cause of a `pending` answer. Returns `{approveAhead, approveSendAhead,
+ * stamp source; `recordCause(answer, error)` keeps the cause of a `pending` answer. `transportBinding` is the seller transport's
+ * Agreement source binding, which every CREATE carries as `metadata.networkBinding`; construction throws
+ * `TypeError('transport_binding_required')` when it is not a plain object. Returns `{approveAhead, approveSendAhead,
  * signCreate, broadcast, readAccountNonce, readTransactionState}`. `signCreate(input, {signal})` resolves `{signedTransaction, txHash, nonce}`: the JSON
  * of exactly `{hash, content, signature}`, its hash and its account nonce. It must run inside the caller's effect pass and
  * sends nothing. It rejects `signer_input_invalid`, `signer_lane_busy`, `locked` (the session's wallet is locked),
@@ -189,7 +194,10 @@ function planCreate(request, { signer, nonce, timestamp, postFork, networkFeeDem
  * passes the bytes and nonce it keeps, which also reads a CREATE whose reservation has ended. Given `{txHash}` alone, it reads back
  * the bytes and nonce of the reservation holding that hash, and is `pending` when none does.
  */
-export function createPaymentEvidenceCreateAdapter({ reservations, approval, demos, observer, journal, pins, clock, rpcUrl, isWalletLocked, owner, fetchImpl, stamps, stopped, recordCause }) {
+export function createPaymentEvidenceCreateAdapter({ reservations, approval, demos, observer, journal, pins, transportBinding, clock, rpcUrl, isWalletLocked, owner, fetchImpl, stamps, stopped, recordCause }) {
+  if (!isObject(transportBinding)) throw new TypeError('transport_binding_required');
+  // Kept as canonical text, so each plan gets its own copy and a later change to the caller's object reaches no CREATE.
+  const bindingText = canonicalize(transportBinding);
   const signer = String(demos.getAddress()).toLowerCase(), inQueue = createQueue();
   // The sign attempts of `approveAhead` that this adapter made and that have not ended.
   const liveAttempts = new Set();
@@ -250,7 +258,7 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
   // Reads the fees, plans the CREATE at `nonce` and stores its exact approval request on the reservation.
   async function planFresh(request, reservation, nonce, signal) {
     const debitInputs = await readDebitInputs(signal);
-    const plan = planCreate(request, { signer, nonce, timestamp: clock.now(), pins, assertUnlocked, ...debitInputs });
+    const plan = planCreate(request, { signer, nonce, timestamp: clock.now(), pins, networkBinding: JSON.parse(bindingText), assertUnlocked, ...debitInputs });
     const requestText = JSON.stringify(plan.approvalRequest);
     signal.throwIfAborted();
     return { held: await reservations.bindApprovalIntent(reservation, requestText), plan, requestText, debitInputs };
@@ -466,7 +474,15 @@ export function createPaymentEvidenceCreateAdapter({ reservations, approval, dem
     const { ed25519_signature: dual = null, attrs, ...reported } = isObject(executed) ? executed : {};
     return hasKeys(reported, ['hash', 'content', 'signature', 'status', 'blockNumber']) && (dual === null || dual === '') && (attrs === undefined || isObject(attrs))
       && reported.hash === tx.hash && reported.status === 'confirmed' && reported.blockNumber === blockNumber && sameJson(reported.signature, tx.signature)
-      && isObject(reported.content) && demosTransactionContentMatches(tx.content, reported.content, tx.hash);
+      && isObject(reported.content) && demosTransactionContentMatches(tx.content, comparedExecutedContent(tx.content, reported.content), tx.hash);
+  }
+  // The node's executed copy can omit the pinned network and chain identity the signed CREATE carries. Only when it omits both, and
+  // the signed content names the pinned ones, are they taken from the signed content for the comparison, as the seller host's
+  // readback does; an executed copy that carries either member is compared as served.
+  function comparedExecutedContent(signed, executed) {
+    const signedPins = signed.network === pins.network && signed.chainIdentity === pins.chainIdentity;
+    const omitsBoth = !Object.hasOwn(executed, 'network') && !Object.hasOwn(executed, 'chainIdentity');
+    return signedPins && omitsBoth ? { ...executed, network: signed.network, chainIdentity: signed.chainIdentity } : executed;
   }
   // An authenticated block of this chain that lists the hash; block one's previous hash is the chain identity. Only the members that
   // decide this are read: the block's `content` also carries the node's other members, which are accepted.

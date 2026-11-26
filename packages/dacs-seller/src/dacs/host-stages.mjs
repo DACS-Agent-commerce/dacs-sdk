@@ -38,7 +38,8 @@ function checkWalletSession(walletSession) {
  * Opens the first three stages and resolves `{ binding, local(), bootstrap, finalize(input), close() }`. `walletSession` is the
  * session port: its read-only `authority` capability, its `connectionAuthority` reader, `finalize(input)` and an optional
  * `close()`; once its shape is checked the stages own it. The other inputs feed the reader and the bootstrap scopes.
- * `binding` is made through the production reader, each read within 10,000 ms; `local()` reads the current connection.
+ * `binding` is made through the production reader, each read within 10,000 ms; each read's abort signal, which the reader
+ * passes to `participantImplementations.entriesFor`, is aborted when the read ends or times out. `local()` reads the current connection.
  * `finalize({ dataDirectory, stopped, stateLock })`, called under the state lock, creates and syncs `<dataDirectory>/effects`,
  * builds the one effect boundary over `binding`, finalizes the session with it and resolves `{ effectBoundary, session }`.
  * `close()` closes the finalized session, then the port, once. Throws TypeError for a malformed port. Rejects with a missing
@@ -61,7 +62,11 @@ export async function openSellerStages({ walletSession, participantImplementatio
     bootstrap = createBootstrapScopes({ sellerClaim, listingPin, retainedJob, maxConcurrent });
     const reader = createSellerAuthorityReader({ connectionAuthority: walletSession.connectionAuthority, identityRecord: TP1_APPROVED_IDENTITY_RECORD,
       claim: sellerClaim, listingPin, bootstrap, retainedJob, participantImplementations });
-    const readAuthority = (scope) => withinAuthorityDeadline(() => reader(scope));
+    // Each read gets its own signal, aborted when the read ends or its deadline passes, so the host's enrollment source can stop.
+    const readAuthority = (scope) => {
+      const read = new AbortController();
+      return withinAuthorityDeadline(() => reader(scope, read.signal)).finally(() => read.abort());
+    };
     binding = await withinAuthorityDeadline(() => bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: local(), readAuthority }));
   } catch (error) {
     // The binding error is the one reported; a failed close travels with it as `cleanupError` where the error can carry it.

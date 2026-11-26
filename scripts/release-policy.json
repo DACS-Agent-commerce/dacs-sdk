@@ -28,15 +28,15 @@
     {
       "name": "@kynesyslabs/dacs-client", "directory": "packages/dacs-client",
       "preparationBlockers": ["private package is not releasable"],
-      "preparationManifestSha256": "b5a9b868bc3e2763126f8f064637a717f4b8bbe8b7407fade973f61f0558fb8b",
+      "preparationManifestSha256": "8d1488a6b0ea1df73abd7deeec4a04a33e211d9446cd12c20b768444e0d46c7c",
       "preparationSnapshotBlockers": ["@kynesyslabs/dacs-client: release identity or publish policy is invalid"],
-      "requiredExports": [".", "./wallet/durable-journal", "./substrate/demos"],
+      "requiredExports": [".", "./wallet/durable-journal", "./substrate/demos", "./purchase/wallet-bridge"],
       "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
     },
     {
       "name": "@kynesyslabs/dacs-seller", "directory": "packages/dacs-seller",
       "preparationBlockers": ["private package is not releasable"],
-      "preparationManifestSha256": "a9acab08c48ba658307db26fad9958b019e1a7674a6b50c83303b25f68383d91",
+      "preparationManifestSha256": "f3733df0dbf9e97b6ef12c599ba752855928d10f830155b963acd34578ffc429",
       "preparationSnapshotBlockers": ["@kynesyslabs/dacs-seller: release identity or publish policy is invalid"],
       "requiredExports": ["."],
       "allow": ["package.json", "README.md", "LICENSE", "bin/**/*.mjs", "src/**/*.mjs", "PROFILE.json", "ADMISSION.md", "SOURCES.md"]

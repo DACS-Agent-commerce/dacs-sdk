@@ -45,7 +45,13 @@ case "${1-}" in
 import { appendFileSync } from "node:fs";
 import { readBoundedFile } from "./scripts/acceptance-evidence-io.mjs";
 const file = readBoundedFile(process.argv[2]);
-if (file) appendFileSync(process.env.GITHUB_STEP_SUMMARY, '## Registry-shaped consumer acceptance\n' + file.bytes.toString("utf8") + '\n');
+if (file) {
+  const content = file.bytes.toString("utf8");
+  let fenceLength = 3;
+  for (const run of content.matchAll(/`+/g)) fenceLength = Math.max(fenceLength, run[0].length + 1);
+  const fence = "`".repeat(fenceLength);
+  appendFileSync(process.env.GITHUB_STEP_SUMMARY, '## Registry-shaped consumer acceptance\n\n' + fence + 'json\n' + content + '\n' + fence + '\n');
+}
 NODE
     ;;
   *) echo 'usage: acceptance-ci.sh <acceptance|drift|summary>' >&2; exit 1 ;;
