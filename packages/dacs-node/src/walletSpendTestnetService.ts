@@ -22,7 +22,10 @@ import {
   openDacsWalletSpendDemEvidenceStoreV1,
 } from "./walletSpendTestnetDemRecovery.js";
 import { createRetainingDacsWalletSpendOperationLogV1 } from "./walletSpendTestnetOperationLog.js";
-import { createDacsWalletSpendTestnetRecoveryV1 } from "./walletSpendTestnetRecovery.js";
+import {
+  DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS,
+  createDacsWalletSpendTestnetRecoveryV1,
+} from "./walletSpendTestnetRecovery.js";
 import {
   DacsWalletSpendTestnetAuthorityError,
   loadDacsWalletSpendTestnetAuthoritySettingsV1,
@@ -51,8 +54,13 @@ type Settings = Readonly<DacsWalletSpendTestnetAuthoritySettingsV1>;
 
 const BUYER_ROLE = "buyer";
 const OWNER = "dacs-wallet-spend-testnet-authority";
-/** Operations the log keeps; once full, the oldest completed one is dropped for a new claim. */
+/**
+ * Operations the log keeps; once full, the oldest completed one is dropped for a
+ * new claim, but not before it has been kept long enough for a client that lost
+ * the reply to query it (the client's request timeout is at most one minute).
+ */
 const RETAINED_OPERATIONS = 50_000;
+const RETAINED_OPERATION_MIN_MS = 5 * 60_000;
 const HEADERS_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const STOP_GRACE_MS = 5_000;
@@ -205,10 +213,14 @@ const reportLine = (line: Readonly<Record<string, string>>): void => {
   process.stderr.write(`${JSON.stringify(line)}\n`);
 };
 
-/** The x402 lane: Base Sepolia reads and its chain rule, which binds each hold's validBefore. */
+/**
+ * The x402 lane: Base Sepolia reads and its chain rule, which binds each hold's validBefore and
+ * releases a hold only on a cancel or an expiry at the service's release depth.
+ */
 function x402Lane(stores: Lane["stores"], policy: Lane["policy"], reader: Readonly<DacsWalletSpendEvmReaderV1>): Lane {
   const recovery = createDacsWalletSpendTestnetRecoveryV1({
     policy, reader, readState: headStateReader(stores), report: reportLine,
+    releaseFinalityBlocks: DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS,
   });
   return {
     stores,
@@ -272,7 +284,9 @@ function composeHandler({ settings, tokenDigest, lanes }: Readonly<{
         dependencies: { ...lane.dependencies, owner: OWNER },
       });
     },
-    operations: createRetainingDacsWalletSpendOperationLogV1(RETAINED_OPERATIONS),
+    operations: createRetainingDacsWalletSpendOperationLogV1(
+      RETAINED_OPERATIONS, RETAINED_OPERATION_MIN_MS,
+    ),
   });
 }
 
