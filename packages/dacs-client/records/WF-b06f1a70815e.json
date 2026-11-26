@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest and public API test after carrying the base up into the first part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "da63fce6897af938f85f5dd971d591880a64fed8",
+      "after": "da63fce6897af938f85f5dd971d591880a64fed8"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "2de48b764ae78126149ea6c65d0a73eeb91905af",
+      "after": "2de48b764ae78126149ea6c65d0a73eeb91905af"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-b06f1a70815e.json"
+  ],
+  "note": "Both sides of the merge of the base recorded these files, so their newest records disagree; this record chooses the merged copies. Git merged both without a conflict. No file other than this record changes."
+}

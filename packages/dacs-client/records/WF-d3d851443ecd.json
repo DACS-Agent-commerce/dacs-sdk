@@ -1,0 +1,49 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF re-export the capability authority rule, type the authority reply byte cap and add a bounded node balance read",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "f59e2925ab81b2575ed07530e26d5722839103be",
+      "after": "78247e7665a1d2bd0561d0672b5e8acf6e7b4f20"
+    },
+    {
+      "path": "packages/dacs-client/src/util/http.mjs",
+      "before": "01c62b14963d1579c1a2e3cc02ffd392dff692a6",
+      "after": "c86089c49b04120c080baf94c2e157872ec5a331"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-address-balance.mjs",
+      "before": null,
+      "after": "073a07797e851643198622a94b411d85e1815cdc"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "a07e11e8a5d7cdc21711f824d6e87476bd2fc7b4",
+      "after": "a9f0f9bb7863ca0910b89f62f1c090d44aaf49e6"
+    },
+    {
+      "path": "packages/dacs-client/test/authority-reader.test.mjs",
+      "before": "541f805b0d1f7fafac99369030a42a09cd7c6899",
+      "after": "0a6ae2df0fc9d48561f79491296808a3eb8b4c56"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "9ad3961b96bd210a78423c632c3a34c9f6056d33",
+      "after": "67508236e40aec7121b3d4aacaa05773a5328831"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-d3d851443ecd.json",
+    "packages/dacs-client/src/util/http.mjs",
+    "packages/dacs-client/src/wallet/node-address-balance.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/test/authority-reader.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs"
+  ],
+  "note": "The node-wallet entry re-exports the token module's existing authorityLabel rule as capabilityAuthorityLabel, unchanged, so the seller kit admits a capability authority by the client's rule. An authority reply over the 4 MiB byte limit now refuses authority_reply_too_large with the byte-limit OutboundError, which carries code response_byte_limit, as cause; the decoded list limit and other errors are unchanged. readNodeAddressBalance, in its own module and re-exported by the node-wallet entry, reads one exact OS balance over an owner's own connection within 65,536 bytes and 10,000 ms and signs nothing. No core file changes, so HOLD.json is not re-pinned."
+}

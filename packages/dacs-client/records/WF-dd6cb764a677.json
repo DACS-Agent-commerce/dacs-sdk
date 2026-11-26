@@ -1,0 +1,10 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "chore(client): record the keystore export-count test change",
+  "sha": "dd6cb764a677af9e7e5d54dc57481c83f29054be",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/records/WF-c8f293307c24.json"
+  ]
+}

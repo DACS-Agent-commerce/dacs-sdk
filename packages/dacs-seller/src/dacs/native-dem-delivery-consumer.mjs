@@ -2,18 +2,21 @@
 // limit after the capability returns it; wire bytes inside a capability's own transport are not
 // capped here. Reconcile, read and verify also run under a deadline; a submit does not.
 // A missed deadline never proves that no write occurred.
-import { isDemDeliveryContextAuthority } from './dem-delivery-context-consumer.mjs';
+import { isTp1AuthorityToken } from '@kynesyslabs/dacs-client/node-wallet';
+import { admitKitCapabilityAuthority } from './capability-authority.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { resolveWithDeadline, boundedResolutionValue, isResolverDeadline } from '../util/bounded-resolution.mjs';
 export const NATIVE_DEM_DELIVERY_SOURCE = 'dacs-chatgpt-plugin/native-dem-delivery/v1';
 const capabilities = new WeakMap();
+const refuseConfiguration = () => { throw new TypeError('native DEM delivery requires explicit TEST authority or bound TP-1 token and complete seller/buyer operations'); };
 
-/** Register native operations. submitAuthorized(input, authorize) calls authorize('signing') last before it signs; anything but true signs nothing. A seller agent requires submitAuthorized; submit defaults to it. */
-export function createNativeDemDeliveryCapability({ authority, submitAuthorized, submit = submitAuthorized, reconcile, read, verifyReceipt }) {
-  if (!isDemDeliveryContextAuthority(authority) || [submit, reconcile, read, verifyReceipt].some(fn => typeof fn !== 'function')) {
-    throw new TypeError('native DEM delivery requires explicit TEST authority and complete seller/buyer operations');
-  }
-  const capability = Object.freeze({ source: NATIVE_DEM_DELIVERY_SOURCE, authority });
+/** Register native operations. submitAuthorized(input, authorize) calls authorize('signing') last before it signs; anything but true signs nothing. A seller agent requires submitAuthorized; submit defaults to it.
+ * `authority` is a `TEST-` label or a TP-1 token admitted for `binding`, refused as createDemDeliveryContext says; the capability keeps only the label. */
+export function createNativeDemDeliveryCapability({ authority, binding, submitAuthorized, submit = submitAuthorized, reconcile, read, verifyReceipt }) {
+  if (isTp1AuthorityToken(authority)) assertKitOperationAdmitted('createNativeDemDeliveryCapability');
+  if ([submit, reconcile, read, verifyReceipt].some(fn => typeof fn !== 'function')) refuseConfiguration();
+  const label = admitKitCapabilityAuthority(authority, { binding, refuse: refuseConfiguration });
+  const capability = Object.freeze({ source: NATIVE_DEM_DELIVERY_SOURCE, authority: label });
   capabilities.set(capability, { submit, submitAuthorized, reconcile, read, verifyReceipt });
   return capability;
 }

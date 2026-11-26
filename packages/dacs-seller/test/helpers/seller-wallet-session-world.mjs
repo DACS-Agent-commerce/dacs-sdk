@@ -93,7 +93,8 @@ export async function walletSessionWorld(t, { directory = privateDataDirectory(t
     if (keyReturned && !closedInBuild) { closedInBuild = true; world.port.close(); }
     return lock.held();
   } };
-  world.finalize = () => world.stages.finalize({ dataDirectory: directory, stopped: async () => false, stateLock: world.stateLock });
+  // The stop check is synchronous: the session's payment-evidence adapter reads it before each approval ask.
+  world.finalize = (stopped = () => false) => world.stages.finalize({ dataDirectory: directory, stopped, stateLock: world.stateLock });
   world.issuanceJournals = () => [COMPOSITION_JOURNAL, ARTIFACT_JOURNAL].filter((name) => existsSync(join(directory, name)));
   world.executeStages = () => node.reads.filter((read) => EXECUTE_STAGES.includes(read)).length;
   return world;

@@ -17,6 +17,7 @@ import DatabaseSync from 'better-sqlite3';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { api, COMPOSITION_JOURNAL, createSellerNodeWallet, evidenceInput, inWalletPass, nodeConnection, persistedApproval, preparedWrite, replayNode,
   sellerApproval, setPurchaseAdmission, spyTransactionSignatures, walletOptions } from './seller-node-wallet-world.mjs';
+import { journalOverAdapter } from './payment-evidence-test-journals.mjs';
 
 const { acquireSellerStateLock } = await import('../../src/devnet-demo/seller-state-lock.mjs');
 const { openDurableWalletJournal } = await import('@kynesyslabs/dacs-client/wallet/durable-journal');
@@ -55,9 +56,10 @@ if (mode === 'anchor:sent') {
     return die();
   };
 }
-const wallet = await createSellerNodeWallet(await walletOptions({ connection, directory, stateLock, journalMode, approve: sellerApproval(approval) }));
-const world = { owner: connection.owner, wallet, node };
-if (action === 'anchor') await inWalletPass(world, () => wallet.paymentEvidence.anchorEvidence(evidenceInput(world)));
+const options = await walletOptions({ connection, directory, stateLock, journalMode, approve: sellerApproval(approval) });
+const wallet = await createSellerNodeWallet(options);
+const world = { owner: connection.owner, wallet, node, directory, options };
+if (action === 'anchor') await inWalletPass(world, () => journalOverAdapter(world).anchorEvidence(evidenceInput(world)));
 if (action === 'guarded') {
   const write = await preparedWrite(world);
   let calls = 0;

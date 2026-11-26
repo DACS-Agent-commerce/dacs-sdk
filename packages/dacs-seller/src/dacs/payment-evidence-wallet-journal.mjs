@@ -5,7 +5,9 @@
 // before it is broadcast, and an address has at most one live signed CREATE.
 // Every later question about it is answered from that record checked against
 // the chain: the kept CREATE is broadcast again as the same bytes
-// (`rebroadcast`) while it can still be executed; an authenticated `applied`
+// (`rebroadcast`) while it can still be executed (a journal that approves
+// ahead re-sends only through an authorized ensureEvidence; its reconcile
+// answers `pending`); an authenticated `applied`
 // result retains the row and hash without broadcasting. It is superseded (kept,
 // never sent again) only once it provably cannot: the account nonce has reached
 // its nonce (the node never executes a transaction whose nonce is not above
@@ -18,7 +20,8 @@
 // never `applied`; only successful execution is `applied`.
 //
 // createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
-//   readAccountNonce, readTransactionState, readNetworkInfo, now, readTimeoutMs }):
+//   readAccountNonce, readTransactionState, readNetworkInfo, now, readTimeoutMs,
+//   approveAhead, approveSendAhead, approvalSignal }):
 //  - path: absolute path of the journal's SQLite file (created 0600 when
 //    missing), in a directory owned by this user that no one else can write,
 //    reached through no symbolic link and no ancestor others can write (a
@@ -60,6 +63,19 @@
 //    with clearHeldWrite once the chain shows it applied or unable to execute;
 //  - broadcast({ signedTransaction, txHash }, { signal }): sends exactly these bytes. The
 //    chain refuses a transaction hash it already has, so a repeat lands nothing new;
+//  - approveAhead(input, { signal, authorize }) and approveSendAhead({ signedTransaction,
+//    txHash }, { signal, authorize }), both or neither (TypeError otherwise): with them
+//    the journal approves ahead. Every new signature and every send first asks the
+//    operator's approval, with no writer lock held and outside readTimeoutMs, then
+//    makes the call as signCreate(input, { signal, approval, authorize }) or
+//    broadcast({ signedTransaction, txHash }, { signal, approval, authorize, jobId })
+//    and releases an approval it did not use. authorize is the caller's check (at a
+//    send, bound to the live kept row); a call with none asks, signs and sends nothing;
+//  - approvalSignal: an AbortSignal (TypeError otherwise). It and close() end every
+//    approval wait. After that every ask and every new signature at its pass's last
+//    check is refused with the signal's reason, and nothing is signed or kept for that
+//    call; a kept CREATE whose send approval is not held is not sent by that call,
+//    which is refused operator_closing; a send whose approval is held still runs;
 //  - readAccountNonce({ signal }) -> a non-negative safe integer, or an authenticated
 //    { nonce, blockHeight } snapshot from the qualified wallet reader;
 //  - readTransactionState({ txHash, signedTransaction, nonce }, { signal }) -> 'applied', 'pending', or 'absent'.
@@ -93,7 +109,7 @@
 //    Left out, nothing is read and only a signature over the bare hash is
 //    accepted, so a CREATE signed for an active fork is refused (wallet_sign_invalid).
 //    A `signatureChainId` option is refused (TypeError): no caller names the domain.
-//  Each read, signCreate and broadcast is given readTimeoutMs (default 10 s) to
+//  Each read, signCreate and broadcast (not an approval wait) is given readTimeoutMs (default 10 s) to
 //  settle, and is passed { signal } to stop at the deadline. A signCreate that
 //  does not (wallet_sign_timeout) keeps nothing and frees the journal; a
 //  broadcast that does not (wallet_broadcast_timeout) leaves the kept CREATE
@@ -170,6 +186,15 @@ const nonceOf = (value, least) => (Number.isSafeInteger(value) && value >= least
 // The signed content of a kept CREATE's JSON, or undefined when it has none.
 const signedContent = (signedTransaction) => { try { return JSON.parse(signedTransaction)?.content; } catch { return undefined; } };
 const journalBusy = (cause) => Object.assign(new Error('the wallet journal is busy', { cause }), { code: 'wallet_journal_busy' });
+// The kit's code for an approval or effect a shutdown ended (OPERATOR_CLOSING, devnet-demo/operator-approval.mjs).
+const CLOSING = 'operator_closing';
+const JOURNAL_CLOSED = 'the payment-evidence journal is closed: no new approval or signature is made, and nothing was signed or kept for this call';
+const KEPT_UNSENT = 'payment-evidence approvals have ended because the seller host or this journal is closing: this call did not send the signed, kept evidence CREATE; '
+  + 'it keeps the seller wallet reserved until it executes, and an authorized claim can send it';
+// The approval wait ended (the seller host or this journal is closing) after this CREATE was signed and kept: this call does not send it.
+const keptUnsent = (txHash, cause) => Object.assign(new Error(KEPT_UNSENT, { cause }), { code: CLOSING, txHash });
+// A round under the writer lock that needs a new signature the journal must first ask the approval for. It never leaves the journal.
+class ApprovalNeeded extends Error {}
 // Each journal's own anchorEvidence and reconcilePaymentEvidence, mapped to it.
 const journals = new WeakMap();
 // True only for the two functions of one createPaymentEvidenceWalletJournal.
@@ -312,8 +337,12 @@ function assertPrivateDirectory(directory) {
  * readSignedProjection, journalId and close. Throws TypeError for an unusable
  * option, path or file.
  */
-export function createSignedCreateJournal({ table, path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000, readNetworkInfo, signatureChainId } = {}) {
+export function createSignedCreateJournal({ table, path, signCreate, broadcast, readAccountNonce, readTransactionState, now = () => Date.now(), readTimeoutMs = 10_000, readNetworkInfo, signatureChainId,
+  approveAhead, approveSendAhead, approvalSignal } = {}) {
   assertNoCallerSignatureDomain({ signatureChainId });
+  const approvesAhead = approveAhead !== undefined || approveSendAhead !== undefined;
+  if (approvesAhead && (typeof approveAhead !== 'function' || typeof approveSendAhead !== 'function')) throw new TypeError('the wallet journal takes approveAhead and approveSendAhead together, or neither');
+  if (approvalSignal !== undefined && !(approvalSignal instanceof AbortSignal)) throw new TypeError('the wallet journal approvalSignal must be an AbortSignal');
   if (!TABLE_NAME.test(table)) throw new TypeError('the wallet journal table must be named for its kind of artifact');
   if (typeof path !== 'string' || !isAbsolute(path)) throw new TypeError('the wallet journal path must be absolute');
   if (typeof signCreate !== 'function' || typeof broadcast !== 'function' || typeof now !== 'function') throw new TypeError('the wallet journal needs signCreate, broadcast and now functions');
@@ -425,8 +454,43 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   };
   // permit() runs in the same synchronous step as the wallet call it guards.
   const allow = () => {};
-  const sendSigned = ({ signedTransaction, txHash }, permit = allow) => withDeadline((signal) => { permit(); return broadcast({ signedTransaction, txHash }, { signal }); },
-    () => Object.assign(new Error(`broadcasting the kept signed CREATE ${txHash} did not settle in ${readTimeoutMs} ms; its fate is not known`), { code: 'wallet_broadcast_timeout' }));
+  // The approval waits end when this journal closes or `approvalSignal` aborts; from then on no new signature is made.
+  const closingJournal = new AbortController();
+  const approvalWait = approvalSignal === undefined ? closingJournal.signal : AbortSignal.any([closingJournal.signal, approvalSignal]);
+  // Throws unless `row` is still the live kept CREATE of its address; a busy file answers at once (busy_timeout=0).
+  function assertLiveRow({ logicalAddress, txHash }) {
+    let live;
+    try { live = db.prepare(`SELECT tx_hash FROM ${table} WHERE logical_address = ? AND superseded_at IS NULL`).get(logicalAddress); }
+    catch (error) { throw error.code === 'SQLITE_BUSY' ? journalBusy(error) : error; }
+    if (live?.tx_hash !== txHash) throw Object.assign(new Error(`the kept signed CREATE ${txHash} is no longer the live one for its address; nothing was sent`), { code: 'wallet_journal_conflict' });
+  }
+  // The current-authorization check a pass runs right before its signature or request: the caller's check (none for `allow`),
+  // bound at a send to the exact live kept row, and at a new signature refused once the approval waits have ended.
+  function authorizationOf(permit, row) {
+    if (permit === allow) return undefined;
+    if (row) return () => { permit(); assertLiveRow(row); return true; };
+    return () => { approvalWait.throwIfAborted(); permit(); return true; };
+  }
+  const broadcastTimedOut = (txHash) => () => Object.assign(new Error(`broadcasting the kept signed CREATE ${txHash} did not settle in ${readTimeoutMs} ms; its fate is not known`), { code: 'wallet_broadcast_timeout' });
+  // Sends the kept bytes once. `beforeSend` (the caller's awaited re-check) runs right before the send's pass. A journal that
+  // approves ahead first asks the send approval, outside the writer lock and the deadline, and uses it once in the pass.
+  async function sendSigned(signed, permit = allow, input, beforeSend) {
+    const retained = { signedTransaction: signed.signedTransaction, txHash: signed.txHash };
+    if (!approvesAhead) {
+      await beforeSend?.();
+      return withDeadline((signal) => { permit(); return broadcast(retained, { signal }); }, broadcastTimedOut(retained.txHash));
+    }
+    const authorize = authorizationOf(permit, { logicalAddress: input.logicalAddress, txHash: retained.txHash });
+    if (approvalWait.aborted) throw keptUnsent(retained.txHash, approvalWait.reason);
+    permit();
+    let approval;
+    try { ({ approval } = await approveSendAhead(retained, { signal: approvalWait, authorize })); }
+    catch (error) { throw approvalWait.aborted ? keptUnsent(retained.txHash, error) : error; }
+    try {
+      await beforeSend?.();
+      return await withDeadline((signal) => { permit(); return broadcast(retained, { signal, approval, authorize, jobId: input.jobId }); }, broadcastTimedOut(retained.txHash));
+    } finally { await approval.release(); }
+  }
   // Read the nonce snapshot before the transaction index. The latter must
   // have indexed at least that snapshot, closing the nonce-before-tx-row race.
   async function fate(signed) {
@@ -507,11 +571,20 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     return { live: null, highestNonce: nonceFree ? keptFor(input).highestNonce : highestNonce, superseded: { txHash: live.txHash, reason: checked.reason } };
   }
 
-  async function prepareAnchor(input, observed, permit = allow) {
+  // The signature for `input` when nothing is live: the bytes the adapter already holds (`ahead.answer`), or signCreate's,
+  // with the approval taken ahead when the journal approves ahead.
+  function signatureFor(input, permit, ahead) {
+    if (ahead?.answer !== undefined) { permit(); return ahead.answer; }
+    const options = (signal) => (ahead ? { signal, approval: ahead.approval, authorize: authorizationOf(permit) } : { signal });
+    return withDeadline((signal) => { permit(); return signCreate(structuredClone(input), options(signal)); },
+      () => Object.assign(new Error(`signCreate did not settle in ${readTimeoutMs} ms; nothing was kept`), { code: 'wallet_sign_timeout' }));
+  }
+  async function prepareAnchor(input, observed, permit = allow, ahead = null) {
     let { live: signed, highestNonce, applied } = await liveFor(input, observed);
     if (!signed) {
-      const answer = await withDeadline((signal) => { permit(); return signCreate(structuredClone(input), { signal }); },
-        () => Object.assign(new Error(`signCreate did not settle in ${readTimeoutMs} ms; nothing was kept`), { code: 'wallet_sign_timeout' }));
+      // Rolls this round back: the operator is asked with no lock held, and the next round decides again.
+      if (approvesAhead && ahead === null) throw new ApprovalNeeded();
+      const answer = await signatureFor(input, permit, ahead);
       if (!object(answer) || typeof answer.signedTransaction !== 'string' || answer.signedTransaction.length === 0 || Buffer.byteLength(answer.signedTransaction, 'utf8') > MAX_SIGNED_TRANSACTION_BYTES
           || typeof answer.txHash !== 'string' || !TX_HASH.test(answer.txHash) || nonceOf(answer.nonce, 1) === null) throw Object.assign(new Error('signCreate answered no signed transaction, hash and nonce'), { code: 'wallet_sign_invalid' });
       const problem = signedCreateProblem(answer, input, observed.signatureDomain);
@@ -525,10 +598,21 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     }
     return { ...signed, applied };
   }
+  // Runs `change(observed, ahead)` under the writer lock. When it needs a new signature the journal approves ahead for, that
+  // round is rolled back, the approval is asked with no lock held, and a second round runs with it; an unused hold is released.
+  async function keptWithApproval(input, permit, change) {
+    try { return await lockedAfterObserving(input, (observed) => change(observed, null)); }
+    catch (error) { if (!(error instanceof ApprovalNeeded)) throw error; }
+    approvalWait.throwIfAborted();
+    permit();
+    const ahead = await approveAhead(structuredClone(input), { signal: approvalWait, authorize: authorizationOf(permit) });
+    try { return await lockedAfterObserving(input, (observed) => change(observed, ahead)); }
+    finally { await ahead.approval?.release(); }
+  }
   async function anchorCreate(input) {
     assertKitOperationAdmitted('anchorEvidence');
-    const signed = await lockedAfterObserving(input, (observed) => prepareAnchor(input, observed));
-    if (!signed.applied) await sendSigned(signed);
+    const signed = await keptWithApproval(input, allow, (observed, ahead) => prepareAnchor(input, observed, allow, ahead));
+    if (!signed.applied) await sendSigned(signed, allow, input);
     return { status: signed.applied ? 'applied' : 'submitted', txHash: signed.txHash };
   }
 
@@ -577,7 +661,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
     // code; any other answer than `true` is wallet_not_authorized.
     const permit=authorize?()=>{const answer=authorize();permitted(()=>answer);}:allow;
     assertOwner(expectedJournalId);
-    const signed=await lockedAfterObserving(input,async(observed)=>{
+    const signed=await keptWithApproval(input,permit,async(observed,ahead)=>{
       permit();
       const key=`ensure:${input.logicalAddress}`,binding=JSON.stringify([input.receiptContentHash,attempt?.answer?.txHash??null]);
       const accepted=db.prepare('SELECT value FROM journal_meta WHERE key = ?').get(key);
@@ -585,9 +669,9 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       // a lost broadcast answer cannot leave the caller naming a stale row.
       inspectAttempt(input,attempt,true,accepted?.value===binding);
       db.prepare('INSERT OR IGNORE INTO journal_meta VALUES (?, ?)').run(key,binding);
-      return prepareAnchor(input,observed,permit);
+      return prepareAnchor(input,observed,permit,ahead);
     });
-    if(!signed.applied){await recheck?.();await sendSigned(signed,permit);}
+    if(!signed.applied)await sendSigned(signed,permit,input,recheck);
     return {status:signed.applied?'applied':'submitted',txHash:signed.txHash};
   }
 
@@ -613,7 +697,7 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
       return { status: 'unsigned', ...(prior ? { txHash: typeof named === 'string' ? named : prior.tx_hash } : {}), reason: superseded?.reason ?? 'the wallet journal keeps no live signed CREATE for this address' };
     }
     if (applied) return { status: 'applied', txHash: signed.txHash };
-    try { await sendSigned(signed, permit); }
+    try { await sendSigned(signed, permit, input); }
     catch (error) {
       if (error?.code === 'wallet_not_authorized') throw error;
       return { status: 'pending', txHash: signed.txHash, reason: `the same signed CREATE was not broadcast again: ${reason(error)}` };
@@ -684,7 +768,8 @@ export function createSignedCreateJournal({ table, path, signCreate, broadcast, 
   }
 
   const operations = table === EVIDENCE_TABLE ? { anchor: anchorCreate, reconcile: reconcileCreate, ensureEvidence } : { guardedCreate };
-  return Object.freeze({ ...operations, readSignedProjection, clearHeldWrite, journalId, close: () => db.close() });
+  const close = () => { closingJournal.abort(Object.assign(new Error(JOURNAL_CLOSED), { code: CLOSING })); db.close(); };
+  return Object.freeze({ ...operations, readSignedProjection, clearHeldWrite, journalId, close });
 }
 
 export function createPaymentEvidenceWalletJournal(options) {

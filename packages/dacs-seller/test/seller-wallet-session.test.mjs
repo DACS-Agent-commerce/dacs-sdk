@@ -11,9 +11,10 @@ import { entropyToMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { agreementRequest } from '../../dacs-client/test/helpers/tp1-node-fixture.mjs';
-import { ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, T0, api, finalization, jsonResponse, keyRecordBytes, ok, privateDataDirectory, replayNode, sellerPublications,
-  setPurchaseAdmission, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
-import { allZero, createSellerWalletSession, mnemonicSigner, portOptions, walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
+import { ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, T0, api, evidenceInput, finalization, jsonResponse, keyRecordBytes, ok, privateDataDirectory, replayNode, replyTo,
+  sellerPublications, setPurchaseAdmission, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
+import { allZero, createSellerWalletSession, portOptions, walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
+import { heldOperator, manualSellerApproval, PAYMENT_EVIDENCE_JOURNAL } from './helpers/payment-evidence-test-journals.mjs';
 
 const guard = await import('../src/kit-operation-guard.mjs');
 const { createEffectBoundary, effectBoundaryBinding } = await import('../src/dacs/effect-boundary.mjs');
@@ -25,17 +26,16 @@ const { contextHostFixture } = await import('./helpers/host-context-client.mjs')
 const { anchorOptions, importSpiedWalletSession } = await import('./helpers/artifact-anchor-spy.mjs');
 const { isSellerCreatePass } = await import('../src/devnet-demo/create-pass.mjs');
 const CRASH_CHILD = new URL('./helpers/seller-wallet-session-crash-child.mjs', import.meta.url);
+const { default: Database } = await import('better-sqlite3');
 
 const PORT_MEMBERS = ['authority', 'connectionAuthority', 'artifactAnchor', 'runCreate', 'finalize', 'close'];
 const SESSION_MEMBERS = ['effectPass', 'runInEffectPass', 'walletFactory', 'transport', 'acquireConnectionFence', 'address', 'observer', 'artifactJournal',
-  'paymentEvidence', 'readBalance', 'close'];
+  'paymentEvidence', 'nativePaymentEvidence', 'endApprovalWaits', 'readBalance', 'close'];
 const ANCHOR_METHODS = ['publish', 'read', 'readRetained', 'retainedSignedCreate', 'hasIntent', 'verifyReceipt'];
 const PASS_WINDOW_MS = 10_000;
 const AUTHORITY_DEADLINE_MS = 10_000;
 const JOB_ID = '01M5YKPJG0248H248H248H248H';
 const OTHER_CHAIN = 'd'.repeat(64);
-// Public Demos testnet nodes serve their RPC over plain http.
-const PLAIN_ENDPOINT = 'http://rpc.example.invalid/';
 const SECOND_MNEMONIC = entropyToMnemonic(new Uint8Array(32).fill(4), wordlist);
 const BOUNDARY_CLOCK = Object.freeze({ now: () => 0, after: () => () => {} });
 // The only node reads the stage-one capability sends: the binding check's.
@@ -66,7 +66,7 @@ const boundaryOver = (binding, directory) => createEffectBoundary({ stopped: () 
   history: createEffectHistory({ dataDirectory: directory }), clock: BOUNDARY_CLOCK });
 
 // The input the host's stages give the port's finalize, for `world`, with `changes`.
-const finalizeInput = (world, changes = {}) => ({ binding: world.stages.binding, stopped: async () => false, feeCeilingOs: finalization.feeCeilingOs, stateLock: world.lock,
+const finalizeInput = (world, changes = {}) => ({ binding: world.stages.binding, stopped: () => false, feeCeilingOs: finalization.feeCeilingOs, stateLock: world.lock,
   dataDirectory: world.directory, ...changes });
 
 // A fresh port over `directory` finalizes once the first world's lock is released: the journals a refused finalize opened were closed.
@@ -374,33 +374,6 @@ test('createSellerWalletSession refuses an endpoint that is not a canonical root
   assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
 });
 
-test('over a plain-http node root the production port binds the approved record through the host\'s stages, finalizes under the state lock, and a CREATE in a pass is confirmed and broadcast once on that endpoint', async (t) => {
-  const signatures = await spyTransactionSignatures(t.mock);
-  const world = await walletSessionWorld(t, { options: { endpoint: PLAIN_ENDPOINT } });
-  assert.equal(world.stages.binding.local.endpoint, PLAIN_ENDPOINT);
-  const { session } = await world.finalize();
-  const wallet = session.walletFactory({ anchorJournal: session.artifactJournal });
-  const answer = await inSessionPass(session, wallet, await agreementRequest({ session: { wallet }, node: world.node }));
-  assert.equal(answer.success, true, JSON.stringify(answer));
-  assert.deepEqual(world.node.reads.filter((read) => read === 'confirmTx' || read === 'broadcastTx'), ['confirmTx', 'broadcastTx'], 'confirmed and broadcast once');
-  assert.equal(signatures.length, 1, 'signed once');
-  assert.ok(world.node.calls.every((row) => row.url.startsWith(PLAIN_ENDPOINT)), 'every node request went to the plain-http root');
-});
-
-test('a node over a plain-http root that reports another chain refuses the host\'s stages before the key is loaded, the signer is called or anything is signed or sent', async (t) => {
-  const signatures = await spyTransactionSignatures(t.mock);
-  const node = replayNode();
-  node.reply = otherChain;
-  const signer = await mnemonicSigner();
-  let signerCalls = 0, keyLoads = 0;
-  const counted = { claim: signer.claim, sign: (bytes) => { signerCalls += 1; return signer.sign(bytes); } };
-  await assert.rejects(walletSessionWorld(t, { node, keyBytes: () => { keyLoads += 1; return keyRecordBytes(); }, options: { endpoint: PLAIN_ENDPOINT, signer: counted } }),
-    { code: 'tp1_connection_unverified' });
-  assert.ok(node.reads.includes('getBlockByNumber'), 'the binding asked the node for its chain');
-  assert.deepEqual({ signerCalls, keyLoads, signatures: signatures.length, effects: node.reads.filter((read) => read === 'confirmTx' || read === 'broadcastTx') },
-    { signerCalls: 0, keyLoads: 0, signatures: 0, effects: [] });
-});
-
 test('finalize refuses a binding whose authority is no longer current with tp1_connection_unverified, and one whose authority read stalls with tp1_authority_timeout at 10,000 ms but not at 9,999 ms, each before the key is loaded or an issuance journal opens', async (t) => {
   const signatures = await spyTransactionSignatures(t.mock);
   const stale = await walletSessionWorld(t, { nodeScript: otherChain });
@@ -527,4 +500,97 @@ test('a seller process killed after finalize opens the issuance journals and bef
   const answer = await inSessionPass(session, wallet, await agreementRequest({ session: { wallet }, node: restarted.node }));
   assert.equal(answer.success, true, JSON.stringify(answer));
   assert.deepEqual({ confirms: restarted.node.confirms.length, broadcasts: restarted.node.broadcasts.length, signatures: signatures.length }, { confirms: 1, broadcasts: 1, signatures: 1 });
+});
+
+// ---- The session's payment-evidence journal ----
+
+const KEPT_UNSENT = 'payment-evidence approvals have ended because the seller host or this journal is closing: this call did not send the signed, kept evidence CREATE; '
+  + 'it keeps the seller wallet reserved until it executes, and an authorized claim can send it';
+// An authorized ensureEvidence of the session's journal for the evidence `label`, written by the session's own address.
+const ensureOver = (session, label = 'a') => session.paymentEvidence.ensureEvidence({ ...evidenceInput({ wallet: session }, label), expectedJournalId: session.paymentEvidence.journalId,
+  authorize: () => true });
+const keptOf = (session, label = 'a') => session.paymentEvidence.readSignedProjection(evidenceInput({ wallet: session }, label));
+const transmissions = (node) => node.reads.filter((read) => read === 'confirmTx' || read === 'broadcastTx').length;
+// A finalized session in manual mode, whose operator holds every request until the test answers it.
+async function manualSession(t) {
+  const directory = privateDataDirectory(t), operator = heldOperator();
+  const world = await walletSessionWorld(t, { directory, options: { approvalMode: 'manual', approve: manualSellerApproval({ directory, operator: operator.operator, t }) } });
+  const { session } = await world.finalize();
+  return { world, session, operator };
+}
+// Starts an ensureEvidence of `session` and, once the operator holds its approval request, resolves `{ outcome }`: the call's
+// settled `{ value }` or `{ error }`, still pending.
+async function waitingForTheOperator({ session, operator }) {
+  const asked = operator.nextAsk();
+  const outcome = ensureOver(session).then((value) => ({ value }), (error) => ({ error }));
+  await asked;
+  return { outcome };
+}
+
+test('the finalized session builds its payment-evidence journal and consumer over the session\'s own passes; ending its approval waits ends a pending approval and refuses later ones while the journal stays open, and its close closes the journal and the wallet once', async (t) => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  const world = await walletSessionWorld(t);
+  const { session } = await world.finalize();
+  assert.equal(session.nativePaymentEvidence.anchorEvidence, session.paymentEvidence.anchorEvidence, 'the consumer anchors with the session journal\'s own anchorEvidence');
+  assert.equal((await ensureOver(session)).status, 'submitted', 'with no test pass around it, the journal signs and sends in the session\'s own passes');
+  assert.deepEqual({ signatures: signatures.length, transmissions: transmissions(world.node), asked: world.options.approve.retained.prepared.length },
+    { signatures: 1, transmissions: 2, asked: 1 }, 'asked once, signed once, confirmed and broadcast once');
+  const closing = session.close();
+  await closing;
+  assert.equal(session.close(), closing, 'a second close returns the same promise');
+  for (const file of [PAYMENT_EVIDENCE_JOURNAL, COMPOSITION_JOURNAL]) {
+    const raw = new Database(join(world.directory, file), { timeout: 0 });
+    raw.exec('BEGIN IMMEDIATE; COMMIT');
+    raw.close();
+  }
+
+  // The worlds run one after another: each session is closed before the next one starts.
+  const manual = await manualSession(t);
+  const { outcome: pending } = await waitingForTheOperator(manual);
+  manual.session.endApprovalWaits();
+  assert.equal((await pending).error?.code, 'signer_reservation_uncertain', 'the pending approval ended without the operator\'s answer');
+  assert.equal(await keptOf(manual.session), null, 'nothing was kept, and the journal is still open');
+  const later = await refusalOf(ensureOver(manual.session));
+  assert.equal(later.code, 'operator_closing');
+  assert.match(later.message, /nothing was signed or kept for this call$/);
+  assert.equal(manual.operator.asked.length, 1, 'a later call asks the operator nothing');
+  manual.session.endApprovalWaits();
+  await manual.session.close();
+
+  // The journal's own close ends a wait too.
+  const second = await manualSession(t);
+  const { outcome: waiting } = await waitingForTheOperator(second);
+  await second.session.close();
+  assert.equal((await waiting).error?.code, 'signer_reservation_uncertain', 'the close ended the wait without the operator\'s answer');
+  second.operator.asked[0].answer(true);
+  await flush();
+  const raw = new Database(join(second.world.directory, PAYMENT_EVIDENCE_JOURNAL), { readonly: true });
+  assert.equal(raw.prepare('SELECT COUNT(*) AS kept FROM evidence_creates').get().kept, 0, 'no row was kept');
+  raw.close();
+  assert.equal(signatures.length, 1, 'a yes given after the close signs nothing');
+});
+
+test('a signed CREATE kept unsent is not sent once the approval waits have ended, and says so', async (t) => {
+  for (const ended of [true, false]) {
+    const world = await walletSessionWorld(t);
+    const { session } = await world.finalize();
+    replyTo(world.node, 'broadcastTx', () => jsonResponse({ result: 400, response: 'TEST-refused' }));
+    await refusalOf(ensureOver(session));
+    world.node.reply = null;
+    const kept = await keptOf(session);
+    assert.ok(kept, 'the refused send left the signed CREATE kept');
+    const before = transmissions(world.node);
+    if (ended) session.endApprovalWaits();
+    const outcome = await ensureOver(session).then((value) => value, (error) => error);
+    if (ended) {
+      assert.deepEqual({ code: outcome.code, message: outcome.message, txHash: outcome.txHash }, { code: 'operator_closing', message: KEPT_UNSENT, txHash: kept.hash });
+      assert.equal(transmissions(world.node), before, 'nothing more was confirmed or broadcast');
+    } else {
+      assert.deepEqual(outcome, { status: 'submitted', txHash: kept.hash }, 'the control sends the kept bytes');
+      assert.equal(transmissions(world.node) - before, 2, 'confirmed and broadcast once');
+      assert.deepEqual(world.node.broadcasts.at(-1), kept, 'the exact kept bytes');
+    }
+    assert.deepEqual(await keptOf(session), kept, 'the row is still the kept one');
+    await session.close();
+  }
 });

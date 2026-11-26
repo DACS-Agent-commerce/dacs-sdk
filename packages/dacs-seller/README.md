@@ -9,11 +9,11 @@ own TLS; see "Listener modes"). The agent runs negotiation (DACS-3), the finaliz
 evidence and native DEM delivery capabilities, which the host requires. This
 is the devnet-demo seller kit, ported from the plugin seller kit (see
 [SOURCES.md](SOURCES.md)). It builds its Node wallet through the client's held
-Node composition, which the kit guard and the client hold keep off. Its
-packaged native readers are **fixture-only**:
-the native DEM delivery capability and the DEM delivery context accept only a
-`TEST-` authority (`src/dacs/native-dem-delivery-consumer.mjs`,
-`src/dacs/dem-delivery-context-consumer.mjs`), and
+Node composition, which the kit guard and the client hold keep off. The
+native DEM delivery capability and the DEM delivery context accept a fixture
+`TEST-` authority, or a TP-1 token admitted for the composition's own binding
+(`src/dacs/native-dem-delivery-consumer.mjs`,
+`src/dacs/dem-delivery-context-consumer.mjs`); they keep only the label string.
 `createNativePaymentEvidenceConsumer` accepts only a literal `127.0.0.1` RPC
 origin (`src/dacs/native-payment-evidence-consumer.mjs`). The host checks
 `agreementAnchor` and `artifactAnchor` only by shape, and the wallet journal's
@@ -190,9 +190,10 @@ const host = await startSellerHost({
                          // must be walletSession.artifactAnchor, or the host refuses with a TypeError
   participantImplementations, // { entriesFor(claim) -> [{ claim, profile, modules, evidence, revoked }] }: the
                          // independently approved enrollment of each buyer, read on every request; a buyer
-                         // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch
-  reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's answer for an evidence
-                         // anchor that was sent or whose outcome is unknown ('unsigned' | 'rebroadcast' | 'pending')
+                         // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch;
+                         // openVerifiedEnrollmentReader(...) is the node-signed source (below)
+  reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's own answer for an evidence
+                         // anchor ('unsigned' | 'rebroadcast' | 'pending'); the agent checks the pair when it is built
   resumeDeliverableCreate: deliveryJournal.resume, // optional (below); nativeDemDelivery is then
                          // createNativeDemDeliveryCapability({ ..., submitAuthorized: deliveryJournal.submitAuthorized })
 });
@@ -309,7 +310,8 @@ parts the host composes, for operators who compose their own:
 `createSellerContextRoute`,
 `createWireSellerContextRoute` (the context step on the wire),
 `createSellerAuthorityReader` (the host's TP-1 authority reader),
-`createSellerWalletSession` (the host's production `walletSession` port) and the buyer
+`createSellerWalletSession` (the host's production `walletSession` port),
+`openVerifiedEnrollmentReader` (a node-signed enrollment source) and the buyer
 side `createSellerAgentClient`. The host
 answers every route through the wire, under the wire domain with a TP-1
 profile in each request, and refuses a request signed under the transport's
@@ -334,7 +336,7 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createWireSellerContextRoute`,
-`createSellerTransportStore`, `createSellerAuthorityReader` and `createSellerWalletSession`. The kit's other modules are reachable by
+`createSellerTransportStore`, `createSellerAuthorityReader`, `createSellerWalletSession` and `openVerifiedEnrollmentReader`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
@@ -738,22 +740,21 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   It also needs a readback that finds nothing: at most once per request,
   never in the request of the first attempt, and never once a readback has
   authenticated it. A name-index miss is no proof that nothing landed
-  (CORE §5.1). After any other answer, a throw, or a crash during the call
-  (`anchorOutcome: "sent"` or `"unknown"`), a readback that finds nothing asks
-  `reconcilePaymentEvidence`, once per claim. It is the wallet's own journal
-  for this exact evidence, and the host does not start without it, so a paid
-  order whose anchor outcome is unknown always has a way on. It is called with
-  `{ logicalAddress, artifact, writer, artifactKind, jobId, receiptContentHash,
-  attempt: { outcome, answer } }`:
-  - `{ status: "unsigned" }` must mean that no transaction the wallet signed for
-    this address is or can still be executed; only this answer lets the agent
-    send the same bytes again;
-  - `{ status: "rebroadcast" | "pending", txHash }` means the one signed
-    transaction was broadcast again unchanged (a dropped submission), or is
-    still pending; the agent waits for its readback and never asks for a new
-    signature;
-  - any other answer or a throw keeps the claim held (`reconcileError` keeps
-    the cause).
+  (CORE §5.1), and a readback miss alone allows no new signature or send.
+  After any other answer, a throw, or a crash during the call
+  (`anchorOutcome: "sent"` or `"unknown"`), the buyer's next claim asks the
+  journal's `ensureEvidence` under that claim's current authorization: it
+  sends the one kept CREATE again unchanged, or finds it applied, and signs
+  anew only when no kept CREATE can still land. The agent does not call
+  `reconcilePaymentEvidence`; it only checks that the function comes from the
+  same journal. Asked with `{ logicalAddress, artifact, writer, artifactKind,
+  jobId, receiptContentHash, attempt: { outcome, answer } }`, the journal answers:
+  - `{ status: "unsigned" }`: no transaction the wallet signed for this address
+    is or can still be executed;
+  - `{ status: "rebroadcast" | "pending", txHash }`: the one signed transaction
+    was broadcast again unchanged (a dropped submission), or is still pending.
+    A journal that approves ahead (below) answers `pending` for a resend no
+    authorization check guards, and sends nothing.
 
   `createPaymentEvidenceWalletJournal({ path, signCreate, broadcast,
   readAccountNonce, readTransactionState, readNetworkInfo })` gives both functions from the
@@ -815,7 +816,12 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   returns the held write.
   The operator sees a held write as the `write-fee-cap` reason with the hash
   and cost of the write. On the payment evidence path it is `anchorError`
-  (`code` and `message`) on the held answer of the seller agent. On the
+  (`code` and `message`) on the held answer of the seller agent. The same code
+  with the effect gate's message, "the effect gate refused; nothing was signed
+  or sent", and no hash or cost is not a held write: a release on the seller's
+  approval ledger (the approval withdrawn) ended the payment-evidence approval
+  before the signature. Nothing was signed or kept, there is nothing to clear,
+  and the buyer's next claim asks for the approval again. On the
   Deliverable path it is the `reason` of the held, pending or indeterminate
   delivery outcome, which starts with `write-fee-cap:`.
   To clear a held write, call `clearHeldWrite({ logicalAddress, txHash })` on
@@ -843,6 +849,18 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   Clearing the same write again answers the same result without reading the
   chain.
   `broadcast({ signedTransaction, txHash })` sends exactly those bytes.
+  The options also take `approveAhead` and `approveSendAhead` (both or neither;
+  a `TypeError` otherwise) and `approvalSignal` (an `AbortSignal`):
+  - with the two approve options, every new signature and every send asks the
+    operator's approval before the writer lock and outside the journal's
+    deadline, uses it once in the effect pass, and releases an unused one;
+  - a call with no authorization check signs, sends and asks nothing;
+  - `approvalSignal`, like the journal's `close()`, ends every approval the
+    journal waits for. Later asks and new signatures are refused with its
+    reason; a kept CREATE not yet sent is refused `operator_closing` and stays
+    unsent; a send whose approval is held still runs;
+  - with your own such journal behind a host, abort its `approvalSignal` before
+    `host.close()`: the host does not end the waits itself.
   `readAccountNonce()` reads a non-negative account nonce or an authenticated
   `{ nonce, blockHeight }` snapshot. `readTransactionState({ txHash })` answers
   `'applied'`, `'pending'`, or `'absent'`; the journal also passes the kept
@@ -869,7 +887,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   CREATE; restore the file to resolve it. The journal also refuses
   (`wallet_journal_unknown_attempt`) an attempt whose `txHash` it never kept. While that CREATE can still be executed, the journal
   broadcasts the same signed bytes again (`rebroadcast`, or `pending` when the
-  broadcast fails). The node never executes a transaction whose nonce the
+  broadcast fails; a journal that approves ahead does this only through an
+  authorized `ensureEvidence`). The node never executes a transaction whose nonce the
   account has reached: it refuses it, or includes it as failed. So once the
   account nonce has reached the kept nonce (read first), and a complete
   authenticated index proves non-execution through that snapshot height, the
@@ -1179,8 +1198,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   chain (`settlement_profile_unavailable`), and takes payment only as native
   payment evidence (`native_evidence_required`), so these capabilities and the supported Listing size are checked before
   commitment or payment intake. Actual delivery still depends on valid producer
-  output and available operator capabilities. These
-  capabilities accept only `TEST-` authorities and a loopback fixture node.
+  output and available operator capabilities. The delivery capabilities
+  accept a `TEST-` authority or a bound TP-1 token, and native payment evidence only a loopback fixture node.
   The host checks `agreementAnchor` and `artifactAnchor` only by shape, and
   the wallet journal's `broadcast` is the operator's own callback, so those
   can still reach a real node; keep them on the fixture too (see the start of
@@ -1254,8 +1273,9 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   (`src/devnet-demo/seller-node-wallet.mjs`) takes the seller state lock it
   must hold, the opened seller key and the key record, the composed seller
   approval and a node connection, and returns the wallet factory, the held
-  source capability, the read-only observer, the payment-evidence journal
-  over the client's payment-evidence adapter, and a bounded balance read.
+  source capability, the read-only observer, the client's payment-evidence
+  adapter, with the kit operation guard checked at each effect call, and a
+  bounded balance read.
   Before any effect it removes the lock rows a dead holder left in the client
   journals it opens. The source capability is the only value the devnet
   artifact anchor, issued-write readback and the source mode of native
@@ -1267,8 +1287,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `not-authorized` with nothing signed or sent. A signature or send is also
   refused while the kit
   operation guard is off or the client's purchase hold is held, which is how
-  both ship. `start` does not build the wallet. Native DEM delivery and the
-  DEM delivery context accept only `TEST-` authorities, as in the source kit.
+  both ship. `start` does not build the wallet. The delivery constructors take a `TEST-` label or a TP-1 token with
+  the composition's own `binding`; a token is refused in that same state, and a `TP1-` label string grants nothing.
   Native writes also need a
   qualified node deployment (`QUALIFIED_NODE_COMMITS`).
 - `createSellerWalletSession` (`src/devnet-demo/seller-wallet-session.mjs`) is
@@ -1278,7 +1298,9 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `publications` and `diagnostics` it passes unchanged to
   `createSellerNodeWallet`, a wall `clock` (`Date.now` by default) and the
   anchor's `buyerAccess` (`null` by default, which refuses every job's write
-  and read with `buyer_access_closed`); any other option is a TypeError. Its
+  and read with `buyer_access_closed`); any other option is a TypeError. The
+  `endpoint` is an https root (plain http refuses `transport_mismatch`). Its read-only pair comes from `createNodeAuthorityReader({ owner, claim })`.
+  At finalize a publication naming the binding's own `TP1-` label gets a token for that binding; the anchor keeps the label. Its
   `artifactAnchor` is the one handle the operator gives the host, the Vet
   provider and the delivery capability. Until the host finalizes the port
   under the state lock, every anchor method refuses
@@ -1295,8 +1317,15 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   session has `effectPass`, `runInEffectPass`,
   `walletFactory`, `transport` (with `recoverStorageWrite`),
   `acquireConnectionFence` (the fence its passes need), `address`,
-  `observer`, `artifactJournal`, `paymentEvidence`, `readBalance` and
-  `close`. A second finalization refuses `wallet_session_finalize_once`, and
+  `observer`, `artifactJournal`, `paymentEvidence`, `nativePaymentEvidence`,
+  `endApprovalWaits`, `readBalance` and `close`. `paymentEvidence` is the
+  session's payment-evidence journal, which signs and sends only in the
+  session's passes and asks the operator's approval before each pass;
+  `nativePaymentEvidence` is the payment-evidence consumer that anchors
+  through it. `endApprovalWaits()` ends every approval that journal waits for
+  and refuses later ones and every new signature (`operator_closing`); a kept
+  CREATE not yet sent stays unsent, and its call says so. `close()` closes the
+  journal and the wallet once. A second finalization refuses `wallet_session_finalize_once`, and
   after a close the handle, the fence and finalization refuse
   `wallet_session_closed`.
 - The port's `runCreate` is the one pass finalization builds, the same one the
@@ -1317,6 +1346,31 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   The provider's `resolveBuyer`, `recoverBuyer` and `resolveSeller` and each
   method of the kit client `createSellerAgentClient` check the kit operation
   guard at each call.
+- `openVerifiedEnrollmentReader` (`src/devnet-demo/seller-enrollment-reader.mjs`,
+  a root export) is a `participantImplementations` source that the operator's node
+  signs. It takes the node connection (`endpoint`, `transportAuthority`,
+  `fetchImpl`), the seller `claim`, the Listing's full `listingPin`, the required
+  `trustedNode` pin `{chainIdentity, publicKey}` (the node's 32-byte Ed25519 key in
+  43 base64url characters, no default) and an optional `clock`. Each
+  `entriesFor(participantClaim, {sessionId, signal})` call sends the node method
+  `getParticipantEnrollmentProof` with a fresh nonce. It checks the chain identity
+  before and after, reads the signed block, and returns every entry the pinned key
+  signed for that request, revoked ones included. A signed complete empty set
+  returns `[]`. Calls run one at a time, each inside its own 10 s deadline, and the reply is
+  limited to 1 MiB, 16 entries, 1,024 members per list and 32 levels. Refusals are
+  `OperationError`s with the original error as `cause`:
+  `enrollment_unverified`, `enrollment_invalid`, `enrollment_timeout`,
+  `enrollment_too_large`, `enrollment_connection_changed` (also after `close()`)
+  and `enrollment_unavailable`. No reviewed node build serves the node method, so
+  a live read refuses `enrollment_unavailable`.
+- Each job read calls the seller reader's `readParticipantEvidence({ claim, sessionId, signal })`, which reads
+  `participantImplementations.entriesFor(claim, { sessionId, signal })` for a buyer the job relates to this seller
+  and Listing, before the connection; the stages abort `signal` when the read ends or times out.
+- `openDoctorNode({ rpcUrl, sellerClaim, fetchImpl })` opens one read-only
+  connection (`{ owner, readAuthority, observer, close() }`, transport authority
+  `SELLER_TRANSPORT_AUTHORITY`; http only for the approved TP-1 testnet), and
+  `readSellerBalance({ owner, address, signal })` reads an exact OS balance in
+  65,536 bytes and 10,000 ms. Neither opens a wallet, key or journal.
 - Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).

@@ -7,13 +7,13 @@ const readme = readFileSync(new URL('README.md', packageUrl), 'utf8');
 const rootPackage = JSON.parse(readFileSync(new URL('../../package.json', packageUrl), 'utf8'));
 const profile = JSON.parse(readFileSync(new URL('PROFILE.json', packageUrl), 'utf8'));
 
-test('the fixture-only claim names the packaged readers and excludes operator-supplied callbacks', () => {
+test('the packaged readers\' authority claim names the TEST- label and the bound TP-1 token and excludes operator-supplied callbacks', () => {
   // The host and createSellerAgent check agreementAnchor and artifactAnchor only
   // by shape (host.mjs:33-81, seller-agent.mjs:148,178), and the wallet journal's
   // broadcast is the operator's own callback (payment-evidence-wallet-journal.mjs).
   // A blanket claim that the kit cannot reach a real Demos node is therefore false.
   assert.doesNotMatch(readme, /cannot start against, or read from, a real Demos node/);
-  assert.match(readme, /packaged native readers are \*\*fixture-only\*\*:\s+the\s+native DEM delivery capability and the DEM delivery context accept only a\s+`TEST-` authority/);
+  assert.match(readme, /native DEM delivery capability and the DEM delivery context accept a fixture\s+`TEST-` authority, or a TP-1 token admitted for the composition's own binding/);
   assert.match(readme, /createNativePaymentEvidenceConsumer` accepts only a literal `127\.0\.0\.1` RPC\s+origin/);
   assert.match(readme, /`agreementAnchor` and `artifactAnchor` only by shape/);
   assert.match(readme, /`broadcast` is the operator's own callback/);
@@ -22,7 +22,7 @@ test('the fixture-only claim names the packaged readers and excludes operator-su
 test('the required-capability bullet does not claim the host cannot start against a real node', () => {
   assert.doesNotMatch(readme, /so the host does not start against a real node/);
   const bullet = readme.match(/It starts only with the whole chain to delivery:[\s\S]*?\n- It signs no completed DACS-5 bundle/)?.[0] ?? '';
-  assert.match(bullet, /accept only `TEST-` authorities and a loopback fixture node\./);
+  assert.match(bullet, /accept a `TEST-` authority or a bound TP-1 token, and native payment\s+evidence only a loopback fixture node\./);
   assert.match(bullet, /`agreementAnchor` and `artifactAnchor` only by shape/);
   assert.match(bullet, /`broadcast`\s+is the operator's own callback/);
 });
