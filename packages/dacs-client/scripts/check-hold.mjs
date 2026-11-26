@@ -50,7 +50,7 @@ export const PINNED = Object.freeze({
     name: PACKAGE,
     version: "0.1.0-alpha.0",
     description: "Buyer purchase services, protocol readers and host integration seams for DACS clients.",
-    exports: Object.freeze({ ".": "./src/index.mjs", "./wallet/durable-journal": "./src/wallet/durable-journal.mjs", "./node-wallet": "./src/wallet/node-wallet-session.mjs", "./substrate/demos": "./src/substrate/demos.mjs", "./purchase/evidence-recorder": "./src/passive-evidence-recorder.mjs", "./purchase/wallet-bridge": "./src/purchase/wallet-bridge.mjs" }),
+    exports: Object.freeze({ ".": "./src/index.mjs", "./wallet/durable-journal": "./src/wallet/durable-journal.mjs", "./node-wallet": "./src/wallet/node-wallet-session.mjs", "./substrate/demos": "./src/substrate/demos.mjs", "./purchase/evidence-recorder": "./src/passive-evidence-recorder.mjs", "./rpc-endpoint": "./src/rpc-endpoint.mjs", "./purchase/wallet-bridge": "./src/purchase/wallet-bridge.mjs" }),
     scripts: Object.freeze({ test: "node scripts/check-hold.mjs && node scripts/test.mjs" }),
     type: "module",
     engines: Object.freeze({ node: "^22.22.2 || ^24.15.0" }),

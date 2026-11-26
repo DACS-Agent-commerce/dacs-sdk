@@ -8,6 +8,7 @@
     "./node-wallet": "./src/wallet/node-wallet-session.mjs",
     "./substrate/demos": "./src/substrate/demos.mjs",
     "./purchase/evidence-recorder": "./src/passive-evidence-recorder.mjs",
+    "./rpc-endpoint": "./src/rpc-endpoint.mjs",
     "./purchase/wallet-bridge": "./src/purchase/wallet-bridge.mjs"
   },
   "scripts": {
@@ -37,7 +38,7 @@
     "src/devnet-demo/operator-approval.mjs", "src/devnet-demo/stop-request.mjs",
     "src/devnet-demo/storage-write-recovery.mjs", "src/diagnostic-projection.mjs",
     "src/index.mjs", "src/passive-evidence-recorder.mjs", "src/portal-capability.mjs", "src/purchase-limits.mjs",
-    "src/purchase-state-schema.mjs", "src/purchase/wallet-bridge.mjs", "src/purchases.mjs",
+    "src/purchase-state-schema.mjs", "src/purchase/wallet-bridge.mjs", "src/purchases.mjs", "src/rpc-endpoint.mjs",
     "src/seams/purchase-store-not-wired.mjs", "src/seams/seller-integration-not-wired.mjs",
     "src/seams/wallet-actions-not-wired.mjs", "src/signatures.mjs",
     "src/substrate/demos.mjs",
