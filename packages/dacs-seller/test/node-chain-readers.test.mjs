@@ -4,7 +4,8 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { api, finalization, jsonResponse, ok, T0 } from './helpers/seller-node-wallet-world.mjs';
+import { join } from 'node:path';
+import { api, finalization, jsonResponse, ok, privateDataDirectory, T0 } from './helpers/seller-node-wallet-world.mjs';
 import { canonicalize, compositeVerificationAddress, contentHash, encodeAddressSegment, sha256Hex, signComponentArtifact } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 
@@ -21,6 +22,8 @@ const { isBoundedCallTimeout } = await import('../src/dacs/bounded-call.mjs');
 const { createSellerWalletSession } = await import('../src/devnet-demo/seller-wallet-session.mjs');
 const { REPLY_LIMIT_CODE, SELLER_PROFILE, listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem } = await import('../src/dacs/session-admission.mjs');
 const { sellerRecordsPurchaseResolver } = await import('../src/devnet-demo/seller-purchase-source.mjs');
+const { composeSellerApproval, createExactOperatorApproval } = await import('../src/devnet-demo/operator-approval.mjs');
+const { artifactAuthority, confirmationFor, deliveredHashFor, requestFor, sourceBinding } = await import('./helpers/d5-policy-fixtures.mjs');
 const { commitmentReceiptTime } = await import('../../../dist/wire/commitment.js');
 
 const CHAIN = TP1_APPROVED_IDENTITY_RECORD.chainIdentity;
@@ -39,6 +42,7 @@ const paidSession = (patch = {}, settlementIdentity = { txHash: TX, blockNumber:
 const transfer = (patch = {}) => ({ status: 'included', execution: 'executed', txHash: TX, payer: buyer.address, payee: TERMS.payee, amountOs: TERMS.price.amountOs,
   blockNumber: BLOCK, includedAt: NOW, ...patch });
 const paymentQuery = (observedAt = NOW - 5) => ({ jobId: fx.agreement.jobId, agreementHash: AGREEMENT_HASH, agreement: fx.agreement, observedAt, fresh: true });
+const demString = (os) => `${os / 1_000_000_000n}${os % 1_000_000_000n ? `.${(os % 1_000_000_000n).toString().padStart(9, '0').replace(/0+$/, '')}` : ''}`;
 const LIMITS = Object.freeze({ timeoutMs: 10_000, maxBytes: 1024 });
 const admitQuery = (patch = {}) => ({ jobId: JOB, buyer: buyer.claim, buyerBundleHash: 'd'.repeat(64), sessionNonce: 'TEST-nonce', seller: seller.claim,
   listingPin: LISTING_PIN, profile: structuredClone(SELLER_PROFILE), ...patch });
@@ -167,20 +171,33 @@ test('a chain read waits behind a held connection fence inside its deadline and 
 });
 
 test('an after-payment write approved by the policy calls the port\'s real observePayment from stillAuthorizedToSign and the confirmation approval while its own signature lease holds the connection fence; an executed matching transfer answers verified before the deadline and no second fence is acquired', async (t) => {
-  const sessionOf = () => paidSession();
+  const SOURCE = { ...sourceBinding }, listingPin = { listingId: fx.agreement.listingRef.listingId, version: fx.agreement.listingRef.version, contentHash: fx.agreement.listingRef.contentHash };
+  const sessionOf = () => paidSession({ agreementSignedProjection: { content: { network: SOURCE.network, chainIdentity: SOURCE.chainIdentity, data: ['storageProgram', { metadata: { networkBinding: SOURCE } }] } } });
   const world = await finalizedPort(t, { participantImplementations: enrollment(), sessionOf });
   world.node.reply = transferNode(NODE_TRANSFER);
-  const resolve = sellerRecordsPurchaseResolver({ sessionOf, buyerAccess: () => ({ allowsWallet: () => true }), now: () => T0, observePayment: world.port.observePayment });
+  const resolvePurchase = sellerRecordsPurchaseResolver({ sessionOf, buyerAccess: () => ({ allowsWallet: () => true }), now: () => T0, observePayment: world.port.observePayment });
+  const policy = { address: seller.address, seller: seller.claim, sourceBinding: SOURCE, artifactAuthority, listingPin: () => listingPin, resolvePurchase, paymentPhaseIndex: () => 2, deliveryPhaseIndex: () => 3, deliveredPayloadHash: deliveredHashFor };
+  const approval = createExactOperatorApproval({ maxTotalOs: '50000000000', evidencePath: join(privateDataDirectory(t), 'approvals.jsonl'), now: () => T0,
+    sellerApproval: { mode: 'policy', maxWriteTotalOs: '4000000000' }, policy });
+  t.after(() => approval.stop());
+  const retained = composeSellerApproval({ mode: 'policy', policy: approval, manual: () => assert.fail('the operator was asked') }).retained;
+  const payment = requestFor({ artifactKind: 'SettlementEvidence', phase: 'pay-dem', job: fx.agreement.jobId, walletAddress: seller.address, writer: seller.claim, sourceBinding: SOURCE,
+    artifact: { signature: { algorithm: 'ed25519', signer: seller.claim, value: 'A'.repeat(86) }, paymentTxRefs: [{ kind: 'demos', txHash: TX, blockNumber: BLOCK }], paymentAmount: { amount: demString(BigInt(TERMS.price.amountOs)), currency: 'DEM' } } });
+  // A read that waits for the pass's own fence would wait for its 10 s deadline; the pass must finish well inside it.
+  const withinPass = (work) => Promise.race([work, new Promise((_, fail) => setTimeout(() => fail(new Error('a second connection fence is waited for')), 3000).unref())]);
   const lease = await world.session.acquireConnectionFence();
   try {
     const handle = world.session.effectPass({ fence: lease, deadline: T0 + 5_000, refreshAuthority() {}, finalStop() {}, synchronousChecks: [], feeCeilingOs: finalization.feeCeilingOs,
       context: api.passContext({ operationClass: 'payment-evidence', currentAuthorization: () => true }) });
-    for (const caller of ['stillAuthorizedToSign', 'confirmation approval']) {
-      const projection = await world.session.runInEffectPass(handle, () => resolve(fx.agreement.jobId));
-      assert.deepEqual({ paymentObserved: projection.paymentObserved, paymentTxRef: projection.paymentTxRef }, { paymentObserved: true, paymentTxRef: { kind: 'demos', txHash: TX, blockNumber: BLOCK } }, caller);
-    }
+    // The signing check (stillAuthorizedToSign at the end of the sign gate), then the confirmation approval's own stillAuthorizedToSign.
+    const prepared = await withinPass(world.session.runInEffectPass(handle, () => retained.prepare(payment)));
+    assert.equal(typeof prepared.ledgerId, 'string', 'the policy authorized the signature: a verified matching transfer left no refusal');
+    const observed = () => world.node.reads.filter((read) => read === 'getTxByHash').length, afterSigning = observed();
+    assert.ok(afterSigning >= 2, 'the approval decision and the signing check each observed the transfer');
+    const binding = { ledgerId: prepared.ledgerId, requestText: prepared.requestText, ...(prepared.token ? { token: prepared.token } : {}) };
+    assert.equal(await withinPass(world.session.runInEffectPass(handle, () => retained.confirm(binding, confirmationFor(payment, { executed: true })))), true, 'the confirmation approval was accepted');
+    assert.ok(observed() > afterSigning, 'the confirmation approval observed the transfer again');
   } finally { lease.release(); }
-  assert.equal(world.node.reads.filter((read) => read === 'getTxByHash').length >= 2, true, 'the transfer is observed on each call');
 });
 
 test('a second call reads again: nothing is cached across calls, and a restarted port reads from its own new session', async () => {
