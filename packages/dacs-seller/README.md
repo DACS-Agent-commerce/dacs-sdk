@@ -465,6 +465,14 @@ receipt is a declaration on the wire answer only: the Agreement, the commitment
 record and every transaction are unchanged. The host refuses to start without
 both ceilings; the SDK sets no default and infers none.
 
+The buyer opens Pay only when the Pay's debit, the price plus the network's
+current fee for one native write (the wallet's 1 DEM gas plus the node's
+fees), is no more than `reservedMaximumOs`. So `payFeeCeilingOs` should cover
+that fee; if the two ceilings together are below it, every Pay is refused.
+The buyer also refuses a receipt above its
+own price plus fee ceilings, or above its mandate cap. Its ceilings need not
+equal the seller's.
+
 The HTTP limiter is global (120 requests/minute, eight concurrent requests)
 and includes unauthenticated traffic. Put the host behind a front end with a
 per-client limiter so one client cannot exhaust the shared request budget.

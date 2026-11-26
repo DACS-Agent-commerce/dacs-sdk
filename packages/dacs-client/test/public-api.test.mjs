@@ -40,7 +40,7 @@ const ROOT = {
     'demDeliveryContextUsage', 'isDemDeliveryContextAuthority',
     'rpcAuthRefusal', 'transferRefusal', 'sellerSessionTransitionState', 'createPurchaseReadbackCache',
     'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence',
-    'createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport', 'createSellerSessionKeys',
+    'createDemDeliveryContext', 'createDemDeliveryContextRouteCaller', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport', 'createSellerSessionKeys',
     'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'createAuthorityReader', 'createPublicSellerClient',
     'createPurchaseOperations', 'isPurchaseOperationId', 'createPurchaseChallenges', 'purchaseApprovalChallengeText', 'createLocalPurchaseAccount'],
   classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
@@ -64,7 +64,7 @@ const modules = {
   "dacs/seller-http.mjs": "sellerFailureCause SellerRefusedError SellerUnavailableError SellerTlsUnusableError createPublicSellerClient",
   "dacs/native-payment-evidence-consumer.mjs": "usesNativePaymentEvidence createNativePaymentEvidenceConsumer",
   "dacs/agreement-context-consumer.mjs": "AGREEMENT_CONTEXT_SOURCE isOperatorContextAuthority",
-  "dacs/dem-delivery-context-consumer.mjs": "DEM_DELIVERY_CONTEXT_SOURCE demDeliveryContextUsage isDemDeliveryContextAuthority createDemDeliveryContext",
+  "dacs/dem-delivery-context-consumer.mjs": "DEM_DELIVERY_CONTEXT_SOURCE demDeliveryContextUsage isDemDeliveryContextAuthority createDemDeliveryContext createDemDeliveryContextRouteCaller",
   "dacs/native-dem-delivery-consumer.mjs": "createNativeDemDeliveryCapability",
   "dacs/source-demo-seller-transport.mjs": "createSourceDemoSellerTransport",
   "dacs/seller-session-keys.mjs": "createSellerSessionKeys",
@@ -145,7 +145,8 @@ test('candidate manifest uses release metadata and the exact public boundary', a
   assert.equal(client.version, core.version);
   assert.deepEqual(client.peerDependencies, { '@kynesyslabs/dacs': core.version });
   assert.deepEqual(client.exports, { '.': './src/index.mjs', './wallet/durable-journal': './src/wallet/durable-journal.mjs', './node-wallet': './src/wallet/node-wallet-session.mjs',
-    './substrate/demos': './src/substrate/demos.mjs', './purchase/evidence-recorder': './src/passive-evidence-recorder.mjs' });
+    './substrate/demos': './src/substrate/demos.mjs', './purchase/evidence-recorder': './src/passive-evidence-recorder.mjs',
+    './purchase/wallet-bridge': './src/purchase/wallet-bridge.mjs' });
   assert.equal(client.publishConfig, undefined, 'release-set admission is pending');
   assert.deepEqual(client.repository, { type: 'git', url: core.repository.url, directory: 'packages/dacs-client' });
   assert.equal(client.bugs.url, core.bugs.url);
@@ -159,7 +160,7 @@ test('the client manifest declares exactly demosdk ^4.0.16 and dacs-node and @sc
   assert.equal(client.dependencies['@kynesyslabs/demosdk'], '^4.0.16');
   assert.equal(client.dependencies['@kynesyslabs/dacs-node'], core.version);
   assert.match(client.dependencies['@scure/bip39'], /^\d+\.\d+\.\d+$/);
-  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder'], 'no export is added for the loading modules');
+  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder', './purchase/wallet-bridge'], 'no export is added for the loading modules');
   const script = `import * as module from 'node:module';
     const refuse = (specifier, context, next) => {
       if (/demosdk|demos-loader|demos-quiet-hooks|node-demos-loading/.test(specifier)) throw new Error('unexpected import of ' + specifier);
@@ -407,4 +408,22 @@ test('an archive installed outside the checkout exports createPublicSellerClient
     assert.equal(process.moduleLoadList.includes('NativeModule sqlite'), false, 'SQLite was never loaded');
   `);
   run(process.execPath, ['seller-client.mjs'], app);
+});
+
+test('an archive installed outside the checkout exports createDemDeliveryContextRouteCaller and constructs its held buyer capability', (t) => {
+  const { app, run } = installPackedPair(t, { installedDependencyGraph: true });
+  writeFileSync(join(app, 'route-caller.mjs'), `
+    import assert from 'node:assert/strict';
+    assert.match(import.meta.resolve('@kynesyslabs/dacs-client'), /\\/node_modules\\/@kynesyslabs\\/dacs-client\\//, 'the package is the installed copy');
+    let fetches = 0;
+    globalThis.fetch = async () => { fetches++; throw new Error('nothing is sent at construction'); };
+    const client = await import('@kynesyslabs/dacs-client');
+    const capability = client.createDemDeliveryContextRouteCaller({ authority: 'TEST-installed-route' });
+    assert.deepEqual(capability, { source: client.DEM_DELIVERY_CONTEXT_SOURCE, authority: 'TEST-installed-route' });
+    assert.equal(Object.isFrozen(capability), true);
+    assert.equal(client.demDeliveryContextUsage(capability), null, 'it has no provider store');
+    assert.throws(() => client.createDemDeliveryContextRouteCaller({ authority: 'not-a-label' }), TypeError);
+    assert.equal(fetches, 0);
+  `);
+  run(process.execPath, ['route-caller.mjs'], app);
 });

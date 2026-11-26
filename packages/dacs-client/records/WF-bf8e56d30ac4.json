@@ -1,0 +1,24 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test that a plan step's context route keeps session_gone_reapprove and that the seller host refuses the buyer route capability",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/dem-context-route-caller.test.mjs",
+      "before": "2bcb04131f739d9715734888c9b5c87a96b6e38c",
+      "after": "f36b7785112254e7edbd2c531b173467c198bb3c"
+    },
+    {
+      "path": "packages/dacs-client/test/seller-session-restart.test.mjs",
+      "before": "e2ed3a05aa61a5a89e0cc5077cf8d6e28d3534c4",
+      "after": "65267855c9edca870cb794d988bc319004a21a8a"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-bf8e56d30ac4.json",
+    "packages/dacs-client/test/dem-context-route-caller.test.mjs",
+    "packages/dacs-client/test/seller-session-restart.test.mjs"
+  ]
+}
