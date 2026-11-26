@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF drop the unused live-state parameter from the node RPC endpoint test's binder reader",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/rpc-endpoint.test.mjs",
+      "before": "fdb09dd1d197cbd73db160cea69e6368caf338b0",
+      "after": "2f1ad9242d2f01c9031b967197a3d7a9a946c0d5"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-943d8525724c.json",
+    "packages/dacs-client/test/rpc-endpoint.test.mjs"
+  ]
+}
