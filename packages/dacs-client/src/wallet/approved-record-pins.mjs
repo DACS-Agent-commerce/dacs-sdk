@@ -1,10 +1,10 @@
 // The pins a node wallet takes from the SDK-approved TP-1 record, and the checks that run before anything is built from them.
 import { createHash } from 'node:crypto';
 import { canonicalize } from '@kynesyslabs/dacs';
-import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+import { assertTp1Binding, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { OperationError } from '../client-errors.mjs';
-import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory } from '../public-admission.mjs';
-import { observeWithDeadline, OutboundError } from '../util/http.mjs';
+import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory, notAdmittedError } from '../public-admission.mjs';
+import { observeWithDeadline, OutboundError, settleOnAbort } from '../util/http.mjs';
 import { DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, DEVNET_NODE2_BLOCK_LAYOUT, TP1_REVIEWED_BLOCK_TWO_HASH } from './devnet-native-transport.mjs';
 
 export const NODE_WALLET_NETWORK = TP1_APPROVED_IDENTITY_RECORD.network;
@@ -24,6 +24,17 @@ export async function withinAuthorityDeadline(read, signal) {
 
 // The construction checks (admission shape, untrusted options, Node floor) run before anything is built or imported.
 export const checkConstruction = admitPublicFactory(options => ({ options }), { purchase: true });
+
+/**
+ * Checks `binding` with the wire's binding check under the authority deadline (a late answer is discarded), then that the connection is still
+ * the one checked. Rejects OperationError(profile_not_admitted, cause kept) or OperationError(tp1_local_binding_changed).
+ */
+export async function checkAdmission({ binding, currentLocal }, owner) {
+  const local = owner.currentLocal(), checked = canonicalize(local);
+  try { await withinAuthorityDeadline(({ signal }) => settleOnAbort(assertTp1Binding(binding, local), signal)); }
+  catch (error) { throw notAdmittedError(error); }
+  if (canonicalize(currentLocal()) !== checked || canonicalize(owner.currentLocal()) !== checked) fail('tp1_local_binding_changed');
+}
 
 // The pins come from the admitted binding alone, and only for the SDK-held approved record.
 export function approvedPins(binding) {

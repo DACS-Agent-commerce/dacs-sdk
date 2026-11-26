@@ -1,0 +1,103 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add a keyless signed relay transport that confirms and broadcasts a wallet-signed payment or Agreement CREATE",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "9d6fe39a1a447e09b4b460cdf5863d7d358d6135",
+      "after": "f3d62cf6bcce058e3389a0bdc8991f4ae2ebd9a0"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "8f04d596612bb53f9ac7b1e370385c5c900a96a5",
+      "after": "3e4e135731c28ca0331cdda7dfd0f664d47ec9a4"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/approved-record-pins.mjs",
+      "before": "98beb9642c8cb16e6220afb33768c98a196c3109",
+      "after": "1dce079c6cc319604e9df109c31c47e6a40720b4"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "7102245d58cfe0449e9933fe0d721c93621fe767",
+      "after": "11498d84fc229ad7618ac1741cbee7882d1877d7"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+      "before": "e7b6bd961343393025d2e3b511f2f9543913d937",
+      "after": "8441e2714326bd653ab2469796cb216fff39455e"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/held-transport-facade.mjs",
+      "before": null,
+      "after": "8b63262f4e6a78f6630916c815b11ec15eae4551"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+      "before": "40367f47c71c08ce3582aed4d4eca16918016ee7",
+      "after": "3cbc5fe072ce068a30c86af5c745b5bc754bb602"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-signed-relay.mjs",
+      "before": null,
+      "after": "d0871d6dc8d136e720b7a3161ec7fd130888da2b"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "f3c0079cfc99e596409e691f16a5d8edfc20feea",
+      "after": "ef8f2d3cf2df293a99626eca2f9597ea56549a01"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/shared-wallet-effect-boundary.mjs",
+      "before": null,
+      "after": "01abb743fe2697b8aa4e4725bb0b70e22b233abf"
+    },
+    {
+      "path": "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+      "before": "389314001f9655de05dc5c0871199836a2de7183",
+      "after": "7c0821ebb576872f86e17090283ff5822b1a901e"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/native-effect-world.mjs",
+      "before": "b7870b105f7f3c327bfd3187659591d80d12a751",
+      "after": "0fa843db32c2fdd972b737c3904f502f0f7f145a"
+    },
+    {
+      "path": "packages/dacs-client/test/keyless-signed-relay.test.mjs",
+      "before": null,
+      "after": "bf3389baa56f9c11fe16248cdb6077f5098cc4f2"
+    },
+    {
+      "path": "packages/dacs-client/test/native-fee-ceiling-view.test.mjs",
+      "before": null,
+      "after": "940fb847ae13c196b9d1ff108a3d649260aa2c54"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "291bc2e4e3941b7d99ba325ef34e2e2e58f27f98",
+      "after": "653681a143c2fd376e858a0bef8f63a066c5cd76"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-586d80f2706b.json",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/wallet/approved-record-pins.mjs",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/src/wallet/effect-boundary.mjs",
+    "packages/dacs-client/src/wallet/held-transport-facade.mjs",
+    "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+    "packages/dacs-client/src/wallet/keyless-signed-relay.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/src/wallet/shared-wallet-effect-boundary.mjs",
+    "packages/dacs-client/test/effect-boundary-operation.test.mjs",
+    "packages/dacs-client/test/helpers/native-effect-world.mjs",
+    "packages/dacs-client/test/keyless-signed-relay.test.mjs",
+    "packages/dacs-client/test/native-fee-ceiling-view.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "scripts/release-policy.json"
+  ]
+}

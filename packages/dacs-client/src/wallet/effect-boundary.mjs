@@ -150,9 +150,10 @@ function createKeyedQueue() {
  * instead: the work's return value (a send's result, a signed artifact) is
  * `error.details.result` and the release failure is `error.cause`.
  *
- * - `signPass(operation, sign)`: refuses `eb_operation_signed` (with the recorded
+ * - `signPass(operation, sign, { confirmedDebitOs })`: refuses `eb_operation_signed` (with the recorded
  *   `artifactHash` in `details`) once the operation has a record on its lane, without
- *   calling `sign`. Calls `sign({ signal })` with a deadline of its own
+ *   calling `sign`. `confirmedDebitOs` (optional) replaces the operation's `debitOs` in each
+ *   fee check, before and after the signed record, as `dispatchPass` does. Calls `sign({ signal })` with a deadline of its own
  *   (AUTHORITY_READ_DEADLINE_MS, apart from the reads' budget); expiry aborts the
  *   signal and refuses `eb_sign_timeout`, ignoring late bytes. Resolves
  *   the artifact `{ ...operation, artifactHash }` after the signer's
@@ -280,8 +281,9 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
     }
   }
 
-  // One pass under the operation's fence capability, its own or the enclosing operation's.
-  async function runPass(operation, work) {
+  // One pass under the operation's fence capability, its own or the enclosing operation's. `checked` is the operation the
+  // precheck's fee check reads when it differs from the recorded one.
+  async function runPass(operation, work, checked = operation) {
     assertPurchaseActionsAdmitted();
     const read = createReadBudget(clock);
     const enclosing = operations.getStore();
@@ -297,7 +299,7 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
       return heldScope.runInAsyncScope(() => fence.withFence(operation.operationId,
         () => caller.runInAsyncScope(() => work(enclosing, read)), { capability: enclosing.capability }));
     }
-    await precheck(read, operation);
+    await precheck(read, checked);
     let finished;
     try {
       return await fence.withFence(operation.operationId, async (capability) => {
@@ -377,21 +379,22 @@ export function createEffectBoundary({ binding, currentLocal, stopped, feeCeilin
     if (recorded) throw refusal('eb_operation_signed', undefined, { artifactHash: recorded.artifactHash });
   }
 
-  async function signPass(input, sign) {
+  async function signPass(input, sign, { confirmedDebitOs } = {}) {
     const operation = snapshotOperation(input);
+    const checked = feeView(operation, confirmedDebitOs);
     return runPass(operation, (frame, read) => signingQueue(JSON.stringify([operation.lane, operation.operationId]), async () => {
       assertPurchaseActionsAdmitted();
       await refuseSignedOperation(operation);
-      await refresh(read, operation);
-      gate(frame, operation);
+      await refresh(read, checked);
+      gate(frame, checked);
       const bytes = await createReadBudget(clock)(sign, 'eb_sign_timeout');
       if (!(bytes instanceof Uint8Array) || bytes.length === 0) throw new TypeError('the signer must return a non-empty Uint8Array');
       await refuseSignedOperation(operation);
       const stored = Buffer.from(bytes);
       const artifact = { ...operation, artifactHash: sha256Hex(stored) };
       await persist({ ...artifact, bytes: stored.toString('base64'), passId: FIRST_PASS, state: 'signed' });
-      return authorizeOrHold(frame, read, artifact, FIRST_PASS, 'signed-held', () => artifact);
-    }));
+      return authorizeOrHold(frame, read, artifact, FIRST_PASS, 'signed-held', () => artifact, { checked: feeView(artifact, confirmedDebitOs) });
+    }), checked);
   }
 
   // Hands the operation's retained bytes to `release(bytes, passId)` once the history

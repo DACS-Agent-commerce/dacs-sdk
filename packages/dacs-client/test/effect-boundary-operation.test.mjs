@@ -386,3 +386,35 @@ test('a queued nested sign checks admission before reading history when the earl
     assert.deepEqual(await passStates(w), []);
   });
 });
+
+test('signPass without confirmedDebitOs checks the recorded debit and with it checks only the fee view', async (t) => {
+  // The ceiling is 50 DEM; the recorded debit is far above it, the fee view is under it.
+  const OVER = '90000000000', FEE_VIEW = '2300000000';
+  const signWith = (w, options) => w.boundary.signPass({ ...w.op, debitOs: OVER }, () => { w.signatures++; return signedBytes; }, options);
+  const artifactStates = (w) => states(w, { lane: w.op.lane, artifactHash: digestBytes(signedBytes) });
+
+  const plain = await boundaryWorld(t);
+  await assert.rejects(signWith(plain), code('write-fee-cap'), 'without the option the recorded debit is checked');
+  assert.equal(plain.signatures, 0);
+
+  const viewed = await boundaryWorld(t);
+  const artifact = await signWith(viewed, { confirmedDebitOs: FEE_VIEW });
+  assert.equal(viewed.signatures, 1);
+  assert.equal(artifact.debitOs, OVER, 'the returned artifact keeps the recorded debit');
+  const [signed] = await viewed.history.readOperation(viewed.op);
+  assert.equal(signed.state, 'signed');
+  assert.equal(signed.debitOs, OVER, 'the persisted record keeps the recorded debit');
+
+  for (const confirmedDebitOs of ['50000000001', null]) {
+    const w = await boundaryWorld(t);
+    await assert.rejects(signWith(w, { confirmedDebitOs }), code('write-fee-cap'), String(confirmedDebitOs));
+    assert.equal(w.signatures, 0, String(confirmedDebitOs));
+    assert.deepEqual(await artifactStates(w), [], `${confirmedDebitOs}: no record`);
+  }
+
+  // The check after the signed record is persisted reads the view too: only the stop refuses there.
+  const stopped = await boundaryWorld(t);
+  cutAppend(stopped, 'signed', { mutate: () => { stopped.stopped = true; } });
+  await assert.rejects(signWith(stopped, { confirmedDebitOs: FEE_VIEW }), code('writes_stopped'));
+  assert.deepEqual(await artifactStates(stopped), ['signed', 'signed-held']);
+});
