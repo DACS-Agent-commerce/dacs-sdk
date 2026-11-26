@@ -368,7 +368,7 @@ test('the packed root and node-wallet subpath export one keyless signed relay fa
   assert.equal(typeof client.createKeylessSignedRelayTransport, 'function');
   assert.equal(nodeWallet.createKeylessSignedRelayTransport, client.createKeylessSignedRelayTransport);
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs-client'))));
-  assert.deepEqual(Object.keys(manifest.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder'], 'no subpath is added');
+  assert.deepEqual(Object.keys(manifest.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder', './purchase/wallet-bridge'], 'no subpath is added');
   // Construction needs the owner's members and the journal's methods; it calls no journal method and sends nothing.
   const { binding, currentLocal } = await bindFixture();
   const refuse = () => { throw new Error('TEST-not-called'); };
