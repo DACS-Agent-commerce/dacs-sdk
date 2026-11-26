@@ -44,6 +44,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/native-observation-evidence.mjs': { effect: {  }, pure: ['reportNativeRefusal', 'withNativeObservationEvidence'] },
   'src/dacs/native-payment-evidence-consumer.mjs': { effect: { createNativePaymentEvidenceConsumer: ['createNativePaymentEvidenceConsumer'] }, pure: ['checkNativePaymentEvidence', 'nativeEvidenceReadOutcome', 'nativePaymentEvidenceConfig', 'observedTransferMatches', 'usesNativePaymentEvidence'] },
   'src/dacs/payment-evidence-wallet-journal.mjs': { effect: { createPaymentEvidenceWalletJournal: ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence'], createSignedCreateJournal: ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'] }, pure: ['isPaymentEvidenceWalletJournalPair', 'paymentEvidenceWalletJournalOf'] },
+  'src/dacs/payment-evidence-pass.mjs': { effect: { createPaymentEvidencePass: ['paymentEvidence.approveAhead', 'paymentEvidence.signCreate', 'paymentEvidence.approveSendAhead', 'paymentEvidence.broadcast'] }, pure: [] },
   'src/dacs/process-lease.mjs': { effect: {  }, pure: ['ProcessLeaseError', 'leaseFile', 'leaseHolderState', 'leaseState', 'takeLease'] },
   'src/dacs/purchase-protocol.mjs': { effect: {  }, pure: ['agreementInput', 'agreementTerms', 'assembleBundleCopies', 'bundleAddress', 'bundleSession', 'bundleSigningPlan', 'claimPublicKeyRaw', 'commitmentReader', 'commitmentSession', 'commitmentVerifier', 'contributionVerifier', 'deliverableAddress', 'deliveryEvidenceAddress', 'finalityCommitmentAddress', 'fixedPriceAgreementLogicalAddress', 'listingPin', 'paymentEvidenceAddress', 'plainJson', 'protocolSupport', 'verifyAnchoredCopy', 'verifyDelivery', 'verifyPaymentEvidence', 'vetNotPerformedRef'] },
   'src/dacs/rail-authority.mjs': { effect: {  }, pure: ['intakeRailDefinition', 'railAuthorityConfig', 'validateSellerListing'] },
@@ -133,11 +134,25 @@ const TRANSPORT_PASSIVE = ['readRpc', 'observeBinding', 'chainReader', 'nativeTr
   'isWalletIdle', 'profile', 'onPurchaseStep', 'onStorageWriteResend', 'reserveRpcAuth', 'close'];
 const LOCAL_JOURNAL = ['appendUnderLock', 'close', 'entries', 'get', 'inspectLocks', 'put', 'releaseAbandonedLock', 'withOwnedOrAcquiredLane', 'withWalletLock'];
 const EVIDENCE_JOURNAL_KEY = 'src/dacs/payment-evidence-wallet-journal.mjs#createPaymentEvidenceWalletJournal';
+const EVIDENCE_CONSUMER_KEY = 'src/dacs/native-payment-evidence-consumer.mjs#createNativePaymentEvidenceConsumer';
+const EVIDENCE_PASS_KEY = 'src/dacs/payment-evidence-pass.mjs#createPaymentEvidencePass';
+const EVIDENCE_EFFECTS = ['approveAhead', 'signCreate', 'approveSendAhead', 'broadcast'];
+const EVIDENCE_READS = ['readAccountNonce', 'readTransactionState'];
+// The four effect members of a payment-evidence adapter or pass, named `<member>` after `memberPrefix`, each guarded at its call
+// as `<guardPrefix>.<member>`.
+const evidenceEffects = (guardPrefix, memberPrefix = '') => Object.fromEntries(EVIDENCE_EFFECTS.map((member) => [`${memberPrefix}${member}`, [`${guardPrefix}.${member}`]]));
 // The seller's Node wallet composition, as createSellerNodeWallet returns it and the port's finalize hands it on; `transport` is the
 // facade's member name (`sourceCapability` on the wallet). Its wallet factory and passes sign only through the client's effect gate.
-const nodeWalletRow = (transport, extraPure = []) => ({ role: [], as: { paymentEvidence: EVIDENCE_JOURNAL_KEY },
+const nodeWalletRow = (transport, extraPure = []) => ({ role: [],
   effect: Object.fromEntries([['walletFactory', CLIENT_HOLD], ['effectPass', CLIENT_HOLD], ['runInEffectPass', CLIENT_HOLD], ...prefixed(transport, TRANSPORT_ACTIVE).map((name) => [name, CLIENT_HOLD])]),
   pure: ['close', 'readBalance', ...extraPure, ...prefixed('artifactJournal', LOCAL_JOURNAL), ...prefixed('observer', ['observe', 'provenance', 'readNodeInfo']), ...prefixed(transport, TRANSPORT_PASSIVE)] });
+// The wallet hands out the client's payment-evidence adapter, guarded at each effect call; the finalized session hands out instead
+// its own journal over the session's passes, the consumer anchoring through it, and endApprovalWaits, which only aborts a signal.
+const walletRow = () => {
+  const row = nodeWalletRow('sourceCapability');
+  return { ...row, effect: { ...row.effect, ...evidenceEffects('paymentEvidenceAdapter', 'paymentEvidenceAdapter.') }, pure: [...row.pure, ...prefixed('paymentEvidenceAdapter', EVIDENCE_READS)] };
+};
+const sessionRow = () => ({ ...nodeWalletRow('transport', ['acquireConnectionFence', 'endApprovalWaits']), as: { paymentEvidence: EVIDENCE_JOURNAL_KEY, nativePaymentEvidence: EVIDENCE_CONSUMER_KEY } });
 const EVIDENCE_JOURNAL = { role: [], effect: { anchorEvidence: ['anchorEvidence'], ensureEvidence: ['ensureEvidence'], reconcilePaymentEvidence: ['reconcilePaymentEvidence'] },
   pure: ['clearHeldWrite', 'close', 'readSignedProjection'] };
 const DELIVERABLE_JOURNAL = { role: [], effect: { submitAuthorized: ['guardedCreate'], resume: ['guardedCreate'] }, pure: ['clearHeldWrite', 'close', 'readSignedProjection'] };
@@ -148,8 +163,9 @@ const PARTY_VET_STORE = { role: [], effect: {}, pure: ['close', 'entries', 'read
 // The read-only connection pair: the client's authority capability (no sign or send) and its connection reader.
 const CONNECTION_PAIR = { role: [], effect: {}, pure: ['connectionAuthority', 'authority.authorityRpc', 'authority.claim', 'authority.context', 'authority.connectionGeneration'] };
 export const RETURNED_CLASSIFICATION = Object.freeze({
-  'src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession.finalize()': nodeWalletRow('transport', ['acquireConnectionFence']),
-  'src/devnet-demo/seller-node-wallet.mjs#createSellerNodeWallet': nodeWalletRow('sourceCapability'),
+  'src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession.finalize()': sessionRow(),
+  'src/devnet-demo/seller-node-wallet.mjs#createSellerNodeWallet': walletRow(),
+  [EVIDENCE_PASS_KEY]: { role: [], effect: evidenceEffects('paymentEvidence'), pure: EVIDENCE_READS },
   'src/dacs/host-stages.mjs#openSellerStages': { role: [], effect: { finalize: ['sellerWalletSession.finalize', 'effectBoundary'] }, pure: ['bootstrap.current', 'bootstrap.enter', 'close', 'local'] },
   'src/seller-key.mjs#loadKeyFile': { role: [], effect: {}, pure: ['bytes', 'destroy', 'redact', 'text', 'toJSON'] },
   'src/devnet-demo/create-pass.mjs#currentAuthorizationFor': { role: [], effect: {}, pure: ['()'] },

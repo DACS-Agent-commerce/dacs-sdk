@@ -13,6 +13,7 @@ import { agreementRequest } from '../../dacs-client/test/helpers/tp1-node-fixtur
 import { api, ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, createSellerNodeWallet, evidenceInput, FIXTURE_MNEMONIC, inWalletPass, keyRecordBytes, nodeConnection,
   privateDataDirectory, restartedWorld, runWalletChild, sellerWalletWorld, setPurchaseAdmission, walletOptions } from './helpers/seller-node-wallet-world.mjs';
 import { productionObserveIdentity } from './helpers/sr2-live-fixture.mjs';
+import { journalOverAdapter } from './helpers/payment-evidence-test-journals.mjs';
 
 const egress = installNoEgress();
 const { acquireSellerStateLock } = await import('../src/devnet-demo/seller-state-lock.mjs');
@@ -25,7 +26,7 @@ const { createDemosSr2Adapter, createInMemoryDemosSr2Journal } = await import('.
 const packageDirectory = fileURLToPath(new URL('../', import.meta.url));
 const WALLET_MODULE = join(packageDirectory, 'src/devnet-demo/seller-node-wallet.mjs');
 const zeroed = bytes => bytes.every(byte => byte === 0);
-const anchor = world => inWalletPass(world, () => world.wallet.paymentEvidence.anchorEvidence(evidenceInput(world)));
+const anchor = world => inWalletPass(world, () => journalOverAdapter(world).anchorEvidence(evidenceInput(world)));
 // A world's connection, a fresh private directory and its held lock, without building the wallet.
 async function unbuilt(t) {
   setPurchaseAdmission('testnet-tp1');
@@ -64,7 +65,7 @@ test('an environment variable or seller.json key cannot turn the guard or the cl
   t.after(() => { delete process.env.DACS_PURCHASE_ADMISSION; });
   const world = await sellerWalletWorld(t, { held: true, options: { purchaseAdmission: 'testnet-tp1' } });
   await assert.rejects(world.wallet.walletFactory().request({ method: 'sign', params: ['TEST-message'] }), { code: 'profile_not_admitted' }, 'the client hold still refuses');
-  const refused = await inWalletPass(world, () => world.wallet.paymentEvidence.anchorEvidence(evidenceInput(world))).then(() => null, error => error);
+  const refused = await inWalletPass(world, () => journalOverAdapter(world).anchorEvidence(evidenceInput(world))).then(() => null, error => error);
   const codes = [];
   for (let link = refused; link instanceof Error; link = link.cause) codes.push(link.code);
   assert.ok(codes.includes('profile_not_admitted'), `the evidence CREATE is refused by the hold: ${codes}`);
@@ -77,9 +78,9 @@ test('under the unshipped test loader, the artifact anchor, payment evidence and
   const artifacts = createDevnetDemoArtifactAnchor({ sourceCapability, ...identity, journal: world.wallet.artifactJournal, walletFactory: world.wallet.walletFactory,
     network: sourceCapability.pins.network, signer: { claim: `did:demos:agent:${world.wallet.address.slice(2)}` }, runCreate: () => assert.fail('no CREATE runs here') });
   assert.equal(typeof artifacts.publish, 'function');
-  const evidence = createNativePaymentEvidenceConsumer({ rpcUrl: sourceCapability.pins.endpoint, sourceCapability, ...identity, anchorEvidence: world.wallet.paymentEvidence.anchorEvidence,
-    readSignedProjection: world.wallet.paymentEvidence.readSignedProjection });
-  assert.equal(evidence.anchorEvidence, world.wallet.paymentEvidence.anchorEvidence, 'source mode takes the wallet journal\'s own anchor');
+  const evidence = createNativePaymentEvidenceConsumer({ rpcUrl: sourceCapability.pins.endpoint, sourceCapability, ...identity, anchorEvidence: journalOverAdapter(world).anchorEvidence,
+    readSignedProjection: journalOverAdapter(world).readSignedProjection });
+  assert.equal(evidence.anchorEvidence, journalOverAdapter(world).anchorEvidence, 'source mode takes the wallet journal\'s own anchor');
   assert.equal(typeof createDemosSr2Adapter({ rpcUrl: sourceCapability.pins.endpoint, journal: createInMemoryDemosSr2Journal(), sourceCapability, ...identity }).read, 'function');
   const clientExports = Object.keys(JSON.parse(readFileSync(join(packageDirectory, '../dacs-client/package.json'), 'utf8')).exports);
   const specifiers = [...readFileSync(WALLET_MODULE, 'utf8').matchAll(/from '(@kynesyslabs\/dacs-client[^']*)'/g)].map(match => match[1]);
@@ -198,7 +199,7 @@ test('SIGKILL while the signer lock is held, then a restart under the real selle
   assert.equal(await world.wallet.artifactJournal.withWalletLock('TEST-artifact-lane', async () => 'free'), 'free', 'the anchor journal\'s dead lock row was released');
   const sent = await anchor(world);
   assert.equal(sent.status, 'submitted', 'the signer lock is free: the composition signs');
-  assert.deepEqual(await inWalletPass(world, () => world.wallet.paymentEvidence.reconcilePaymentEvidence(evidenceInput(world))), { status: 'applied', txHash: sent.txHash });
+  assert.deepEqual(await inWalletPass(world, () => journalOverAdapter(world).reconcilePaymentEvidence(evidenceInput(world))), { status: 'applied', txHash: sent.txHash });
   const second = await runWalletChild('second-lock', directory, stateDirectory);
   assert.deepEqual(JSON.parse(second.stdout), { code: 'seller_state_locked', reason: 'held' }, 'a second live kit process is refused');
 });
@@ -223,7 +224,7 @@ test('a storage CREATE for an artifact and for payment evidence signs under the 
   for (const approvalMode of ['policy', 'manual']) {
     const world = await sellerWalletWorld(t, { options: { approvalMode } });
     const sent = await anchor(world);
-    const kept = await world.wallet.paymentEvidence.readSignedProjection({ logicalAddress: evidenceInput(world).logicalAddress });
+    const kept = await journalOverAdapter(world).readSignedProjection({ logicalAddress: evidenceInput(world).logicalAddress });
     assert.equal(JSON.stringify(world.node.broadcasts[0]), JSON.stringify(kept), 'the evidence CREATE sent is the projection the journal kept');
     assert.equal(kept.hash, sent.txHash);
     assert.equal(world.approval.confirmations.length, 1, 'payment evidence is confirmed through approve.retained');
