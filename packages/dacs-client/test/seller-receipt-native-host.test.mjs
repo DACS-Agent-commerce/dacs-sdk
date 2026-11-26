@@ -16,7 +16,7 @@ const { fetchAsHost } = await import('../../dacs-seller/test/helpers/listener-ho
 const { sellerApi } = await import('../../dacs-seller/test/helpers/seller-internal-api.mjs');
 const { createSellerHttpsClient } = await import('../src/dacs/seller-http.mjs');
 const { fetchClient, NO_TRANSMIT_GUARDS } = await import('./helpers/seller-https-rig.mjs');
-const { receiptWorld } = await import('./helpers/seller-receipt-reservation-world.mjs');
+const { receiptWorld, NETWORK_FEE_OS } = await import('./helpers/seller-receipt-reservation-world.mjs');
 const { OperationError } = await import('../src/index.mjs');
 
 const refused = (error) => error instanceof OperationError && error.code === 'seller_receipt_reservation_insufficient';
@@ -50,10 +50,10 @@ test('the shipped native seller host signs a commitment answer whose receipt the
   assert.equal(row.terms.price.amountOs, purchase.amountOs);
   const withReceipt = { ...row.state.protocol, agreement: { artifact: purchase.agreement, hash: agreementHash }, sellerReceipt: answer.sellerReceipt };
   const operation = (protocol) => ({ ...row, state: { ...row.state, protocol } });
-  assert.doesNotThrow(() => buyer.protocol.assertSellerReceiptReservation(operation(withReceipt)));
+  assert.doesNotThrow(() => buyer.protocol.assertSellerReceiptReservation(operation(withReceipt), NETWORK_FEE_OS));
 
   // The same answer with its receipt removed fails closed.
   const withoutReceipt = { ...withReceipt };
   delete withoutReceipt.sellerReceipt;
-  assert.throws(() => buyer.protocol.assertSellerReceiptReservation(operation(withoutReceipt)), refused);
+  assert.throws(() => buyer.protocol.assertSellerReceiptReservation(operation(withoutReceipt), NETWORK_FEE_OS), refused);
 });
