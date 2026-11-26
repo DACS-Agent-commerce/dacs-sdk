@@ -175,8 +175,10 @@ const host = await startSellerHost({
                          // admit must name both participants on the exact
                          // [PROFILE.json](PROFILE.json) profile: standardRevision
                          // d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20 and documentVersions
-                         // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5
-  readCommitmentReceipt, // Chain-bound current SR-2 receipt reader, with bounded I/O.
+                         // CORE 0.3, DACS-1 0.7, DACS-2 0.6, DACS-3 0.5, DACS-4 0.8, DACS-5 0.5;
+                         // the wallet-session port's sessionAdmission is one
+  readCommitmentReceipt, // Chain-bound current SR-2 receipt reader, with bounded I/O; the wallet-session
+                         // port's readCommitmentReceipt is one
   receiptFeeCeilings: { payFeeCeilingOs, anchorFeeCeilingOs }, // required, no default: the Pay and anchor fee
                          // ceilings, each canonical decimal OS text (zero allowed); see "Seller receipt"
   walletSession,         // { authority, connectionAuthority, finalize, close? }: the seller's wallet session.
@@ -1296,8 +1298,24 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `publications` and `diagnostics` it passes unchanged to
   `createSellerNodeWallet`, a wall `clock` (`Date.now` by default) and the
   anchor's `buyerAccess` (`null` by default, which refuses every job's write
-  and read with `buyer_access_closed`); any other option is a TypeError. The
-  `endpoint` is an https root (plain http refuses `transport_mismatch`). Its read-only pair comes from `createNodeAuthorityReader({ owner, claim })`.
+  and read with `buyer_access_closed`), and two optional inputs of its chain readers:
+  `participantImplementations` (`{ entriesFor }`, the host's enrollment source) and
+  `sessionOf(jobId)` (the seller's durable session view); any other option, or one of
+  these two of another type, is a TypeError. The
+  `endpoint` is an https root (plain http refuses `transport_mismatch`). Its readers come from
+  `createNodeAuthorityReader({ owner, claim, chain, participantImplementations, sessionOf })`:
+  the read-only connection pair and three chain readers the host passes on, `sessionAdmission`,
+  `readCommitmentReceipt` and `observePayment`. They read through the finalized session on every
+  call and keep nothing: before finalization they refuse `wallet_session_not_finalized`, after a
+  close `wallet_session_closed`, and without the option they read `reader_input_missing`.
+  `sessionAdmission` reads seller-owned Vet records and receipts back through the bound artifact
+  anchor, and reads the Listing's revocation marker through a read-only SR-2 adapter; a marker
+  read that cannot be authenticated, or a missing marker, is unavailable, so admission refuses
+  `session_admission_unavailable`. `observePayment` answers `verified` only for the retained
+  payment transfer observed again on this call, `absent` only when the session records no payment
+  and the connection reads as the bound chain, and otherwise refuses `payment_unverified`.
+  A buyer with more than one enrollment entry for this seller and Listing, for example a revoked
+  entry and a later re-enrollment, is refused; re-enrollment is planned for a later release.
   At finalize a publication naming the binding's own `TP1-` label gets a token for that binding; the anchor keeps the label. Its
   `artifactAnchor` is the one handle the operator gives the host, the Vet
   provider and the delivery capability. Until the host finalizes the port

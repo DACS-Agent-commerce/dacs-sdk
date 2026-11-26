@@ -64,6 +64,7 @@ import { createDevnetDemoDeliveryCapability } from '../../src/devnet-demo/native
 import { createConnectionAuthorityReader } from '../../src/devnet-demo/connection-authority.mjs';
 import { openDoctorNode } from '../../src/devnet-demo/doctor-node.mjs';
 import { createNodeAuthorityReader } from '../../src/devnet-demo/seller-wallet-session.mjs';
+import { createNodeChainReaders, createReadOnlyDemosSr2Journal } from '../../src/devnet-demo/node-chain-readers.mjs';
 import { composeSellerApproval, createExactOperatorApproval, createSellerContextAdmission } from '../../src/devnet-demo/operator-approval.mjs';
 import { lateWriteWatchOpen } from '../../src/devnet-demo/late-write-watch.mjs';
 import { createInMemoryPartyVetStore, openPartyVetStore } from '../../src/devnet-demo/party-vet-store.mjs';
@@ -196,6 +197,8 @@ export function capabilityBuilders(t) {
     ['src/dacs/dem-delivery-context-consumer.mjs#createDemDeliveryContext', (w) => w.demContext],
     ['src/devnet-demo/late-write-watch.mjs#lateWriteWatchOpen', () => lateWriteWatchOpen(0, 1)],
     ['src/dacs/demos-sr2-adapter.mjs#createInMemoryDemosSr2Journal', () => createInMemoryDemosSr2Journal()],
+    ['src/devnet-demo/node-chain-readers.mjs#createNodeChainReaders', () => createNodeChainReaders({ claim: () => seller.claim, chain: never('the finalized session') })],
+    ['src/devnet-demo/node-chain-readers.mjs#createReadOnlyDemosSr2Journal', () => createReadOnlyDemosSr2Journal()],
     ['src/dacs/demos-sr2-adapter.mjs#createDemosSr2Adapter', () => createDemosSr2Adapter({ rpcUrl: 'http://127.0.0.1:9/', journal: createInMemoryDemosSr2Journal(), fetchImpl: never('a fetch') })],
     ['src/dacs/authority-reader.mjs#createSellerAuthorityReader', (w) => createSellerAuthorityReader({ connectionAuthority: never('the connection reader'), identityRecord: TP1_APPROVED_IDENTITY_RECORD,
       claim: seller.claim, listingPin: w.context.pin, bootstrap: { current: () => null }, retainedJob: () => null, participantImplementations: { entriesFor: () => [] } })],
