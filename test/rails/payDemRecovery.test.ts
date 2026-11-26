@@ -18,6 +18,12 @@ const request = (priorAttempts: readonly SettlementRecoveryAttempt[] = [prior()]
   rail: "pay-dem", phase: "pay-dem", phaseIndex: 0, jobId: "retained-native",
   amount: "1", asset: "DEM", payee: payeeClaim, expectedPayee: payeeClaim, priorAttempts,
 });
+/** The same request without recovery history. */
+const omitHistory = (req: SettleRequest): SettleRequest => {
+  const copy = { ...req };
+  delete copy.priorAttempts;
+  return copy;
+};
 const executed = () => ({
   ok: true as const, txHash, payer, payee, chainId: "demos", amountOs: "1000000000",
   blockNumber: 42, txRefKind: "demos", finality: { model: "bft-final" as const },
@@ -35,36 +41,95 @@ function fixture(reconcile?: PayDemSettlementReconcile) {
   const once = vi.spyOn(store, "once");
   const submit = vi.fn(async () => { throw new Error("must never submit a retained transfer"); });
   const settle = payDemSettle({ address: payer, settle: submit }, {}, { store, reconcile });
-  return { settle, once, submit };
+  return { settle, once, submit, store };
 }
 
 describe("pay-dem retained transaction recovery is read-only even with an empty rail log", () => {
-  test.each([true, false].flatMap((ok) => ["executed", "failed"].map((outcome) => ({ ok, outcome }))))(
-    "audits prior ok=$ok as $outcome on repeat and restart without claiming an effect",
-    async ({ ok, outcome }) => {
-      const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => {
-        expect(context).toEqual({ railId: "pay-dem", jobId: "retained-native", phaseIndex: 0,
-          settlementKey: "pay-dem:retained-native:0", network: "demos", payer, payee,
-          amountOs: "1000000000", txHash });
-        expect(Object.isFrozen(context)).toBe(true);
-        return outcome === "executed" ? executed() : failed();
-      });
-      const first = fixture(reconcile);
-      const restarted = fixture(reconcile);
-      for (const f of [first, first, restarted]) {
-        const result = await f.settle(request([prior(false), prior(ok)]));
-        expect(result).toMatchObject({ ok: outcome === "executed", txHash, payee: payeeClaim });
-        expect(result).not.toHaveProperty("execution");
-        expect(result).not.toHaveProperty("amountOs");
-        expect(Object.isFrozen(result)).toBe(true);
-        if (result.ok) expect(Object.isFrozen(result.finality)).toBe(true);
-        else expect(result).not.toHaveProperty("finality");
-        expect(f.once).not.toHaveBeenCalled();
-        expect(f.submit).not.toHaveBeenCalled();
-      }
-      expect(reconcile).toHaveBeenCalledTimes(3);
-    },
-  );
+  test("audits a prior failed attempt as a permanent failure on repeat and restart without claiming an effect", async () => {
+    const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => {
+      expect(context).toEqual({ railId: "pay-dem", jobId: "retained-native", phaseIndex: 0,
+        settlementKey: "pay-dem:retained-native:0", network: "demos", payer, payee,
+        amountOs: "1000000000", txHash });
+      expect(Object.isFrozen(context)).toBe(true);
+      return failed();
+    });
+    const first = fixture(reconcile);
+    const restarted = fixture(reconcile);
+    for (const f of [first, first, restarted]) {
+      const result = await f.settle(request([prior(false), prior(false)]));
+      expect(result).toMatchObject({ ok: false, txHash, payee: payeeClaim });
+      expect(result).not.toHaveProperty("execution");
+      expect(result).not.toHaveProperty("amountOs");
+      expect(result).not.toHaveProperty("finality");
+      expect(Object.isFrozen(result)).toBe(true);
+      expect(f.once).not.toHaveBeenCalled();
+      expect(f.submit).not.toHaveBeenCalled();
+    }
+    expect(reconcile).toHaveBeenCalledTimes(3);
+  });
+
+  const unresolved = /history records a success but reconciliation reports a permanent failure; the payment stays unresolved and must not be paid again/;
+
+  test("keeps a success recorded in history unresolved when reconciliation reports a permanent failure", async () => {
+    const f = fixture(vi.fn(async () => failed()));
+    await expect(f.settle(request([prior(true)]))).rejects.toThrow(unresolved);
+    expect(f.once).not.toHaveBeenCalled();
+    expect(f.submit).not.toHaveBeenCalled();
+  });
+
+  test("keeps a recorded history success unresolved on a repeat that omits history, and on a restarted bridge given the same history", async () => {
+    const reconcile = vi.fn(async () => failed());
+    const first = fixture(reconcile);
+    const restarted = fixture(reconcile);
+    const withoutHistory = omitHistory(request());
+    await expect(first.settle(request([prior(true)]))).rejects.toThrow(unresolved);
+    await expect(first.settle({ ...withoutHistory, recoveryOnly: true })).rejects.toThrow(unresolved);
+    await expect(first.settle(withoutHistory)).rejects.toThrow(unresolved);
+    await expect(restarted.settle(request([prior(true)]))).rejects.toThrow(unresolved);
+    expect(reconcile).toHaveBeenCalledTimes(4);
+    for (const f of [first, restarted]) {
+      expect(f.once).not.toHaveBeenCalled();
+      expect(f.submit).not.toHaveBeenCalled();
+    }
+  });
+
+  test("keeps a hash unresolved when history records a success and then a failure for it", async () => {
+    const f = fixture(vi.fn(async () => failed()));
+    await expect(f.settle(request([prior(true), prior(false)]))).rejects.toThrow(unresolved);
+    await expect(f.settle(omitHistory(request()))).rejects.toThrow(unresolved);
+    expect(f.once).not.toHaveBeenCalled();
+    expect(f.submit).not.toHaveBeenCalled();
+  });
+
+  test("still returns a bound permanent failure when no history entry records a success", async () => {
+    const f = fixture(vi.fn(async () => failed()));
+    await expect(f.settle(request([prior(false)]))).resolves.toMatchObject({
+      ok: false, errorClass: "permanent", txHash, payee: payeeClaim,
+    });
+    expect(f.once).not.toHaveBeenCalled();
+    expect(f.submit).not.toHaveBeenCalled();
+  });
+
+  test("keeps a history success for one transaction unresolved when the store holds a permanent failure for another transaction under the same key", async () => {
+    const otherHash = "34".repeat(32);
+    const recorded = {
+      ok: false as const, txHash: otherHash, payer, payee, chainId: "demos", blockNumber: 42,
+      txRefKind: "demos" as const, errorClass: "permanent" as const,
+      failureProof: { ...failed().failureProof, txHash: otherHash },
+    };
+    const f = fixture(vi.fn(async () => ({ ...recorded, amountOs: "1000000000" })));
+    await f.store.once("pay-dem:retained-native:0", {
+      bindingVersion: "1", railId: "pay-dem", jobId: "retained-native", phaseIndex: 0, phase: "pay-dem",
+      amount: "1000000000", agreementAsset: "DEM", settlementAsset: "DEM", payer, payee, network: "demos",
+      finality: { model: "bft-final" },
+    }, async () => recorded);
+    f.once.mockClear();
+
+    await expect(f.settle(request([prior(true)]))).rejects.toThrow(/conflicts with the rail outcome/);
+    await expect(f.settle(omitHistory(request()))).rejects.toThrow(unresolved);
+    expect(f.once).not.toHaveBeenCalled();
+    expect(f.submit).not.toHaveBeenCalled();
+  });
 
   test.each([true, false])("requires a reconciler for retained ok=%s before touching the log", async (ok) => {
     const f = fixture();
@@ -78,14 +143,14 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     const f = fixture();
     const reconcile = vi.fn(async (context: PayDemSettlementRecoveryContext) => {
       expect(context).toMatchObject({ txHash, network });
-      return { ...executed(), chainId: network };
+      return { ...failed(), chainId: network };
     });
     const settle = payDemSettle({ address: payer, settle: f.submit }, { network },
       { store: { once: f.once, readOutcome: async () => null }, reconcile });
     const history = Array.from({ length: 256 }, () => ({
-      ...prior(), chainId: network, txHash: `0x${txHash.toUpperCase()}`,
+      ...prior(false), chainId: network, txHash: `0x${txHash.toUpperCase()}`,
     }));
-    await expect(settle(request(history))).resolves.toMatchObject({ txHash, chainId: network });
+    await expect(settle(request(history))).resolves.toMatchObject({ txHash, chainId: network, ok: false });
     expect(f.once).not.toHaveBeenCalled();
     expect(f.submit).not.toHaveBeenCalled();
   });
@@ -193,16 +258,16 @@ describe("pay-dem retained transaction recovery is read-only even with an empty 
     expect(f.submit).not.toHaveBeenCalled();
   });
 
-  test.each(["executed", "missing journal"])("history omission after %s cannot restore submit authority", async (reply) => {
+  test.each(["failed", "missing journal"])("history omission after %s cannot restore submit authority", async (reply) => {
     const reconcile = vi.fn(async () => {
       if (reply === "missing journal") throw new Error(reply);
-      return executed();
+      return failed();
     });
     const f = fixture(reconcile);
-    const { priorAttempts: _history, ...withoutHistory } = request();
-    for (const req of [request(), withoutHistory]) {
+    const { priorAttempts: _history, ...withoutHistory } = request([prior(false)]);
+    for (const req of [request([prior(false)]), withoutHistory]) {
       if (reply === "missing journal") await expect(f.settle(req)).rejects.toThrow(reply);
-      else await expect(f.settle(req)).resolves.toMatchObject({ ok: true, txHash });
+      else await expect(f.settle(req)).resolves.toMatchObject({ ok: false, txHash });
     }
     expect(reconcile).toHaveBeenCalledTimes(2);
     expect(f.once).not.toHaveBeenCalled();

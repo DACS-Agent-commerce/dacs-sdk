@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { api, evidenceInput, finalization, FIXTURE_MNEMONIC, inWalletPass, jsonResponse, ok, outcomes, preparedWrite, privateDataDirectory, replayNode, replyTo,
   restartedWorld, runWalletChild, settlingApproval, settlingWorld, spyTransactionSignatures, T0, writesOf } from './helpers/seller-node-wallet-world.mjs';
+import { journalOverAdapter } from './helpers/payment-evidence-test-journals.mjs';
 
 const egress = installNoEgress();
 after(() => {
@@ -148,7 +149,7 @@ test('a request\'s signing check is its own: while a CREATE whose authorize refu
     const waiting = wallet.request(request, { authorize });
     while (!entered) await nextTurn();
     replyTo(world.node, 'confirmTx', row => jsonResponse(ok({ data: { valid: false, message: 'TEST-refused-confirmation', gas_operation: null, transaction: row.body.params[0].data } })));
-    const evidence = await world.wallet.paymentEvidence.anchorEvidence(evidenceInput(world)).then(value => value, error => error);
+    const evidence = await journalOverAdapter(world).anchorEvidence(evidenceInput(world)).then(value => value, error => error);
     world.node.reply = null;
     release();
     return { waiting: await waiting, evidence };

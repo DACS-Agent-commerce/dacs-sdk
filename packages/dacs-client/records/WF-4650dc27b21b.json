@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged node wallet session after carrying the payment evidence source binding base up into the enrollment reader part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "9a89c27ec2ecadd81f4cc12527839c31fb9c5549",
+      "after": "9a89c27ec2ecadd81f4cc12527839c31fb9c5549"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-4650dc27b21b.json"
+  ],
+  "note": "Both sides of the merge of the base recorded this file, so its newest records disagree; this record chooses the merged copy. The Node session keeps the exports of fetchBoundedNodeJson and listsWithin beside the base's transport binding passed to the payment evidence adapter. Git merged both without a conflict. No file other than this record changes."
+}

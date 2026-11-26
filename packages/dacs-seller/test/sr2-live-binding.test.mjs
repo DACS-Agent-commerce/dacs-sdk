@@ -57,7 +57,7 @@ test('the production authority reader bounds bytes before decode and lists after
   const replies = [];
   const bounded = testWalletSession({ node: { fetch: async () => replies.shift(), calls: [] } }).walletSession.authority;
   replies.push(jsonResponse(nodeAnswer({ pad: 'a'.repeat(4 * MIB) })));
-  await assert.rejects(bounded.authorityRpc(BLOCK_ZERO), (error) => error.kind === 'invalid' && /exceeds byte limit/.test(error.message));
+  await assert.rejects(bounded.authorityRpc(BLOCK_ZERO), (error) => error.code === 'authority_reply_too_large' && error.cause?.kind === 'invalid' && /exceeds byte limit/.test(error.cause.message));
   replies.push(jsonResponse(nodeAnswer({ rows: new Array(LIST_LIMIT + 1).fill(0) })));
   await assert.rejects(bounded.authorityRpc(BLOCK_ZERO), { code: 'authority_list_too_large' });
   // A caller's cancellation keeps its own reason.

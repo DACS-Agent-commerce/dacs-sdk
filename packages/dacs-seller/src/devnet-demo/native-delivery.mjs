@@ -1,4 +1,6 @@
 import { canonicalize, contentHash, isCanonicalJobId } from '@kynesyslabs/dacs';
+import { isTp1AuthorityToken } from '@kynesyslabs/dacs-client/node-wallet';
+import { admitKitCapabilityAuthority } from '../dacs/capability-authority.mjs';
 import { createNativeDemDeliveryCapability, isDeadRefusedCreate, PASSIVE_RETAINED_READ } from '../dacs/native-dem-delivery-consumer.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
@@ -39,9 +41,13 @@ export async function readDevnetPurchasedReport(capability,input){
 // authority; publish/read/readRetained/verifyReceipt), so no copied descriptor
 // grants a write. Every callback first re-checks the job, seller, Listing and
 // receipt hash against the report; failures return rejected/indeterminate, never
-// throw. deliveryEvidenceEnabled adds the optional evidence reader.
-export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvidenceEnabled=false}) {
-  if(anchor?.authority!==authority || typeof anchor.publish!=='function' || typeof anchor.read!=='function' || typeof anchor.readRetained!=='function' || typeof anchor.verifyReceipt!=='function') throw new TypeError('the exact seller native artifact anchor is required');
+// throw. deliveryEvidenceEnabled adds the optional evidence reader. `authority` is a TEST-
+// label or a TP-1 token admitted for `binding`; both go to the inner capability.
+export function createDevnetDemoDeliveryCapability({authority,binding,anchor,deliveryEvidenceEnabled=false}) {
+  if(isTp1AuthorityToken(authority))assertKitOperationAdmitted('createDevnetDemoDeliveryCapability');
+  const refuse=()=>{throw new TypeError('the exact seller native artifact anchor is required');};
+  const label=admitKitCapabilityAuthority(authority,{binding,refuse});
+  if(anchor?.authority!==label || typeof anchor.publish!=='function' || typeof anchor.read!=='function' || typeof anchor.readRetained!=='function' || typeof anchor.verifyReceipt!=='function') refuse();
   const expected=(input)=>isDevnetPurchasedReport(input.report,{jobId:input.jobId ?? input.report?.jobId,agreementHash:input.deliveryBinding?.agreementHash,producer:anchor.writer})
     && input.logicalAddress===`dacs4:deliverable:${input.report.jobId}` && input.receiptContentHash===contentHash(input.report)
     && bindsReport(input.deliveryBinding,input.report,input.receiptContentHash);
@@ -60,7 +66,7 @@ export function createDevnetDemoDeliveryCapability({authority,anchor,deliveryEvi
       ...(authorize?{authorize:()=>authorize('intent'),authorizeSigning:()=>authorize('signing'),currentAuthorization:()=>authorize('signing')}:{})});
     return value.status==='present' ? {status:'accepted',reconciliationId:value.receipt.transactionRef.value} : {status:value.status==='rejected'?'rejected':'indeterminate',reason:value.reason};
   };
-  const capability=createNativeDemDeliveryCapability({authority,submit:(input)=>submit(input),submitAuthorized:submit,
+  const capability=createNativeDemDeliveryCapability({authority,binding,submit:(input)=>submit(input),submitAuthorized:submit,
     reconcile:async(input)=>{
       const value=await read(input);
       // A refused CREATE that can no longer be included is as absent as one that was never signed; every other refusal stays indeterminate.

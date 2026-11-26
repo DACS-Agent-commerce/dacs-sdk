@@ -8,6 +8,7 @@ import { canonicalize, contentHash, paymentEvidenceAddress } from '@kynesyslabs/
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { createSellerNodeWallet, fixtureClaim, inWalletPass, keyRecordBytes, privateDataDirectory, replayNode, sellerWalletWorld, T0 } from './seller-node-wallet-world.mjs';
 import { agreementHash, artifactAuthority, buyer, deliveredHashFor, JOBS, pin, PAYMENT_TX_REF, requestFor, sourceBinding as fixtureBinding } from './d5-policy-fixtures.mjs';
+import { journalOverAdapter } from './payment-evidence-test-journals.mjs';
 
 const { composeSellerApproval, createExactOperatorApproval, heldPolicyBudget, parsePolicyLedger } = await import('../../src/devnet-demo/operator-approval.mjs');
 
@@ -97,9 +98,10 @@ export async function ledgerWorld(t, { limits = {}, node = replayNode(), directo
   Object.assign(world, {
     claim, address, sourceBinding: sellerBinding, ledger, evidenceInput: job => evidenceInputFor(claim, job), purchaseState: state, confirmations: state.confirmations, retainedCalls: state.retainedCalls,
     faults: state.faults,
-    anchor: input => inWalletPass(world, () => world.wallet.paymentEvidence.anchorEvidence(input)),
-    reconcile: input => inWalletPass(world, () => world.wallet.paymentEvidence.reconcilePaymentEvidence(input)),
+    anchor: input => inWalletPass(world, () => journalOverAdapter(world).anchorEvidence(input)),
+    reconcile: input => inWalletPass(world, () => journalOverAdapter(world).reconcilePaymentEvidence(input)),
     reopen: async () => {
+      for (const journal of world.journals.splice(0)) journal.close();
       await world.wallet.close();
       world.approve = openApproval();
       world.options = { ...world.options, approve: world.approve };
