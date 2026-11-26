@@ -59,7 +59,10 @@ const admissionTooLarge = () => Object.assign(new RangeError('the admission answ
  * `{ anchor, transport, binding, observeIdentity, clock }` or throws the port's wallet_session_not_finalized or wallet_session_closed;
  * `participantImplementations.entriesFor` is the host's enrollment source and `sessionOf(jobId)` its durable session view. Nothing
  * is read at construction. Returns frozen `{ sessionAdmission, readCommitmentReceipt, observePayment }`; a reader whose input is
- * missing rejects reader_input_missing naming it.
+ * missing rejects reader_input_missing naming it. Every read also rejects with `chain()`'s refusal, an aborted signal's reason, or
+ * the deadline's timeout error. The Vet reads reject vet_record_unverified, readRevocationMarker revocation_marker_unverified (or
+ * the SR-2 adapter's own refusal), and observePayment payment_unverified, each keeping its cause. readRevocationSurfaces answers a
+ * failed marker read as one unavailable surface (node_endpoint_refused for a bound endpoint that is not a canonical node root).
  */
 export function createNodeChainReaders({ claim, chain, participantImplementations, sessionOf }) {
   const adapters = new WeakMap();
