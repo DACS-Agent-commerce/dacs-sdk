@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged keystore import test after carrying the wallet bridge part up to its published head",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+      "before": "bbcb50fab246b4617bcfc61c7825969ceb588e9e",
+      "after": "bbcb50fab246b4617bcfc61c7825969ceb588e9e"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-9047f4361354.json"
+  ],
+  "note": "Both sides of the merge recorded this test, so their newest records disagree; this record chooses the merged copy. It keeps the count of six package entries and takes the other side's keystore test changes; the file is the automatic merge of both sides. No file other than this record changes."
+}
