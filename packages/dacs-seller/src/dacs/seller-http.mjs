@@ -252,7 +252,6 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   if (wire.signer.claim !== agent.claim) throw new Error('seller transport identity must match the independently configured agent');
   if (wire.requireDelegation && typeof agent.transportAgreementOf !== 'function') throw new Error('delegated seller transport needs retained Agreement scope');
   if (context !== null && (context?.path !== DACS_SELLER_HTTP_PATHS.context || context?.challengePath !== DACS_SELLER_HTTP_PATHS.contextChallenge || typeof context.challengeOnWire !== 'function' || (context.handleContext !== undefined && typeof context.handleContext !== 'function'))) throw new TypeError('the seller context route needs its paths and its wire challenge (challengeOnWire), and its context step (handleContext) must be a function when given');
-  if (typeof wire.stopped !== 'function') throw new TypeError('the wire routes need the host\'s stop predicate (wire.stopped)');
   if (publicSignedCreates !== null && typeof publicSignedCreates !== 'function') throw new Error('publicSignedCreates must be the seller\'s signed CREATE pointer function');
   // DACS_BUYER_CHAIN_READBACK=on: a successful commit or payment answer (the
   // only answers the buyer takes pointers from) also names the seller's
