@@ -1,0 +1,76 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add a wallet-free node RPC endpoint check as its own package subpath",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "f59e2925ab81b2575ed07530e26d5722839103be",
+      "after": "8e85285a1b4f16fb26c6185fef822ccad1425ffe"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/network-binding.mjs",
+      "before": "680816c1e815ea36eca1a157642ebccffabff7d0",
+      "after": "104dcf5e475292901380246f05f15b47d8c922ce"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "8f04d596612bb53f9ac7b1e370385c5c900a96a5",
+      "after": "2505ff7b545635e63f90995d5e4bf537894dbf5a"
+    },
+    {
+      "path": "packages/dacs-client/src/rpc-endpoint.mjs",
+      "before": null,
+      "after": "2650b227ad590d25566c72d74b2d890f2b253b5e"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+      "before": "61708f9f988302ebb41e5f78542b234704a5316e",
+      "after": "1d67a0e44d7733f99d6143cba1499c88dec3e8f8"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/rpc-endpoint-cases.mjs",
+      "before": null,
+      "after": "19cab243c1ecaff3a2f06c07c7fa80fd97439cdc"
+    },
+    {
+      "path": "packages/dacs-client/test/package-contents.test.mjs",
+      "before": "30cfe566d9e17bbf3cefaa1dd75bd5a7d2ac7b38",
+      "after": "5e56297fac2dd109ebf00394a4716fb1f790df09"
+    },
+    {
+      "path": "packages/dacs-client/test/packed-consumer.test.mjs",
+      "before": "f2f609157634323be6d760298fc6243295df3c22",
+      "after": "34e3c92c067828a5de33f6caa9ea37e1d3686c1b"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "9ad3961b96bd210a78423c632c3a34c9f6056d33",
+      "after": "84a3edf1216d9a58f085f1be2a98dc32210874f9"
+    },
+    {
+      "path": "packages/dacs-client/test/rpc-endpoint.test.mjs",
+      "before": null,
+      "after": "fdb09dd1d197cbd73db160cea69e6368caf338b0"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-f2c3f101ae12.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/src/dacs/network-binding.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/rpc-endpoint.mjs",
+    "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+    "packages/dacs-client/test/helpers/rpc-endpoint-cases.mjs",
+    "packages/dacs-client/test/package-contents.test.mjs",
+    "packages/dacs-client/test/packed-consumer.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "packages/dacs-client/test/rpc-endpoint.test.mjs",
+    "scripts/release-policy.json"
+  ],
+  "note": "New package subpath ./rpc-endpoint whose only export is assertNodeRpcEndpoint({ rpcUrl, network, chainIdentity }), also exported from the root. It returns rpcUrl unchanged when the wire's canonicalNodeEndpoint admits it, passing chainIdentity on only for network 'testnet', and otherwise throws NetworkBindingError rpc_endpoint_invalid. network-binding.mjs now imports canonicalNodeEndpoint from the import-free @kynesyslabs/dacs/wire/node-endpoint leaf instead of the broad wire entry, so the subpath loads no wallet, signing, journal, transport or SQLite module; the binder's own endpoint rule is unchanged. The manifest pin in scripts/check-hold.mjs gains the new export, re-pinned with pin-delta.mjs."
+}

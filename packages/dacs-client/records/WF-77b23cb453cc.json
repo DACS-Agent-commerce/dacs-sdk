@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client entry point and public API test after merging the base into the wallet-free node part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "9cf004de533030e7e1e8cb608ebb216178884602",
+      "after": "9cf004de533030e7e1e8cb608ebb216178884602"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "ec6f80d51c712b560601370f53a3c56e6c6c6c59",
+      "after": "ec6f80d51c712b560601370f53a3c56e6c6c6c59"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-77b23cb453cc.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's node RPC endpoint check together with the base's DEM delivery context route caller."
+}
