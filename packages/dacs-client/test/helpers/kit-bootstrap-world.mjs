@@ -38,9 +38,9 @@ const SESSION_KEY_TAG = 99;
  * Starts the kit host and returns the world: `purchase(jobId)` seeds a prepared purchase, `sent(path)` the requests the client sent on
  * that path, `answers` the challenge answers it received (`{ text, header }`), `signs` the session key's signatures, and `clock.time` the client clock.
  * `intercept(path, init, forward)`, when set, answers a request instead of the host (`forward()` sends it on).
- * `demDeliveryContext`, when given, is the DEM delivery context capability every service is built with.
+ * `demDeliveryContext`, when given, is the DEM delivery context capability every service is built with, and `stopped` the host stop check.
  */
-export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = DELEGATION_LIFETIME_MS, demDeliveryContext = null, startHost } = {}) {
+export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = DELEGATION_LIFETIME_MS, demDeliveryContext = null, startHost, stopped } = {}) {
   setPurchaseAdmission('testnet-tp1');
   t.after(() => setPurchaseAdmission('held'));
   const f = await contextHostFixture(t, { startHost });
@@ -73,7 +73,7 @@ export async function bootstrapWorld(t, { ready = true, delegationLifetimeMs = D
     const ops = createOperationStore({ db, handoffSecret: 'TEST-wire-bootstrap-'.repeat(3), now: () => world.clock.time });
     const service = withSeller(fetchImpl, () => createProtocolPurchases({ db, ops, admission, now: () => world.clock.time, store: createSqlitePurchaseStore(),
       coordinates: { unresolvedForSender: () => [] }, buyerAccess: { assertWallet() {} }, dacsProtocol: { sellerTransport: transport, sellerEndpoint: () => FIXTURE_ENDPOINT, sellerRequestTimeoutMs: SELLER_DEADLINE_MS, demDeliveryContext },
-      feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n } }));
+      feeCeilingOs: '50000000000', chain: { getTransactionFees: async () => 1n }, ...(stopped ? { stopped } : {}) }));
     return { db, ops, service };
   };
   let current = open();
