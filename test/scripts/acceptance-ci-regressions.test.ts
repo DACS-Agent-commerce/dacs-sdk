@@ -45,7 +45,21 @@ describe("acceptance evidence entrypoints", () => {
     expect(run().status).toBe(0); expect(existsSync(output)).toBe(false);
     mkdirSync(join(root, "registry-container-artifacts"));
     writeFileSync(join(root, "registry-container-artifacts/acceptance-summary.json"), '{"complete":false}');
-    expect(run().status).toBe(0); expect(readFileSync(output, "utf8")).toContain('{"complete":false}');
+    expect(run().status).toBe(0); expect(readFileSync(output, "utf8")).toBe(
+      '## Registry-shaped consumer acceptance\n\n```json\n{"complete":false}\n```\n');
+  });
+  it.each([
+    ['{"note":"```"}', "````"],
+    ['{"note":"````` and ```"}', "``````"],
+  ])("keeps embedded backticks inside the JSON fence: %s", (content, fence) => {
+    const root = checkout(), output = join(root, "step-summary");
+    mkdirSync(join(root, "registry-container-artifacts"));
+    writeFileSync(join(root, "registry-container-artifacts/acceptance-summary.json"), content);
+    const result = spawnSync("bash", ["scripts/acceptance-ci.sh", "summary"], { cwd: root, encoding: "utf8",
+      env: { ...process.env, GITHUB_STEP_SUMMARY: output } });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(output, "utf8")).toBe(
+      `## Registry-shaped consumer acceptance\n\n${fence}json\n${content}\n${fence}\n`);
   });
   it.each(["pull_request", "workflow_dispatch", "schedule", "workflow_call"])("keeps absent drift unevaluated and fails enforcing event %s", event => {
     const root = checkout();

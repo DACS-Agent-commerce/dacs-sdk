@@ -6,6 +6,10 @@
 // Listing bundle is accepted) or the TP-1 G3 orchestrator mode "W" (the seller
 // verifies both records; only the exact Listing seller bundle is accepted).
 import { canonicalize, compositeVerificationAddress, deriveFixedPriceAgreement, isAttestationRef, requireCanonicalJobId, sameCanonicalClaimIdentity, sellerFulfilmentVetModeOf } from '@kynesyslabs/dacs';
+import { isDemDeliveryContextAuthority } from '@kynesyslabs/dacs-client';
+import { isTp1AuthorityToken } from '@kynesyslabs/dacs-client/node-wallet';
+import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
+import { admitKitCapabilityAuthority } from './capability-authority.mjs';
 import { agreementInput, listingPin } from './purchase-protocol.mjs';
 import { isOrchestratorVetMode, sellerBundleProblem, sellerRecordVerifier } from './session-admission.mjs';
 import { cutText } from '../util/text.mjs';
@@ -20,25 +24,30 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 const snapshot = value => JSON.parse(canonicalize(value));
 const held = (disposition, reason) => ({ disposition: HELD.includes(disposition) ? disposition : 'indeterminate', reason: cutText(reason, 240) });
 
-/** Whether a bounded single-line TEST authority may label a capability. */
-export const isDemDeliveryContextAuthority = value => typeof value === 'string' && /^TEST-[A-Za-z0-9._:-]{1,115}$/.test(value);
+/** Whether a value is a canonical `TEST-` or `TP1-` label string (the client's predicate). A label names an authority and grants none. */
+export { isDemDeliveryContextAuthority };
 
 const HOST_CALLBACKS = ['recoverBuyer', 'resumableBuyer', 'bindRetainedScope'];
+const refuseConfiguration = () => { throw new TypeError('DEM delivery context requires explicit TEST authority or bound TP-1 token and buyer/seller resolvers'); };
 
 /** Register buyer/seller resolvers and optional lifecycle callbacks in one Vet mode
  * (`vetMode`, default counterparty); throws on invalid configuration or an unsupported mode.
+ * `authority` is a `TEST-` label or a TP-1 token admitted for `binding`, the composition's own binding; the capability keeps
+ * the label. A token throws kit_operation_guard_off, profile_not_admitted (hold held) or authority_unbound (another binding), as a `TP1-` string does.
  * `recoverBuyer`, `resumableBuyer` and `bindRetainedScope` are the callbacks the seller host
  * needs (see `demDeliveryContextHost`); each must be a function when given. */
-export function createDemDeliveryContext({ authority, vetMode, resolveBuyer, resolveSeller, release = null, usage = null, recoverBuyer = null, resumableBuyer = null, bindRetainedScope = null }) {
+export function createDemDeliveryContext({ authority, binding, vetMode, resolveBuyer, resolveSeller, release = null, usage = null, recoverBuyer = null, resumableBuyer = null, bindRetainedScope = null }) {
+  if (isTp1AuthorityToken(authority)) assertKitOperationAdmitted('createDemDeliveryContext');
   const hostCallbacks = { recoverBuyer, resumableBuyer, bindRetainedScope };
-  if (!isDemDeliveryContextAuthority(authority) || typeof resolveBuyer !== 'function' || typeof resolveSeller !== 'function' || (release !== null && typeof release !== 'function') || (usage !== null && typeof usage !== 'function')
+  if (typeof resolveBuyer !== 'function' || typeof resolveSeller !== 'function' || (release !== null && typeof release !== 'function') || (usage !== null && typeof usage !== 'function')
     || HOST_CALLBACKS.some(key => hostCallbacks[key] !== null && typeof hostCallbacks[key] !== 'function')) {
-    throw new TypeError('DEM delivery context requires explicit TEST authority and buyer/seller resolvers');
+    refuseConfiguration();
   }
+  const label = admitKitCapabilityAuthority(authority, { binding, refuse: refuseConfiguration });
   const mode = sellerFulfilmentVetModeOf(vetMode);
   if (mode === null) throw new TypeError('DEM delivery context vetMode is not a supported fulfilment Vet mode');
-  const capability = Object.freeze({ source: DEM_DELIVERY_CONTEXT_SOURCE, authority });
-  capabilities.set(capability, { authority, vetMode: mode, resolveBuyer, resolveSeller, release, usage, ...hostCallbacks });
+  const capability = Object.freeze({ source: DEM_DELIVERY_CONTEXT_SOURCE, authority: label });
+  capabilities.set(capability, { authority: label, vetMode: mode, resolveBuyer, resolveSeller, release, usage, ...hostCallbacks });
   return capability;
 }
 

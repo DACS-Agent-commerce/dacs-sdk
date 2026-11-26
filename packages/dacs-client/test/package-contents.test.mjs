@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { installPackedPair } from './helpers/packed-install.mjs';
 import { LOADING_MODULES, entryPointClosure, packageDir } from './helpers/entry-point-closure.mjs';
 
-test('npm pack ships the five entry points, their reviewed import closure and the quiet loading hook', t => {
+test('npm pack ships the six entry points, their reviewed import closure and the quiet loading hook', t => {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-pack-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const path of ['src', 'package.json', 'README.md', 'LICENSE']) {
@@ -34,6 +34,18 @@ test('npm pack ships the five entry points, their reviewed import closure and th
   }
   for (const path of ['src/dacs/purchase-admission-state.mjs', 'src/public-admission.mjs', 'src/host-stop.mjs',
     'src/host/purchase-ops.mjs', 'src/host/purchase-challenges.mjs', 'src/host/local-account.mjs']) assert.ok(files.includes(path), `${path} ships`);
+});
+
+test('the packed client ships the purchase wallet bridge entry and its reviewed closure', () => {
+  const manifest = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
+  assert.equal(manifest.exports['./purchase/wallet-bridge'], './src/purchase/wallet-bridge.mjs');
+  assert.ok(manifest.files.includes('src/purchase/wallet-bridge.mjs'));
+  const closure = entryPointClosure();
+  for (const path of ['src/purchase/wallet-bridge.mjs', 'src/dacs/demos-sr2-wallet-bridge.mjs', 'src/dacs/demos-sr2-adapter.mjs']) assert.ok(closure.includes(path), `${path} ships`);
+  const policy = JSON.parse(readFileSync(join(packageDir, '../../scripts/release-policy.json'), 'utf8'));
+  const client = policy.packages.find(entry => entry.name === manifest.name);
+  assert.ok(client.requiredExports.includes('./purchase/wallet-bridge'));
+  assert.ok(client.allow.includes('src/**/*.mjs'));
 });
 
 test('the packed archive offers no admission bypass and every packed module sees PURCHASE_ADMISSION held', t => {

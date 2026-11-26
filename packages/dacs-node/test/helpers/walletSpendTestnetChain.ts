@@ -16,6 +16,7 @@ import {
 } from "@kynesyslabs/dacs";
 
 import { createDacsWalletSpendContinuitySignerV1 } from "../../src/walletSpendPostgres.js";
+import { DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS } from "../../src/walletSpendTestnetRecovery.js";
 
 type Hex = `0x${string}`;
 
@@ -28,6 +29,8 @@ export const SEARCH_FLOOR = 10_000;
 export const LATEST_NUMBER = 20_000;
 /** The final head's height at the fixture depth. */
 export const FINAL_NUMBER = LATEST_NUMBER - TESTNET_DEPTH + 1;
+/** The height of the head the service judges a release on. */
+export const RELEASE_NUMBER = LATEST_NUMBER - DACS_WALLET_SPEND_TESTNET_RELEASE_FINALITY_BLOCKS + 1;
 /** The wallet's token balance the stub answers to `balanceOf`. */
 const TESTNET_BALANCE = 10_000_000n;
 const BALANCE_OF_SELECTOR = "0x70a08231";
@@ -131,7 +134,7 @@ export function chainBlocks(input: Readonly<{
   const split = input.split ?? Number.NEGATIVE_INFINITY;
   const label = (number: number) => number < split ? "a" : fork;
   const blocks: StubBlock[] = [];
-  for (let number = input.low ?? LATEST_NUMBER - 40; number <= (input.high ?? LATEST_NUMBER); number += 1) {
+  for (let number = input.low ?? LATEST_NUMBER - 100; number <= (input.high ?? LATEST_NUMBER); number += 1) {
     blocks.push({
       number,
       hash: blockHash(label(number), number),
@@ -144,6 +147,10 @@ export function chainBlocks(input: Readonly<{
 
 /** Chain time that puts the final head at `finalTime`, two seconds per block. */
 export const timeWithFinalAt = (finalTime: number) => (number: number) => finalTime + (number - FINAL_NUMBER) * 2;
+
+/** Chain time that puts the service's release head at `releaseTime`, two seconds per block. */
+export const timeWithReleaseAt = (releaseTime: number) => (number: number) =>
+  releaseTime + (number - RELEASE_NUMBER) * 2;
 
 /** What the stub serves; tests change it between and during checks. */
 export interface ChainState {
