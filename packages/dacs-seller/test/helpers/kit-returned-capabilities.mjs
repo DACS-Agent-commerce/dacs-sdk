@@ -49,6 +49,7 @@ import { createContextAttempt } from '../../src/dacs/seller-context-attempt.mjs'
 import { createAcceptedContinuation, createContextOutcomeRevalidation, createContinuationCheck } from '../../src/dacs/seller-context-continuation.mjs';
 import { resumeContext } from '../../src/dacs/seller-context-recovery.mjs';
 import { completedContextOutcome, contextOperationView, createSellerContextRecords, createSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
+import { createStopCheck } from '../../src/kill-switch.mjs';
 import { createSellerEffectRoutes } from '../../src/dacs/seller-effect-routes.mjs';
 import { createCompletedOutcomeReader, createOrdinaryCompletionPort, createSellerAgentClient } from '../../src/dacs/seller-http.mjs';
 import { createPlannedAgreementReader } from '../../src/dacs/seller-planned-agreement.mjs';
@@ -121,6 +122,7 @@ export function capabilityBuilders(t) {
     ['src/dacs/seller-context-route.mjs#createWireSellerContextRoute', (w) => w.context.route],
     ['src/dacs/seller-context-route.mjs#createSellerContextRoute', (w) => createSellerContextRoute({ listing: w.context.listing, assertBuyerAccess: async () => true })],
     ['src/dacs/seller-context-route.mjs#createSellerContextRecords', (w) => createSellerContextRecords({ listing: w.context.listing, admission: () => null, contextOutcome: () => null })],
+    ['src/kill-switch.mjs#createStopCheck', () => createStopCheck('/TEST-missing-data-directory')],
     ['src/dacs/seller-context-route.mjs#contextOperationView', (w) => contextOperationView(w.context.wire.journal, seller.claim)],
     ['src/dacs/seller-context-route.mjs#completedContextOutcome', (w) => completedContextOutcome(w.context.wire.journal, seller.claim)],
     ['src/dacs/seller-context-recovery.mjs#resumeContext', (w) => resumeContext(w.provider, w.vet.input)],

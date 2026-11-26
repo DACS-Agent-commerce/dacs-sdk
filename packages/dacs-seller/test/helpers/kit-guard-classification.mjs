@@ -178,6 +178,7 @@ export const RETURNED_CLASSIFICATION = Object.freeze({
       'tuple', ...prefixed('store', ['bind', 'close', 'contextHoldState', 'jobSlotReleased', 'purchaseProfile', 'sessionTerminal'])] },
   'src/dacs/seller-context-route.mjs#createSellerContextRoute': { role: [], effect: { challengeOnWire: ['issue'] }, pure: [] },
   'src/dacs/seller-context-route.mjs#createSellerContextRecords': { role: [], effect: {}, pure: ['completedScope', 'exactRequest', 'retainedBody'] },
+  'src/kill-switch.mjs#createStopCheck': { role: [], effect: {}, pure: ['()'] },
   'src/dacs/seller-context-route.mjs#contextOperationView': { role: [], effect: {}, pure: ['()'] },
   'src/dacs/seller-context-route.mjs#completedContextOutcome': { role: [], effect: {}, pure: ['()'] },
   'src/dacs/seller-context-continuation.mjs#createContinuationCheck': { role: [], effect: {}, pure: ['()'] },

@@ -28,6 +28,7 @@ const { MONOTONIC_CLOCK, TEST_BINDING, TEST_PASS_SESSION, integrityRoleOf, readO
 const { createSellerCreatePass, isSellerCreatePass, lateSellerCreatePass } = await import('../src/devnet-demo/create-pass.mjs');
 const { signInPass, signRetainedInPass } = await import('../src/devnet-demo/wallet-signature-pass.mjs');
 const { createAnswerSigners } = await import('../src/dacs/answer-signers.mjs');
+const { createStopCheck } = await import('../src/kill-switch.mjs');
 const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
 const { createWireContext } = await import('../src/dacs/seller-wire-requests.mjs');
 const { orchestratorFixture } = await import('./helpers/vet-orchestrator-fixture.mjs');
@@ -168,7 +169,7 @@ test('a runCreate refusal after publish stored its intent makes no CREATE, and t
   assert.deepEqual(f.captured.map(({ transaction }) => transaction.content.nonce), [1], 'the retry asked the wallet once, from the nonce the refused attempt never used');
 });
 
-test('a runCreate refusal before a retained CREATE\'s resend records no recovery intent and sends nothing, so the one resend stays open for the next read', async () => {
+test('a runCreate stop refusal before a retained CREATE\'s resend leaves the read answering its readback, records no recovery intent and sends nothing, so the one resend stays open for the next read', async () => {
   const f = await anchorFixture({ signRpc: async () => 'TEST-rpc-auth' }), resends = [];
   f.source.binding = async () => ({ disposition: 'pending' });
   f.source.recoverStorageWrite = async ({ signedTransaction }) => { resends.push(signedTransaction.hash); return {}; };
@@ -182,7 +183,7 @@ test('a runCreate refusal before a retained CREATE\'s resend records no recovery
   const { input } = [...f.journal.rows.values()].find((row) => row.input);
   const resend = { resend: true, authorizeResend: () => true };
   f.controls.runCreate = refusingRunCreate;
-  await assert.rejects(f.open().read(input, resend), { code: 'seller_stopped' });
+  assert.equal(typeof (await f.open().read(input, resend)).status, 'string', 'the stopped read answers its readback');
   assert.deepEqual(resends, [], 'nothing was resent');
   assert.equal([...f.journal.rows.keys()].some((key) => key.startsWith('demo/recovery/')), false, 'no recovery intent was recorded');
   f.controls.runCreate = undefined;
@@ -746,6 +747,13 @@ async function inventory(t, pass) {
     { label: 'an effect-route answer', attempt: () => settled(answers.signAnswer(EFFECT_ANSWER, (signer) => signer.sign(Buffer.from('TEST-answer')))), signatures: () => answerSigns.count, transmissions: () => 0 },
   ];
 }
+// A data directory that holds a KILL entry, removed when the test ends.
+const killedDirectory = (t) => {
+  const directory = mkdtempSync(join(tmpdir(), 'TEST-killed-'));
+  writeFileSync(join(directory, 'KILL'), '');
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  return directory;
+};
 const passOver = ({ binding = TEST_BINDING, stopped = () => false } = {}) => {
   const { effectBoundary } = testEffectBoundary({ binding, stopped });
   return { effectBoundary, binding, runCreate: testRunCreate({ effectBoundary, stopped }).runCreate };
@@ -762,6 +770,7 @@ test('zero signatures and transmissions on every seller inventory path, returned
   const conditions = [
     ...REFUSED_RECORDS.map(([label, record]) => [label, () => passOver({ binding: forgedBinding(record) }), () => {}]),
     ['the stop flag set before the call', () => passOver({ stopped: () => true }), () => {}],
+    ['a KILL file present before the call', () => passOver({ stopped: createStopCheck(killedDirectory(t)) }), () => {}],
     ['a re-hold', () => passOver(), () => guard.setKitOperationGuardForTest('off')],
   ];
   for (const [condition, makePass, before] of conditions) {
