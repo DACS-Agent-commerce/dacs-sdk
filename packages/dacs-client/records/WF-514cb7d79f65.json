@@ -1,0 +1,61 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add a keyless purchase source that gives the purchase flow its source members with no key and no send",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "f3d62cf6bcce058e3389a0bdc8991f4ae2ebd9a0",
+      "after": "bcefc1311f9893d3172824f6702a9bfa897b68b7"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-inner-transport.mjs",
+      "before": null,
+      "after": "3fe98ce3a49306c8894dca7780e7179dd6ffcab8"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-purchase-source.mjs",
+      "before": null,
+      "after": "1bcbb2cd83c4b6d3e988830aa9442605a47c1ce9"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-signed-relay.mjs",
+      "before": "d0871d6dc8d136e720b7a3161ec7fd130888da2b",
+      "after": "deeed097187b52546acfd7060282027e1fe5397a"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "ef8f2d3cf2df293a99626eca2f9597ea56549a01",
+      "after": "606e95ca1d81073af7684598758f18b9856d8ef5"
+    },
+    {
+      "path": "packages/dacs-client/test/keyless-purchase-source.test.mjs",
+      "before": null,
+      "after": "685dde8817ec40dedebc88f7f698eb0e9aa204fb"
+    },
+    {
+      "path": "packages/dacs-client/test/packed-consumer.test.mjs",
+      "before": "f2f609157634323be6d760298fc6243295df3c22",
+      "after": "c41bf4ce039667f71c3e4218ab1a86c624576730"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "653681a143c2fd376e858a0bef8f63a066c5cd76",
+      "after": "7cfd2e6ff8a70019e489b6ceca390df4c385221e"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-514cb7d79f65.json",
+    "packages/dacs-client/src/wallet/keyless-inner-transport.mjs",
+    "packages/dacs-client/src/wallet/keyless-purchase-source.mjs",
+    "packages/dacs-client/src/wallet/keyless-signed-relay.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/test/keyless-purchase-source.test.mjs",
+    "packages/dacs-client/test/packed-consumer.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "scripts/release-policy.json"
+  ]
+}

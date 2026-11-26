@@ -91,6 +91,9 @@ export { createHeldTransportFacade } from './held-transport-facade.mjs';
 /** The keyless relay of a buyer wallet's own signed payment or Agreement CREATE; see `keyless-signed-relay.mjs`. */
 export { createKeylessSignedRelayTransport } from './keyless-signed-relay.mjs';
 
+/** The keyless source capability of a server-side purchase, with no key and no send; see `keyless-purchase-source.mjs`. */
+export { createKeylessPurchaseSource } from './keyless-purchase-source.mjs';
+
 // `approveAhead`, `approveSendAhead`, `signCreate` and `broadcast` are active: each call refuses profile_not_admitted while held and checks the binding before it runs.
 // The two reads are passive and keep working while held.
 function createHeldAdapter(admission, adapter) {

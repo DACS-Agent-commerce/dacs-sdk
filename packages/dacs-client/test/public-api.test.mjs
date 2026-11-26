@@ -356,7 +356,7 @@ test("node-wallet publicly exports the keyless transport and pure Agreement prof
  assert.equal(child.status,0,child.stderr);
  assert.deepEqual(child.result,{names:['function','function'],demosdkImports:0});
  assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource','createNodeAuthorityCapability','composeNodeWalletSession','openKeystoreWalletSession',
-   'createHeldTransportFacade','createKeylessAgreementTransport','keylessAgreementProfile','createKeylessSignedRelayTransport','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport','releaseAbandonedJournalLocks','passContext',
+   'createHeldTransportFacade','createKeylessAgreementTransport','keylessAgreementProfile','createKeylessSignedRelayTransport','createKeylessPurchaseSource','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport','releaseAbandonedJournalLocks','passContext',
    'DEVNET_AGREEMENT_PROFILE','DEVNET_AGREEMENT_KIND','DEVNET_AGREEMENT_SOURCE','DEVNET_SETTLEMENT_KIND','DEVNET_SETTLEMENT_POLICY',
    'DEVNET_DELIVERY_KIND','DEVNET_DELIVERY_POLICY','DEVNET_DEMO_ARTIFACT_KIND','DEVNET_DEMO_ARTIFACT_POLICY','DEVNET_DEMO_ARTIFACT_TYPES'].sort());
 });
@@ -383,7 +383,21 @@ test('the packed root and node-wallet subpath export one keyless signed relay fa
   for (const isOther of [nodeWallet.isDevnetSettlementTransport, nodeWallet.isDevnetDemoTransport]) assert.equal(isOther(relay), false);
 });
 
-const SELLER_CLIENT_ACTIONS = ['propose', 'agreementState', 'commit', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy'];
+test('the keyless purchase source is a node-wallet export only and the package root does not export it', t => {
+  const child = runFreshChild(t, `
+    import { writeFileSync } from 'node:fs'; import { registerHooks } from 'node:module';
+    let demosdkImports = 0;
+    registerHooks({ resolve(specifier, context, next) { if (/demosdk|demos-loader|demos-quiet-hooks/.test(specifier)) demosdkImports++; return next(specifier, context); } });
+    const root = await import(process.argv[2]);
+    const rootImports = demosdkImports;
+    const nodeWallet = await import(process.argv[3]);
+    writeFileSync('result.json', JSON.stringify({ root: Object.hasOwn(root, 'createKeylessPurchaseSource'), nodeWallet: typeof nodeWallet.createKeylessPurchaseSource, rootImports }));
+  `, [import.meta.resolve('@kynesyslabs/dacs-client'), import.meta.resolve('@kynesyslabs/dacs-client/node-wallet')]);
+  assert.equal(child.status, 0, child.stderr);
+  assert.deepEqual(child.result, { root: false, nodeWallet: 'function', rootImports: 0 });
+});
+
+const SELLER_CLIENT_ACTIONS =['propose', 'agreementState', 'commit', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy'];
 
 test('createPublicSellerClient requires admission and rejects every active method while held with no connector call', async () => {
   const { createPublicSellerClient } = await import('@kynesyslabs/dacs-client');
