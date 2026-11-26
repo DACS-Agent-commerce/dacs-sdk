@@ -78,8 +78,8 @@ function proveAbsent({ key, siblings, terminal, root }) {
 
 /**
  * Checks one node `StorageProofEntry` `{storageAddress, record, siblings, terminal}` against an authenticated
- * `storageRoot` (lower-case 64-hex) for `expectedAddress`, the address the caller asked about. Reads only those
- * members and never throws.
+ * `storageRoot` (lower-case 64-hex). `expectedAddress` must equal the entry's `storageAddress` exactly. Reads only
+ * those members and never throws.
  * @returns {{status: 'present', record: object} | {status: 'absent'} | {status: 'invalid'}} `present` carries the
  * entry's own record object, whose `storageAddress` equals the entry's; `absent` means no record at this one address;
  * `invalid` is every malformed, mismatched or uncommitted input.
