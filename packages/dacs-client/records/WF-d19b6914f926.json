@@ -1,0 +1,32 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest and tests after carrying the first part up into the second part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "bb013a7fc91ae0d2bfdffb0619a21e5062fd5d82",
+      "after": "9f5a4ab8f0a7ad0fd89b84f65128c52d79c91e42"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+      "before": "929fcebf83bbf312c337577ff849673265c77f1b",
+      "after": "f08d8f0af8033e25f3beae831c072f8c0a306f56"
+    },
+    {
+      "path": "packages/dacs-client/test/package-contents.test.mjs",
+      "before": "5e56297fac2dd109ebf00394a4716fb1f790df09",
+      "after": "8824b36b990a9d5000aa8e493d649bb2ae2fa9d5"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "bdc1678988cdb5dac00ce7825e9d28946cc16578",
+      "after": "3806e65d3b5f3de84d4cc59bb423f5beeb7835b4"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-d19b6914f926.json"
+  ],
+  "note": "Both sides of the merge recorded the client manifest and the export tests. The merged copies keep the read-only listing export and file entries of this part and the purchase wallet bridge export and file entry of the first part, in that order; the entry point closure and the package contents test list both. The hold pins in HOLD.json and check-hold.mjs were re-pinned with pin-delta.mjs after the exports pin took both exports. No file other than this record changes."
+}
