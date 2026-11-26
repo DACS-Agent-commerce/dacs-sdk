@@ -6,7 +6,6 @@ import { causeOf } from './helpers/refusal-body.mjs';
 import * as guard from '../src/kit-operation-guard.mjs';
 import { DACS_SELLER_HTTP_HEADER } from '@kynesyslabs/dacs/wire';
 import { SellerTransportError, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
-import { createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
 import { createSellerContextRoute } from '../src/dacs/seller-context-route.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
 import { createOldDomainRequestSigner } from './helpers/old-domain-request.mjs';
