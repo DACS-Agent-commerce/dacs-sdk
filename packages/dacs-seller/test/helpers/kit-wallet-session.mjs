@@ -4,8 +4,8 @@
 // test's: the kit's own Node wallet session is not built here.
 import { addressForClaim } from '../../src/dacs/demos-claims.mjs';
 import { TESTNET_PROFILE_TP1, TP1_APPROVED_IDENTITY_RECORD, TP1_BASE_REVISION, TP1_PROFILE_ID, TP1_PROFILE_REVISION } from '@kynesyslabs/dacs/wire';
-import { createAuthorityReader } from '../../../dacs-client/src/wallet/authority-reader.mjs';
-import { createNodeAuthorityCapability, createNodeTransportOwner } from '../../../dacs-client/src/wallet/node-wallet-session.mjs';
+import { createNodeTransportOwner } from '../../../dacs-client/src/wallet/node-wallet-session.mjs';
+import { createNodeAuthorityReader } from '../../src/devnet-demo/seller-wallet-session.mjs';
 import { buyer } from './protocol-fixture.mjs';
 
 export const NODE_ENDPOINT = 'https://rpc.example.invalid/';
@@ -56,9 +56,7 @@ export function testWalletSession({ node = scriptedNode(), finalize = null } = {
   const owner = { ...inner, acquisitions: 0, acquireConnectionFence: (...args) => { owner.acquisitions++; return inner.acquireConnectionFence(...args); } };
   const events = [];
   // The connection reader is only asked the connection scope, so its claim, Listing and purchase sources are never read.
-  const authority = createNodeAuthorityCapability({ owner, claim: () => { throw new Error('TEST the connection reader reads no claim'); } });
-  const connectionAuthority = createAuthorityReader({ authority, identityRecord: TP1_APPROVED_IDENTITY_RECORD, claim: authority.claim, listings: { isRegistered: () => false },
-    purchases: { findByJobId: () => null }, participantImplementations: { entriesFor: () => [] } });
+  const { authority, connectionAuthority } = createNodeAuthorityReader({ owner, claim: () => { throw new Error('TEST the connection reader reads no claim'); } });
   const finalizeSession = finalize ?? (async (input) => ({ input, close: async () => { events.push('session-close'); } }));
   const walletSession = {
     authority, connectionAuthority,
