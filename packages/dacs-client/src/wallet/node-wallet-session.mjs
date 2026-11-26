@@ -83,8 +83,9 @@ const fail = (code, cause) => { throw new OperationError(code, code, undefined, 
  */
 export { passContext } from './pass-context.mjs';
 
-/** Removes dead holders' lock rows from a client durable journal, given the host's state-ownership proof; see `signer-reservation.mjs`. */
+/** Dead-holder journal lock cleanup, given the host's state-ownership proof (`signer-reservation.mjs`); one bounded JSON read posted to a transport owner's own endpoint (`node-wallet-http.mjs`). */
 export { releaseAbandonedJournalLocks } from './signer-reservation.mjs';
+export { fetchBoundedNodeJson } from './node-wallet-http.mjs';
 
 /** Capability identity checks (return a boolean, never throw) and the transport's profile and publication constants, re-exported so a kit imports one source. */
 export { isDevnetAgreementTransport, isDevnetSettlementTransport, isDevnetDemoTransport,
@@ -237,9 +238,8 @@ export function createNodeObserver({ owner, clock = { now: () => Date.now() } } 
   });
 }
 
-// True when no array or object anywhere in `value` has more than `limit` entries. Iterative, and members are pushed
-// one at a time, so neither nesting nor width can overflow the stack.
-function listsWithin(value, limit) {
+/** True when no array or object anywhere in `value` has more than `limit` entries; iterative, so deep or wide input cannot overflow the stack. */
+export function listsWithin(value, limit) {
   const pending = [value];
   while (pending.length > 0) {
     const next = pending.pop();
