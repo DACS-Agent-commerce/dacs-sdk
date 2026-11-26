@@ -1,7 +1,7 @@
 const nativeStage=false; // This part deliberately stages native settlement.
 // Native proposal admission and authenticated Vet contexts use real fixed-key
 // Listings, exact session challenges and durable contribution recovery.
-// Commitment, payment and delivery behavior is introduced separately.
+// Native delivery is part of this profile and requires guarded submission.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, sign, verify } from 'node:crypto';
