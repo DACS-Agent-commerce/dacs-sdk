@@ -1,17 +1,21 @@
 // Explicit application capability for the fixed-price DEM delivery profile.
 //
-// This is narrower than the generic operator Agreement-context seam: the same
-// capability must answer both the buyer planner and the seller orchestrator,
-// and every Vet reference must name a seller/orchestrator-produced composite
-// at the canonical DACS-2 address.  The underlying composite records and their
-// verification provenance are kept seller-side; this consumer only binds the
-// exact Agreement derivation input to the already prepared purchase scope.
+// This is narrower than the generic operator Agreement-context seam, and comes
+// in two kinds. A host-written capability answers the buyer planner and the
+// seller orchestrator from the host's own resolvers. A route capability answers
+// the buyer planner only, from the seller's signed answer on its context route;
+// the seller process keeps its own capability for the seller side. Every Vet
+// reference must name a seller/orchestrator-produced composite at the canonical
+// DACS-2 address. The underlying composite records and their verification
+// provenance are kept seller-side; this consumer only binds the exact
+// Agreement derivation input to the already prepared purchase scope.
 import { canonicalize, compositeVerificationAddress, identityBundleHash } from '@kynesyslabs/dacs';
 import { claimForAddress } from '../signatures.mjs';
 import { DEM_RAIL } from './listing.mjs';
 import { agreementContextScope } from './agreement-context-consumer.mjs';
 import { listingPin, protocolSupport } from './purchase-protocol.mjs';
 import { heldContextMembers, refusalAnswer } from './bootstrap-outcome.mjs';
+import { SellerRefusedError, SellerUnavailableError } from './seller-http.mjs';
 import { cutText } from '../util/text.mjs';
 import { isTp1AuthorityLabel } from './tp1-authority-label.mjs';
 import { authorityLabel } from './tp1-authority-token.mjs';
@@ -25,6 +29,8 @@ export const DEM_DELIVERY_CONTEXT_SOURCE = 'dacs-chatgpt-plugin/dem-delivery-con
 const capabilities = new WeakMap();
 const HEX64 = /^[0-9a-f]{64}$/;
 const INPUT_KEYS = ['buyer', 'generatedAt', 'jobId', 'payoutBindings', 'selectedRail', 'seller', 'verifiedListing'];
+// The purchase scope the seller's context route takes and echoes: the local scope less its account and operation ids.
+const WIRE_SCOPE_KEYS = ['source', 'wallet', 'jobId', 'buyer', 'buyerBundleHash', 'seller', 'listingPin', 'rail', 'payee', 'price', 'generatedAt'];
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const exactKeys = (value, keys) => object(value) && canonicalize(Object.keys(value).sort()) === canonicalize([...keys].sort());
 const same = (left, right) => { try { return canonicalize(left) === canonicalize(right); } catch { return false; } };
@@ -56,6 +62,19 @@ export function createDemDeliveryContext({ authority, binding, resolveBuyer, res
   }
   const capability = Object.freeze({ source: DEM_DELIVERY_CONTEXT_SOURCE, authority: label });
   capabilities.set(capability, { authority: label, resolveBuyer, resolveSeller, release, usage, readBack });
+  return capability;
+}
+
+/**
+ * Creates the buyer's route capability: the same opaque capability as createDemDeliveryContext, whose buyer context is the
+ * seller's signed answer on its context route, sent through the purchase's own authenticated seller session. It has no seller
+ * resolver, readback, release or usage hook. Throws as createDemDeliveryContext does for the authority; reads, sends and signs
+ * nothing at construction.
+ */
+export function createDemDeliveryContextRouteCaller({ authority, binding }) {
+  const label = authorityLabel(authority, binding, isFixtureLabel, 'DEM delivery context requires a TEST authority or an authority token');
+  const capability = Object.freeze({ source: DEM_DELIVERY_CONTEXT_SOURCE, authority: label });
+  capabilities.set(capability, { authority: label, kind: 'seller-route', release: null, usage: null, readBack: null });
   return capability;
 }
 
@@ -140,16 +159,42 @@ function captureAnswer(answer, { scope, listing, buyerBundle }) {
   return problem ? held('rejected', `DEM_DELIVERY_CONTEXT_INPUT_MISMATCH: ${problem}`) : { disposition: 'present', input };
 }
 
+// The seller's answer on its context route for this purchase. The purchase must still allow a new write before
+// anything is signed. The route is sent the scope without the local account and operation ids, and a present
+// answer must echo exactly that scope; only then does it go on to the answer checks with the full local scope.
+async function routeAnswer(scope, buyerIdentityBundle, { writable, route }) {
+  if (typeof route !== 'function') return held('indeterminate', 'DEM delivery context has no seller route for this purchase');
+  const allowed = writable?.();
+  if (allowed !== true) return held('indeterminate', `DEM delivery context route not sent: ${typeof allowed === 'string' ? allowed : 'the purchase allows no new write'}`);
+  if (!exactKeys(scope, [...WIRE_SCOPE_KEYS, 'account', 'operation'])) return held('indeterminate', 'DEM delivery context scope has no seller route form');
+  const wireScope = Object.fromEntries(WIRE_SCOPE_KEYS.map((key) => [key, scope[key]]));
+  const answer = await route({ scope: wireScope, buyerIdentityBundle });
+  if (answer?.disposition !== 'present') return answer;
+  if (!object(answer.value) || !same(answer.value.scope, wireScope)) return held('rejected', 'DEM_DELIVERY_CONTEXT_SCOPE_MISMATCH');
+  return { ...answer, value: { ...answer.value, scope } };
+}
+
+// A route error that is not the seller's classified answer is a local refusal (a stale row, a stop, a changed stored
+// request): it keeps its own cause instead of becoming a context answer.
+const sellerAnswerError = (error) => error instanceof SellerUnavailableError || error instanceof SellerRefusedError;
+
 // writable: the purchase check the provider re-runs before each Vet signature
 // or anchor intent (true, or why no new write may start).
-export async function resolveDemDeliveryBuyerContext(capability, { operation, listing, buyerBundle, generatedAt, writable }) {
+// route: the purchase's authenticated seller context request (`body -> answer`); only a route capability uses it.
+export async function resolveDemDeliveryBuyerContext(capability, { operation, listing, buyerBundle, generatedAt, writable, route }) {
   const configured = capabilityFor(capability);
   if (!configured) return { ...held('indeterminate', 'CONTEXT_PROVIDER_UNAVAILABLE: DEM delivery context capability is absent'), written: false };
   if (buyerBundle?.presentedBy !== claimForAddress(operation.terms.buyer.wallet)) return held('rejected', 'buyer bundle is not the purchase wallet identity');
   const scope = agreementContextScope({ operation, buyerBundle, generatedAt });
+  const viaRoute = configured.kind === 'seller-route';
   let answer;
-  try { answer = await configured.resolveBuyer(structuredClone({ scope, buyerIdentityBundle: buyerBundle }), ...(writable ? [{ writable }] : [])); }
-  catch (error) { answer = refusalAnswer(error); if (!answer) return held('indeterminate', `DEM delivery context failed: ${failureText(error)}`); }
+  try {
+    answer = viaRoute ? await routeAnswer(scope, buyerBundle, { writable, route })
+      : await configured.resolveBuyer(structuredClone({ scope, buyerIdentityBundle: buyerBundle }), ...(writable ? [{ writable }] : []));
+  } catch (error) {
+    if (viaRoute && !sellerAnswerError(error)) throw error;
+    answer = refusalAnswer(error); if (!answer) return held('indeterminate', `DEM delivery context failed: ${failureText(error)}`);
+  }
   let captured;
   try { captured = captureAnswer(answer, { scope, listing, buyerBundle }); }
   catch { return held('indeterminate', 'DEM_DELIVERY_CONTEXT_FAILED: unreadable answer'); }
