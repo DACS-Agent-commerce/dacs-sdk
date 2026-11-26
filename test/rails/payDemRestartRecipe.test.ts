@@ -205,6 +205,7 @@ async function buildBridge(now: number, options: FirstProcess = {}) {
   return payDemSettle(rail, {}, {
     store,
     reconcile: reconcileFromJournalAndNode,
+    readPreparedTransfers: async (key) => journal.filter((prepared) => prepared.recovery?.settlementKey === key),
     ...(options.unjournaled === true ? { allowUnjournaled: true } : {}),
   });
 }
