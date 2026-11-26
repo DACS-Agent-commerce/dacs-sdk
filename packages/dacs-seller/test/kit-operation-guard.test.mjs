@@ -25,11 +25,18 @@ const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/se
 // `complete`, and helpers/coordinator-guard-off-probe.mjs pins `terminalSession`. The wallet-session port's `finalize` exists only on
 // a port built while the guard is on; seller-wallet-session.test.mjs flips the guard off after construction and pins it. The Vet
 // provider's entries and the kit client's methods exist only on a capability built while the guard is on;
-// seller-effect-paths.test.mjs flips the guard off after construction and pins each refusal.
+// seller-effect-paths.test.mjs flips the guard off after construction and pins each refusal. The three delivery constructors guard
+// only a TP-1 token, which the off-state probe cannot make; tp1-authority.test.mjs builds each with one while the guard is off.
+// The seller Node wallet's `paymentEvidenceAdapter` exists only on a wallet built while the guard is on; seller-effect-paths.test.mjs
+// flips the guard off after construction and pins its four entries.
 const PROVIDER_ENTRIES = ['agreementContextProvider.resolveBuyer', 'agreementContextProvider.recoverBuyer', 'agreementContextProvider.resolveSeller'];
 const CLIENT_METHODS = ['propose', 'agreementState', 'commit', 'commitOnSignature', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy', 'agreementContext',
   'contextChallenge'].map((method) => `sellerAgentClient.${method}`);
-const REACHED_BY_ISSUED_CAPABILITY = ['complete', 'terminalSession', 'sellerWalletSession.finalize', ...PROVIDER_ENTRIES, ...CLIENT_METHODS];
+const TOKEN_CONSTRUCTORS = ['createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createDevnetDemoDeliveryCapability'];
+const EVIDENCE_EFFECTS = ['approveAhead', 'signCreate', 'approveSendAhead', 'broadcast'];
+const WALLET_ADAPTER_ENTRIES = EVIDENCE_EFFECTS.map((member) => `paymentEvidenceAdapter.${member}`);
+const SEPARATELY_PROBED_GUARD_ENTRIES = ['complete', 'terminalSession', 'sellerWalletSession.finalize', ...PROVIDER_ENTRIES, ...CLIENT_METHODS, ...TOKEN_CONSTRUCTORS,
+  ...WALLET_ADAPTER_ENTRIES];
 // The entries each module guards, named as the error's `entry` (51-2, 51-3).
 const GUARD_SITES = {
   'src/host.mjs': ['startSellerHost'],
@@ -42,15 +49,17 @@ const GUARD_SITES = {
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],
   'src/dacs/effect-boundary.mjs': ['effectBoundary'],
   'src/dacs/payment-evidence-wallet-journal.mjs': ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'],
+  'src/dacs/payment-evidence-pass.mjs': EVIDENCE_EFFECTS.map((member) => `paymentEvidence.${member}`),
   'src/dacs/native-payment-evidence-consumer.mjs': ['createNativePaymentEvidenceConsumer'],
-  'src/dacs/native-dem-delivery-consumer.mjs': ['submitNativeDemDelivery'],
+  'src/dacs/dem-delivery-context-consumer.mjs': ['createDemDeliveryContext'],
+  'src/dacs/native-dem-delivery-consumer.mjs': ['submitNativeDemDelivery', 'createNativeDemDeliveryCapability'],
   'src/dacs/fixture-anchors.mjs': ['signAnchorWrite'],
   'src/dacs/commit-on-signature.mjs': ['signatureCommitmentAnchor'],
   'src/devnet-demo/agreement-context.mjs': ['createDevnetDemoAgreementContextProvider', ...PROVIDER_ENTRIES],
   'src/devnet-demo/artifact-anchor.mjs': ['publish'],
   'src/devnet-demo/listing.mjs': ['createDevnetDemoListingPublisher'],
-  'src/devnet-demo/native-delivery.mjs': ['createDevnetDemoDeliveryCapability.submit'],
-  'src/devnet-demo/seller-node-wallet.mjs': ['createSellerNodeWallet'],
+  'src/devnet-demo/native-delivery.mjs': ['createDevnetDemoDeliveryCapability', 'createDevnetDemoDeliveryCapability.submit'],
+  'src/devnet-demo/seller-node-wallet.mjs': ['createSellerNodeWallet', ...WALLET_ADAPTER_ENTRIES],
   'src/devnet-demo/seller-wallet-session.mjs': ['createSellerWalletSession', 'sellerWalletSession.finalize'],
   'src/devnet-demo/storage-write-recovery.mjs': ['storageWriteRpcSigner'],
   'src/seller-key.mjs': ['sellerKey.sign', 'sellerKey.readOnlyAnswerSigner'],
@@ -131,7 +140,7 @@ test('while the guard is off, startSellerHost refuses kit_operation_guard_off be
 
 test('while the guard is off, every directly reachable effect entry under ./src/* refuses before it reads, signs or sends', () => {
   const answer = runProbe('effectEntries');
-  assert.deepEqual(Object.keys(answer.refused).sort(), [...new Set(Object.values(GUARD_SITES).flat())].filter((entry) => !REACHED_BY_ISSUED_CAPABILITY.includes(entry)).sort(), 'every guarded entry was reached');
+  assert.deepEqual(Object.keys(answer.refused).sort(), [...new Set(Object.values(GUARD_SITES).flat())].filter((entry) => !SEPARATELY_PROBED_GUARD_ENTRIES.includes(entry)).sort(), 'every guarded entry was reached');
   for (const [entry, refusal] of Object.entries(answer.refused)) assert.deepEqual({ name: refusal?.name, code: refusal?.code, entry: refusal?.entry }, { name: 'KitOperationGuardError', code: GUARD_CODE, entry }, entry);
   assert.deepEqual(answer.effects, { signs: 0, sends: 0 });
   assert.equal(answer.readable.anchorIntentKept, false, 'the refused durable-state anchor kept no intent');

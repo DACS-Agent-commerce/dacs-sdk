@@ -38,6 +38,7 @@ import { createEffectHistory } from '../../src/dacs/effect-history.mjs';
 import { createFixtureSettlement } from '../../src/dacs/fixture-settlement.mjs';
 import { createNativeDemDeliveryCapability } from '../../src/dacs/native-dem-delivery-consumer.mjs';
 import { createNativePaymentEvidenceConsumer } from '../../src/dacs/native-payment-evidence-consumer.mjs';
+import { createPaymentEvidencePass } from '../../src/dacs/payment-evidence-pass.mjs';
 import { createPaymentEvidenceWalletJournal, createSignedCreateJournal, paymentEvidenceWalletJournalOf } from '../../src/dacs/payment-evidence-wallet-journal.mjs';
 import { takeLease } from '../../src/dacs/process-lease.mjs';
 import { commitmentReader } from '../../src/dacs/purchase-protocol.mjs';
@@ -60,10 +61,15 @@ import { currentAuthorizationFor, lateSellerCreatePass } from '../../src/devnet-
 import { createDevnetPurchasedReportProducer } from '../../src/devnet-demo/deliverable.mjs';
 import { createDevnetDemoListingPublisher } from '../../src/devnet-demo/listing.mjs';
 import { createDevnetDemoDeliveryCapability } from '../../src/devnet-demo/native-delivery.mjs';
+import { createConnectionAuthorityReader } from '../../src/devnet-demo/connection-authority.mjs';
+import { openDoctorNode } from '../../src/devnet-demo/doctor-node.mjs';
+import { createNodeAuthorityReader } from '../../src/devnet-demo/seller-wallet-session.mjs';
 import { composeSellerApproval, createExactOperatorApproval, createSellerContextAdmission } from '../../src/devnet-demo/operator-approval.mjs';
 import { lateWriteWatchOpen } from '../../src/devnet-demo/late-write-watch.mjs';
 import { createInMemoryPartyVetStore, openPartyVetStore } from '../../src/devnet-demo/party-vet-store.mjs';
+import { openVerifiedEnrollmentReader } from '../../src/devnet-demo/seller-enrollment-reader.mjs';
 import { sellerRecordsPurchaseResolver } from '../../src/devnet-demo/seller-purchase-source.mjs';
+import { testOnlyNodeKey, trustedNodeFor } from './enrollment-signing.mjs';
 import { storageWriteRpcSigner } from '../../src/devnet-demo/storage-write-recovery.mjs';
 import { createWriteExclusionRule } from '../../src/devnet-demo/write-exclusion.mjs';
 import { loadKeyFile } from '../../src/seller-key.mjs';
@@ -91,6 +97,9 @@ export function capabilityBuilders(t) {
     ['src/devnet-demo/agreement-context.mjs#createDevnetDemoAgreementContextProvider', (w) => w.provider],
     ['src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession', (w) => w.session.port],
     ['src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession.finalize()', async (w) => (await w.session.finalize()).session],
+    ['src/devnet-demo/seller-wallet-session.mjs#createNodeAuthorityReader', (w) => createNodeAuthorityReader({ owner: w.nodeWallet.owner, claim: () => seller.claim })],
+    ['src/devnet-demo/connection-authority.mjs#createConnectionAuthorityReader', (w) => createConnectionAuthorityReader({ owner: w.nodeWallet.owner, claim: () => seller.claim })],
+    ['src/devnet-demo/doctor-node.mjs#openDoctorNode', (w) => onClose(openDoctorNode({ rpcUrl: 'https://rpc.example.invalid/', sellerClaim: seller.claim, fetchImpl: w.nodeWallet.node.fetch }))],
     ['src/devnet-demo/listing.mjs#createDevnetDemoListingPublisher', () => createDevnetDemoListingPublisher({ anchor: { publish: async () => {}, read: async () => {}, verifyReceipt: async () => {} },
       sign: signer.sign, scanOwnListings: async () => ({ status: 'ok', anchors: [] }), loadRailResolution: async () => null, runCreate: testRunCreate().runCreate })],
     ['src/devnet-demo/create-pass.mjs#createSellerCreatePass', () => testRunCreate()],
@@ -172,6 +181,8 @@ export function capabilityBuilders(t) {
       return paymentEvidenceWalletJournalOf(journal.anchorEvidence);
     }],
     ['src/dacs/payment-evidence-wallet-journal.mjs#createSignedCreateJournal', () => onClose(createSignedCreateJournal({ ...journalOptions(directory(), 'creates.sqlite'), table: 'inventory_creates' }))],
+    ['src/dacs/payment-evidence-pass.mjs#createPaymentEvidencePass', () => createPaymentEvidencePass({ runCreate: never('runCreate'),
+      adapter: Object.fromEntries(['approveAhead', 'signCreate', 'approveSendAhead', 'broadcast', 'readAccountNonce', 'readTransactionState'].map((name) => [name, never(name)])) })],
     ['src/dacs/deliverable-wallet-journal.mjs#createDeliverableWalletJournal', () => onClose(createDeliverableWalletJournal(journalOptions(directory(), 'deliverable.sqlite')))],
     ['src/dacs/deliverable-wallet-journal.mjs#deliverableJournalFor', () => {
       const journal = onClose(createDeliverableWalletJournal(journalOptions(directory(), 'deliverable.sqlite')));
@@ -202,6 +213,8 @@ export function capabilityBuilders(t) {
     ['src/devnet-demo/party-vet-store.mjs#createInMemoryPartyVetStore', () => createInMemoryPartyVetStore()],
     ['src/devnet-demo/party-vet-store.mjs#openPartyVetStore', () => onClose(openPartyVetStore({ path: join(directory(), 'party.sqlite'), mode: 'create' }))],
     ['src/devnet-demo/seller-node-wallet.mjs#createSellerNodeWallet', (w) => w.nodeWallet.wallet],
+    ['src/devnet-demo/seller-enrollment-reader.mjs#openVerifiedEnrollmentReader', (w) => onClose(openVerifiedEnrollmentReader({ endpoint: 'https://rpc.example.invalid/',
+      transportAuthority: 'TEST-inventory', fetchImpl: never('a fetch'), claim: seller.claim, listingPin: w.context.pin, trustedNode: trustedNodeFor(testOnlyNodeKey()) }))],
     ['src/devnet-demo/seller-purchase-source.mjs#sellerRecordsPurchaseResolver', () => sellerRecordsPurchaseResolver({ sessionOf: () => null, buyerAccess: createOperatorBuyerAccess({ openBuyerAccess: false, custodyBuyer: seller.claim }),
       now: () => 0, observePayment: never('observePayment') })],
     ['src/devnet-demo/seller-state-lock.mjs#acquireSellerStateLock', (w) => w.nodeWallet.stateLock],

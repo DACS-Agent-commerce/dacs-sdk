@@ -94,7 +94,9 @@ the execution guide; it must omit successful execution and finality.
 `payDemSettle` keeps an intent held unless reconciliation authenticates one of
 these definitive outcomes (see
 [the pay-dem execution gate](./pay-dem-execution.md)). After restart, even a
-cached success is reconciled before reuse. An authoritative `null` proves only
+cached success is reconciled before reuse. A success for a hash from recovery
+history also needs the journal entry, read through `readPreparedTransfers`, and
+the bridge's own node read to agree. An authoritative `null` proves only
 that no transfer has landed yet; it cannot revoke a possibly-live old process
 or signed transaction and does not authorize a new native transfer.
 Non-observation, absence without an independent replay fence, or an ambiguous
