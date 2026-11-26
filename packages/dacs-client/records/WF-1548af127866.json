@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF keep the nonce-lane inspection off the held transport facade in its own module",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/held-transport-facade.mjs",
+      "before": "63c3a0f731e825eba89400d2f677d8191a9d868e",
+      "after": "17a92dd3897124863f7432a34171ca80e379cb2a"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-1548af127866.json",
+    "packages/dacs-client/src/wallet/held-transport-facade.mjs"
+  ],
+  "note": "The held facade moved from the node wallet session into its own module on one side of the merge, while the other side changed it in the session to leave out the nonce-lane inspection, which only the composition uses. This applies that change to the moved facade, so neither a host nor the keyless signed relay holds the inspection. The module now takes the positive OS amount pattern from the public admission module, as the session does, instead of its own copy."
+}

@@ -2,7 +2,7 @@
 // Neither loads the Demos SDK or holds a key, so the package root can use them as well as the Node wallet session.
 import { createHash } from 'node:crypto';
 import { canonicalize } from '@kynesyslabs/dacs';
-import { admitPublicFactory } from '../public-admission.mjs';
+import { POSITIVE_OS_AMOUNT, admitPublicFactory } from '../public-admission.mjs';
 import { fail } from './approved-record-pins.mjs';
 import { registerHeldTransportFacade } from './devnet-native-transport.mjs';
 import { createEffectBoundary } from './effect-boundary.mjs';
@@ -15,9 +15,6 @@ import { currentPassContext, relayPassContext, runInPassContext } from './pass-c
 const PASSIVE_TRANSPORT_METHODS = ['readRpc', 'observeBinding', 'chainReader', 'nativeTransferClaimed', 'nativeTransferCancelled',
   'nativeTransferRefused', 'nativeNonceConsumer', 'isWalletIdle', 'profile', 'onPurchaseStep', 'onStorageWriteResend', 'reserveRpcAuth', 'close'];
 const READBACK_PHASE = 'readback';
-
-/** A positive decimal OS amount with no leading zero, the form of every fee ceiling. */
-export const POSITIVE_OS_AMOUNT = /^[1-9][0-9]*$/;
 
 const localDigestOf = local => createHash('sha256').update(canonicalize(local)).digest('hex');
 
@@ -37,8 +34,8 @@ const localDigestOf = local => createHash('sha256').update(canonicalize(local)).
  */
 export function createHeldTransportFacade({ admission, transport } = {}) {
   const wrapped = admitPublicFactory(() => transport, { passive: PASSIVE_TRANSPORT_METHODS, purchase: true })({ admission });
-  // The reopen entry is the composition's own (`withheldReopen`), never a member a host or a relay holds.
-  const members = Object.fromEntries(Object.entries(wrapped).filter(([name]) => !['actionsAdmitted', 'reopenWithheldBroadcast'].includes(name)));
+  // The reopen entry (`withheldReopen`) and the nonce-lane inspection are the composition's own, never members a host or a relay holds.
+  const members = Object.fromEntries(Object.entries(wrapped).filter(([name]) => !['actionsAdmitted', 'reopenWithheldBroadcast', 'inspectWalletNonceLane'].includes(name)));
   const facade = Object.freeze({ ...members, binding(request, ...args) {
     try {
       return request?.phase === READBACK_PHASE ? transport.binding({ ...request, phase: READBACK_PHASE }, ...args) : wrapped.binding(request, ...args);
