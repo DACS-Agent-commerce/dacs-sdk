@@ -4,14 +4,20 @@ import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
 // callers can distinguish "timeout" and "unavailable" from "invalid". A
 // deadline is kind 'timeout' with the deadline's TimeoutError as cause, at
 // every stage of the request. A caller's abort rejects with the caller's own
-// reason, unchanged.
+// reason, unchanged. A reply over the byte limit is kind 'invalid' with `code`
+// RESPONSE_BYTE_LIMIT, set before any JSON is decoded.
 export class OutboundError extends Error {
-  constructor(kind, message, { status, cause } = {}) {
+  constructor(kind, message, { status, cause, code } = {}) {
     super(message, cause === undefined ? undefined : { cause });
     this.kind = kind; // 'unavailable' | 'invalid' | 'not-found' | 'timeout'
     this.status = status;
+    if (code !== undefined) this.code = code;
   }
 }
+
+/** The `code` of the OutboundError for a reply whose declared or streamed size passes the request's byte limit. */
+export const RESPONSE_BYTE_LIMIT = 'response_byte_limit';
+const overByteLimit = () => new OutboundError('invalid', 'response exceeds byte limit', { code: RESPONSE_BYTE_LIMIT });
 
 /** Cancel a response body that will not be read. Never throws; returns nothing. */
 export function cancelResponseBody(response) {
@@ -54,7 +60,7 @@ async function readCapped(response, maxBytes, stop, cancellation) {
   const declared = response.headers.get('content-length');
   if (declared !== null && Number(declared) > maxBytes) {
     cancelResponseBody(response);
-    throw new OutboundError('invalid', 'response exceeds byte limit');
+    throw overByteLimit();
   }
   if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
@@ -71,7 +77,7 @@ async function readCapped(response, maxBytes, stop, cancellation) {
       total += value.byteLength;
       if (total > maxBytes) {
         void reader.cancel().catch(() => {});
-        throw new OutboundError('invalid', 'response exceeds byte limit');
+        throw overByteLimit();
       }
       chunks.push(value);
     }
