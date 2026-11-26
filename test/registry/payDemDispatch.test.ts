@@ -359,6 +359,57 @@ describe("pay-DEM registry dispatch recovery wiring", () => {
     expect(capturedRecovery.reconcile).not.toBe(reconcile);
   });
 
+  test("hands the prepared-transfer reader to the native bridge as a captured method", async () => {
+    const rail = { address: "aa".repeat(32), settle: vi.fn() };
+    mocks.createPayDemRail.mockResolvedValue(rail);
+    mocks.payDemSettle.mockReturnValue(vi.fn());
+    const readPreparedTransfers = vi.fn(async () => []);
+    const payDem = {
+      journalPreparedTransfer: vi.fn(async () => undefined),
+      settlementStore: { once: vi.fn() } as SettlementIdempotencyStore,
+      readPreparedTransfers,
+    };
+    const descriptor = await authenticatedDefinition();
+
+    await settleFromRail(descriptor, {
+      demosRpc: "https://demos.example",
+      demosSecret: "test-secret",
+      payment: { network: "demos", phaseIndex: 4 },
+      payDem,
+    });
+    const replacement = vi.fn(async () => []);
+    payDem.readPreparedTransfers = replacement;
+
+    expect(mocks.payDemSettle).toHaveBeenCalledWith(rail, expect.anything(), {
+      store: expect.objectContaining({ once: expect.any(Function) }),
+      readPreparedTransfers: expect.any(Function),
+    });
+    const captured = mocks.payDemSettle.mock.calls[0]![2].readPreparedTransfers;
+    expect(captured).not.toBe(readPreparedTransfers);
+    await captured("pay-dem:job-1:4");
+    expect(readPreparedTransfers).toHaveBeenCalledWith("pay-dem:job-1:4");
+    expect(replacement).not.toHaveBeenCalled();
+  });
+
+  test("settleFromRail refuses a prepared-transfer reader that is an accessor or a proxy before loading a rail", async () => {
+    const descriptor = await authenticatedDefinition();
+    const getter = vi.fn(() => async () => []);
+    const accessorPayDem = { settlementStore: { once: vi.fn() } as SettlementIdempotencyStore };
+    Object.defineProperty(accessorPayDem, "readPreparedTransfers", { enumerable: true, get: getter });
+    const dispatch = (payDem: NonNullable<RailDispatchOptions["payDem"]>) => settleFromRail(descriptor, {
+      demosRpc: "https://demos.example", demosSecret: "test-secret", payDem,
+    });
+
+    await expect(dispatch(accessorPayDem)).rejects.toThrow(/prepared-transfer reader must be stable data/);
+    expect(getter).not.toHaveBeenCalled();
+    await expect(dispatch({
+      settlementStore: { once: vi.fn() } as SettlementIdempotencyStore,
+      readPreparedTransfers: new Proxy(async () => [], {}),
+    }))
+      .rejects.toThrow(/prepared-transfer reader must be a stable method/);
+    expect(mocks.createPayDemRail).not.toHaveBeenCalled();
+  });
+
   test("requires a settlement store before constructing the native rail", async () => {
     const rail = { address: "aa".repeat(32), settle: vi.fn() };
     const executor = vi.fn();

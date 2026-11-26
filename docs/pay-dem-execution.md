@@ -76,6 +76,23 @@ native hash and network. The reconciler receives the canonical retained hash in
 `context.txHash` and must bind it to the original journal's signed nonce and
 payment tuple before reading execution. Missing or conflicting journals must
 throw. An executed result or bound permanent failure must name that same hash.
+
+The bridge does not take the reconciler's word for a retained success. Build it
+with `readPreparedTransfers`, which returns the entries your
+`journalPreparedTransfer` hook stored for a settlement key. Before it returns a
+success, the bridge reads that journal and needs exactly one entry for the
+retained hash, with this job's recovery context, payer, payee, amount, a valid
+nonce and a denomination. It then reads the node itself through its own rail,
+with that entry's nonce, payer, payee and amount: the status index must report
+the transaction included, and its record must be `confirmed` at the reconciled
+block. Otherwise the success is withheld with an error and nothing is written.
+A bridge built without `readPreparedTransfers`, or around a rail that
+`createPayDemRail` did not build, withholds every retained success. When the
+history records a success (`ok: true`) and reconciliation reports a permanent
+failure, the bridge throws instead of returning the failure: the payment stays
+unresolved and must not be paid again. A history with no success entry still
+gets the bound permanent failure.
+
 Repeated calls audit again without relying on an in-memory success cache. Once
 this bridge has retained an audit identity, later calls for the same key remain
 read-only even if they omit history; conflicting terms or hashes are refused. A
@@ -119,9 +136,11 @@ first sent and `recoveryOnly: true`. When the log holds no outcome and no
 transaction hash is supplied, the bridge refuses instead of paying, because the
 transfer may already have been sent. To finish such a purchase, wrap the bridge
 with `withRecoveredAttempts`, which adds the hash you read from the
-prepared-transfer journal to the recovery request:
+prepared-transfer journal to the recovery request. Give the bridge the same
+journal reader, so it can check the journal entry before it reports a success:
 
 ```ts
+const bridge = payDemSettle(rail, {}, { store, reconcile, readPreparedTransfers });
 const recoverSettlement = withRecoveredAttempts(bridge, async (req) =>
   (await readPreparedTransfers(settlementKey(req.rail, req.jobId, req.phaseIndex ?? 0)))
     .map((prepared) => ({ txHash: prepared.txHash, chainId: network, ok: false })));
@@ -130,7 +149,8 @@ const result = await recoverSettlement({ ...firstRequest, recoveryOnly: true });
 
 The wrapper only adds history. A request that already carries
 history, or is not a recovery request, passes through unchanged, and the bridge
-still decides from the chain whether the payment landed.
+still decides from the chain whether the payment landed. Through
+`settleFromRail`, pass the reader as `payDem.readPreparedTransfers`.
 
 In order:
 
