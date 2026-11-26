@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged node wallet session and public API test after merging the base with the payment evidence transport binding into the node balance read part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "55e618f8df4060dc69acc81859820d087904855c",
+      "after": "55e618f8df4060dc69acc81859820d087904855c"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "a3b583e3172067ee338324e8773f33daf76ea617",
+      "after": "a3b583e3172067ee338324e8773f33daf76ea617"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-04f2357c8bee.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's authority reply size refusal, capability authority label and node balance read exports and their export list together with the base's payment evidence transport binding and buyer context route caller export and test."
+}

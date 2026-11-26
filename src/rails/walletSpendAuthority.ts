@@ -187,7 +187,8 @@ export interface WalletSpendAuthorityDependenciesV1 {
    * Rail-specific authentication of final debit or authoritative absence.
    * A store entry is never released merely because a caller says an effect is
    * absent. For an absence claim, `hold` is the stored hold the claim is
-   * checked against; the release applies only while that hold is current.
+   * checked against; the release applies only while that hold's generation and
+   * expiry are unchanged.
    */
   authenticateRecovery(
     reservation: Readonly<WalletSpendReservationV1>,
@@ -1782,7 +1783,8 @@ export function createWalletSpendAuthorityV1(
           }
           return { state, value: "existing" as const };
         }
-        if (existing.generation !== checked.generation) {
+        if (existing.generation !== checked.generation ||
+            existing.authorizationValidBefore !== checked.authorizationValidBefore) {
           throw new DacsError("wallet spend absence was checked against another hold");
         }
         if ((existing.leaseExpiresAt ?? Number.MAX_SAFE_INTEGER) >= timestamp) {
