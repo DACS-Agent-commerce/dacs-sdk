@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test the read-only Listing verifier",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/read-only-listing-verifier.test.mjs",
+      "before": null,
+      "after": "53a245fbfc0c980a23958f704e5f345e99104f41"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-39c6b1e880c7.json",
+    "packages/dacs-client/test/read-only-listing-verifier.test.mjs"
+  ]
+}
