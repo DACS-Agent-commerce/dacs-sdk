@@ -92,6 +92,8 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/native-delivery.mjs': { effect: { createDevnetDemoDeliveryCapability: ['createDevnetDemoDeliveryCapability', 'createDevnetDemoDeliveryCapability.submit'] }, pure: ['hasDevnetDeliveryEvidenceReader', 'hasDevnetPurchasedReportReader', 'readDevnetDeliveryEvidence', 'readDevnetPurchasedReport'] },
   'src/devnet-demo/operator-approval.mjs': { effect: {  }, pure: ['composeSellerApproval', 'confirmedWriteOs', 'createExactOperatorApproval', 'createSellerContextAdmission', 'cutTornContextLine', 'decidedFromJournals', 'heldPolicyBudget', 'parsePolicyLedger', 'policyRefusal', 'releaseSellerContextHolds', 'sellerApprovalSettings', 'sellerIssuanceJournalIds', 'sellerPurchaseSource', 'serializedPolicy', 'stillAuthorizedToSign', 'stillOpenBeforePayment', 'withContextHolds'] },
   'src/devnet-demo/party-vet-store.mjs': { effect: {  }, pure: ['createInMemoryPartyVetStore', 'openPartyVetStore'] },
+  // The passive Listing reader only reads a node and authenticates what it reads; it signs, sends and recovers nothing.
+  'src/devnet-demo/passive-listing-reader.mjs': { effect: {  }, pure: ['createPassiveListingReader'] },
   'src/devnet-demo/seller-node-wallet.mjs': { effect: { createSellerNodeWallet: ['createSellerNodeWallet'] }, pure: [] },
   'src/devnet-demo/seller-purchase-source.mjs': { effect: {  }, pure: ['isPaymentTxRef', 'sellerHeldEvidenceJobs', 'sellerHoldNotice', 'sellerRecordsPurchaseResolver'] },
   'src/devnet-demo/seller-state-lock.mjs': { effect: {  }, pure: ['acquireSellerStateLock'] },
@@ -282,6 +284,7 @@ export const RETURNED_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/doctor-node.mjs#openDoctorNode': { role: [], effect: {},
     pure: ['close', 'readAuthority', 'owner.acquireConnectionFence', 'owner.close', 'owner.currentLocal', 'owner.fetchImpl', 'owner.getContext', 'observer.observe',
       'observer.provenance', 'observer.readNodeInfo'] },
+  'src/devnet-demo/passive-listing-reader.mjs#createPassiveListingReader': { role: [], effect: {}, pure: ['close', 'readPublishedListing'] },
   'src/devnet-demo/listing.mjs#createDevnetDemoListingPublisher': { role: [], effect: { '()': ['createDevnetDemoListingPublisher', 'effectBoundary'] }, pure: [] },
   'src/devnet-demo/create-pass.mjs#createSellerCreatePass': { role: [], effect: { runCreate: ['effectBoundary'] }, pure: [] },
   'src/devnet-demo/create-pass.mjs#lateSellerCreatePass': { role: [], effect: { '()': ['effectBoundary'] }, pure: [] },

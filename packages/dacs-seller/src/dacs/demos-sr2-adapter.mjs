@@ -13,6 +13,7 @@ import {
   demosSignedTransactionProofHash, demosWriteEvidenceBindsReceiptContent,
   demosWriteEvidenceToAnchorReceipt,
 } from '@kynesyslabs/dacs';
+import { canonicalNodeEndpoint, TP1_APPROVED_IDENTITY_RECORD_DIGESTS, TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES } from '@kynesyslabs/dacs/wire';
 import { fetchBoundedJson } from '../util/http.mjs';
 import { addressForClaim } from './demos-claims.mjs';
 import { assertNoCallerSignatureDomain, signatureDomainFromNetworkInfo } from './signature-domain.mjs';
@@ -61,12 +62,13 @@ const wireInteger = (v) => integer(v) ? v : typeof v === 'string' && /^(0|[1-9][
 // Node2's confirmed storageProgram projection can omit the two source-binding
 // properties that remain present in the original signed CREATE. Restore that
 // exact pair only in a fresh comparison copy, and only when an authentic
-// projected/retained authorization binds the current source admission. Raw
-// content is never a source of missing authorization and no input is mutated.
-function sourceBoundStorageComparison({ sourceCapability, expectedIdentity, authenticContent, executedContent, authenticated }) {
-  if (!sourceCapability || !authenticated || !object(authenticContent) || !object(executedContent)) return executedContent;
+// projected/retained authorization binds the expected `network` (the source
+// pin's, or the passive identity record's) and chain. Fixture reads pass no
+// network. Raw content is never a source of missing authorization and no input is mutated.
+function sourceBoundStorageComparison({ network, expectedIdentity, authenticContent, executedContent, authenticated }) {
+  if (!network || !authenticated || !object(authenticContent) || !object(executedContent)) return executedContent;
   const authenticBinding = typeof authenticContent.network === 'string' && authenticContent.network.length > 0
-    && authenticContent.network === sourceCapability.pins.network
+    && authenticContent.network === network
     && typeof authenticContent.chainIdentity === 'string' && authenticContent.chainIdentity.length > 0
     && authenticContent.chainIdentity === expectedIdentity;
   if (!authenticBinding) return executedContent;
@@ -96,6 +98,16 @@ export class DemosSr2Error extends Error {
   constructor(code, message, options) { super(message, options); this.code = code; if (options?.status !== undefined) this.status = options.status; }
 }
 const reject = (code, message, options) => { throw new DemosSr2Error(code, message, options); };
+
+// The chain identity of a passive adapter: `identityRecord.chainIdentity`, once the record is one the SDK approved (its canonical
+// digest is listed) and names no simulated fixture chain. A caller's record never extends the approved list.
+function passiveExpectedIdentity(identityRecord) {
+  if (TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES.includes(identityRecord?.chainIdentity)) reject('tp1_identity_fixture', 'the simulated fixture chain is not a live chain identity');
+  let digest = null;
+  try { digest = exactHash(identityRecord); } catch { /* an uncanonical record is not approved */ }
+  if (!TP1_APPROVED_IDENTITY_RECORD_DIGESTS.includes(digest)) reject('tp1_identity_unapproved', 'the identity record is not an SDK-approved record');
+  return identityRecord.chainIdentity;
+}
 
 // Offline journal only. Retaining the same journal across adapter instances,
 // or restoring its serializable snapshot, preserves issued handoffs. A real
@@ -139,38 +151,54 @@ export function demosSr2TxRef(receipt) {
  * when it cannot read. An observation is only compared with `binding`; it never authorizes a record. A record whose writer is
  * `ownWriter` must carry the source's own binding exactly; a record of any other writer needs the shared tuple only. Without
  * `ownWriter` every record is held to the exact binding.
- * Throws TypeError for a `signatureChainId` option, or for a live adapter without `binding` or `observeIdentity`, and an error with
- * code `tp1_identity_fixture` or `invalid-chain` when the source's pin is a fixture chain or disagrees with `binding`.
+ *
+ * With an `identityRecord` and no `sourceCapability` the adapter is passive: it reads a published record over a node it neither
+ * writes to nor recovers through. `identityRecord` must be an SDK-approved TP-1 identity record, `rpcUrl` a root that
+ * `canonicalNodeEndpoint` admits under its chain identity, and `observeIdentity` as above. Its reads refuse an answer that carries
+ * the simulation marker, an authenticated result carries `finality: 'not-established'`, and its receipts keep the Demos labels.
+ * Throws TypeError for a `signatureChainId` option, or for a live or passive adapter without `observeIdentity` or a live one without
+ * `binding`, and an error with code `tp1_identity_fixture` or `invalid-chain` when the source's pin is a fixture chain or disagrees
+ * with `binding`. A passive adapter refuses `tp1_identity_fixture`, `tp1_identity_unapproved` or `offline-only` for its record or endpoint.
  */
-export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null, binding: boundProfile, observeIdentity, ownWriter, signatureChainId }) {
+export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null, binding: boundProfile, observeIdentity, ownWriter, signatureChainId, identityRecord }) {
   assertNoCallerSignatureDomain({ signatureChainId });
+  const passive = sourceCapability === null && identityRecord !== undefined;
   if(sourceCapability !== null && (!isDevnetAgreementTransport(sourceCapability)||typeof sourceCapability.observeBinding!=='function')) reject('source-held','an opaque independently supplied Agreement transport is required');
-  if(sourceCapability !== null && typeof observeIdentity !== 'function') throw new TypeError('a live adapter needs observeIdentity');
+  if((sourceCapability !== null || passive) && typeof observeIdentity !== 'function') throw new TypeError('a live or passive adapter needs observeIdentity');
+  const passiveIdentity = passive ? passiveExpectedIdentity(identityRecord) : null;
+  if (passive && canonicalNodeEndpoint(rpcUrl, { chainIdentity: passiveIdentity }) === null) reject('offline-only', 'passive SR-2 requires a canonical approved endpoint');
   const endpoint = new URL(rpcUrl);
-  if (sourceCapability ? rpcUrl !== sourceCapability.pins.endpoint : (endpoint.protocol !== 'http:' || !LITERAL_LOOPBACK.has(endpoint.hostname) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== '/')) {
+  if (!passive && (sourceCapability ? rpcUrl !== sourceCapability.pins.endpoint : (endpoint.protocol !== 'http:' || !LITERAL_LOOPBACK.has(endpoint.hostname) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== '/'))) {
     reject('offline-only', 'Demos SR-2 requires a literal HTTP loopback root endpoint');
   }
   if (!journal || ['records'].some((k) => typeof journal[k] !== 'function')) reject('journal-required', 'an explicit readback journal is required');
   const base = endpoint.origin;
-  const expectedIdentity=sourceCapability ? liveExpectedIdentity({ binding: boundProfile, sourceCapability }) : DEMOS_SR2_FIXTURE_CHAIN_IDENTITY;
-  const mode=sourceCapability ? 'explicit-pinned-transport-single-node' : DEMOS_SR2_EVIDENCE_MODE;
-  const receiptLabels = sourceCapability ? DEMOS_FINALITY_RECEIPT : DEMOS_SR2_FIXTURE_RECEIPT;
+  // Live and passive reads hold chain evidence; only fixture reads are simulated.
+  const live = sourceCapability !== null || passive;
+  const expectedIdentity=sourceCapability ? liveExpectedIdentity({ binding: boundProfile, sourceCapability }) : passive ? passiveIdentity : DEMOS_SR2_FIXTURE_CHAIN_IDENTITY;
+  const expectedNetwork = sourceCapability ? sourceCapability.pins.network : passive ? identityRecord.network : null;
+  const mode=sourceCapability ? 'explicit-pinned-transport-single-node' : passive ? 'passive-pinned-record-single-node' : DEMOS_SR2_EVIDENCE_MODE;
+  const receiptLabels = live ? DEMOS_FINALITY_RECEIPT : DEMOS_SR2_FIXTURE_RECEIPT;
   const scope = canonicalize([base, expectedIdentity,...(sourceCapability?[sourceCapability.transportBinding.bindingId]:[])]);
   const ownRecords = async () => (await journal.records()).filter((r) => r.scope === scope);
   const retained = async (logicalAddress, writer) => (await ownRecords()).find((r) => r.logicalAddress === logicalAddress && r.writer === writer);
-  // One aggregate deadline per resolution: its signal and the moment it ends, which every read inside it shares.
+  // One aggregate deadline per resolution: its signal and the moment it ends, which every read inside it shares. A caller's
+  // aborted `signal` refuses with its reason before any read, and an abort during the resolution ends it with that reason.
   const readBudget = new AsyncLocalStorage();
-  async function boundedRead(work) {
+  async function boundedRead(work, signal) {
     if (readBudget.getStore()) return work();
+    signal?.throwIfAborted();
     const controller = new AbortController();
     const cause = new DOMException('SR-2 aggregate read deadline exceeded', 'TimeoutError');
-    let timer;
-    const deadline = new Promise((_, fail) => { timer = setTimeout(() => {
-      controller.abort(cause); fail(new DemosSr2Error('indeterminate', cause.message, { cause }));
-    }, timeoutMs); });
+    let timer, onAbort;
+    const stopped = new Promise((_, fail) => {
+      timer = setTimeout(() => { controller.abort(cause); fail(new DemosSr2Error('indeterminate', cause.message, { cause })); }, timeoutMs);
+      onAbort = () => { controller.abort(signal.reason); fail(signal.reason); };
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
     const budget = { signal: controller.signal, endsAt: performance.now() + timeoutMs };
-    try { return await readBudget.run(budget, () => Promise.race([work(), deadline])); }
-    finally { clearTimeout(timer); controller.abort(); }
+    try { return await readBudget.run(budget, () => Promise.race([work(), stopped])); }
+    finally { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); controller.abort(); }
   }
   // The whole milliseconds left of the current resolution's deadline (at least 1), or the full deadline outside one.
   const remainingMs = () => {
@@ -188,9 +216,10 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
           const signal = readBudget.getStore()?.signal; signal?.throwIfAborted();
           const response = await fetchImpl(url, { ...options, signal: signal ? AbortSignal.any([signal, options.signal]) : options.signal });
           signal?.throwIfAborted();
-          if (response.headers.get('x-dacs-simulation') !== 'fixture') {
+          // Fixture replies must carry the simulation marker; a passive read refuses one, so fixture evidence never reads as live.
+          if (passive ? response.headers.has('x-dacs-simulation') : response.headers.get('x-dacs-simulation') !== 'fixture') {
             await response.body?.cancel().catch(() => {});
-            reject('indeterminate', 'every SR-2 response must carry the simulation marker');
+            reject('indeterminate', passive ? 'a passive SR-2 response must not carry the simulation marker' : 'every SR-2 response must carry the simulation marker');
           }
           return response;
         },
@@ -235,6 +264,10 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
         ||binding.chainIdentity!==expectedIdentity) reject('invalid-chain','source-bound chain identity differs');
       await observedIdentityMatches(signal);
       return binding.chainIdentity;
+    }
+    if (passive) {
+      await observedIdentityMatches(signal);
+      return expectedIdentity;
     }
     const genesis = await nodeCall('getBlockByNumber', { blockNumber: 0 });
     if (genesis?.number !== 0 || genesis.status !== 'confirmed' || genesis.hash !== expectedIdentity) reject('invalid-chain', 'source-bound chain identity differs');
@@ -352,10 +385,10 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
       || sha256Hex(JSON.stringify(signed.content)) !== txHash || signed.signature?.type !== 'ed25519' || !object(tx.signature) || canonicalize(tx.signature) !== canonicalize(signed.signature)
       || signed.content.from !== owner || c.from !== owner || c.from_ed25519_address !== owner
       || !verifyTransactionSignature({ address: owner, hash: txHash, signature: tx.signature.data, domain, blockNumber: tx.blockNumber })) reject('invalid', 'transaction lacks the exact writer authorization');
-    if (!creationProvenanceMatches(native, txHash, Boolean(sourceCapability) && (embedded || projected))) {
+    if (!creationProvenanceMatches(native, txHash, live && (embedded || projected))) {
       reject('invalid', 'native creation provenance does not bind the authenticated transaction');
     }
-    const comparison = sourceBoundStorageComparison({ sourceCapability, expectedIdentity, authenticContent: signed.content,
+    const comparison = sourceBoundStorageComparison({ network: expectedNetwork, expectedIdentity, authenticContent: signed.content,
       executedContent: c, authenticated: embedded || projected });
     // Retain the raw mismatch as a repeatable guard witness: only the narrow
     // authenticated comparison projection may turn that mismatch into a pass.
@@ -372,12 +405,16 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
       || op.metadata?.envelopeHash !== exactHash(native.data) || !HASH.test(op.metadata?.contentHash)) reject('invalid', 'transaction does not bind the logical address, native address and exact readback');
     if (op.metadata.contentHash !== artifactContentHash(native.data, op.metadata.artifactKind)) reject('invalid', 'native artifact content hash differs from the signed metadata');
     if(sourceCapability && (comparison.network!==sourceCapability.pins.network || comparison.chainIdentity!==expectedIdentity || !bindsSourcePin(op.metadata.networkBinding, expectedWriter))) reject('invalid','signed Agreement metadata does not bind the exact source pin');
+    // A passive read accepts any writer's record on the approved chain: its endpoint and transport authority are the writer's own.
+    if (passive && (comparison.network !== expectedNetwork || comparison.chainIdentity !== expectedIdentity || !sameSharedTuple(op.metadata.networkBinding, identityRecord))) {
+      reject('invalid', 'signed CREATE does not bind the approved identity record');
+    }
     if (saved && ((!embedded && canonicalize(c) !== canonicalize(saved.payload.content)) || txHash !== saved.authorizationMessage
       || exactHash(native.data) !== saved.envelopeHash || op.metadata.contentHash !== saved.hash || op.metadata.artifactKind !== saved.artifactKind)) reject('invalid', 'transaction differs from the retained wallet plan');
     const block = await nodeCall('getBlockByNumber', { blockNumber: tx.blockNumber });
     if (!object(block) || block.status !== 'confirmed' || block.number !== tx.blockNumber || !HASH.test(block.hash)
       || !integer(block.content?.timestamp) || !Array.isArray(block.content?.ordered_transactions) || !block.content.ordered_transactions.includes(txHash)
-      || (sourceCapability ? (!object(block.validation_data) || Object.keys(block.validation_data).length===0 || (block.validation_data.chainIdentity!==undefined && block.validation_data.chainIdentity!==identity)) : (block.validation_data?.simulated !== true || block.validation_data.chainIdentity !== identity))) reject('invalid', 'observed block does not establish source-bound inclusion');
+      || (live ? (!object(block.validation_data) || Object.keys(block.validation_data).length===0 || (block.validation_data.chainIdentity!==undefined && block.validation_data.chainIdentity!==identity)) : (block.validation_data?.simulated !== true || block.validation_data.chainIdentity !== identity))) reject('invalid', 'observed block does not establish source-bound inclusion');
     const observedAt = now();
     if (!integer(observedAt)) reject('invalid', 'observation timestamp must be a nonnegative integer');
     const finalityProof = canonicalize(block.validation_data);
@@ -390,7 +427,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     };
     assertDemosWriteEvidence(evidence);
     const receipt = labelReceipt(demosWriteEvidenceToAnchorReceipt({ logicalAddress, contentHash: op.metadata.contentHash, writer: expectedWriter, evidence }), receiptLabels);
-    return { status: 'present', artifact: clone(native.data), ...(native.metadata.artifactKind !== undefined ? { artifactKind: native.metadata.artifactKind } : {}), receipt, demosEvidence: evidence, evidenceMode: mode,...(sourceCapability?{networkBinding:clone(sourceCapability.transportBinding),finality:'not-established'}:{}) };
+    return { status: 'present', artifact: clone(native.data), ...(native.metadata.artifactKind !== undefined ? { artifactKind: native.metadata.artifactKind } : {}), receipt, demosEvidence: evidence, evidenceMode: mode,...(sourceCapability?{networkBinding:clone(sourceCapability.transportBinding)}:{}),...(live?{finality:'not-established'}:{}) };
   }
 
   async function readCurrent(logicalAddress, { expectedWriter, expectedArtifactKind, expectedDeliveryBinding, signedProjection, nativeAddress } = {}) {
@@ -410,12 +447,13 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     return authenticate(logicalAddress, expectedWriter, native, expectedHash, saved, projection);
   }
 
-  const readAuthenticated = (logicalAddress, options) => boundedRead(() => readCurrent(logicalAddress, options));
+  // `read` also takes the caller's `signal` (see boundedRead).
+  const readAuthenticated = (logicalAddress, { signal, ...options } = {}) => boundedRead(() => readCurrent(logicalAddress, options), signal);
 
   // Fixture evidence leaves this adapter only with the fixture labels, so the
   // core converter and verifier refuse it as chain evidence. Receipt checks
   // below use the unmarked read, which stays internal.
-  const markFixtureEvidence = (record) => sourceCapability ? record
+  const markFixtureEvidence = (record) => live ? record
     : { ...record, demosEvidence: { ...record.demosEvidence, state: DEMOS_SR2_FIXTURE_RECEIPT.state, finalityProfile: DEMOS_SR2_FIXTURE_RECEIPT.finalityProfile } };
   const read = async (logicalAddress, options) => markFixtureEvidence(await readAuthenticated(logicalAddress, options));
 
