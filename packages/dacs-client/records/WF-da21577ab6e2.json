@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF import the narrow seller observer entry and the read-only address parser in the chain reader",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/chain.mjs",
+      "before": "1e918802dc38fbf0abb5e8ea39a25994597795a5",
+      "after": "b45673f05259eb69d79885144c3de87f2194c3d8"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-da21577ab6e2.json",
+    "packages/dacs-client/src/dacs/chain.mjs"
+  ]
+}

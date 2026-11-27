@@ -5,10 +5,10 @@
 // createPayDemSellerObserver nodeCall protocol (POST {rpc} {method:"nodeCall",
 // params:[{message,data}]} -> {result:200,response}). Transfer observation is
 // delegated to the SDK's observePayDemTransferCore.
-import { createPayDemSellerObserver } from '@kynesyslabs/dacs/seller';
+import { createPayDemSellerObserver } from '@kynesyslabs/dacs/seller/pay-dem-observer';
 import { DEMOS_CCI_RESPONSE_LIMITS, assertDemosCciResponseBounds } from '@kynesyslabs/dacs/identity';
 import { fetchBoundedJson, OutboundError } from '../util/http.mjs';
-import { normalizeDemosAddress } from '../signatures.mjs';
+import { normalizeDemosAddress } from './read-only-address.mjs';
 
 const LOCATOR = /^stor-[0-9a-f]{40}$/;
 const CHAIN_IDENTITY = /^(?:0x)?([0-9a-f]{64})$/;
