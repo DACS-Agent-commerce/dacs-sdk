@@ -8,7 +8,7 @@ import { createDemosSr2Adapter, createInMemoryDemosSr2Journal } from '../dacs/de
 const PASSIVE_LISTING_READER_AUTHORITY = 'dacs-passive-listing-reader';
 
 /**
- * Opens one read-only connection to `endpoint` (a canonical https root, or http only for the approved TP-1 testnet) and returns
+ * Opens one read-only connection to `endpoint` (a canonical https root) and returns
  * frozen `{ readPublishedListing, close }`. Throws OperationError(transport_mismatch) for another endpoint or a `fetchImpl` that is
  * not a function, before any read.
  *
@@ -21,8 +21,7 @@ const PASSIVE_LISTING_READER_AUTHORITY = 'dacs-passive-listing-reader';
  * to 1 MiB, each name-index page to 50 rows, and each read to one 10 s deadline. Nothing it reads is kept after the reader closes.
  */
 export function createPassiveListingReader({ endpoint, fetchImpl } = {}) {
-  const owner = createNodeTransportOwner({ endpoint, transportAuthority: PASSIVE_LISTING_READER_AUTHORITY, fetchImpl,
-    chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
+  const owner = createNodeTransportOwner({ endpoint, transportAuthority: PASSIVE_LISTING_READER_AUTHORITY, fetchImpl });
   const observer = createNodeObserver({ owner });
   const adapter = createDemosSr2Adapter({ rpcUrl: endpoint, journal: createInMemoryDemosSr2Journal(), fetchImpl: owner.fetchImpl,
     identityRecord: TP1_APPROVED_IDENTITY_RECORD, observeIdentity: async ({ signal }) => (await observer.observe({ signal })).chainIdentity });
