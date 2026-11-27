@@ -4,19 +4,17 @@
 // transmission; its authority reads are counted exactly (S: the step-1 read, F: the reads of each refresh).
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalize, contentHash, listingAddress, logicalToStorageProgramName, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD, bindTp1Profile } from '@kynesyslabs/dacs/wire';
 import { agreementRequest } from '../../dacs-client/test/helpers/tp1-node-fixture.mjs';
 import { T0, jsonResponse, ok, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { EXECUTE_STAGES, walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
+import { listingCreateRequest, pendingNode, rpc } from './helpers/listing-create-fixture.mjs';
 
 const guard = await import('../src/kit-operation-guard.mjs');
 const { WRITE_FEE_CEILING_OS, createEffectBoundary, effectPassRemainingMs } = await import('../src/dacs/effect-boundary.mjs');
 const { createEffectHistory } = await import('../src/dacs/effect-history.mjs');
 const { createSellerCreatePass, currentAuthorizationFor } = await import('../src/devnet-demo/create-pass.mjs');
-const { buildStorageProgramCreatePayload, deriveStorageAddress } = await import('../src/dacs/wallet-transactions.mjs');
-const { DEVNET_AGREEMENT_PROFILE, DEVNET_DEMO_ARTIFACT_KIND, DEVNET_DEMO_ARTIFACT_POLICY } = await import('../src/dacs/devnet-source.mjs');
-const { fixtureListing } = await import('./fixtures/listings.mjs');
 
 const FEE_CEILING_OS = WRITE_FEE_CEILING_OS.toString();
 const KIT_WINDOW_MS = 10_000;
@@ -40,18 +38,6 @@ function manualClock() {
     advanceTo(at) { now = at; for (const timer of [...timers].sort((a, b) => a.at - b.at)) if (timer.at <= now && timers.delete(timer)) timer.callback(); },
   };
 }
-
-// A node answer in the RPC envelope.
-const rpc = (response, extra = null) => jsonResponse({ result: 200, response, require_reply: false, extra });
-// A node that acknowledges a broadcast it never applies, so the CREATE reads back pending and its one resend stays open. While the
-// CREATE is sent its status read fails, which ends the transport's inclusion wait at once; afterwards the status is unknown.
-const pendingNode = ({ statusUnavailable }) => (row) => {
-  const call = row.body?.params[0], message = call?.message || call?.extra;
-  if (message === 'broadcastTx') return rpc({ hash: call.data.response.data.transaction.hash });
-  if (message === 'getTransactionStatus') return statusUnavailable ? jsonResponse({ result: 500, response: 'TEST-unavailable', require_reply: false, extra: null }) : rpc({ state: 'unknown' }, '');
-  if (message === 'getTxByHash') return jsonResponse({ result: 400, response: 'error', require_reply: false, extra: null });
-  return undefined;
-};
 
 /**
  * The production port and finalized session over the scripted node, with authority reads counted and transaction signatures
@@ -120,19 +106,7 @@ async function createWorld(t, { onSigned } = {}) {
 }
 
 // The seller's own Listing CREATE request, built as the artifact anchor builds it, for the session's next nonce.
-function listingRequest(w) {
-  const { world, real: session } = w, transport = session.transport, owner = session.address, writer = world.signer.claim;
-  const artifact = fixtureListing(world.signer, { now: T0 }), contentHashOf = contentHash(artifact), envelopeHash = sha256Hex(canonicalize(artifact));
-  const logicalAddress = listingAddress(writer, artifact.listingId, artifact.listingVersion), programName = logicalToStorageProgramName(logicalAddress), nonce = world.node.nonce + 1;
-  const transaction = buildStorageProgramCreatePayload({ from: owner, storageAddress: deriveStorageAddress(owner, programName, nonce, ''), programName, logicalAddress,
-    signedListing: artifact, nonce, timestamp: T0 });
-  Object.assign(transaction.content, { from_ed25519_address: owner, network: transport.pins.network, chainIdentity: transport.pins.chainIdentity });
-  const jobId = `listing:${artifact.listingId}`;
-  Object.assign(transaction.content.data[1].metadata, { contentHash: contentHashOf, envelopeHash, artifactKind: 'Listing', networkBinding: structuredClone(transport.transportBinding),
-    artifactBinding: { version: '1', policy: DEVNET_DEMO_ARTIFACT_POLICY, authority: transport.demoArtifactPublication.authority, artifactKind: 'Listing', jobId, logicalAddress, writer } });
-  return { method: 'sendTransaction', params: [{ kind: DEVNET_DEMO_ARTIFACT_KIND, profile: DEVNET_AGREEMENT_PROFILE, network: transport.pins.network, owner: writer,
-    artifactKind: 'Listing', jobId, logicalAddress, contentHash: contentHashOf, envelopeHash, transaction }] };
-}
+const listingRequest = (w) => listingCreateRequest({ transport: w.real.transport, address: w.real.address, signer: w.world.signer, nonce: w.world.node.nonce + 1 });
 
 /**
  * Seeds a CREATE whose one resend is open: `runCreate` transmits the Listing CREATE once to a node that never applies it, and
