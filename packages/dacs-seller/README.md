@@ -192,7 +192,8 @@ const host = await startSellerHost({
                          // must be walletSession.artifactAnchor, or the host refuses with a TypeError
   participantImplementations, // { entriesFor(claim) -> [{ claim, profile, modules, evidence, revoked }] }: the
                          // independently approved enrollment of each buyer, read on every request; a buyer
-                         // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch
+                         // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch;
+                         // openVerifiedEnrollmentReader(...) is the node-signed source (below)
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's own answer for an evidence
                          // anchor ('unsigned' | 'rebroadcast' | 'pending'); the agent checks the pair when it is built
   resumeDeliverableCreate: deliveryJournal.resume, // optional (below); nativeDemDelivery is then
@@ -311,7 +312,8 @@ parts the host composes, for operators who compose their own:
 `createSellerContextRoute`,
 `createWireSellerContextRoute` (the context step on the wire),
 `createSellerAuthorityReader` (the host's TP-1 authority reader),
-`createSellerWalletSession` (the host's production `walletSession` port) and the buyer
+`createSellerWalletSession` (the host's production `walletSession` port),
+`openVerifiedEnrollmentReader` (a node-signed enrollment source) and the buyer
 side `createSellerAgentClient`. The host
 answers every route through the wire, under the wire domain with a TP-1
 profile in each request, and refuses a request signed under the transport's
@@ -336,7 +338,7 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createWireSellerContextRoute`,
-`createSellerTransportStore`, `createSellerAuthorityReader` and `createSellerWalletSession`. The kit's other modules are reachable by
+`createSellerTransportStore`, `createSellerAuthorityReader`, `createSellerWalletSession` and `openVerifiedEnrollmentReader`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
@@ -1362,6 +1364,23 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   The provider's `resolveBuyer`, `recoverBuyer` and `resolveSeller` and each
   method of the kit client `createSellerAgentClient` check the kit operation
   guard at each call.
+- `openVerifiedEnrollmentReader` (`src/devnet-demo/seller-enrollment-reader.mjs`,
+  a root export) is a `participantImplementations` source that the operator's node
+  signs. It takes the node connection (`endpoint`, `transportAuthority`,
+  `fetchImpl`), the seller `claim`, the Listing's full `listingPin`, the required
+  `trustedNode` pin `{chainIdentity, publicKey}` (the node's 32-byte Ed25519 key in
+  43 base64url characters, no default) and an optional `clock`. Each
+  `entriesFor(participantClaim, {sessionId, signal})` call sends the node method
+  `getParticipantEnrollmentProof` with a fresh nonce. It checks the chain identity
+  before and after, reads the signed block, and returns every entry the pinned key
+  signed for that request, revoked ones included. A signed complete empty set
+  returns `[]`. Calls run one at a time, each inside its own 10 s deadline, and the reply is
+  limited to 1 MiB, 16 entries, 1,024 members per list and 32 levels. Refusals are
+  `OperationError`s with the original error as `cause`:
+  `enrollment_unverified`, `enrollment_invalid`, `enrollment_timeout`,
+  `enrollment_too_large`, `enrollment_connection_changed` (also after `close()`)
+  and `enrollment_unavailable`. No reviewed node build serves the node method, so
+  a live read refuses `enrollment_unavailable`.
 - Each job read calls the seller reader's `readParticipantEvidence({ claim, sessionId, signal })`, which reads
   `participantImplementations.entriesFor(claim, { sessionId, signal })` for a buyer the job relates to this seller
   and Listing, before the connection; the stages abort `signal` when the read ends or times out.

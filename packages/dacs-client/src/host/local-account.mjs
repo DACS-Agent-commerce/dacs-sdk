@@ -4,6 +4,7 @@ import { purchaseStore } from '../seams/purchase-store-not-wired.mjs';
 import { normalizeDemosAddress } from '../signatures.mjs';
 
 const LOCAL_ISSUER = 'local-wallet';
+const localAccounts = new WeakSet();
 
 /** createLocalPurchaseAccount({db,store,wallet,now}) returns a frozen {accountId, listWallets} for the purchase service's `accounts`.
  * accountId is `local:` and the normalized wallet address; listWallets(accountId) returns [{address}] for that id and [] for any other.
@@ -26,5 +27,10 @@ export function createLocalPurchaseAccount({ db, store, wallet, now = () => Date
     }
     if (!named) insert.run(accountId, LOCAL_ISSUER, address, new Date(now()).toISOString());
   });
-  return Object.freeze({ accountId, listWallets: (id) => (id === accountId ? [{ address }] : []) });
+  const account = Object.freeze({ accountId, listWallets: (id) => (id === accountId ? [{ address }] : []) });
+  localAccounts.add(account);
+  return account;
 }
+
+/** isLocalPurchaseAccount(candidate) returns whether `candidate` is an account createLocalPurchaseAccount returned in this copy of the package. It never throws. */
+export const isLocalPurchaseAccount = (candidate) => localAccounts.has(candidate);
