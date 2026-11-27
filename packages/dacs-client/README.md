@@ -16,7 +16,7 @@ npm install /tmp/dacs-artifacts/kynesyslabs-dacs-0.1.0-alpha.0.tgz /tmp/dacs-art
 
 All three artifacts must come from the same reviewed SDK revision. Release-set admission requires coordinated artifact, lifecycle, SBOM and publication checks; `private: true` prevents publication until that happens.
 
-Every public entry point requires Node ^22.22.2 or ^24.15.0. The root does not load SQLite during import. `@kynesyslabs/dacs-client/wallet/durable-journal` separately exports the durable wallet journal, its format/version constants and the wallet-lane view. Source paths are private.
+Every public entry point requires Node ^22.22.2 or ^24.15.0, except `@kynesyslabs/dacs-client/listing/read-only`, which also runs on Node 20.19 (see "Read-only Listing verifier"). The root does not load SQLite during import. `@kynesyslabs/dacs-client/wallet/durable-journal` separately exports the durable wallet journal, its format/version constants and the wallet-lane view. Source paths are private.
 
 The client depends on `@kynesyslabs/dacs-node` (the exact same release), `@kynesyslabs/demosdk` (`^4.0.16`) and `@scure/bip39` (exact). The Node wallet session loads demosdk's websdk through an internal loading module that is not a package export and that the root import never reaches. It imports `@kynesyslabs/dacs-node/demos-loader`, which registers the SDK's package-scoped resolver for demosdk's one extensionless directory import, and then registers a reviewed load transform. The transform removes demosdk's own diagnostic output on the signing paths by replacing only these statements with an empty statement on the same line: GCRGeneration.js lines 173, 246, 249, 250 and demosclass.js lines 719, 1547 (demosdk 4.0.16), GCRGeneration.js lines 178, 302, 305, 306 and demosclass.js lines 738, 1767, 1773 (demosdk 4.0.17), GCRGeneration.js lines 178, 302, 305, 306 and demosclass.js lines 738, 1775, 1781 (demosdk 4.0.18), or GCRGeneration.js lines 254, 378, 381, 382 and demosclass.js lines 788, 2054, 2060 (demosdk 4.0.23). It first checks the source's SHA-256 against a reviewed table, then each listed line against its recorded text, then the output's SHA-256 against its recorded digest, and refuses any other source shape with `node_wallet_sdk_unreviewed`. Nothing assigns `console`, `process.stdout` or `process.stderr`. Host rule: build the composition before any other import of `@kynesyslabs/demosdk/websdk` in the process; a module imported earlier never passes through the transform, so loading refuses `node_wallet_sdk_preloaded`.
 
@@ -192,6 +192,25 @@ The first read checks the RPC's chain identity before its own request, and refus
 It returns `rpcUrl` unchanged when the URL is a canonical root: exactly its origin followed by `/`, with no path, credentials, query or fragment. An `https:` root passes under any label, with or without a chain identity. A plain `http:` root passes only with `network: 'testnet'` and the approved testnet `chainIdentity`; under any other or missing label the identity is not passed on to the rule, so plain http is refused. An omitted `network` or `chainIdentity` never admits plain http, and an invalid URL is never repaired (`https://h` without its trailing `/` is refused).
 
 Anything else throws `NetworkBindingError` `rpc_endpoint_invalid`, synchronously and with no URL or credential in the message. The check reads nothing from the network and grants no payment: a purchase still binds to the chain's live identity before any signature or send.
+
+## Read-only Listing verifier
+
+`@kynesyslabs/dacs-client/listing/read-only` exports `createReadOnlyListingVerifier` and `ReadOnlyListingError`. It shows one Listing; it cannot purchase. It holds no key, opens no store, signs nothing and sends only Directory reads and read-only chain reads. It runs on Node 20.19 as well as on the purchase floor; the purchase entries keep their floor.
+
+`createReadOnlyListingVerifier({ directoryOrigin, rpcUrl, network, pinnedIdentity, directoryFetchImpl, chainFetchImpl, now })` takes the Directory origin (an origin, with no path), the testnet RPC URL, `network: 'testnet'` and the testnet genesis identity as 64 lowercase hex. The two fetch functions default to the global `fetch` and `now` to `Date.now`. It returns a frozen `{ verify }`.
+
+`verify({ listingId, version, seller, fresh })` checks one exact Listing: a Listing id of 1 to 128 URL-safe characters, a positive integer version and the seller's `did:demos:agent:` claim in lowercase hex. `fresh` may be left out or `true`; `false` is refused, because every answer is read afresh. Each call:
+- finds exactly one Directory row for those coordinates and reads its detail, whose content hash and coordinates must match the row;
+- requires the row's catalog observation to be present, not in the future and at most 24 hours old;
+- reads the RPC's genesis identity and requires it to equal the pin, on every call;
+- reads the Listing from the row's storage program and requires the owner to be the seller's address and the bytes to equal the detail;
+- runs the Standard Listing reader on the chain's copy, with at most one revocation marker read, and requires `verified`.
+
+It resolves a frozen `{ listingId, version, seller, listing, contentHash, anchor, checkedAt, disposition: 'verified' }`, where `listing` is the chain's copy and `checkedAt` is the `now()` reading. It makes no claim about price, payee or whether the Listing can be purchased. The Standard reader verifies only a Listing whose pipeline has no payment phase while the client's DEM rail is unavailable, so a Listing with a `pay-dem` phase is refused `listing_standard_invalid`. Use `createListingVerifier` for the purchase verdict.
+
+Limits, fixed for every call: at most 9 requests across the Directory and the chain (the tenth is refused before it is sent), 15 s for the whole call, 2 s for each Directory or chain request, and replies of at most 500,000 bytes for a Directory page, 32,768 for a Listing detail, 2,097,152 for a genesis block and 131,072 for a storage program. A request that ignores its abort signal cannot hold the call past 15 s.
+
+The factory throws, and `verify` rejects with, a `ReadOnlyListingError` whose `code` is `listing_read_unavailable` and whose `reason`, also its message, is one of `listing_input_invalid`, `listing_not_found`, `listing_directory_unavailable`, `listing_read_timeout`, `listing_read_limit`, `listing_chain_identity_mismatch`, `listing_anchor_mismatch`, `listing_catalog_stale` or `listing_standard_invalid`. A chain read that fails before the identity is confirmed reports `listing_chain_identity_mismatch`, and one that fails while reading the Listing reports `listing_anchor_mismatch`. The error has no `cause` and carries no node text, URL or reply body.
 
 ## Node wallet session
 
