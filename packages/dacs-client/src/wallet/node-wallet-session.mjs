@@ -159,6 +159,11 @@ function readCanonicalRoot(endpoint, chainIdentity) {
   return new URL(root);
 }
 
+// A plain-http reply carries no authentication, so a session that signs or sends refuses a plain-http endpoint.
+function requireHttpsEndpoint(endpoint) {
+  if (new URL(endpoint).protocol !== 'https:') fail('transport_mismatch');
+}
+
 /**
  * Returns the owner of the one connection to `endpoint`: `{local, currentLocal(), getContext(), acquireConnectionFence(claim), fetchImpl, close()}`.
  * Fences are granted one at a time in request order; `release` frees a fence once. Inside `runInEffectPass`, an acquisition shares the pass's own fence
@@ -166,7 +171,7 @@ function readCanonicalRoot(endpoint, chainIdentity) {
  * `chainIdentity` is the chain identity the caller pins for this connection, if any. Throws OperationError(transport_mismatch) for an endpoint
  * `canonicalNodeEndpoint` refuses under it (a canonical root over https, or over plain http only when it is the approved TP-1 chain identity)
  * or an authority that is not a plain token. An owner over plain http serves reads only (the observer and the authority capability):
- * the wire's binding refuses a plain-http connection, so no session over it can sign or send. After `close()`,
+ * the sessions below refuse it with transport_mismatch before any key or signature. After `close()`,
  * `currentLocal`, `getContext`, `fetchImpl` and `acquireConnectionFence` throw transport_closed and queued waiters are rejected.
  */
 export function createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl = globalThis.fetch, chainIdentity } = {}) {
@@ -694,6 +699,7 @@ async function composeStages({ owner, journal, key, identityRecord, listings, pu
   try {
     const authority = createNodeAuthorityCapability({ owner, claim: () => walletClaim ?? fail('session_not_finalized') });
     const readAuthority = createAuthorityReader({ authority, identityRecord, claim: authority.claim, listings, purchases, participantImplementations });
+    requireHttpsEndpoint(owner.currentLocal().endpoint);
     const binding = await bindTp1Profile({ record: identityRecord, local: owner.currentLocal(), readAuthority });
     const composition = await buildNodeComposition({ ...session, owner, journal, key, admission: { binding, currentLocal: owner.currentLocal } }, false, requirePass);
     try { walletClaim = claimForAddress(composition.wallet.getPublicAccount().address); }
@@ -728,6 +734,7 @@ async function buildNodeComposition(options, seller, requirePass = false) {
     if (seller && !PAYMENT_EVIDENCE_APPROVAL_MEMBERS.every(name => typeof paymentEvidenceApproval?.[name] === 'function')) fail('invalid_params');
     const { Demos, validateMnemonic } = await loadNodeDemos();
     const expected = readExpectedPins(admission.binding, owner);
+    requireHttpsEndpoint(expected.endpoint);
     const effectBoundary = finalizeEffectBoundary({ owner, journal, admission, stopped, feeCeilingOs });
     const attempts = new AsyncLocalStorage(), selectedJournal = new AsyncLocalStorage();
     const gate = createEffectGate({ owner, expectedLocal: admission.binding.local, clock, qualify, passRequired: seller || requirePass, jobContextRequired: seller });
