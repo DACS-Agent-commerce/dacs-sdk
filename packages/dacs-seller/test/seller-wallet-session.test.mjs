@@ -28,7 +28,7 @@ const { isSellerCreatePass } = await import('../src/devnet-demo/create-pass.mjs'
 const CRASH_CHILD = new URL('./helpers/seller-wallet-session-crash-child.mjs', import.meta.url);
 const { default: Database } = await import('better-sqlite3');
 
-const PORT_MEMBERS = ['authority', 'connectionAuthority', 'artifactAnchor', 'runCreate', 'finalize', 'close'];
+const PORT_MEMBERS = ['authority', 'connectionAuthority', 'sessionAdmission', 'readCommitmentReceipt', 'observePayment', 'artifactAnchor', 'runCreate', 'finalize', 'close'];
 const SESSION_MEMBERS = ['effectPass', 'runInEffectPass', 'walletFactory', 'transport', 'acquireConnectionFence', 'address', 'observer', 'artifactJournal',
   'paymentEvidence', 'nativePaymentEvidence', 'endApprovalWaits', 'readBalance', 'close'];
 const ANCHOR_METHODS = ['publish', 'read', 'readRetained', 'retainedSignedCreate', 'hasIntent', 'verifyReceipt'];
@@ -338,7 +338,7 @@ test('startSellerHost finalizes the production port under the state lock and han
   assert.throws(() => port.authority.claim(), { code: 'wallet_session_closed' });
 });
 
-test('createSellerWalletSession refuses an unknown option and a missing or malformed signer, loadKeyRecord or demo artifact publication authority with a TypeError naming the option, before any node read, key load or file', async () => {
+test('createSellerWalletSession accepts a participantImplementations source and a sessionOf function, and refuses an unknown option and a missing or malformed signer, loadKeyRecord or demo artifact publication authority with a TypeError naming the option, before any node read, key load or file', async () => {
   const node = replayNode();
   let keyLoads = 0;
   const valid = await portOptions(node, async () => { keyLoads += 1; return keyRecordBytes(); });
@@ -359,6 +359,8 @@ test('createSellerWalletSession refuses an unknown option and a missing or malfo
     if (options.loadKeyRecord === undefined) delete options.loadKeyRecord;
     assert.throws(() => createSellerWalletSession(options), (error) => error instanceof TypeError && error.message.includes(name), name);
   }
+  const accepted = createSellerWalletSession({ ...valid, participantImplementations: { entriesFor: () => [] }, sessionOf: () => null });
+  await accepted.close();
   assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
 });
 

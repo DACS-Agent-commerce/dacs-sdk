@@ -19,7 +19,8 @@ function abortHonouring(signal, work) {
 
 // One TEST source over a fake node. onFetch(message, signal, data) may hold a
 // request or return a Response to answer it; onFence() may hold the fence.
-export function passiveNativeWorld({ onFetch = () => {}, onFence = () => {}, status = 'confirmed', state = 'included', journal: durableJournal } = {}) {
+// payer, payee and amount set the retained transfer and its wallet lane.
+export function passiveNativeWorld({ onFetch = () => {}, onFence = () => {}, status = 'confirmed', state = 'included', journal: durableJournal, payer = PAYER, payee = PAYEE, amount = '1000000000' } = {}) {
   const expected = { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: 'https://rpc.invalid/', transportAuthority: 'TEST-owner' };
   const context = { network: expected.network, endpoint: expected.endpoint, transportAuthority: expected.transportAuthority, connectionId: 'TEST-connection' };
   const records = new Map(), writes = [], calls = [], lockKeys = [], locks = new Map(), fences = { acquired: 0, released: 0 };
@@ -31,8 +32,8 @@ export function passiveNativeWorld({ onFetch = () => {}, onFence = () => {}, sta
       await prior; try { return await fn(); } finally { release(); }
     } };
   const journal = durableJournal ? { ...durableJournal, put: async (key, value) => { writes.push(key); await durableJournal.put(key, value); } } : memory;
-  const content = { type: 'native', from: PAYER, from_ed25519_address: PAYER, to: PAYEE, amount: '1000000000', nonce: 7,
-    timestamp: NOW, data: ['native', { nativeOperation: 'send', args: [PAYEE, '1000000000'] }] };
+  const content = { type: 'native', from: payer, from_ed25519_address: payer, to: payee, amount, nonce: 7,
+    timestamp: NOW, data: ['native', { nativeOperation: 'send', args: [payee, amount] }] };
   const world = { journal, records, writes, calls, lockKeys, fences, held: () => held,
     statusAnswer: { state, blockNumber: 7 },
     transaction: { hash: HASH, content, status, blockNumber: 7 },
@@ -40,7 +41,7 @@ export function passiveNativeWorld({ onFetch = () => {}, onFence = () => {}, sta
     async seed({ laneOnly = false } = {}) {
       const networkBinding = await world.source.observeBinding();
       const row = { stage: laneOnly ? 'broadcast-started' : 'broadcast-accepted', hash: HASH, nonce: 7, signedTransaction: { hash: HASH, content: structuredClone(content) }, networkBinding };
-      await journal.put(`devnet/native-wallet/${JSON.stringify([expected.network, IDENTITY, PAYER])}`, structuredClone(row));
+      await journal.put(`devnet/native-wallet/${JSON.stringify([expected.network, IDENTITY, payer])}`, structuredClone(row));
       if (!laneOnly) await journal.put(INTENT, structuredClone(row));
       await journal.put('TEST-claims', { claim: 'TEST-retained' });
       writes.length = 0; calls.length = 0; lockKeys.length = 0; fences.acquired = fences.released = 0;
@@ -61,6 +62,8 @@ export function passiveNativeWorld({ onFetch = () => {}, onFence = () => {}, sta
       if (message === 'getBlockByNumber') return json(data.blockNumber === 0 ? { number: 0, status: 'confirmed', hash: IDENTITY } : world.block);
       if (message === 'getTransactionStatus') return json(world.statusAnswer);
       if (message === 'getTxByHash') return json(world.transaction);
+      if (message === 'getAddressNonce') return json(world.transaction.content.nonce + 1);
+      if (message === 'getTransactionHistory') return json([world.transaction]);
       throw new Error(`TEST-unexpected ${message}`);
     }) });
   return world;

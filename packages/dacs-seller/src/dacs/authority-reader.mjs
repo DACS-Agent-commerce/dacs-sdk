@@ -6,6 +6,21 @@ import { DACS_SELLER_DISCOVERY_FORMAT, TESTNET_PROFILE_TP1, TP1_BASE_REVISION, T
 // A retained context admission row in one of these states relates its buyer to its job on its own.
 const GRANTING_STATES = Object.freeze(['intent', 'admitted', 'running']);
 
+/**
+ * The seller's one enrollment rule for a participant: reads `participantImplementations.entriesFor(peer, { sessionId, signal })`
+ * on every call and returns `{ claim, profile, modules }` of its only entry when that entry names `peer`, is unrevoked
+ * (`revoked === false`) and has non-empty `evidence`, a `profile` and `modules`; null for no entry, several, or any other.
+ * Rejects with the aborted signal's reason before the read, and with the source's own error when it throws.
+ */
+export async function currentEnrollment(participantImplementations, peer, { sessionId, signal } = {}) {
+  signal?.throwIfAborted();
+  const entries = await participantImplementations.entriesFor(peer, { sessionId, signal });
+  if (!Array.isArray(entries) || entries.length !== 1) return null;
+  const [entry] = entries;
+  if (entry?.claim !== peer || entry.revoked !== false || typeof entry.evidence !== 'string' || entry.evidence === '' || !entry.profile || !entry.modules) return null;
+  return { claim: peer, profile: entry.profile, modules: entry.modules };
+}
+
 function requireInputs({ connectionAuthority, identityRecord, claim, listingPin, bootstrap, retainedJob, participantImplementations }) {
   if (typeof connectionAuthority !== 'function') throw new TypeError('connectionAuthority is required as a function');
   if (['chainIdentity', 'pinVersion'].some((member) => typeof identityRecord?.[member] !== 'string')) throw new TypeError('identityRecord is required');
@@ -45,19 +60,13 @@ export function createSellerAuthorityReader(inputs = {}) {
     return GRANTING_STATES.includes(row?.state) ? row : null;
   }
 
-  // The buyer's enrollment for job `sessionId`, as `{claim, profile, modules}`, read from the host's source on every call; null when
-  // the job's scope does not relate `peer` to this seller and Listing, or when there is not exactly one current, unrevoked
-  // enrollment with evidence. An aborted `signal` rejects with its reason before the source is read.
+  // The buyer's enrollment for job `sessionId` by currentEnrollment, read from the host's source on every call; null when the job's
+  // scope does not relate `peer` to this seller and Listing. An aborted `signal` rejects with its reason before the source is read.
   async function readParticipantEvidence({ claim: peer, sessionId, signal }) {
     if (!isCanonicalJobId(sessionId)) return null;
     const scope = jobScope(sessionId);
     if (scope === null || scope.seller !== claim || scope.buyer !== peer || canonicalize(scope.listingPin) !== pinText) return null;
-    signal?.throwIfAborted();
-    const entries = await participantImplementations.entriesFor(peer, { sessionId, signal });
-    if (!Array.isArray(entries) || entries.length !== 1) return null;
-    const [entry] = entries;
-    if (entry?.claim !== peer || entry.revoked !== false || typeof entry.evidence !== 'string' || entry.evidence === '' || !entry.profile || !entry.modules) return null;
-    return { claim: peer, profile: entry.profile, modules: entry.modules };
+    return currentEnrollment(participantImplementations, peer, { sessionId, signal });
   }
 
   async function participantsFor({ sessionId, participants }, signal) {
