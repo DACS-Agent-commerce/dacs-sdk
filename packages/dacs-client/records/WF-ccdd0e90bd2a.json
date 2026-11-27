@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test the read-only Listing validation and address parsing",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/read-only-listing-pure.test.mjs",
+      "before": null,
+      "after": "179b9b21f08bbe8c133d56ad630c50d54cd010f9"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-ccdd0e90bd2a.json",
+    "packages/dacs-client/test/read-only-listing-pure.test.mjs"
+  ]
+}
