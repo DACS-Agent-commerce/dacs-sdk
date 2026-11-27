@@ -1,0 +1,42 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client purchase files, entry point and public API test with the anchor write record and the seller receipt network fee check",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "9daa3ab6fbe119ff26bb08964dd8d5d43f5b46a7",
+      "after": "9daa3ab6fbe119ff26bb08964dd8d5d43f5b46a7"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "2962c4d81019889f036ba9744485684fd42adabd",
+      "after": "2962c4d81019889f036ba9744485684fd42adabd"
+    },
+    {
+      "path": "packages/dacs-client/src/public-admission.mjs",
+      "before": "6f5e87e87e9ff240ee1b560e9ff821de1e532f82",
+      "after": "6f5e87e87e9ff240ee1b560e9ff821de1e532f82"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "415ac5a600dd3812c983124de16736b394556af8",
+      "after": "415ac5a600dd3812c983124de16736b394556af8"
+    },
+    {
+      "path": "packages/dacs-client/test/fixtures/plugin-import-inventory.json",
+      "before": "6a1011665e65337e09731ac4dcf73630bdb9f035",
+      "after": "6a1011665e65337e09731ac4dcf73630bdb9f035"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "ddfec5e93b1248a50027696defe948bacd53dddb",
+      "after": "ddfec5e93b1248a50027696defe948bacd53dddb"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-e6893c92b130.json"
+  ],
+  "note": "Both sides of the merge recorded the purchase service, the protocol purchases, the public admission helpers, the client entry point, the plugin import inventory fixture and the client public API test; this record chooses the merged copies, which hold this side's anchor write record and CREATE storage reserve root exports and the base's seller receipt check against the Pay debit with the network fee read once, the returned fee from the fee ceiling check, and the purchase wallet bridge entry point."
+}
