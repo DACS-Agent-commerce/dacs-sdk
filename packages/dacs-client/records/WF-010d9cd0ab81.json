@@ -1,0 +1,23 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF let source reads ask the pinned node for a storage proof and its finalized head",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "11bbdb5327dd2e16e778d428fc8183e9c702e051",
+      "after": "b531bb182dfc79db560102a05d501fc1829b3be8"
+    },
+    {
+      "path": "packages/dacs-client/test/node-wallet-source-reads.test.mjs",
+      "before": "26d2e7a6565227e7b53812340ff529efecb5a89e",
+      "after": "e0570413bc7741a8fa7ddc1e4b7765d60f788a83"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-010d9cd0ab81.json",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/test/node-wallet-source-reads.test.mjs"
+  ]
+}
