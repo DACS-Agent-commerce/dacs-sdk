@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -30,8 +30,7 @@ const { walletSessionWorld } = await import('./helpers/seller-wallet-session-wor
 const { createStopCheck, killState } = await import('../src/kill-switch.mjs');
 const { startSellerHost } = await import('../src/host.mjs');
 const { createSellerChallengeLedger } = await import('../src/dacs/seller-challenge-ledger.mjs');
-const { WRITE_FEE_CEILING_OS } = await import('../src/dacs/effect-boundary.mjs');
-const { SELLER_PROFILE } = await import('../src/dacs/session-admission.mjs');
+const { WRITE_FEE_CEILING_OS } = await import('../src/dacs/effect-boundary.mjs');const { SELLER_PROFILE } = await import('../src/dacs/session-admission.mjs');
 const { createSellerCreatePass } = await import('../src/devnet-demo/create-pass.mjs');
 const { requestStop } = await import('../src/devnet-demo/stop-request.mjs');
 
@@ -110,7 +109,9 @@ async function admittedJob(w, host, label) {
   const verify = (answer) => buyerWire.authentication(() => null).verifyResponse(answer.payload, { header: answer.header, status: answer.status, responseBytes: answer.bytes });
   return { jobId, verify,
     propose: () => buyerWire.signRequest(PROPOSALS, body, { jobId, agreementHash }),
-    state: (stateJob = jobId) => buyerWire.signRequest(STATE, { transportIdentity: { jobId: stateJob, buyer: buyer.claim, seller: seller.claim, agreementHash } }, { jobId: stateJob, agreementHash }) };
+    state: (stateJob = jobId) => buyerWire.signRequest(STATE, { transportIdentity: { jobId: stateJob, buyer: buyer.claim, seller: seller.claim, agreementHash } }, { jobId: stateJob, agreementHash }),
+    // The read of the job's whole Agreement identity: once the proposal is answered, it carries the seller's co-signature.
+    cosignedState: () => buyerWire.signRequest(STATE, { transportIdentity: body.transportIdentity }, { jobId, agreementHash }) };
 }
 const refusalOf = (answer) => JSON.parse(answer.bytes).error;
 
@@ -212,6 +213,24 @@ test('KILL during recovery: readback only', async (t) => {
   stop.removeKill();
   await p.read();
   assert.equal(p.resends.length, 1, 'with KILL removed the read resends once');
+});
+
+test('a restart with KILL present sweeps no unfinished context row, and the same restart without KILL ends a running one', async (t) => {
+  const stateOf = (w, jobId) => w.storeRead('SELECT state FROM kit_context_admissions WHERE jobId = ?', jobId)[0]?.state;
+  for (const withKill of [true, false]) {
+    const w = await killHost(t), first = await w.start();
+    const job = await admittedJob(w, first, `restart-sweep-${withKill}`);
+    await first.close();
+    // The earlier process stopped with the job's context step running.
+    const db = new DatabaseSync(join(w.dataDirectory, 'transport', 'transport.sqlite'));
+    try { db.prepare("UPDATE kit_context_admissions SET state = 'running', record = json_remove(json_set(record, '$.state', 'running'), '$.contextOutcome') WHERE jobId = ?").run(job.jobId); } finally { db.close(); }
+    if (withKill) w.createKill();
+    const effects = w.effects();
+    await w.start();
+    if (withKill) assert.equal(stateOf(w, job.jobId), 'running', 'the stopped startup sweep left the row as it was');
+    else assert.notEqual(stateOf(w, job.jobId), 'running', 'the unstopped startup sweep ended the leftover row');
+    assert.equal(w.effects(), effects, 'the restart made no effect signature');
+  }
 });
 
 test('KILL with a committed job in drain blocks its effects; the same drain without KILL continues it', async (t) => {
@@ -384,6 +403,25 @@ test('under KILL, read routes, refusals and readback stay signed under the bindi
   assert.equal(w.effects(), effects, 'no read, readback or refusal used the effect role');
 });
 
+test('a state read that carries the Agreement co-signature answers a signed seller_stopped under KILL and sends none', async (t) => {
+  const w = await killHost(t), host = await w.start();
+  const job = await admittedJob(w, host, 'cosignature');
+  const proposal = await postSigned(host, await job.propose());
+  assert.equal(proposal.status, 200, proposal.bytes.toString());
+  const carries = (answer) => typeof JSON.parse(answer.bytes)?.contribution?.signature?.value === 'string';
+  const open = await postSigned(host, await job.cosignedState());
+  assert.equal(open.status, 200, open.bytes.toString());
+  assert.equal(carries(open), true, 'without KILL the read carries the co-signature');
+  w.createKill();
+  const effects = w.effects(), readOnly = w.counts.readOnly;
+  const stopped = await postSigned(host, await job.cosignedState());
+  assert.deepEqual([stopped.status, refusalOf(stopped)], [503, 'seller_stopped']);
+  await job.verify(stopped);
+  assert.equal(carries(stopped), false, 'no co-signature was transmitted');
+  assert.ok(w.counts.readOnly > readOnly, 'the refusal is signed by the read-only role');
+  assert.equal(w.effects(), effects, 'no effect signature');
+});
+
 test('a symlink, a directory, a broken symlink or a stat failure at KILL behaves as present at every boundary', async (t) => {
   const w = await killHost(t), host = await w.start();
   const job = await admittedJob(w, host, 'entry-types');
@@ -406,14 +444,16 @@ test('a symlink, a directory, a broken symlink or a stat failure at KILL behaves
   }
   // A stat failure: a KILL path past the length limit and, when not root, a data directory without search permission.
   const root = mkdtempSync(join(tmpdir(), 'TEST-kill-stat-'));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const closed = join(root, 'closed');
+  // A directory without permissions cannot be removed with its parent: the mode is restored first.
+  t.after(() => { try { chmodSync(closed, 0o700); } catch { /* it was not made */ } rmSync(root, { recursive: true, force: true }); });
   let long = root;
   while (4094 - long.length > 201) long = join(long, 'd'.repeat(200));
   long = join(long, 'd'.repeat(4094 - long.length - 1));
   mkdirSync(long, { recursive: true });
   const failures = [long];
   if (RUNNING_AS_ROOT) t.diagnostic('running as root: the EACCES case is replaced by the ENAMETOOLONG case');
-  else { const closed = join(root, 'closed'); mkdirSync(closed, { mode: 0o000 }); t.after(() => rmSync(closed, { recursive: true, force: true })); failures.push(closed); }
+  else { mkdirSync(closed, { mode: 0o000 }); failures.push(closed); }
   for (const directory of failures) {
     assert.equal(killState(directory).present, true);
     const e = await ebWorld(t);
@@ -421,6 +461,23 @@ test('a symlink, a directory, a broken symlink or a stat failure at KILL behaves
     e.control.stopHook = () => isStopped();
     await assert.rejects(e.build().boundary.signPass(e.op(), e.sign()), { code: 'seller_stopped' });
     assert.equal(e.counts.signer, 0, 'the effect boundary signed nothing');
+  }
+});
+
+test('a symlink, a directory or a broken symlink at KILL stops the read-time resend of a retained CREATE', async (t) => {
+  const entries = {
+    'a symlink': (directory) => { writeFileSync(join(directory, 'TEST-target'), ''); symlinkSync(join(directory, 'TEST-target'), join(directory, 'KILL')); },
+    'a directory': (directory) => mkdirSync(join(directory, 'KILL')),
+    'a broken symlink': (directory) => symlinkSync(join(directory, 'TEST-missing'), join(directory, 'KILL')),
+  };
+  for (const [name, make] of Object.entries(entries)) {
+    const stop = killDirectory(t);
+    const p = await pendingCreate(t, stop.isStopped);
+    make(stop.directory);
+    let asked = 0;
+    const out = await p.read(async () => { asked++; return true; });
+    assert.equal(typeof out.status, 'string', `${name}: the read answers its readback`);
+    assert.deepEqual([asked, p.counts.runCreates, p.counts.recoveries, p.recoveryRow()], [0, 0, 0, null], `${name}: nothing was asked, recorded or sent`);
   }
 });
 

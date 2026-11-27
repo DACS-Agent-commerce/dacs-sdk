@@ -815,14 +815,18 @@ async function paymentEvidenceRefusals(t) {
     assert.deepEqual({ asked: ledger.prepared.length, released: releasesOf(ledger, 'TEST-ledger-1') }, asked, `${condition}: approvals`);
     await world.wallet.close();
   }
-  let stopped = false;
-  const stopping = await walletSessionWorld(t);
-  const { session } = await stopping.finalize(() => stopped);
-  stopped = true;
-  const input = evidenceInput({ wallet: session });
-  for (const run of [() => evidenceAt(session.paymentEvidence, input), () => session.paymentEvidence.anchorEvidence(input)]) assert.ok((await settled(run())).error, 'the stop flag refuses');
-  assert.deepEqual({ signatures: signatures.length, asked: stopping.options.approve.retained.prepared.length, ...executeCounts(stopping.node) },
-    { signatures: 0, asked: 0, confirmTx: 0, broadcastTx: 0 }, 'with the stop flag set nothing is asked, signed or sent');
+  // The session's journal over each stop: the in-process flag, and the data directory's real KILL file read by the kit's check.
+  for (const stop of ['the stop flag', 'a KILL file']) {
+    let stopped = false;
+    const stopping = await walletSessionWorld(t);
+    const { session } = await stopping.finalize(stop === 'the stop flag' ? () => stopped : createStopCheck(stopping.directory));
+    if (stop === 'the stop flag') stopped = true;
+    else writeFileSync(join(stopping.directory, 'KILL'), '');
+    const input = evidenceInput({ wallet: session });
+    for (const run of [() => evidenceAt(session.paymentEvidence, input), () => session.paymentEvidence.anchorEvidence(input)]) assert.ok((await settled(run())).error, `${stop} refuses`);
+    assert.deepEqual({ signatures: signatures.length, asked: stopping.options.approve.retained.prepared.length, ...executeCounts(stopping.node) },
+      { signatures: 0, asked: 0, confirmTx: 0, broadcastTx: 0 }, `with ${stop} set nothing is asked, signed or sent`);
+  }
 }
 
 test('the approved record signs and transmits on every seller inventory path', async (t) => {
