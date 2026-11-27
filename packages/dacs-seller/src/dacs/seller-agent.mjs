@@ -2403,7 +2403,12 @@ export async function createSellerAgent({ effectSigner, integritySigner, readOnl
     // Read-only copies of this seller's own authenticated durable sessions, for
     // an operator whose seller policy and resume pass read seller records
     // (sellerApproval.purchaseSource "seller"). Synchronous; never signs or reads the chain.
-    durableSessionOf: durable ? (jobId) => sessionView(durable.loadSession(jobId)) : undefined,
+    // The copy of an existing session carries `settlementBound`, read from the settlement table on each call: true once a
+    // settlement is bound to the job, even before the session holds its payment work. It is never stored in the session.
+    durableSessionOf: durable ? (jobId) => {
+      const session = sessionView(durable.loadSession(jobId));
+      return session && { ...session, settlementBound: durable.settlementBoundTo(jobId) };
+    } : undefined,
     // Whether this seller retains payment work for exactly this claim (its
     // transaction and payer): the transport then never releases the claim's
     // effect as one that started nothing. Synchronous and read only. Throws
