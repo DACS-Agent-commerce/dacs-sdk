@@ -30,6 +30,7 @@
     "src/",
     "!src/devnet-demo/operator-custody.mjs",
     "!src/devnet-demo/seller-issuance.mjs",
+    "vectors/",
     "PROFILE.json",
     "ADMISSION.md",
     "SOURCES.md"

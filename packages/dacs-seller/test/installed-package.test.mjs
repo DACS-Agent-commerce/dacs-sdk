@@ -23,7 +23,8 @@ const ADDED_HELPERS = ['src/dacs/process-lease.mjs', 'src/devnet-demo/approval-l
 // Operator-side sources that need the operator's wallet, journal or custody.
 const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/seller-issuance.mjs'];
 const SELLER_BIN = 'bin/dacs-seller.mjs';
-const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOURCES.md', 'package.json'];
+const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOURCES.md', 'package.json',
+  ...['deployer-public-key.json', 'deployment-record.json', 'deployment.sha256'].map((name) => `vectors/testnet-records/${name}`)];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
   'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerAuthorityReader', 'createSellerContextRoute', 'createSellerHttpHandler',
   'createSellerTransportStore', 'createSellerWalletSession', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
@@ -376,7 +377,7 @@ test('the packed seller ships capability-authority.mjs, connection-authority.mjs
     const publication = { authority: label, policy: 'TEST-policy', artifactKinds: [] };
     const port = createSellerWalletSession({ endpoint: 'https://rpc.example.invalid/', transportAuthority: SELLER_TRANSPORT_AUTHORITY, fetchImpl,
       signer: { claim: 'TEST-claim', sign: () => new Uint8Array(64) }, loadKeyRecord: async () => new Uint8Array(1), approve: async () => true, approvalMode: 'policy',
-      journalMode: 'create', publications: { demoArtifactPublication: publication } });
+      journalMode: 'create', publications: { demoArtifactPublication: publication }, readDeploymentEvidence: async () => { throw new Error('TEST-offline'); } });
     const unbound = await (async () => { try { admitKitCapabilityAuthority(label, { binding: undefined, refuse: () => { throw new TypeError('refused'); } }); return null; } catch (error) { return error.code; } })();
     doctor.close();
     const closed = await (async () => { try { await readSellerBalance({ owner: doctor.owner, address: '0x' + 'ab'.repeat(32) }); return null; } catch (error) { return error.code; } })();
@@ -391,6 +392,30 @@ test('the packed seller ships capability-authority.mjs, connection-authority.mjs
     doctor: ['close', 'observer', 'owner', 'readAuthority'], transportAuthority: 'dacs-seller-tp1-node', anchorAuthority: true, unbound: 'authority_unbound', closed: 'transport_closed' });
 });
 
+test('the packed seller ships the signed testnet deployment record, and from the installed package its loader reads the three record files against the module pins and its verified reader answers the eight-key evidence under the 30-day bound', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
+  const records = ['deployment-record.json', 'deployment.sha256', 'deployer-public-key.json'].map((name) => `vectors/testnet-records/${name}`);
+  for (const file of records) assert.ok(sellerPackFiles().includes(file), `${file} ships`);
+  const app = preparedConsumer();
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-deployment-record-')));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const installed = realpathSync(join(app, 'node_modules', '@kynesyslabs', 'dacs-seller'));
+  for (const file of records) {
+    assert.deepEqual(readFileSync(join(installed, file)), readFileSync(new URL(`../${file}`, import.meta.url)), `${file} is installed byte for byte`);
+  }
+  const script = `
+    const { createVerifiedDeploymentEvidenceReader, readPackagedDeploymentRecord } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/deployment-qualification.mjs');
+    const recordBytes = await readPackagedDeploymentRecord();
+    const { payload } = JSON.parse(new TextDecoder().decode(recordBytes));
+    const read = createVerifiedDeploymentEvidenceReader({ recordBytes, evidenceMaxAgeMs: 2592000000, clock: { now: () => payload.observedAt } });
+    const evidence = await read({});
+    process.stdout.write(JSON.stringify({ bytes: recordBytes.byteLength, keys: Object.keys(evidence).sort(), same: JSON.stringify(evidence) === JSON.stringify(payload) }) + '\\n');`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS,
+    env: { PATH: process.env.PATH, TMPDIR: work, NODE_OPTIONS: kitGuardLoaderOptions(app, work) } });
+  assert.equal(child.status, 0, `the installed deployment record run failed\n${child.stdout}\n${child.stderr}`);
+  assert.deepEqual(JSON.parse(child.stdout.trim().split('\n').at(-1)), { bytes: readFileSync(new URL('../vectors/testnet-records/deployment-record.json', import.meta.url)).byteLength,
+    keys: ['artifactSha256', 'chainIdentity', 'commit', 'dirty', 'endpoint', 'observedAt', 'qualifiedOperations', 'reportedVersion'], same: true });
+});
+
 test('the packed seller also ships node-chain-readers.mjs and the installed port exposes the three chain readers and options', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
   assert.ok(sellerPackFiles().includes('src/devnet-demo/node-chain-readers.mjs'), 'node-chain-readers.mjs ships');
   const app = preparedConsumer();
@@ -402,7 +427,7 @@ test('the packed seller also ships node-chain-readers.mjs and the installed port
     const options = { endpoint: 'https://rpc.example.invalid/', transportAuthority: 'TEST-node', fetchImpl,
       signer: { claim: 'TEST-claim', sign: () => new Uint8Array(64) }, loadKeyRecord: async () => new Uint8Array(1), approve: async () => true, approvalMode: 'policy',
       journalMode: 'create', publications: { demoArtifactPublication: { authority: 'TEST-authority', policy: 'TEST-policy', artifactKinds: [] } },
-      participantImplementations: { entriesFor: () => [] }, sessionOf: () => null };
+      participantImplementations: { entriesFor: () => [] }, sessionOf: () => null, readDeploymentEvidence: async () => { throw new Error('TEST-offline'); } };
     const port = createSellerWalletSession(options);
     const codeOf = (work) => work.then(() => null, (error) => error.code);
     const refusals = [await codeOf(port.readCommitmentReceipt({ record: {}, anchorReceipt: {} })), await codeOf(port.sessionAdmission.admit({}, {})), await codeOf(port.observePayment({}, {}))];
@@ -572,16 +597,20 @@ test('in the installed consumer, through the documented test seams, a payment-ev
   const dataDirectory = join(work, 'seller'), loaderOptions = kitGuardLoaderOptions(app, work);
   mkdirSync(dataDirectory);
   chmodSync(dataDirectory, 0o700);
+  cpSync(new URL('./helpers/shipped-build-evidence.mjs', import.meta.url), join(app, 'shipped-build-evidence.mjs'));
   const answer = runInConsumer(app, work, `${consumerWalletPrelude(app)}
     const { createSellerNodeWallet } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-node-wallet.mjs');
     const { acquireSellerStateLock } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-state-lock.mjs');
     const { generateWalletMnemonic, deriveWalletIdentity } = await import('@kynesyslabs/dacs-seller/src/cli/node-identity.mjs');
     const { createPaymentEvidenceWalletJournal } = await import('@kynesyslabs/dacs-seller');
     const { recordingApproval } = await import('./payment-evidence-approval-double.mjs');
-    // The serving node's signed answer to a valid confirmTx, and a broadcast it applies.
+    const { RECORDED_REVIEWED_BUILD, shippedEvidenceReader } = await import('./shipped-build-evidence.mjs');
+    // The serving node's signed answer to a valid confirmTx, a broadcast it applies, and its build version.
     const reply = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
     node.intercept = async row => {
       const call = row.body?.params[0];
+      if (call?.message === 'getNetworkInfo') return reply(ok({ forks: { osDenomination: { activated: true }, signatureDomain: { activated: false } }, chainId: 1,
+        nodeVersion: { version: RECORDED_REVIEWED_BUILD.reportedVersion } }));
       if (call?.extra === 'confirmTx') { node.confirms.push(structuredClone(call.data)); return reply(ok({ data: { valid: true, reference_block: 1, message: 'TEST-valid', gas_operation: null,
         transaction: call.data }, signature: { type: 'ed25519', data: '0x' + '5'.repeat(128) }, rpc_public_key: { type: 'ed25519', data: '0x' + '6'.repeat(64) } })); }
       if (call?.extra === 'broadcastTx') { const tx = call.data.response.data.transaction; node.broadcasts.push(structuredClone(tx)); node.applied.set(tx.hash, structuredClone(tx)); return reply(ok({ hash: tx.hash })); }
@@ -597,7 +626,8 @@ test('in the installed consumer, through the documented test seams, a payment-ev
       demoArtifactPublication: { authority: 'TEST-RUN-installed-wallet-0001', policy: client.DEVNET_DEMO_ARTIFACT_POLICY, artifactKinds: [...client.DEVNET_DEMO_ARTIFACT_TYPES] } };
     const wallet = await createSellerNodeWallet({ admission, owner, dataDirectory, journalMode: 'create', stateLock, signer: { claim: identity.claim },
       keyRecord: new TextEncoder().encode(JSON.stringify({ format: 'dacs-seller-key/v1', algorithm: 'ed25519', mnemonic })), approve, approvalMode: 'policy',
-      clock: { now: () => T0 }, publications, stopped: async () => false, feeCeilingOs: '50000000000' });
+      clock: { now: () => T0 }, publications, stopped: async () => false, feeCeilingOs: '50000000000',
+      readDeploymentEvidence: shippedEvidenceReader({ endpoint: admission.binding.local.endpoint, clock: { now: () => T0 } }) });
     // The journal over the adapter's one-call members, which run inside the caller's own pass.
     const { signCreate, broadcast, readAccountNonce, readTransactionState } = wallet.paymentEvidenceAdapter;
     const journal = createPaymentEvidenceWalletJournal({ path: dataDirectory + '/seller-payment-evidence.sqlite', signCreate, broadcast, readAccountNonce, readTransactionState, now: () => T0 });

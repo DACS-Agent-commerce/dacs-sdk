@@ -599,3 +599,47 @@ test('a signed CREATE kept unsent is not sent once the approval waits have ended
     await session.close();
   }
 });
+
+// A CREATE through `session`'s walletFactory in one pass whose steps record their order in `order`; resolves the wallet's answer.
+async function orderedCreate(world, session, order) {
+  const wallet = session.walletFactory({ anchorJournal: session.artifactJournal });
+  const request = await agreementRequest({ session: { wallet }, node: world.node });
+  const lease = await session.acquireConnectionFence();
+  try {
+    const pass = session.effectPass({ fence: lease, deadline: T0 + PASS_WINDOW_MS, refreshAuthority() { order.push('refreshAuthority'); }, finalStop() { order.push('finalStop'); },
+      synchronousChecks: [], feeCeilingOs: finalization.feeCeilingOs, context: jobCreate() });
+    return await session.runInEffectPass(pass, () => wallet.request(request));
+  } finally { lease.release(); }
+}
+
+test('the session refuses a missing or non-function readDeploymentEvidence with a TypeError before it opens the connection, and its gate runs qualification first', async (t) => {
+  const node = replayNode();
+  const valid = await portOptions(node, async () => keyRecordBytes());
+  for (const [label, value] of [['missing', undefined], ['a record', shippedBuildEvidence({ endpoint: ENDPOINT, observedAt: T0 })], ['a string', 'TEST']]) {
+    const options = { ...valid, readDeploymentEvidence: value };
+    if (value === undefined) delete options.readDeploymentEvidence;
+    assert.throws(() => createSellerWalletSession(options), { name: 'TypeError', message: 'readDeploymentEvidence must be a function' }, label);
+  }
+  assert.equal(node.calls.length, 0, 'no connection read');
+  const order = [];
+  const world = await walletSessionWorld(t, { options: { readDeploymentEvidence: () => { order.push('qualify'); return shippedBuildEvidence({ endpoint: ENDPOINT, observedAt: T0 }); } } });
+  const { session } = await world.finalize();
+  assert.equal((await orderedCreate(world, session, order)).success, true);
+  assert.deepEqual(order.slice(0, 3), ['qualify', 'refreshAuthority', 'finalStop'], 'qualification is the first step of the signature\'s pass');
+  assert.deepEqual(order, Array(3).fill(['qualify', 'refreshAuthority', 'finalStop']).flat(), 'and of the confirmation\'s and the broadcast\'s');
+});
+
+test('the session with a readDeploymentEvidence function returning the bounded record opens, and a native write on it passes qualification on the shipped entry; the same option set without the function throws the TypeError before any connection', async (t) => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  let reads = 0;
+  const bytes = () => { reads += 1; return new TextEncoder().encode(JSON.stringify(shippedBuildEvidence({ endpoint: ENDPOINT, observedAt: T0 }))); };
+  const world = await walletSessionWorld(t, { options: { readDeploymentEvidence: bytes } });
+  const { session } = await world.finalize();
+  assert.equal((await orderedCreate(world, session, [])).success, true);
+  assert.deepEqual({ signatures: signatures.length, executes: world.executeStages(), reads }, { signatures: 1, executes: 2, reads: 3 });
+  const node = replayNode();
+  const options = await portOptions(node, async () => keyRecordBytes());
+  delete options.readDeploymentEvidence;
+  assert.throws(() => createSellerWalletSession(options), { name: 'TypeError', message: 'readDeploymentEvidence must be a function' });
+  assert.equal(node.calls.length, 0, 'no connection read');
+});
