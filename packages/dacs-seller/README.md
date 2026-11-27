@@ -1258,7 +1258,7 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `wire` context (`createWireContext`, from
   `@kynesyslabs/dacs-seller/src/dacs/seller-wire-requests.mjs`) carries the host's
   `stopped` predicate. Every handler needs it, with or without a context route:
-  without it the wire context and the handler refuse construction. No Agreement exists yet and the wire journal is never
+  without it the handler refuses construction. No Agreement exists yet and the wire journal is never
   written. The seller refuses in this order: the body (64 KiB, one JSON value, no duplicate
   members or lossy numbers: `body_too_large`, `bad_json`; unsigned, like the envelope's
   refusals); the envelope (the wire's refusals); the signed path (`peer_request_mismatch`) and
