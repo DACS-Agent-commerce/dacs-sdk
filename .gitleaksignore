@@ -122,3 +122,5 @@ c84d1d1cc0473191442d6c5c9149f221701c207a:packages/dacs-seller/test/vectors/revoc
 c84d1d1cc0473191442d6c5c9149f221701c207a:packages/dacs-seller/test/vectors/revocation-proof-node.json:generic-api-key:9728
 c84d1d1cc0473191442d6c5c9149f221701c207a:packages/dacs-seller/test/vectors/revocation-proof-node.json:generic-api-key:11588
 c84d1d1cc0473191442d6c5c9149f221701c207a:packages/dacs-seller/test/vectors/revocation-proof-node.json:generic-api-key:11948
+# Seller node qualification: the pinned deployer's ed25519 PUBLIC key (testnet-only test key), not a credential.
+6273881be942506026236aecb53eba7cd1f824e4:packages/dacs-seller/src/devnet-demo/deployment-qualification.mjs:generic-api-key:43
