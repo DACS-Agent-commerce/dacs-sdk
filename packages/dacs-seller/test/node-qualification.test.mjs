@@ -5,7 +5,7 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import dns from 'node:dns';
-import { existsSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { bindTp1Profile, canonicalNodeEndpoint, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { installNoNetworkTrap } from './helpers/no-network-trap.mjs';
@@ -89,7 +89,6 @@ async function gatedWorld(t, { options = {}, ...world } = {}) {
 // One payment-evidence CREATE through the wallet's adapter inside one test pass (sign, confirm, broadcast).
 const anchorEvidence = (world, label = 'a') => inWalletPass(world, () => journalOverAdapter(world).anchorEvidence(evidenceInput(world, label)));
 const reconcileEvidence = (world, label = 'a') => inWalletPass(world, () => journalOverAdapter(world).reconcilePaymentEvidence(evidenceInput(world, label)));
-const keptProjection = (world, label = 'a') => journalOverAdapter(world).readSignedProjection(evidenceInput(world, label));
 // The production payment-evidence chain over the world (kit boundary, runCreate, pass and journal): `ensure(label)` signs or resends
 // the evidence with a current-authorization check that answers true.
 function productionChain(world, options) {
@@ -325,7 +324,7 @@ test('an oversized, malformed or wrongly shaped evidence or build answer is refu
     ['oversized bytes', new Uint8Array(MIB4 + 1)],
     ['not JSON', new TextEncoder().encode('{"dirty":')],
     ['an extra key', { ...evidence, verified: true }],
-    ['a missing key', (({ endpoint, ...rest }) => rest)(evidence)],
+    ['a missing key', Object.fromEntries(Object.entries(evidence).filter(([key]) => key !== 'endpoint'))],
     ['a numeric commit', { ...evidence, commit: 1 }],
     ['a string observedAt', { ...evidence, observedAt: String(T0) }],
     ['repeated operations', { ...evidence, qualifiedOperations: ['fee', 'fee', 'nonce', 'broadcast'] }],
