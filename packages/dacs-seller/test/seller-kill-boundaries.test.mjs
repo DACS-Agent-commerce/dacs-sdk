@@ -23,14 +23,18 @@ const { FIXTURE_ENDPOINT, wireBuyer } = await import('./helpers/wire-buyer.mjs')
 const { LISTING_AUTHORITY, proxyListener } = await import('./helpers/listener-host.mjs');
 const { integrityRoleOf, readOnlyRoleOf } = await import('./helpers/agent-signing.mjs');
 const { hostBuyer } = await import('./helpers/host-context-client.mjs');
-const { ebWorld, flush, gate } = await import('./helpers/effect-boundary-fixture.mjs');
+const { SIGNED_BYTES, ebWorld, flush, gate } = await import('./helpers/effect-boundary-fixture.mjs');
 const { anchorFixture, passThroughRunCreate, signSdkCreate } = await import('./helpers/anchor-isolated-fixture.mjs');
 const { spyTransactionSignatures } = await import('./helpers/seller-node-wallet-world.mjs');
+const { anchorOptions, importSpiedWalletSession } = await import('./helpers/artifact-anchor-spy.mjs');
+const { challengeWorld, watchSql } = await import('./helpers/challenge-route-fixture.mjs');
+const { contextWireWorld } = await import('./helpers/context-wire-world.mjs');
 const { walletSessionWorld } = await import('./helpers/seller-wallet-session-world.mjs');
 const { createStopCheck, killState } = await import('../src/kill-switch.mjs');
 const { startSellerHost } = await import('../src/host.mjs');
 const { createSellerChallengeLedger } = await import('../src/dacs/seller-challenge-ledger.mjs');
-const { WRITE_FEE_CEILING_OS } = await import('../src/dacs/effect-boundary.mjs');const { SELLER_PROFILE } = await import('../src/dacs/session-admission.mjs');
+const { WRITE_FEE_CEILING_OS } = await import('../src/dacs/effect-boundary.mjs');
+const { SELLER_PROFILE } = await import('../src/dacs/session-admission.mjs');
 const { createSellerCreatePass } = await import('../src/devnet-demo/create-pass.mjs');
 const { requestStop } = await import('../src/devnet-demo/stop-request.mjs');
 
@@ -161,6 +165,30 @@ test('KILL after signing and before broadcast: signed-held, zero transmissions',
   await flush();
   assert.deepEqual(sends(), [], 'removing KILL resends nothing');
   assert.equal(signatures.length, 1, 'and signs nothing again');
+
+  // The effect boundary's own signature (the Listing, Vet and identity signatures and the payment-evidence CREATE): KILL created as the
+  // signer returns leaves the signed record and a signed-held record with the stop as its cause, and sends nothing.
+  const e = await ebWorld(t), stop = killDirectory(t);
+  e.control.stopHook = () => stop.isStopped();
+  const first = e.build();
+  const signThenKill = () => { const bytes = e.sign()(); stop.createKill(); return bytes; };
+  await assert.rejects(first.boundary.pass(e.op(), signThenKill, e.send()), { code: 'seller_stopped' });
+  assert.deepEqual([e.counts.signer, e.counts.transport], [1, 0], 'signed once, nothing sent');
+  const held = await first.history.read('lane-1');
+  assert.deepEqual(held.map((record) => record.state), ['signed', 'signed-held'], 'the signature was recorded, then held');
+  assert.equal(held[1].cause.code, 'seller_stopped', 'it was held for the stop');
+  assert.equal(held[1].artifactHash, held[0].artifactHash, 'the held record names the signed bytes');
+  assert.deepEqual(Buffer.from(held[0].bytes, 'base64'), Buffer.from(SIGNED_BYTES), 'the signed bytes are kept for readback');
+  // The later readback, after a restart with KILL still present: the same two records, a retry refused, nothing signed or sent.
+  const restarted = e.build();
+  assert.deepEqual(await restarted.history.read('lane-1'), held, 'the readback finds the held record unchanged');
+  await assert.rejects(restarted.boundary.pass(e.op(), e.sign(), e.send()), { code: 'seller_stopped' });
+  assert.deepEqual([e.counts.signer, e.counts.transport], [1, 0], 'a retry under KILL signs and sends nothing');
+  // Once KILL is removed the explicit retry uses the kept bytes and signs nothing new.
+  stop.removeKill();
+  await restarted.boundary.pass(e.op(), e.sign(), e.send());
+  assert.equal(e.counts.signer, 1, 'the retry signed nothing new');
+  assert.deepEqual(e.sent, [Uint8Array.from(SIGNED_BYTES)], 'the kept bytes were sent once');
 });
 
 // A retained CREATE the source reports pending, so its one read-time resend is open (as devnet-storage-write-recovery.test.mjs builds it).
@@ -215,21 +243,52 @@ test('KILL during recovery: readback only', async (t) => {
   assert.equal(p.resends.length, 1, 'with KILL removed the read resends once');
 });
 
-test('a restart with KILL present sweeps no unfinished context row, and the same restart without KILL ends a running one', async (t) => {
+test('the wallet session gives its composed anchor the host\'s stop check: a retained CREATE eligible for resend is read back with no resend asked, no intent written and nothing sent while KILL is present, and resends once without it', async (t) => {
+  const { createSellerWalletSession: spiedPort } = await importSpiedWalletSession();
+  const world = await walletSessionWorld(t, { createPort: spiedPort });
+  const composed = anchorOptions.length;
+  await world.finalize(createStopCheck(world.directory));
+  const p = await pendingCreate(t, anchorOptions[composed].stopped);
+  const kill = join(world.directory, 'KILL');
+  writeFileSync(kill, '');
+  let asked = 0;
+  const out = await p.read(async () => { asked++; return true; });
+  assert.equal(typeof out.status, 'string', 'the read answers its readback');
+  assert.deepEqual([asked, p.counts.runCreates, p.counts.recoveries, p.recoveryRow()], [0, 0, 0, null], 'nothing was asked, recorded or sent');
+  rmSync(kill);
+  await p.read();
+  assert.equal(p.resends.length, 1, 'with KILL removed the read resends once');
+});
+
+test('a restart with KILL present leaves every unfinished context row, hold, slot and reservation as it was and closes only the lost validation, with no effect signature and no wallet request; the same restart without KILL ends a running row', async (t) => {
+  const tables = ['kit_context_admissions', 'kit_job_holds', 'kit_slot_retirements', 'kit_reservations'];
+  const snapshot = (w) => JSON.stringify(tables.map((name) => w.storeRead(`SELECT * FROM ${name} ORDER BY 1`)));
   const stateOf = (w, jobId) => w.storeRead('SELECT state FROM kit_context_admissions WHERE jobId = ?', jobId)[0]?.state;
+  const executes = (w) => w.node.calls.filter((message) => message === 'confirmTx' || message === 'broadcastTx').length;
   for (const withKill of [true, false]) {
     const w = await killHost(t), first = await w.start();
     const job = await admittedJob(w, first, `restart-sweep-${withKill}`);
+    // A challenge attempt the earlier process committed and never closed.
+    const attemptedJob = jobFor(`restart-attempt-${withKill}`);
+    assert.equal((await (await hostBuyer(first, w.f.listing, {})).challenge(attemptedJob)).status, 200);
     await first.close();
     // The earlier process stopped with the job's context step running.
     const db = new DatabaseSync(join(w.dataDirectory, 'transport', 'transport.sqlite'));
-    try { db.prepare("UPDATE kit_context_admissions SET state = 'running', record = json_remove(json_set(record, '$.state', 'running'), '$.contextOutcome') WHERE jobId = ?").run(job.jobId); } finally { db.close(); }
+    try {
+      db.prepare("UPDATE kit_context_admissions SET state = 'running', record = json_remove(json_set(record, '$.state', 'running'), '$.contextOutcome') WHERE jobId = ?").run(job.jobId);
+      db.prepare("UPDATE kit_challenges SET state = 'attempted', owner = ?, presentationHash = ?, attemptedAt = ? WHERE jobId = ?").run(JSON.stringify({ generation: 'TEST-earlier-process' }), digest('attempt'), NOW, attemptedJob);
+    } finally { db.close(); }
     if (withKill) w.createKill();
-    const effects = w.effects();
+    const [effects, before, executed] = [w.effects(), snapshot(w), executes(w)];
     await w.start();
-    if (withKill) assert.equal(stateOf(w, job.jobId), 'running', 'the stopped startup sweep left the row as it was');
-    else assert.notEqual(stateOf(w, job.jobId), 'running', 'the unstopped startup sweep ended the leftover row');
+    if (withKill) {
+      assert.equal(stateOf(w, job.jobId), 'running', 'the stopped startup sweep left the running row');
+      assert.equal(snapshot(w), before, 'and every row, hold, slot and reservation as it was');
+    } else assert.notEqual(stateOf(w, job.jobId), 'running', 'the unstopped startup sweep ended the leftover row');
+    const lost = w.storeRead("SELECT state, json_extract(failure, '$.code') AS code FROM kit_challenges WHERE jobId = ?", attemptedJob);
+    assert.deepEqual(lost, [{ state: 'failed', code: 'validator_lost' }], 'the lost validation closes in both runs: that write grants no effect');
     assert.equal(w.effects(), effects, 'the restart made no effect signature');
+    assert.equal(executes(w), executed, 'and no wallet request');
   }
 });
 
@@ -355,6 +414,39 @@ test('KILL created after the early stop check and before the ledger transaction:
   assert.deepEqual(l.rows(), issued, 'the row is still issued, with no presentation recorded');
   stop.removeKill();
   assert.equal(ledger.attempt(l.inputOf(jobFor('cut-attempt'), sessionNonce)).kind, 'validate', 'the unused challenge can still be attempted');
+});
+
+// The stop check that answers open the first time it is read and creates KILL right after: the route's own early check, then the ledger's.
+function openOnceThenKill(stop) {
+  const hook = { reads: 0, check: null };
+  hook.check = () => { const answer = stop.isStopped(); hook.reads++; if (hook.reads === 1) stop.createKill(); return answer; };
+  return hook;
+}
+
+test('KILL created between the challenge route\'s early stop check and the ledger transaction: the route answers a signed seller_stopped 503 and the issuance commits nothing', async (t) => {
+  const stop = killDirectory(t), w = await challengeWorld(t), hook = openOnceThenKill(stop);
+  w.state.stop = hook.check;
+  const signed = await w.sign(), sql = watchSql(t);
+  const answer = await w.post(signed);
+  assert.deepEqual([answer.status, answer.body.error], [503, 'seller_stopped']);
+  await signed.verify(answer);
+  assert.ok(hook.reads >= 2, 'the ledger asked again after the route\'s early check');
+  assert.deepEqual([w.rows().length, sql.writes()], [0, 0], 'no ledger row and no write statement');
+  stop.removeKill();
+  assert.equal((await w.post(await w.sign())).status, 200, 'without KILL the same route issues the challenge');
+});
+
+test('KILL created between the context route\'s early stop check and the ledger\'s first attempt: the route answers seller_stopped 503, the challenge stays issued and nothing starts', async (t) => {
+  const stop = killDirectory(t), w = await contextWireWorld(t), request = await w.startContext();
+  const hook = openOnceThenKill(stop);
+  w.state.stop = hook.check;
+  const answer = await w.post(request);
+  assert.deepEqual([answer.status, answer.body.error], [503, 'seller_stopped']);
+  assert.ok(hook.reads >= 2, 'the ledger asked again after the route\'s early check');
+  assert.equal(w.challengeOf(request.nonce).state, 'issued', 'the attempt committed nothing');
+  assert.deepEqual([w.counts.holds.length, w.internals.admissionCounts().starts, w.counts.vetWrites, w.rowOf()], [0, 0, 0, null], 'no hold, start, Vet write or admission row');
+  stop.removeKill();
+  assert.equal((await w.post(request)).status, 200, 'without KILL the same request is admitted');
 });
 
 test('under KILL the named closing writes still record and none signs or sends: an attempt admitted before KILL is accepted or failed, and a restart with KILL closes lost validations while phase-head admission recovery waits for an eligible unstopped sweep or restart', (t) => {
@@ -523,6 +615,13 @@ test('repeat the pause-and-resume, closure, rollback and restart controls with t
   assert.equal(e.counts.signer, 1);
 });
 
+// The wallet session's own runCreate, finalized over `stopped`: the effect boundary and pass a composed anchor runs its resend in.
+async function composedRunCreate(t, stopped) {
+  const world = await walletSessionWorld(t);
+  await world.finalize(stopped);
+  return world.port.runCreate;
+}
+
 test('KILL during a read-time CREATE recovery: at each of three cuts the current read resolves with its readback and never rejects; before the intent nothing is recorded or sent, after the intent nothing is sent, the row is not unsent and the resend is never repeated; a non-stop failure of runCreate still rejects the read', async (t) => {
   // Cut 1: KILL appears while the caller's resend check runs; the anchor's check right after it sees KILL.
   {
@@ -532,38 +631,33 @@ test('KILL during a read-time CREATE recovery: at each of three cuts the current
     assert.equal(typeof out.status, 'string');
     assert.deepEqual([p.counts.runCreates, p.counts.recoveries, p.recoveryRow()], [0, 0, null], 'cut 1: runCreate never ran');
   }
-  // Cut 2: KILL appears right after the anchor's check answered open, before the pass's own first stop read, which refuses.
+  // Cut 2: KILL appears right after the anchor's check answered open; the composed pass's own first check refuses before any work.
   {
     const stop = killDirectory(t);
+    const runCreate = await composedRunCreate(t, stop.isStopped);
     let armed = false;
     const stopped = () => { const answer = stop.isStopped(); if (armed) { armed = false; stop.createKill(); } return answer; };
     const p = await pendingCreate(t, stopped);
-    p.w.controls.runCreate = (op, work) => {
-      p.counts.runCreates++;
-      if (stop.isStopped()) return Promise.reject(Object.assign(new Error('TEST the pass refused'), { code: 'seller_stopped' }));
-      return passThroughRunCreate(op, work);
-    };
+    p.w.controls.runCreate = (op, work) => { p.counts.runCreates++; return runCreate(op, work); };
     const out = await p.read(async () => { armed = true; return true; });
     assert.equal(typeof out.status, 'string');
-    assert.deepEqual([p.counts.runCreates, p.counts.recoveries, p.recoveryRow()], [1, 0, null], 'cut 2: the pass refused before the intent');
+    assert.deepEqual([p.counts.runCreates, p.counts.recoveries, p.recoveryRow()], [1, 0, null], 'cut 2: the composed pass refused before the intent');
     stop.removeKill();
     await p.read();
     assert.equal(p.resends.length, 1, 'cut 2 used nothing: the next read resends once');
   }
-  // Cut 3: KILL appears right after the intent is written; the client boundary's final check refuses the send.
+  // Cut 3: KILL appears after the intent is written, as the resend asks to sign; the composed pass\'s guarded signer refuses the send.
   {
     const stop = killDirectory(t);
+    const runCreate = await composedRunCreate(t, stop.isStopped);
     const p = await pendingCreate(t, stop.isStopped);
+    p.w.controls.runCreate = (op, work) => { p.counts.runCreates++; return runCreate(op, work); };
     const send = p.w.source.recoverStorageWrite;
-    p.w.source.recoverStorageWrite = async (input) => {
-      stop.createKill();
-      if (stop.isStopped()) throw Object.assign(new Error('TEST writes stopped'), { code: 'writes_stopped' });
-      return send(input);
-    };
+    p.w.source.recoverStorageWrite = async (input) => { stop.createKill(); await input.signRpc(); return send(input); };
     const out = await p.read();
     assert.equal(typeof out.status, 'string');
     assert.equal(p.counts.recoveries, 0, 'cut 3: nothing was sent');
-    assert.notEqual(p.recoveryRow()?.stage, 'unsent', 'the row does not reopen the resend');
+    assert.equal(p.recoveryRow()?.stage, 'intent', 'the intent stays recorded');
     stop.removeKill();
     p.w.source.recoverStorageWrite = send;
     await p.read();

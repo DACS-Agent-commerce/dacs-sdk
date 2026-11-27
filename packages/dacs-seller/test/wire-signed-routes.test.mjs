@@ -429,7 +429,7 @@ test('the wire context is checked where it is made and where the handler takes i
   const w = await world(t);
   const { binding, signer, journal, store, readCommitmentReceipt } = w.handle.wire;
   const valid = { binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer, effectBoundary: w.effectBoundary, journal, store, ready: () => true, stopped: () => false, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt };
-  const wrongKinds = { connection: { tp1Network: { connection: 1 } }, ready: { ready: 'yes' }, 'no stop check': { stopped: undefined }, now: { now: NOW }, signer: { signer: { claim: seller.claim } }, store: { store: {} },
+  const wrongKinds = { connection: { tp1Network: { connection: 1 } }, ready: { ready: 'yes' }, now: { now: NOW }, signer: { signer: { claim: seller.claim } }, store: { store: {} },
     agent: { agent: {} }, continuationEvidence: { agent: { transportAgreementOf: () => null } }, readCommitmentReceipt: { readCommitmentReceipt: 'reader' },
     requireDelegation: { requireDelegation: 'no' }, binding: { binding: null }, journal: { journal: undefined },
     'a signer without the read-only role': { signer: { claim: seller.claim, sign: seller.signBytes } }, 'no effect boundary': { effectBoundary: undefined },
@@ -439,6 +439,7 @@ test('the wire context is checked where it is made and where the handler takes i
   assert.throws(() => handlerWith({ ...w.handle.wire }), /createWireContext/, 'an unbranded copy');
   assert.throws(() => createSellerHttpHandler(w.agent), /createWireContext/, 'no options');
   assert.throws(() => createSellerHttpHandler(w.agent, {}), /createWireContext/, 'no wire');
+  assert.throws(() => handlerWith(createWireContext({ ...valid, stopped: undefined })), { name: 'TypeError', message: /wire\.stopped/ }, 'a wire context without the host\'s stop check');
   const unbound = await freshTransportStore(t, w);
   assert.throws(() => handlerWith(createWireContext({ ...valid, store: unbound, signer: BUYER_ROLES })), /identity must match/, 'a signer other than the seller of the agent');
   assert.doesNotThrow(() => handlerWith(createWireContext(valid)));
