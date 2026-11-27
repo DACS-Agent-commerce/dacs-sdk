@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as core from '@kynesyslabs/dacs';
 import {anchorFixture,signSdkCreate} from './helpers/anchor-isolated-fixture.mjs';
 const jobs=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX'];
-async function world({sourceCopy=false,refused=false}={}){
+async function world({sourceCopy=false,refused=false,stage='broadcast-started'}={}){
  const w=await anchorFixture({signRpc:async()=> 'TEST rpc authentication'}),resends=[];
  let included=false;
  w.source.observeBinding=async()=>{};
@@ -16,7 +16,7 @@ async function world({sourceCopy=false,refused=false}={}){
  w.controls.reader.verifyReceipt=async()=> 'valid';
  w.controls.request=async request=>{
   const signedTransaction=await signSdkCreate(request.transaction);
-  const row={stage:'broadcast-started',hash:signedTransaction.hash,signedTransaction};
+  const row={stage,hash:signedTransaction.hash,signedTransaction};
   await w.journal.put('demo/wallet/lane',row);
   if(sourceCopy)await w.sourceJournal.put(`source/${request.jobId}`,row);
   if(refused)return {success:false,error:{code:'broadcast_rejected'}};
@@ -47,6 +47,14 @@ for(const sourceCopy of [false,true])test(`a refused ${sourceCopy?'source and wa
  assert.deepEqual(prior.signedTransaction,original);
  assert.equal((await resendingCall(w.open(),'readRetained',prior.input)).status,'present');
  assert.deepEqual(w.resends,[original]);
+});
+// A stop refused the broadcast after the wallet's marker: the signed bytes stay held, and no lane reconciliation sends them.
+for(const stage of ['broadcast-started','signed-held'])test(`another job's publish reconciling a ${stage} wallet CREATE ${stage==='signed-held'?'sends nothing':'sends it once'}`,async()=>{
+ const w=await world({stage});
+ await assert.rejects(w.publish(w.open(),jobs[0]),/interrupted/);
+ const original=(await w.journal.get('demo/wallet/lane')).signedTransaction;
+ await assert.rejects(w.publish(w.open(),jobs[1]),{code:'indeterminate'},'the retained signed CREATE still fences its nonce');
+ assert.deepEqual(w.resends,stage==='signed-held'?[]:[original]);
 });
 test('a broadcast refusal can authenticate late inclusion without another wallet request or resend',async()=>{
  const w=await world({refused:true});await w.publish(w.open(),jobs[0]);w.include();

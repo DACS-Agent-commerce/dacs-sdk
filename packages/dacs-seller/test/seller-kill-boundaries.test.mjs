@@ -84,21 +84,17 @@ async function killHost(t) {
   const counts = { effect: 0, integrity: 0, readOnly: 0 };
   const node = scriptedNode();
   const hosts = [];
-  // The host's anchor, seen from the host: each retained read with whether it asked for a resend, each publication and each resend the
-  // anchor was authorized to make. With `anchor.pending` set, the anchor holds a pending commitment CREATE an earlier process retained:
-  // its read is indeterminate, and a read that asks for a resend sends it once more when the host's stop check is open and the caller's
-  // authorization answers true, in that order, as the anchor the wallet session composes does.
-  const anchor = { pending: false, beforeRead: null, reads: [], publishes: [], resends: [] };
+  // The host's anchor, seen from the host: each retained read with whether it asked for a resend and each publication. With
+  // `anchor.pending` set to a `pendingCreate`, the commitment CREATE an earlier process retained is read through the shipped anchor over
+  // that fixture, whose stop check is this host's: the anchor's own stop decides whether a resend is made, and the fixture counts them.
+  const anchor = { pending: null, beforeRead: null, reads: [], publishes: [] };
   const isStopped = createStopCheck(dataDirectory);
   const spiedAnchor = { ...nativeArtifactAnchor,
     publish: async (input) => { anchor.publishes.push(input.artifactKind); return nativeArtifactAnchor.publish(input); },
     readRetained: async (input, readOptions) => {
       anchor.beforeRead?.();
       anchor.reads.push({ artifactKind: input.artifactKind, resend: readOptions?.resend === true });
-      if (anchor.pending && input.artifactKind === 'FinalityCommitmentRecord') {
-        if (readOptions?.resend === true && !isStopped() && await readOptions.authorizeResend?.() === true) anchor.resends.push(input.logicalAddress);
-        return { status: 'indeterminate', reason: 'TEST retained CREATE is pending' };
-      }
+      if (anchor.pending && input.artifactKind === 'FinalityCommitmentRecord') return anchor.pending.readWith(readOptions);
       return nativeArtifactAnchor.readRetained(input, readOptions);
     } };
   const options = { ...config, signer: countedRoles(counts), artifactAnchor: spiedAnchor, dataDirectory, walletSession: testWalletSession({ node }).walletSession,
@@ -109,7 +105,7 @@ async function killHost(t) {
     const db = new DatabaseSync(join(dataDirectory, 'transport', 'transport.sqlite'), { readonly: true });
     try { return db.prepare(sql).all(...args); } finally { db.close(); }
   };
-  return { f, counts, node, anchor, dataDirectory, storeRead,
+  return { f, counts, node, anchor, dataDirectory, storeRead, isStopped,
     start: async () => { const host = await startSellerHost(options); hosts.push(host); return host; },
     createKill: () => writeFileSync(kill, ''),
     removeKill: () => rmSync(kill, { recursive: true, force: true }),
@@ -260,7 +256,9 @@ async function pendingCreate(t, stopped, { afterSign = null } = {}) {
   const recoveryRow = () => w.journal.rows.get(`demo/recovery/${signed.hash}`) ?? null;
   const read = (authorizeResend = async () => true) => w.open().readRetained({ logicalAddress: row.input.logicalAddress, artifactKind: row.input.artifactKind }, { resend: true, authorizeResend });
   const passive = () => w.open().readRetained({ logicalAddress: row.input.logicalAddress, artifactKind: row.input.artifactKind }, { resend: false });
-  return { w, counts, resends, recoveryRow, read, passive, signed };
+  // The same read with the caller's own options, as a host passes them to its anchor.
+  const readWith = (options) => w.open().readRetained({ logicalAddress: row.input.logicalAddress, artifactKind: row.input.artifactKind }, options);
+  return { w, counts, resends, recoveryRow, read, passive, readWith, signed };
 }
 
 test('KILL during recovery: readback only', async (t) => {
@@ -286,7 +284,7 @@ test('KILL during recovery: readback only', async (t) => {
     const held = await killHost(t), earlier = await held.start();
     const retained = await admittedJob(held, earlier, `recovery-retained-${withKill}`);
     await retained.anchorAgreement(await postSigned(earlier, await retained.propose()));
-    held.anchor.pending = true;
+    held.anchor.pending = await pendingCreate(t, held.isStopped);
     await earlier.close();
     if (withKill) held.createKill();
     const tables = ['kit_reservations', 'kit_job_holds', 'kit_context_admissions'];
@@ -302,11 +300,11 @@ test('KILL during recovery: readback only', async (t) => {
     if (withKill) {
       assert.deepEqual([replay.status, refusalOf(replay)], [503, 'seller_stopped'], 'the commit request is refused under KILL');
       await retained.verify(replay);
-      assert.deepEqual([held.anchor.reads, held.anchor.resends, held.anchor.publishes], [[], [], []], 'the anchor was not asked to read, resend or publish');
+      assert.deepEqual([held.anchor.reads, held.anchor.pending.resends, held.anchor.publishes], [[], [], []], 'the anchor was not asked to read, resend or publish');
       assert.equal(rowsOf(), rows, 'no reservation, hold or admission row changed');
     } else {
       assert.equal(resendReads.length, 1, 'without KILL the same request asks the anchor for a resend');
-      assert.equal(held.anchor.resends.length, 1, 'and the anchor makes the one authorized resend');
+      assert.equal(held.anchor.pending.resends.length, 1, 'and the anchor makes the one authorized resend');
     }
     assert.equal(executes(), sent, 'nothing was confirmed or broadcast');
     assert.equal(held.effects(), signed, 'no effect signature');
@@ -592,6 +590,45 @@ test('under KILL the named closing writes still record and none signs or sends: 
   assert.deepEqual([next.counts.holds.length, next.counts.vetWrites, next.counts.validations, next.counts.agreementSignatures], [0, 0, 0, 0], 'the restart under KILL started no work');
 });
 
+test('a restart under KILL leaves an accepted attempt\'s unfinished effect step, hold and reservation and an unaccepted attempt\'s pending reservation as they were and closes only the lost validation; the same restart without KILL ends the accepted attempt\'s step', async (t) => {
+  const tables = ['kit_context_admissions', 'kit_job_holds', 'kit_slot_retirements', 'kit_reservations'];
+  const snapshot = (world) => JSON.stringify(tables.map((name) => world.internals.db.prepare(`SELECT * FROM ${name} ORDER BY 1`).all()));
+  const challengeRow = (world, nonce) => world.internals.db.prepare("SELECT state, json_extract(failure, '$.code') AS code FROM kit_challenges WHERE nonce = ?").get(nonce);
+  for (const withKill of [true, false]) {
+    const kill = killDirectory(t), w = await contextWireWorld(t);
+    const unacceptedJob = jobFor(`restart-unaccepted-${withKill}`);
+    const requests = { accepted: await w.startContext({ jobId: CONTEXT_JOB }), unaccepted: await w.startContext({ jobId: unacceptedJob }) };
+    // The accepted attempt's provider and the other attempt's validation are held, as when their process stops there.
+    const held = { effect: gate(), validation: gate() };
+    w.behaviour.admit = async ({ jobId }) => { if (jobId === unacceptedJob) await held.validation.arrive(); };
+    w.behaviour.provider = () => held.effect.arrive();
+    const answers = [w.post(requests.accepted), w.post(requests.unaccepted)];
+    await Promise.all([held.effect.reached, held.validation.reached]);
+    assert.deepEqual([challengeRow(w, requests.accepted.nonce).state, challengeRow(w, requests.unaccepted.nonce).state], ['accepted', 'attempted']);
+    assert.deepEqual([w.rowOf(CONTEXT_JOB)?.state, w.openHolds().length, w.reserved.effects.length], ['running', 1, 1], 'the accepted attempt holds its effect step, hold and reservation');
+    // The other attempt's reservation was charged and never finished.
+    w.internals.db.prepare('INSERT INTO kit_job_holds SELECT ?, buyer, seller, listing_pin, context FROM kit_job_holds WHERE jobId = ?').run(unacceptedJob, CONTEXT_JOB);
+    w.internals.db.prepare("INSERT INTO kit_reservations SELECT ?, buyer, ?, operationId, route, allocationId, class, requestHash, at, 'reserving', NULL, rev FROM kit_reservations WHERE jobId = ?").run(`k-unaccepted-${withKill}`, unacceptedJob, CONTEXT_JOB);
+    const before = snapshot(w);
+    if (withKill) kill.createKill();
+    const next = await w.restartHost({ admissionStopped: kill.isStopped });
+    await next.admission.sweep({ startup: true });
+    assert.deepEqual([challengeRow(next, requests.unaccepted.nonce), challengeRow(next, requests.accepted.nonce).state], [{ state: 'failed', code: 'validator_lost' }, 'accepted'],
+      'the lost validation closes in both runs: that write grants no effect');
+    if (withKill) {
+      assert.equal(snapshot(next), before, 'every row, hold, slot and reservation is as the earlier process left it');
+      assert.equal(next.rowOf(CONTEXT_JOB)?.state, 'running', 'the stopped startup sweep did not visit the running row');
+    } else {
+      assert.notEqual(next.rowOf(CONTEXT_JOB)?.state, 'running', 'the unstopped startup sweep ended the leftover step');
+      assert.notEqual(snapshot(next), before);
+    }
+    assert.deepEqual([next.counts.holds.length, next.counts.vetWrites, next.counts.validations, next.counts.agreementSignatures], [0, 0, 0, 0], 'the restart started no work');
+    held.effect.release();
+    held.validation.release();
+    await Promise.allSettled(answers);
+  }
+});
+
 // ---------------------------------------------------------------- reads, entry types and the shutdown flag
 
 test('under KILL, read routes, refusals and readback stay signed under the binding', async (t) => {
@@ -833,14 +870,14 @@ test('KILL during a read-time CREATE recovery: at each of three cuts the current
     await p.read();
     assert.equal(p.resends.length, 0, 'the resend is never repeated');
   }
-  // Through the composed host: KILL appears after the commit route's own check, as the anchor is asked to read. The anchor's stop check
-  // then refuses the resend, so none is made and no CREATE is published; the answer is signed under the binding, and so is the read
-  // that follows.
+  // Through the composed host: KILL appears after the commit route's own check, as the anchor is asked to read. The shipped anchor, over
+  // the host's own stop check, then refuses the resend, so none is made and no CREATE is published; the answer is signed under the
+  // binding, and so is the read that follows.
   {
     const held = await killHost(t), earlier = await held.start();
     const retained = await admittedJob(held, earlier, 'composed-cut');
     await retained.anchorAgreement(await postSigned(earlier, await retained.propose()));
-    held.anchor.pending = true;
+    held.anchor.pending = await pendingCreate(t, held.isStopped);
     await earlier.close();
     const later = await held.start();
     const executes = () => held.node.calls.filter((message) => message === 'confirmTx' || message === 'broadcastTx').length;
@@ -849,7 +886,7 @@ test('KILL during a read-time CREATE recovery: at each of three cuts the current
     const cut = await postSigned(later, await retained.commit());
     await retained.verify(cut);
     assert.ok(cut.status >= 400, cut.bytes.toString());
-    assert.deepEqual([held.anchor.reads.map((read) => read.resend), held.anchor.resends, held.anchor.publishes], [[true], [], []], 'the anchor was asked once and made no resend');
+    assert.deepEqual([held.anchor.reads.map((read) => read.resend), held.anchor.pending.resends, held.anchor.publishes], [[true], [], []], 'the anchor was asked once and made no resend');
     const readback = await postSigned(later, await retained.state());
     assert.equal(readback.status, 200, readback.bytes.toString());
     await retained.verify(readback);

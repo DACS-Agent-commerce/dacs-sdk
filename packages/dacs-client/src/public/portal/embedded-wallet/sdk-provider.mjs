@@ -327,6 +327,11 @@ function confirmationMatches(validity, plan, debit, address, postFork) {
 // The SDK returns a transport failure as {result: 500, response: error} instead of throwing it.
 const failureOf = (answer) => (answer?.result === 500 && answer.response instanceof Error ? answer.response : undefined);
 
+// The refusals a host stop raises, as the node transport's effect boundary raises them at its last check.
+const HOST_STOP_CODES = new Set(['writes_stopped', 'stop_check_failed', 'stop_check_invalid', 'stop_check_timeout']);
+// A transport failure that proves the request never reached the network because a host stop refused it.
+const stoppedBeforeDispatch = (failure) => failure?.stage === 'not_dispatched' && HOST_STOP_CODES.has(failure.cause?.code);
+
 // A confirmation this session cannot match to the approved transaction is
 // indeterminate, never a node refusal; nothing is broadcast after it.
 const unmatchedConfirmation = (check) => new EmbeddedWalletError('upstream_unavailable', 'the node confirmed something this wallet cannot match to the approved transaction; it was not broadcast', { cause: new Error(check) });
@@ -957,7 +962,8 @@ function proofHandle(context, proofUrl) {
 // carries its `nonceSource` and `observedNonce`, as the paid-write preview shows them.
 // `stopped()`, when given, is the host's synchronous stop check. It is read right before each confirm, before a storage CREATE's
 // `broadcast-started` marker and before each broadcast: true refuses `writes_stopped`, a throw `stop_check_failed` and any
-// non-boolean `stop_check_invalid`, so nothing more is sent. A non-function is a TypeError (`stop_seam_invalid`).
+// non-boolean `stop_check_invalid`, so nothing more is sent. A stop seen after the marker is written rewrites the marker as `signed-held`:
+// the signed bytes are kept for readback, nothing was sent, and no reconciliation sends them. A non-function is a TypeError (`stop_seam_invalid`).
 export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, paidApprovalCheck, transactionTransport, validateMnemonic, anchorJournal, relayOrigin, nodeEndpoint, bindingRelay, stamp = () => Date.now(), recordCause, stopped } = {}) {
   if (typeof DemosCtor !== 'function') throw new TypeError('createSdkWalletSession requires the Demos SDK class as DemosCtor');
   if (stopped !== undefined && typeof stopped !== 'function') throw new TypeError('stop_seam_invalid');
@@ -1141,17 +1147,27 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, pai
 
   // Exactly one SDK broadcast. From here on nothing is retried and a lock no
   // longer changes the answer: the request may already have reached the node.
-  async function broadcastOnce(demos, validity, nonce) {
+  // `whenStopped`, when given, records that a stop refused the broadcast, whether this session's own check or the transport's last
+  // check (proven not dispatched); the refusal is `writes_stopped` or the check's own, and a record that fails leaves the issued
+  // marker, which only readback settles.
+  async function broadcastOnce(demos, validity, nonce, whenStopped) {
     const hash = validity.response.data.transaction.hash.toLowerCase().replace(/^0x/, '');
     let res;
     let cause;
-    assertProviderStopOpen();
+    try { assertProviderStopOpen(); } catch (error) {
+      await whenStopped?.().catch(() => {});
+      throw error;
+    }
     try {
       res = await demos.broadcast(validity);
       cause = failureOf(res);
     } catch (error) {
       res = null;
       cause = error;
+    }
+    if (whenStopped && stoppedBeforeDispatch(cause)) {
+      await whenStopped?.().catch(() => {});
+      throw new EmbeddedWalletError('writes_stopped', 'the host has stopped writes; nothing more was sent', { cause });
     }
     const status = res && typeof res === 'object' ? res.result : null;
     if (status === 200) return { hash, nonce, status: 'broadcast_accepted', ...(transport.devnetNative && res.writeProof?.disposition==='included' && res.writeProof.receipt?.hash===hash ? {writeProof:structuredClone(res.writeProof)} : {}), evidenceMode: transport.devnetNative ? DEVNET_NATIVE_EVIDENCE_MODE : TRANSPORT_EVIDENCE_MODE };
@@ -1310,7 +1326,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, pai
       const retained = await journal.get(lane);
       if (JSON.stringify(retained) !== JSON.stringify(issued)) throw new EmbeddedWalletError('journal_error', 'the issued anchor was not retained exactly; nothing was sent');
       stillCurrent(started);
-      const result = await broadcastOnce(demos, validity, plan.nonce);
+      const result = await broadcastOnce(demos, validity, plan.nonce, async () => journal.put(lane, { ...issued, stage: 'signed-held' }));
       try {
         await journal.put(lane, { ...issued, stage: 'broadcast-accepted' });
       } catch {
