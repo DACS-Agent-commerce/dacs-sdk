@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF let the chain reader bound the genesis block and storage program answers",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/chain.mjs",
+      "before": "b45673f05259eb69d79885144c3de87f2194c3d8",
+      "after": "923c2d56568ef821fd797b98e1aef4232735f72e"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-c143f18d1360.json",
+    "packages/dacs-client/src/dacs/chain.mjs"
+  ]
+}

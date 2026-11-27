@@ -116,7 +116,16 @@ function slotRow(tx, wallet) {
   return { nonce, hash: tx.hash };
 }
 
-export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null, timeoutMs = 10000, fetchImpl = globalThis.fetch }) {
+// The byte limit of a node call answer, and the defaults of the identity and storage-program reads.
+const NODE_CALL_MAX_BYTES = 4 * 1024 * 1024;
+const STORAGE_PROGRAM_MAX_BYTES = 256 * 1024;
+
+/**
+ * The client's read-only Demos chain reader for `rpcUrl`. `identityMaxBytes`
+ * bounds each genesis block read of `networkIdentity` and `storageMaxBytes`
+ * each `readStorageProgram` answer; `timeoutMs` bounds each request.
+ */
+export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null, timeoutMs = 10000, identityMaxBytes = NODE_CALL_MAX_BYTES, storageMaxBytes = STORAGE_PROGRAM_MAX_BYTES, fetchImpl = globalThis.fetch }) {
   const base = rpcUrl.replace(/\/$/, '');
   const origin = new URL(base).origin;
   const loopback = LOOPBACK_HOSTS.has(new URL(base).hostname);
@@ -128,14 +137,14 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return response;
   };
 
-  function nodePayload(message, data, fetcher = observingFetch, signal) {
+  function nodePayload(message, data, fetcher = observingFetch, signal, maxBytes = NODE_CALL_MAX_BYTES) {
     return fetchBoundedJson(base, {
       fetchImpl: fetcher,
       signal,
       method: 'POST',
       body: { method: 'nodeCall', params: [{ message, data }] },
       timeoutMs,
-      maxBytes: 4 * 1024 * 1024,
+      maxBytes,
       expectedOrigin: origin,
     });
   }
@@ -157,7 +166,7 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
       const response = await observingFetch(input, init);
       marked = Boolean(response.headers.get(SIMULATION_HEADER));
       return response;
-    }, signal);
+    }, signal, identityMaxBytes);
     signal?.throwIfAborted();
     const answered = isRecord(payload) && payload.result === 200 && Object.hasOwn(payload, 'response');
     return { block: answered && isRecord(payload.response) ? payload.response : null, marked };
@@ -192,7 +201,7 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
       body = await fetchBoundedJson(`${base}/storage-program/${locator}`, {
         fetchImpl: observingFetch,
         timeoutMs,
-        maxBytes: 256 * 1024,
+        maxBytes: storageMaxBytes,
         expectedOrigin: origin,
       });
     } catch (error) {
@@ -322,7 +331,7 @@ export function createDemosChainReader({ rpcUrl, network, pinnedIdentity = null,
     return payload;
   }
 
-  const transferObserver = (fetcher) => createPayDemSellerObserver({ rpc: base, timeoutMs, maxResponseBytes: 4 * 1024 * 1024, fetchImpl: fetcher });
+  const transferObserver = (fetcher) => createPayDemSellerObserver({ rpc: base, timeoutMs, maxResponseBytes: NODE_CALL_MAX_BYTES, fetchImpl: fetcher });
   const observer = transferObserver(observingFetch);
 
   // Each request keeps its own timeoutMs; there is no whole-observation
