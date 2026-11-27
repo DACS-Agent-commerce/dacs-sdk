@@ -51,7 +51,7 @@ import { isSafeJsonString } from "../canonical/snapshot.js";
 import {
   isCanonicalBase64Url,
   isComponentSignature,
-} from "./signatures.js";
+} from "./signaturePredicates.js";
 import {
   isCanonicalClaimReference,
   sameCanonicalClaimIdentity,

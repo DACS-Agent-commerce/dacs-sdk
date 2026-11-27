@@ -8,113 +8,19 @@ import {
   privateKeyFromSeed,
   publicKeyFromRaw,
 } from "./ed25519.js";
+import { type DomainSeparator, isCompositeSeparator, isRegisteredSeparator, signedBytes } from "./signedBytes.js";
 
-/**
- * The closed §B.7 registry of signature domain separators — the full 30-entry
- * set at this revision, in CORE §B.7 table order (oracle pin
- * d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20). A signature produced under one
- * separator MUST NOT validate under any other (SIG-2).
- *
- * Registry membership (all 30) is distinct from *generic single-hash signing
- * support*: most entries sign the single-hash payload `separator || artifact_hash`
- * and are usable via {@link signArtifact}, but two entries are composite-payload
- * separators ({@link COMPOSITE_DOMAIN_SEPARATORS}) that frame more than one value
- * and MUST use their recipe-specific helpers below. The generic helpers reject
- * the composite separators so a caller can never silently sign the wrong bytes.
- *
- * The non-signature hash-domain tags (`dacs-sealed-bid:v1:`, `dacs-sb3:v1:`,
- * `dacs-ap2-idem:v1:`) are deliberately NOT here — they domain-separate hash preimages, not signature
- * `signed_bytes`, so SIG-1 does not scope to them.
- */
-export const SIGNATURE_DOMAIN_SEPARATORS = [
-  "dacs-listing:v1:",
-  "dacs-revocation:v1:",
-  "dacs-bundle-presentation:v1:",
-  "dacs-verifyresult:v1:",
-  "dacs-composite:v1:",
-  "dacs-recipe:v1:",
-  "dacs-channelmsg:v1:",
-  "dacs-agreement:v1:",
-  "dacs-payee-bound-agreement:v1:",
-  "dacs-identity-bound-agreement:v1:",
-  "dacs-identity-bound-payee-agreement:v1:",
-  "dacs-commitment:v1:",
-  "dacs-finality-commitment:v1:",
-  "dacs-transcript:v1:",
-  "dacs-evidence:v1:",
-  "dacs-amendment:v1:",
-  "dacs-rail:v1:",
-  "dacs-entitlement:v1:",
-  "dacs-payload-attestation:v1:",
-  "dacs-prior-payment-disposition:v1:",
-  "dacs-bundle:v1:",
-  "dacs-fault-bundle:v1:",
-  "dacs-evidence-bound-fault-bundle:v1:",
-  "dacs-bundle-binding:v1:",
-  "dacs-fault-bundle-pointer:v1:",
-  "dacs-evidence-bound-fault-bundle-pointer:v1:",
-  "dacs-rating:v1:",
-  "dacs-session-binding:v1:",
-  "dacs-auto-accept-commitment:v1:",
-  "dacs-auto-accept-instance:v1:",
-] as const;
-
-export type DomainSeparator = (typeof SIGNATURE_DOMAIN_SEPARATORS)[number];
-
-const SEPARATOR_SET: ReadonlySet<string> = new Set(SIGNATURE_DOMAIN_SEPARATORS);
-
-export function isRegisteredSeparator(sep: string): sep is DomainSeparator {
-  return SEPARATOR_SET.has(sep);
-}
-
-/**
- * Composite-payload separators (§B.7): these prepend the separator to more than
- * one framed value, so they CANNOT be signed via the single-hash
- * {@link signArtifact}. Each has a recipe-specific helper below
- * ({@link signSessionBinding}, {@link signAutoAcceptInstance}).
- * `dacs-auto-accept-commitment:v1:` is NOT here — despite the auto-accept family
- * it is a plain single-hash signature over `sha256(canonical(commitment))`, so
- * it signs via {@link signArtifact} like any other artifact.
- */
-export const COMPOSITE_DOMAIN_SEPARATORS = [
-  "dacs-session-binding:v1:",
-  "dacs-auto-accept-instance:v1:",
-] as const;
-
-export type CompositeDomainSeparator =
-  (typeof COMPOSITE_DOMAIN_SEPARATORS)[number];
-
-const COMPOSITE_SET: ReadonlySet<string> = new Set(COMPOSITE_DOMAIN_SEPARATORS);
-
-/**
- * True for the composite-payload separators that must use a recipe-specific
- * helper rather than the generic single-hash signer. A registered separator is
- * generic-signable iff it is registered AND not composite.
- */
-export function isCompositeSeparator(
-  sep: string,
-): sep is CompositeDomainSeparator {
-  return COMPOSITE_SET.has(sep);
-}
+export {
+  SIGNATURE_DOMAIN_SEPARATORS, COMPOSITE_DOMAIN_SEPARATORS, type DomainSeparator, type CompositeDomainSeparator,
+  isRegisteredSeparator, isCompositeSeparator, signedBytes,
+} from "./signedBytes.js";
 
 /**
  * SIG-4: an artifact kind not in the closed §B.7 registry signs under a
- * `dacs-x-<kind>:v<version>:` separator, disjoint from the registry above.
+ * `dacs-x-<kind>:v<version>:` separator, disjoint from the registry.
  */
 export function dacsXSeparator(kind: string, version = "1"): string {
   return `dacs-x-${kind}:v${version}:`;
-}
-
-/**
- * `signed_bytes := domain_separator || artifact_hash` (§B.7). The separator is
- * a UTF-8 string and the artifact hash is its lowercase ASCII hex; they are
- * concatenated as byte sequences with no separator byte.
- */
-export function signedBytes(separator: string, artifactHash: string): Uint8Array {
-  return Buffer.concat([
-    Buffer.from(separator, "utf8"),
-    Buffer.from(artifactHash, "ascii"),
-  ]);
 }
 
 /**
