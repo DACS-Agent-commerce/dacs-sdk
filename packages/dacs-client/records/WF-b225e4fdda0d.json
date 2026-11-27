@@ -1,0 +1,11 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF pin the read-only Listing verifier export in the client hold gate and re-pin the hold record",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/records/WF-b225e4fdda0d.json",
+    "packages/dacs-client/scripts/check-hold.mjs"
+  ]
+}

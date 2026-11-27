@@ -1025,7 +1025,7 @@
       },
       "scripts/check-hold.mjs": {
         "control": "gate",
-        "blob": "f89d57117a511f3a22ecb37205a3d5723cd74b4a"
+        "blob": "1d00b913882014acf7c03b63df30e8b30300a78f"
       },
       "scripts/check-hold.test.mjs": {
         "blob": "86f7088926df09a4d0404ef2d86e198ac87f3438"
