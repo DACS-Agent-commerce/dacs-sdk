@@ -26,7 +26,7 @@
 // owner must hold its connection/endpoint fence through those external actions.
 import { createHash } from 'node:crypto';
 import { types } from 'node:util';
-import { canonicalNodeEndpoint } from '@kynesyslabs/dacs/wire';
+import { canonicalNodeEndpoint } from '@kynesyslabs/dacs/wire/node-endpoint';
 
 export const DEMOS_NETWORK_BINDING_VERSION = 'dacs-demos-network-binding/v1';
 const HASH = /^(?:0x)?([0-9a-f]{64})$/;
@@ -79,6 +79,21 @@ function endpoint(value, code, chainIdentity) {
     fail(code, 'A canonical root endpoint is required: https, or plain http on the approved testnet chain only; no path, credentials, query or fragment');
   }
   return value;
+}
+
+/**
+ * Checks a configured node RPC URL by the wire's one endpoint rule and returns it unchanged: a canonical https root
+ * under any label, or a canonical plain-http root only for `network: 'testnet'` with the approved testnet
+ * `chainIdentity`. Under any other or missing label no chain identity is passed on, so plain http is refused.
+ * It reads nothing from the network and grants no payment; a purchase still binds to the chain before it pays.
+ * Throws NetworkBindingError(rpc_endpoint_invalid) for anything else, with no URL or credential in its message.
+ */
+export function assertNodeRpcEndpoint({ rpcUrl, network, chainIdentity } = {}) {
+  const root = canonicalNodeEndpoint(rpcUrl, network === 'testnet' ? { chainIdentity } : {});
+  if (root === null) {
+    fail('rpc_endpoint_invalid', 'The node RPC URL must be a canonical root: https, or plain http on testnet under the approved chain identity; no path, credentials, query or fragment');
+  }
+  return root;
 }
 
 function identifier(value, code) {

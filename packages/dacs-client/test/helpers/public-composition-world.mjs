@@ -72,10 +72,13 @@ function presentAnswer({ scope, buyerIdentityBundle }, listing) {
  * read-only; `native` replaces the native source world (a `passiveNativeWorld` over another journal, say). With `shippedAdapters`,
  * the world runs on a fresh schema with the package's own operations, accounts and challenges adapters under the local account,
  * and `rebuild({ now })` builds new adapters and both factories on the same database, as after a restart. `feeCeilingOs` is the
- * host's per-write fee ceiling (the exported testnet value by default); the chain double's fee is 1 OS.
+ * host's per-write fee ceiling (the exported testnet value by default); the chain double's fee is 1 OS. `native` may also be a
+ * function of the world's `{ payer, payee }` returning the native world. `accountsFor(accounts)` replaces the service's accounts
+ * provider, `buyerAccess` the protocol's counting buyer-access capability, and `nonceSlotProof` sets that service setting.
  */
 export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOINT, contextGate = Promise.resolve(), demDeliveryContext = null, unpaid = false, stopped,
-  passiveOnly = false, native = passiveNativeWorld(), shippedAdapters = false, feeCeilingOs = PAID_WRITE_FEE_CEILING_OS } = {}) {
+  passiveOnly = false, native: nativeOption = passiveNativeWorld(), shippedAdapters = false, feeCeilingOs = PAID_WRITE_FEE_CEILING_OS, accountsFor = (accounts) => accounts,
+  buyerAccess, nonceSlotProof } = {}) {
   // The fixture authority's answer, with every participant it was asked about (the buyer and seller of the session
   // delegation) on the bound profile; its gate, failure and call count still apply.
   const authority = createAuthorityFixture();
@@ -83,6 +86,7 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
     participants: scope.participants.map((claim) => ({ claim, profile: binding.profile, modules: TESTNET_PROFILE_TP1.tuple })) }) });
   const admission = { binding, currentLocal };
   const wallet = createEphemeralWallet(), seller = createEphemeralWallet();
+  const native = typeof nativeOption === 'function' ? nativeOption({ payer: wallet.address, payee: seller.address }) : nativeOption;
   const db = shippedAdapters ? freshDatabase() : openDatabase(':memory:'), store = createSqlitePurchaseStore();
   t.after(() => db.close());
   // Every protocol call that reaches a seller or the buyer-access seam is counted.
@@ -120,14 +124,14 @@ export async function compositionWorld(t, { sellerEndpoint = () => SELLER_ENDPOI
     expected: { network: 'testnet', chainIdentity: IDENTITY, pinVersion: 'TEST-pin', endpoint: native.source.pins.endpoint, transportAuthority: 'TEST-owner' },
     transportOwner: { getContext: unused('evidence context'), acquireConnectionFence: unused('evidence fence') } });
   const compose = ({ ops, accounts, challenges }, now) => {
-    const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, stopped, chain, feeCeilingOs, ...(passiveOnly ? { passiveOnly } : {}), now, buyerAccess: { assertWallet() { counters.buyerAccess++; } }, ...RECEIPT_LIMITS,
+    const protocol = createProtocolPurchases({ db, ops, coordinates, store, admission, stopped, chain, feeCeilingOs, ...(passiveOnly ? { passiveOnly } : {}), now, buyerAccess: buyerAccess ?? { assertWallet() { counters.buyerAccess++; } }, ...RECEIPT_LIMITS,
       dacsProtocol: { walletAgreement: { sourceCapability: native.source, network: 'testnet', rpcUrl: native.source.pins.endpoint, journal: native.journal, bridgeFor: () => ({}) },
         nativeSellerCommitment: commitment,
         ...(unpaid ? {} : { nativeAgreementPayment: native.source, sellerTransport,
           nativePaymentEvidence: createNativePaymentEvidenceConsumer({ rpcUrl: native.source.pins.endpoint, sourceCapability: evidenceSource }) }),
         ...(demDeliveryContext ? { demDeliveryContext } : { agreementContext }), sellerEndpoint: (claim, options) => { counters.sellerLookups++; return sellerEndpoint(claim, options); } } });
-    const service = createPurchaseService({ db, ops, coordinates, store, accounts, verifier, chain, protocol,
-      challenges, config: { demAmountEncoding: 'os-string', publicOrigin: APPROVAL_ORIGIN }, now, purposes, admission, stopped, feeCeilingOs,
+    const service = createPurchaseService({ db, ops, coordinates, store, accounts: accountsFor(accounts), verifier, chain, protocol,
+      challenges, config: { demAmountEncoding: 'os-string', publicOrigin: APPROVAL_ORIGIN, ...(nonceSlotProof ? { nonceSlotProof } : {}) }, now, purposes, admission, stopped, feeCeilingOs,
       ...(passiveOnly ? { passiveOnly } : {}) });
     return { protocol, service };
   };

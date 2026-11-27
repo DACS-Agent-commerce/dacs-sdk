@@ -30,7 +30,8 @@
 // All approval and payment handoffs, including legacy purchases without
 // terms.protocol, remain held by the package's purchase-action admission.
 import { createPortalCapability } from './portal-capability.mjs';
-import { contentHash } from './dacs/listing.mjs';
+import { canonicalize, contentHash } from './dacs/listing.mjs';
+import { isLocalPurchaseAccount } from './host/local-account.mjs';
 import { walletPurposes } from './seams/wallet-actions-not-wired.mjs';
 import { generateCanonicalJobId, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { OperationError, requestHashOf } from './client-errors.mjs';
@@ -61,6 +62,8 @@ const MAX_OBSERVATION_REASON_LENGTH = 240;
 const JOB_ID_ATTEMPTS = 3; // fresh ids tried when the unique job_id index refuses one.
 const RELEASE_AMOUNT_OS = '1000000000'; // 1 DEM: the self-transfer that takes a handed-off payment's nonce slot.
 const MAX_TRANSFER_IDENTIFIER_LENGTH = 66; // 32-byte hex, optionally prefixed with 0x.
+const PASSIVE_STAGES = new Set(['anchor', 'payment']);
+const PASSIVE_REQUEST_KEYS = new Set(['accountId', 'operationId', 'stage', 'signal']);
 function errorText(error) {
   let text = 'chain reader failed';
   try {
@@ -195,7 +198,7 @@ export function approvalBinding(operation) {
 // CORE §11.1.2(3): profile admission is held while the one constant says so;
 // readback chooses its projection on each call. Host diagnostics are not
 // artifact verification or the archival path described in §11.1.2(4).
-// `passiveOnly: true` keeps every reader on the diagnostic projection after the hold lifts; the native lane readback has none.
+// `passiveOnly: true` keeps every reader on the diagnostic projection after the hold lifts; the native lane readback has none, and the passive stage read answers unavailable.
 // verifyDeal accepts an optional signal to cancel its passive chain reads.
 export function createPublicPurchaseService({ passiveOnly, ...options }) {
   return createPurchaseService(options, () => passiveOnly === true || !purchaseActionsAdmitted());
@@ -1194,6 +1197,87 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
         : null, ...OBSERVATION_LIMITS } });
   }
 
+  const passiveNotFound = () => new OperationError('not_found', 'purchase not found for this account');
+  // The purchase a passive stage read answers for, with no chain read: `accounts` is this package's local account for `accountId`, whose
+  // one wallet is the purchase's buyer wallet, and the protocol's buyer access holds (its refusal propagates). Else not_found.
+  function passiveOwner(accountId, operationId) {
+    if (!isLocalPurchaseAccount(accounts) || accounts.accountId !== accountId) throw passiveNotFound();
+    const operation = ops.get(accountId, operationId);
+    if (!operation || operation.kind !== 'purchase' || operation.accountId !== accountId || operation.id !== operationId) throw passiveNotFound();
+    const wallets = accounts.listWallets(accountId);
+    if (wallets.length !== 1 || wallets[0].address !== operation.terms.buyer.wallet) throw passiveNotFound();
+    protocol?.assertBuyerAccess?.(operation.terms.buyer.wallet, operation);
+    return operation;
+  }
+
+  // True when the body's amount, and a native send's own amount argument when it carries one, are the observed OS amount. The node
+  // projects content.amount as OS text or an OS number; a native argument is OS text or a whole-DEM number.
+  function slotBodyAmountAgrees(content, amountOs) {
+    const projected = content?.amount;
+    if (projected !== amountOs && !(Number.isSafeInteger(projected) && String(projected) === amountOs)) return false;
+    const args = content.type === 'native' && Array.isArray(content.data) && content.data[0] === 'native' ? content.data[1]?.args : undefined;
+    if (args === undefined) return true;
+    if (!Array.isArray(args) || args.length !== 2) return false;
+    const argument = args[1];
+    return argument === amountOs || (Number.isSafeInteger(argument) && argument > 0 && (BigInt(argument) * 1_000_000_000n).toString() === amountOs);
+  }
+
+  // The included transfer `hash`, read passively, when its canonical body is the wallet's confirmed transaction at `nonce`, in
+  // the observed block, paying the observed payee and amount; null otherwise.
+  async function passiveSlotTransfer(hash, { wallet, nonce, allowUnretained, signal }) {
+    const seen = transferObservationRecord(await chain.observePassiveTransfer(hash, { signal, allowUnretained }), hash);
+    if (seen.status !== 'included') return null;
+    const body = await chain.getTransaction(hash, { signal });
+    if (!slotBodyAgrees(body, seen, { hash, wallet, nonce }) || !same(body.content?.to, seen.payee) || !slotBodyAmountAgrees(body.content, seen.amountOs)) return null;
+    return body.blockNumber === undefined || body.blockNumber === seen.blockNumber ? seen : null;
+  }
+
+  // The payment stage's decisive answer, or null. `verified` needs the reported transfer itself (a native payment also its retained signed
+  // transfer); `unused` needs account nonce-slot proof that another confirmed transaction took the reserved nonce, never this payment.
+  async function passivePaymentRead(operation, { signal }) {
+    const t = operation.terms, coords = coordinates.get(operation.id), wallet = t.buyer.wallet;
+    if (!coords || !same(coords.from, wallet) || !same(coords.target, t.seller.payee) || coords.amountOs !== t.price.amountOs || coords.network !== t.network) return null;
+    const { chainIdentity } = await assertBoundDomain(operation, { signal });
+    if (typeof chain.observePassiveTransfer !== 'function') return null;
+    const nonce = coords.expectedNonce, pays = (seen) => same(seen.payee, t.seller.payee) && seen.amountOs === t.price.amountOs;
+    if (coords.reportedTxHash) {
+      const hash = canonicalHash(coords.reportedTxHash), native = usesNativeAgreementPayment(operation);
+      const seen = await passiveSlotTransfer(hash, { wallet, nonce, allowUnretained: !native, signal });
+      const disposed = Object.hasOwn(seen ?? {}, 'sourceDisposition') ? seen.sourceDisposition === 'included' : !native;
+      if (seen && pays(seen) && disposed) return { status: 'verified', evidence: { txHash: hash, nonce, chainIdentity } };
+    }
+    if (!slotProofEnabled || !(await chain.getAddressNonce(wallet) >= nonce)) return null;
+    signal.throwIfAborted();
+    const slot = await chain.findTransferAtNonce(wallet, nonce, { signal });
+    if (slot?.status !== 'found') return null;
+    const slotHash = canonicalHash(slot.hash);
+    const taker = await passiveSlotTransfer(slotHash, { wallet, nonce, allowUnretained: true, signal });
+    return taker && !pays(taker) ? { status: 'unused', evidence: { reservedNonce: nonce, consumingTxHash: slotHash, chainIdentity } } : null;
+  }
+
+  // One stage of one purchase from authenticated rows and pinned passive reads under one chainReadTimeoutMs deadline; it writes and sends
+  // nothing. The anchor stage, a held and a passive-only service answer unavailable after authentication with no chain read; so does any
+  // read failure, deadline, abort, hold landing or retained row change during the reads.
+  async function verifyDealPassive(request) {
+    if (!request || typeof request !== 'object' || Array.isArray(request) || Object.keys(request).some((key) => !PASSIVE_REQUEST_KEYS.has(key))) throw new TypeError('passive_request_invalid');
+    const { accountId, operationId, stage, signal } = request;
+    if (typeof accountId !== 'string' || !accountId || typeof operationId !== 'string' || !operationId) throw passiveNotFound();
+    if (!PASSIVE_STAGES.has(stage) || (signal !== undefined && !(signal instanceof AbortSignal))) throw new TypeError('passive_request_invalid');
+    const operation = passiveOwner(accountId, operationId);
+    const unavailable = Object.freeze({ status: 'unavailable', stage, operationId });
+    if (stage === 'anchor' || diagnostic()) return unavailable;
+    const readRows = () => ({ snapshot: canonicalize({ operation: ops.get(accountId, operationId) ?? null, coords: coordinates.get(operationId) ?? null }) });
+    try {
+      const before = readRows();
+      const answer = await raceWithDeadline((options) => passivePaymentRead(operation, options), { timeoutMs: chainReadTimeoutMs, signal });
+      if (!answer || diagnostic()) return unavailable;
+      assertRetainedProofUnchanged(readRows, before);
+      return Object.freeze({ status: answer.status, stage, operationId, evidence: Object.freeze(answer.evidence) });
+    } catch {
+      return unavailable;
+    }
+  }
+
   async function verifySettlement(operation) {
     if (diagnostic()) return diagnosticReadback(operation);
     // Unverified readback cannot undo a nonce-proven cancellation.
@@ -1756,7 +1840,7 @@ export function createPurchaseService({ db, config, ops, coordinates, accounts, 
   }
 
   const service = {
-    prepare, status, issueApprovalChallenge, approve, prepareHandoff, nativePaymentLane, nativePaymentLaneRead, reportWalletResult, verifyDeal, cancel, portalOperation, portalEvidence,
+    prepare, status, issueApprovalChallenge, approve, prepareHandoff, nativePaymentLane, nativePaymentLaneRead, reportWalletResult, verifyDeal, verifyDealPassive, cancel, portalOperation, portalEvidence,
     agreementIdentity, agreementDelegation, sessionRenewal, sessionRenewalAccept, agreementPlan, planRunning, agreementSubmit, completionRequest, completionCountersign, protocolRecheck,
   };
   stopRefusalRecorders.set(service, suspendOnStopRefusal);

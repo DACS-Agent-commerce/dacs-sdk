@@ -168,6 +168,12 @@ async function effectEntries() {
   await attempt('storageWriteRpcSigner', () => storageWriteRpcSigner({ claim: 'writer', sign: signBytes }, 'writer')('message'));
   const { createSellerNodeWallet } = await import('../../src/devnet-demo/seller-node-wallet.mjs');
   await attempt('createSellerNodeWallet', () => createSellerNodeWallet({ dataDirectory: directory, keyRecord: new Uint8Array(1) }));
+  // The payment-evidence pass has no construction guard; each effect member refuses before its runCreate or adapter is reached.
+  const { createPaymentEvidencePass } = await import('../../src/dacs/payment-evidence-pass.mjs');
+  const evidenceAdapter = Object.fromEntries(['approveAhead', 'signCreate', 'approveSendAhead', 'broadcast', 'readAccountNonce', 'readTransactionState']
+    .map((name) => [name, async () => { effects.sends++; }]));
+  const evidencePass = createPaymentEvidencePass({ runCreate: async () => { effects.signs++; }, adapter: evidenceAdapter });
+  for (const member of ['approveAhead', 'signCreate', 'approveSendAhead', 'broadcast']) await attempt(`paymentEvidence.${member}`, () => evidencePass[member]({}, {}));
   const { createSellerWalletSession } = await import('../../src/devnet-demo/seller-wallet-session.mjs');
   await attempt('createSellerWalletSession', () => createSellerWalletSession({ loadKeyRecord: () => { effects.signs++; } }));
 

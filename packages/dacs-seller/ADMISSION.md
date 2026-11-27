@@ -148,6 +148,19 @@ Both records require verified, established `finalized` receipts on every answer.
 Checkpoints reuse retained signatures; unknown signing outcomes stay held.
 The seller writes and signs both Vet records as orchestrator (known testnet gap G3); the buyer-written Vet arrives in N1.
 
+A buyer's enrollment can come from `openVerifiedEnrollmentReader`, which
+accepts only answers signed by the node key the operator pins. Its result is
+every signed entry for the buyer, revoked ones included, or `[]` for a signed
+complete empty set. Each call reads the node again with a fresh nonce; nothing
+is cached. A failed read never becomes an empty list. It rejects with an
+`enrollment_*` refusal: a bad signature, another signer, nonce, claim, Listing
+pin, chain or block, a malformed or oversized answer, a timeout, a changed
+connection, a closed reader or an unavailable node. When the session admission
+reads it on a first presentation, that rejection becomes
+`session_admission_unavailable` (503) with the enrollment refusal as its cause.
+No presentation is accepted, and no purchase step signs or sends anything.
+enrollment-host.test.mjs covers this path.
+
 Buyer-side seller requirements are not a capability of this route: an extra
 request scope field is refused. The seller is evaluated against that empty
 requirement, independently of the Listing's buyer requirement, during initial
@@ -238,6 +251,16 @@ Capacity lookup work is bounded by retained rows with indexed effect/job referen
 
 The host supplies participant enrollment through `participantImplementations`; this package supplies none. The pair from `createNodeAuthorityReader`
 decides the connection scope alone; the staged seller reader's `readParticipantEvidence({ claim, sessionId, signal })` reads the enrollment on every job read.
+
+The wallet-session port's `sessionAdmission.admit` reads the same host source on every call and admits a buyer only with exactly one current,
+unrevoked enrollment with evidence, on the bound profile and the TP-1 module tuple. A buyer with more than one enrollment entry for this seller
+and Listing, for example a revoked entry and a later re-enrollment, is refused; re-enrollment is planned for a later release.
+
+The port's chain readers refuse `wallet_session_not_finalized` before finalization, `wallet_session_closed` after a close and `reader_input_missing`
+without the option they read (`participantImplementations` for `admit`, `sessionOf` for `observePayment`). A failed admission read refuses
+`session_admission_unavailable`. The Listing's revocation marker is read from the chain, and no read can prove that a marker is absent: a missing
+or unauthenticated marker is unavailable and refuses `session_admission_unavailable`, so an unrevoked Listing is not admitted until revocation
+absence can be proven. `observePayment` refuses `payment_unverified` whenever it cannot prove the payment verified or absent.
 
 Run the seller checks from the repository root after building the core:
 

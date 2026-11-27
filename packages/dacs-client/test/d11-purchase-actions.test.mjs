@@ -14,7 +14,7 @@ import { createOperationStore } from './helpers/purchase-integrity-operations.mj
 // held protocol recheck.
 const SERVICE_HELD = ['prepare', 'issueApprovalChallenge', 'approve', 'prepareHandoff', 'nativePaymentLane',
   'agreementIdentity', 'agreementDelegation', 'sessionRenewal', 'sessionRenewalAccept', 'agreementPlan', 'agreementSubmit', 'completionRequest', 'completionCountersign'];
-const SERVICE_OPEN = ['status', 'reportWalletResult', 'verifyDeal', 'cancel', 'portalOperation', 'portalEvidence', 'planRunning', 'protocolRecheck', 'nativePaymentLaneRead'];
+const SERVICE_OPEN = ['status', 'reportWalletResult', 'verifyDeal', 'cancel', 'portalOperation', 'portalEvidence', 'planRunning', 'protocolRecheck', 'nativePaymentLaneRead', 'verifyDealPassive'];
 const PROTOCOL_HELD = ['prepareTerms', 'identityRequest', 'sessionRenewal', 'sessionRenewalAccept', 'planRequest', 'signRequest', 'submitAgreement',
   'recheckCommitment', 'recheck', 'withNativePaymentLane', 'readNativePaymentLane'];
 const PROTOCOL_COMPLETION_HELD = ['checkDelivery', 'countersignRequest', 'countersign'];

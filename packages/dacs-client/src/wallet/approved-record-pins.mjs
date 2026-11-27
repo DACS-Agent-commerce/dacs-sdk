@@ -3,8 +3,7 @@ import { createHash } from 'node:crypto';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { OperationError } from '../client-errors.mjs';
-import { AUTHORITY_READ_DEADLINE_MS, admitPublicFactory } from '../public-admission.mjs';
-import { observeWithDeadline, OutboundError } from '../util/http.mjs';
+import { admitPublicFactory } from '../public-admission.mjs';
 import { DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, DEVNET_NODE2_BLOCK_LAYOUT, TP1_REVIEWED_BLOCK_TWO_HASH } from './devnet-native-transport.mjs';
 
 export const NODE_WALLET_NETWORK = TP1_APPROVED_IDENTITY_RECORD.network;
@@ -13,14 +12,7 @@ const IDENTITY_RECORD_DIGEST = createHash('sha256').update(canonicalize(TP1_APPR
 /** Throws an `OperationError` whose code and message are `code`, with `cause` when one is given. */
 export const fail = (code, cause) => { throw new OperationError(code, code, undefined, cause === undefined ? undefined : { cause }); };
 
-// Runs one authority or node read under the 10 s deadline; a timeout is tp1_authority_timeout with the timer's error as cause.
-export async function withinAuthorityDeadline(read, signal) {
-  try { return await observeWithDeadline(read, { timeoutMs: AUTHORITY_READ_DEADLINE_MS, signal }); }
-  catch (error) {
-    if (error instanceof OutboundError && error.kind === 'timeout') throw new OperationError('tp1_authority_timeout', 'the authority read did not answer within the deadline', undefined, { cause: error });
-    throw error;
-  }
-}
+export { withinAuthorityDeadline } from './node-observer.mjs';
 
 // The construction checks (admission shape, untrusted options, Node floor) run before anything is built or imported.
 export const checkConstruction = admitPublicFactory(options => ({ options }), { purchase: true });
