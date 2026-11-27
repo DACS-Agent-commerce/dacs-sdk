@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF count the read-only Listing verifier entry in the package contents test",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/package-contents.test.mjs",
+      "before": "6113dfb585e09aca6836e83ede25ee1bb703d7a2",
+      "after": "d6ea8b49c44cf0a7b24fe954286b324de66ccc38"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-b048e6a58577.json",
+    "packages/dacs-client/test/package-contents.test.mjs"
+  ]
+}
