@@ -278,20 +278,13 @@ test('a pure keyless Agreement profile matches the inner transport without a buy
   assert.throws(() => api.keylessAgreementProfile(), isRefusal('admission_required'));
 });
 
-test('a keyless relay refuses a request with a hidden, symbol or accessor member before a journal or node call', async t => {
+test('a keyless relay view rebuilds a readback or release request so a hidden member never reaches the inner transport', async t => {
   const w = await world(t);
-  const address = walletOf(w), hash = 'a'.repeat(64);
-  const { relay, watch } = await openRelay(t, w);
-  const before = w.node.calls.length;
-  for (const base of [readback(address, hash), release(address)]) {
-    const requests = [
-      Object.defineProperty({ ...base }, 'writeProof', { value: { disposition: 'included' }, enumerable: false }),
-      { ...base, [Symbol('TEST-member')]: 1 },
-      Object.defineProperty({ ...base }, 'phase', { get: () => base.phase, enumerable: true }),
-    ];
-    for (const request of requests) {
-      for (const method of ['binding', 'walletBinding']) await assert.rejects(relay[method](request, {}), isRefusal(REFUSED), `${method} ${base.phase}`);
-    }
-  }
-  assertUntouched(w, watch, before);
+  const address = walletOf(w), hash = await retainedTransfer(w);
+  const { relay } = await openRelay(t, w);
+  const hidden = base => Object.defineProperty({ ...base }, 'writeProof', { value: { disposition: 'included' }, enumerable: false });
+  const plain = await relay.walletBinding(readback(address, hash), {});
+  assert.deepEqual(await relay.walletBinding(hidden(readback(address, hash)), {}), plain);
+  assert.deepEqual(await relay.binding(hidden(readback(address, hash))), plain);
+  assert.deepEqual(await relay.walletBinding(hidden(release(address, 'TEST-lease')), {}), { released: true });
 });

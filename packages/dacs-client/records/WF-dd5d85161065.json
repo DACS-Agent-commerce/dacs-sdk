@@ -1,0 +1,23 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF keep the passive keyless view's request check as it was and test that a hidden member is not forwarded",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+      "before": "fce439c73ccd0af4cf25f021f636461bc0c4c4b2",
+      "after": "3cbc5fe072ce068a30c86af5c745b5bc754bb602"
+    },
+    {
+      "path": "packages/dacs-client/test/keyless-agreement-transport.test.mjs",
+      "before": "44b96ed089a4746a7382c7286455a8e917e4e22c",
+      "after": "bef3195da0622a801e6a0df647dd3b215c1c0525"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-dd5d85161065.json",
+    "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+    "packages/dacs-client/test/keyless-agreement-transport.test.mjs"
+  ]
+}
