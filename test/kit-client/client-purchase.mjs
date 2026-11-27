@@ -54,7 +54,7 @@ export async function purchaseWorld(t, { host, listing }) {
   const commitment = createDevnetNativeCommitmentCapability({ authority: COMMITMENT_AUTHORITY,
     anchor: { authority: COMMITMENT_AUTHORITY, readRetained() { throw new Error('TEST not used'); }, verifyReceipt() { throw new Error('TEST not used'); } } });
   const chain = { network: 'testnet', pinnedIdentity: IDENTITY, networkIdentity: async () => ({ identity: IDENTITY, mode: 'public-chain-read' }),
-    getAddressBalance: async () => 10n ** 20n, getTransactionFees: async () => 1n, broadcasts: 0,
+    getAddressBalance: async () => 10n ** 20n, getTransactionFees: async () => 1n, getAddressNonce: async () => 0, broadcasts: 0,
     observePassiveTransfer: async () => ({ status: 'not-found' }), broadcastTransaction: async () => { chain.broadcasts++; } };
   const verifier = { verify: async () => ({ transactable: true, payee: seller.address, price: { amount: '2.5', currency: 'DEM', amountOs: '2500000000' }, contentHash: contentHash(listing),
     anchor: { kind: 'storage-program', locator: 'TEST-locator' }, listing, checks: [], evidence: {} }) };

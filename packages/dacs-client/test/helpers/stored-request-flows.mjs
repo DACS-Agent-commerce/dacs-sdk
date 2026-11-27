@@ -17,10 +17,12 @@ const FLOW_PATHS = { agreement: PATHS.proposals, commit: PATHS.commitments, sign
  * Runs one of the five seller flows through the real protocol service: `sellerFor`, the request records, wire
  * verification, SQLite saves and the note reducers. The coordinator and the authenticated source readbacks are
  * supplied at their existing seams. `factoryOptions` adds to or replaces the protocol factory's options: `stopped`, and the
- * per-write fee ceiling (50 DEM) and fee-reading chain (a 1 OS fee) it is given by default.
+ * per-write fee ceiling (50 DEM) and fee-reading chain (a 1 OS fee) it is given by default. `termsPatch` adds members to the
+ * purchase's saved terms, such as the `network` a prepared purchase saves.
  */
-export async function sellerFlow(t, kind, beforeRun = () => {}, configOverrides = {}, factoryOptions = {}) {
+export async function sellerFlow(t, kind, beforeRun = () => {}, configOverrides = {}, factoryOptions = {}, termsPatch = {}) {
   const s = await storedWorld(t, { paid: true, configureTerms(terms, listing) {
+    Object.assign(terms, termsPatch);
     const unsigned = { ...listing };
     delete unsigned.signature;
     terms.listing = { listingId: listing.listingId, version: listing.listingVersion, contentHash: contentHash(unsigned) };
