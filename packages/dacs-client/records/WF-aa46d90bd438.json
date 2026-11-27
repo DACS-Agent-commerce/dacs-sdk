@@ -1,0 +1,23 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF refuse a non-http Directory origin and a non-object argument in the read-only Listing verifier",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/listing/read-only-verifier.mjs",
+      "before": "05ad21d14f2688a72546c13fca9e4e42393c4730",
+      "after": "792f8e253a57570ee1ba3cdd2101f53a9843e5e5"
+    },
+    {
+      "path": "packages/dacs-client/test/read-only-listing-verifier.test.mjs",
+      "before": "60a7f1b000682321315c545eb25185133a2a5607",
+      "after": "810c9caaeb83288e32dc441cc042b8f4dc87a17e"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-aa46d90bd438.json",
+    "packages/dacs-client/src/listing/read-only-verifier.mjs",
+    "packages/dacs-client/test/read-only-listing-verifier.test.mjs"
+  ]
+}

@@ -42,7 +42,7 @@ ReadOnlyListingError.prototype.name = 'ReadOnlyListingError';
 
 const refuse = (reason) => { throw new ReadOnlyListingError(reason); };
 
-const isOrigin = (value) => typeof value === 'string' && URL.canParse(value) && new URL(value).origin === value;
+const isOrigin = (value) => typeof value === 'string' && URL.canParse(value) && new URL(value).origin === value && ['http:', 'https:'].includes(new URL(value).protocol);
 const isHttpUrl = (value) => typeof value === 'string' && URL.canParse(value) && ['http:', 'https:'].includes(new URL(value).protocol);
 
 function assertOptions({ directoryOrigin, rpcUrl, network, pinnedIdentity, directoryFetchImpl, chainFetchImpl, now }) {
@@ -118,7 +118,9 @@ function budgetedFetch(fetchImpl, budget, deadline) {
  *
  * The factory throws, and `verify` rejects with, ReadOnlyListingError.
  */
-export function createReadOnlyListingVerifier({ directoryFetchImpl = globalThis.fetch, chainFetchImpl = globalThis.fetch, now = () => Date.now(), ...endpoints } = {}) {
+export function createReadOnlyListingVerifier(options = {}) {
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) refuse('listing_input_invalid');
+  const { directoryFetchImpl = globalThis.fetch, chainFetchImpl = globalThis.fetch, now = () => Date.now(), ...endpoints } = options;
   const { directoryOrigin, rpcUrl, pinnedIdentity } = endpoints;
   assertOptions({ ...endpoints, directoryFetchImpl, chainFetchImpl, now });
 

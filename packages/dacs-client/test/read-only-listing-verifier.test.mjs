@@ -331,3 +331,17 @@ test('read failures expose only fixed code and reason with no cause or node text
     assert.doesNotMatch(`${JSON.stringify(error)} ${error.stack}`, new RegExp(`${SECRET}|\\.invalid`), reason);
   }
 });
+
+test('the Directory origin must be http or https, and a non-object argument is refused as invalid input at construction', () => {
+  const { directoryFetchImpl, chainFetchImpl } = world();
+  const options = { directoryOrigin: DIRECTORY, rpcUrl: RPC, network: 'testnet', pinnedIdentity: PIN, directoryFetchImpl, chainFetchImpl };
+  for (const directoryOrigin of ['ftp://directory.invalid', 'ws://directory.invalid', 'file://']) {
+    assert.throws(() => createReadOnlyListingVerifier({ ...options, directoryOrigin }), { name: 'ReadOnlyListingError', reason: 'listing_input_invalid' }, directoryOrigin);
+  }
+  for (const directoryOrigin of ['https://directory.invalid', 'http://directory.invalid']) {
+    assert.equal(typeof createReadOnlyListingVerifier({ ...options, directoryOrigin }).verify, 'function', directoryOrigin);
+  }
+  for (const argument of [null, 42, 'options', true, []]) {
+    assert.throws(() => createReadOnlyListingVerifier(argument), (error) => error instanceof ReadOnlyListingError && error.reason === 'listing_input_invalid', String(argument));
+  }
+});
