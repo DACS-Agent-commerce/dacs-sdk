@@ -1302,7 +1302,7 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   anchor's `buyerAccess` (`null` by default, which refuses every job's write
   and read with `buyer_access_closed`), and three optional inputs of its chain readers:
   `participantImplementations` (`{ entriesFor }`, the host's enrollment source),
-  `sessionOf(jobId)` (the seller's durable session view) and `trustedFinality` (a plain
+  `sessionOf(jobId)` (the seller's durable session view; `observePayment` answers `absent` only for a view with `settlementBound: false`, which the seller's own `durableSessionOf` carries) and `trustedFinality` (a plain
   object, the operator's pinned finality checkpoint); any other option, or one of
   these three of another type, is a TypeError. The
   `endpoint` is an https root (plain http refuses `transport_mismatch`). Its readers come from

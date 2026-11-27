@@ -38,7 +38,7 @@ const fx = await protocolFixture();
 const TERMS = agreementTerms(fx.agreement), AGREEMENT_HASH = contentHash(fx.agreement);
 const TX = 'ab'.repeat(32), BLOCK = 77, COMMITTED_AT = NOW - 60_000;
 const unpaidSession = (patch = {}) => ({ jobId: fx.agreement.jobId, agreement: fx.agreement, agreementHash: AGREEMENT_HASH, buyerBundle: fx.buyerBundle,
-  commitment: { committedAt: COMMITTED_AT }, ...patch });
+  commitment: { committedAt: COMMITTED_AT }, settlementBound: false, ...patch });
 const paidSession = (patch = {}, settlementIdentity = { txHash: TX, blockNumber: BLOCK }) => unpaidSession({ nativeEvidenceWork: { txHash: TX, intake: { settlementIdentity } }, ...patch });
 const transfer = (patch = {}) => ({ status: 'included', execution: 'executed', txHash: TX, payer: buyer.address, payee: TERMS.payee, amountOs: TERMS.price.amountOs,
   blockNumber: BLOCK, includedAt: NOW, ...patch });
@@ -526,6 +526,28 @@ test('with no payment or settlement reference visible in the durable session, an
     assert.equal((await refusalOf(readers.observePayment(paymentQuery(), LIMITS))).code, 'payment_unverified', String(identity));
   }
   assert.equal((await refusalOf(world.readers({ sessionOf: undefined }).observePayment(paymentQuery(), LIMITS))).code, 'reader_input_missing');
+});
+
+test('a session without a payment reference whose settlementBound is true, missing, null or a string rejects payment_unverified and reads neither the chain identity nor the transfer', async () => {
+  const world = scriptedChain(), readers = world.readers();
+  const missing = unpaidSession();
+  delete missing.settlementBound;
+  for (const session of [unpaidSession({ settlementBound: true }), missing, unpaidSession({ settlementBound: null }), unpaidSession({ settlementBound: 'false' })]) {
+    world.session = session;
+    const refused = await refusalOf(readers.observePayment(paymentQuery(), LIMITS));
+    assert.deepEqual([refused.code, refused.message], ['payment_unverified', 'a settlement is bound to the job without its payment reference']);
+  }
+  assert.deepEqual([world.count('observeIdentity'), world.count('observeTransfer')], [0, 0]);
+});
+
+test('a session with a retained payment reference answers verified whether settlementBound is true or missing', async () => {
+  const world = scriptedChain(), readers = world.readers();
+  const missing = paidSession();
+  delete missing.settlementBound;
+  for (const session of [paidSession({ settlementBound: true }), missing]) {
+    world.session = session;
+    assert.equal((await readers.observePayment(paymentQuery(), LIMITS)).disposition, 'verified');
+  }
 });
 
 test('a session with payment, paymentWork, settlementCredit indeterminate or another visible settlement reference but no nativeEvidenceWork rejects payment_unverified rather than answering absent; a throwing sessionOf keeps its seller_state_unverified cause', async () => {

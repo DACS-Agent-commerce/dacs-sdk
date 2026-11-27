@@ -236,6 +236,7 @@ export function createNodeChainReaders(inputs) {
     const work = session.nativeEvidenceWork, retained = work?.intake?.settlementIdentity;
     if (retained === undefined || retained === null) {
       if (PAYMENT_MEMBERS.some((name) => session[name] !== undefined && session[name] !== null)) throw paymentUnverified('a payment is recorded without its payment reference');
+      if (session.settlementBound !== false) throw paymentUnverified('a settlement is bound to the job without its payment reference');
       if (await observeIdentity({ signal, timeoutMs: READ_TIMEOUT_MS }) !== binding.profile.chainIdentity) throw paymentUnverified('the connection does not read as the bound chain');
       return reading('absent', null);
     }
@@ -251,7 +252,7 @@ export function createNodeChainReaders(inputs) {
   }
 
   // The approval policy's payment observer: `verified` only for a transfer observed on this call, `absent` only when the session
-  // records no payment and the connection reads as the bound chain now; anything else rejects payment_unverified, keeping its cause.
+  // records no payment, its view says no settlement is bound to the job, and the connection reads as the bound chain now; anything else rejects payment_unverified, keeping its cause.
   async function observePayment(query, { timeoutMs, maxBytes, signal } = {}) {
     const session = bound();
     if (typeof sessionOf !== 'function') throw readerInputMissing('sessionOf');
