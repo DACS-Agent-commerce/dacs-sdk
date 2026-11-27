@@ -1,17 +1,12 @@
 // A keyless relay of a buyer wallet's own signed TP-1 payment or Agreement CREATE. The wallet signs every transaction and every
 // RPC authentication; the relay checks them and confirms and broadcasts the exact signed bytes through the client's effect
 // boundary. It holds no key, signs nothing and loads no demosdk.
-import { POSITIVE_OS_AMOUNT } from '../public-admission.mjs';
-import { approvedSourcePolicy, checkAdmission, checkConstruction, fail, hasOnlyDataMembers, readExpectedPins } from './approved-record-pins.mjs';
-import { createDevnetAgreementTransport, registerHeldTransportFacade } from './devnet-native-transport.mjs';
+import { fail, hasOnlyDataMembers } from './approved-record-pins.mjs';
+import { registerHeldTransportFacade } from './devnet-native-transport.mjs';
 import { createHeldTransportFacade } from './held-transport-facade.mjs';
-import { JOURNAL_METHODS } from './keystore-wallet-opener.mjs';
+import { openKeylessInnerTransport } from './keyless-inner-transport.mjs';
 import { relayPassContext } from './pass-context.mjs';
-import { hasKeys } from './payload-helpers.mjs';
-import { finalizeEffectBoundary } from './shared-wallet-effect-boundary.mjs';
 
-const RELAY_OPTION_NAMES = ['admission', 'owner', 'journal', 'stopped', 'feeCeilingOs'];
-const RELAY_OWNER_METHODS = ['currentLocal', 'getContext', 'acquireConnectionFence', 'fetchImpl'];
 const RELAY_NODE_READS = ['getNetworkInfo', 'getNetworkParameters', 'getAddressNonce'];
 const RELAY_EXECUTE_STAGES = ['confirmTx', 'broadcastTx'];
 // The exact members of each wallet phase the relay forwards; a signature request may also name its transfer.
@@ -21,16 +16,6 @@ const WALLET_PHASES = Object.keys(WALLET_PHASE_KEYS);
 const READBACK_PHASES = ['readback'];
 const TRANSFER_KEYS = ['nonce', 'to', 'amountOs', 'payloadDigest'];
 const WRITE_REFUSED = 'keyless_relay_write_refused';
-
-// The construction checks after the admission shape, in order; none of them calls the owner or the journal.
-function checkRelayOptions(options) {
-  if (!hasKeys(options, RELAY_OPTION_NAMES)) throw new TypeError('keyless_relay_options_invalid');
-  const { owner, journal, stopped, feeCeilingOs } = options;
-  if (typeof feeCeilingOs !== 'string' || !POSITIVE_OS_AMOUNT.test(feeCeilingOs)) throw new TypeError('keyless_relay_fee_ceiling_invalid');
-  if (typeof stopped !== 'function') throw new TypeError('keyless_relay_stop_invalid');
-  if (!RELAY_OWNER_METHODS.every(name => typeof owner?.[name] === 'function')) throw new TypeError('keyless_relay_owner_invalid');
-  if (!JOURNAL_METHODS.every(name => typeof journal?.[name] === 'function')) throw new TypeError('keyless_relay_journal_invalid');
-}
 
 // A wallet request the relay forwards: one of `phases` with exactly that phase's members, a string lease id and hash, and for a
 // signature an optional transfer of exactly its four terms. It is rebuilt from the checked members, so no server proof gets through.
@@ -86,14 +71,8 @@ function assertNotStopped(stopped) {
  * stop_check_invalid), write-fee-cap over the ceiling, or the transport's own refusal.
  */
 export async function createKeylessSignedRelayTransport(options) {
-  checkConstruction(options);
-  checkRelayOptions(options);
-  const { admission, owner, journal, stopped, feeCeilingOs } = options;
-  await checkAdmission(admission, owner);
-  const expected = readExpectedPins(admission.binding, owner);
-  const boundary = finalizeEffectBoundary({ owner, journal, admission, stopped, feeCeilingOs });
-  const inner = createDevnetAgreementTransport({ expected, transportOwner: owner, journal, fetchImpl: (input, init) => owner.fetchImpl(input, init), boundary,
-    ...approvedSourcePolicy(), networkFeeCeilingOnly: true, noRepeatUnknownConfirm: true });
+  const stopped = options?.stopped;
+  const { inner, admission } = await openKeylessInnerTransport(options);
   const held = createHeldTransportFacade({ admission, transport: inner });
   const nativeTransport = Object.freeze({
     async binding(request) { return held.binding(checkWalletRequest(request, READBACK_PHASES)); },
