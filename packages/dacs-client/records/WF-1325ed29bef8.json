@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF import the canonical core entry in the client errors",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/client-errors.mjs",
+      "before": "242423938795f24b31349c0477c6b9942059d930",
+      "after": "819723864a5f9fdf23c7a32f8293c4be2f34c888"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-1325ed29bef8.json",
+    "packages/dacs-client/src/client-errors.mjs"
+  ]
+}
