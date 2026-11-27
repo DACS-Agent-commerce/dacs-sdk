@@ -1316,8 +1316,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   read that cannot be authenticated, or a missing marker, is unavailable, so admission refuses
   `session_admission_unavailable`. With `trustedFinality`, an authenticated marker's storage
   address is also asked for its storage proof and the node for its finalized head, each reply at
-  most 64 KiB and both within 1.5 seconds; the replies are not verified yet and change nothing, so
-  a revoked marker still refuses and a missing one stays unavailable. Without `trustedFinality`
+  most 64 KiB and both within 1.5 seconds. The reader does not verify the replies, and they change
+  nothing: a revoked marker still refuses and a missing one stays unavailable. Without `trustedFinality`
   neither read is sent. `observePayment` answers `verified` only for the retained
   payment transfer observed again on this call, `absent` only when the session records no payment
   and the connection reads as the bound chain, and otherwise refuses `payment_unverified`.
