@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { api, finalization, jsonResponse, ok, privateDataDirectory, T0 } from './helpers/seller-node-wallet-world.mjs';
-import { canonicalize, compositeVerificationAddress, contentHash, encodeAddressSegment, sha256Hex, signComponentArtifact } from '@kynesyslabs/dacs';
+import { canonicalize, compositeVerificationAddress, contentHash, encodeAddressSegment, sha256Hex } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 
 const { walletSessionWorld, LISTING_PIN } = await import('./helpers/seller-wallet-session-world.mjs');
@@ -20,7 +20,8 @@ const { createDemosSr2Adapter } = await import('../src/dacs/demos-sr2-adapter.mj
 const { agreementTerms } = await import('../src/dacs/purchase-protocol.mjs');
 const { isBoundedCallTimeout } = await import('../src/dacs/bounded-call.mjs');
 const { createSellerWalletSession } = await import('../src/devnet-demo/seller-wallet-session.mjs');
-const { REPLY_LIMIT_CODE, SELLER_PROFILE, listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem } = await import('../src/dacs/session-admission.mjs');
+const { REPLY_LIMIT_CODE, SELLER_PROFILE, sessionAdmissionConfig, sessionAdmissionProblem } = await import('../src/dacs/session-admission.mjs');
+const { markerWorld } = await import('./helpers/revocation-marker-world.mjs');
 const { sellerRecordsPurchaseResolver } = await import('../src/devnet-demo/seller-purchase-source.mjs');
 const { composeSellerApproval, createExactOperatorApproval } = await import('../src/devnet-demo/operator-approval.mjs');
 const { artifactAuthority, confirmationFor, deliveredHashFor, requestFor, sourceBinding } = await import('./helpers/d5-policy-fixtures.mjs');
@@ -93,27 +94,6 @@ const transferNode = (transferFacts) => (row) => {
 };
 const NODE_TRANSFER = { txHash: TX, payer: buyer.address, payee: TERMS.payee, amountOs: TERMS.price.amountOs, blockNumber: BLOCK, includedAt: NOW / 1000 };
 
-// A seller wallet world whose source serves the seller's signed revocation marker for the fixture Listing at its marker address,
-// changed by `change(fixture)`; with `storageMiss` the node answers every native storage read 404.
-async function markerWorld(t, { change = () => {}, storageMiss = false } = {}) {
-  const world = await sellerWalletWorld(t), source = world.wallet.sourceCapability;
-  const listingPin = { listingId: fx.listing.listingId, version: fx.listing.listingVersion, contentHash: contentHash(fx.listing) };
-  const marker = await signComponentArtifact({ listingId: listingPin.listingId, listingVersion: listingPin.version, listingContentHash: listingPin.contentHash, revokedAt: NOW - 1,
-    reason: 'TEST withdrawn' }, 'dacs-revocation:v1:', { algorithm: 'ed25519', signer: seller.claim, sign: seller.signBytes });
-  const logicalAddress = `dacs1-revoked:${encodeAddressSegment(seller.claim)}:${listingPin.listingId}:v${listingPin.version}`;
-  const f = readbackFixture({ logicalAddress, artifact: marker, artifactKind: 'RevocationMarker' });
-  resign(f, (content) => { content.network = source.pins.network; content.chainIdentity = source.pins.chainIdentity; content.data[1].metadata.networkBinding = structuredClone(source.transportBinding); });
-  change(f);
-  world.fixture = f; world.listingPin = listingPin; world.marker = marker; world.logicalAddress = logicalAddress;
-  const served = registeredSource(world, { fixture: f });
-  const readRpc = !storageMiss ? served.readRpc
-    : async (path, body, options) => { if (path.startsWith('/storage-program/')) throw Object.assign(new Error('TEST storage program not found'), { status: 404 }); return served.readRpc(path, body, options); };
-  world.readers = ({ pins, binding = world.admission.binding } = {}) => createNodeChainReaders({ claim: () => seller.claim, chain: () => Object.freeze({ anchor: null,
-    transport: registeredSource(world, { readRpc, ...(pins ? { pins: Object.freeze({ ...source.pins, ...pins }) } : {}) }), binding, observeIdentity: productionObserveIdentity(world),
-    clock: { now: () => NOW } }) });
-  world.coreCheck = (readers) => listingRevocationProblem(readers.sessionAdmission, { listing: fx.listing, listingPin, jobId: JOB, now: () => NOW });
-  return world;
-}
 const UNAVAILABLE = (readFailureReason) => [{ kind: 'catalog', status: 'active', readStatus: 'unavailable', readFailureReason }];
 
 test('the three chain readers reject wallet_session_not_finalized before finalize and wallet_session_closed after close with no read made, and a reader built without a chain thunk rejects reader_input_missing', async (t) => {

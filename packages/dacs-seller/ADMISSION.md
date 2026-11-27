@@ -260,7 +260,11 @@ The port's chain readers refuse `wallet_session_not_finalized` before finalizati
 without the option they read (`participantImplementations` for `admit`, `sessionOf` for `observePayment`). A failed admission read refuses
 `session_admission_unavailable`. The Listing's revocation marker is read from the chain, and no read can prove that a marker is absent: a missing
 or unauthenticated marker is unavailable and refuses `session_admission_unavailable`, so an unrevoked Listing is not admitted until revocation
-absence can be proven. `observePayment` refuses `payment_unverified` whenever it cannot prove the payment verified or absent.
+absence can be proven. A name-index search or a 404 is never taken as absence. With the operator's pinned finality checkpoint
+(`trustedFinality`), the reader also asks the node for the storage proof of an authenticated marker's address and for its finalized head,
+through the bound connection, each reply at most 64 KiB and both within 1.5 seconds; it verifies neither, so no proof reply can admit a Listing. Without
+the pin, or on a node without the proof method, neither read admits anything either: a missing marker refuses 503, and a revoked marker
+that reads back and verifies refuses 409. `observePayment` refuses `payment_unverified` whenever it cannot prove the payment verified or absent.
 
 Run the seller checks from the repository root after building the core:
 
