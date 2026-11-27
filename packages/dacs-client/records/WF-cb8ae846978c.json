@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add the read-only Demos address and claim parser module",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/read-only-address.mjs",
+      "before": null,
+      "after": "add8fe731cc39b76cb93449bbe1d80f790402d83"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-cb8ae846978c.json",
+    "packages/dacs-client/src/dacs/read-only-address.mjs"
+  ]
+}
