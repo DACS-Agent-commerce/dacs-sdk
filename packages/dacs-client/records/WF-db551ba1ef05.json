@@ -1,0 +1,58 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add the held delivery transport package entry for Deliverable publication",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "c4d427a79a50371be4dd0ad8eaa835feeb694aa8",
+      "after": "26108d8937cc4fa3cea331617b573c34201491d9"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-delivery-transport.mjs",
+      "before": null,
+      "after": "3d3afebafdb08bd040d177dba78e5b4fbd717f90"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+      "before": "409cb4197e63deace4c9de90808c7d84731c6054",
+      "after": "f6eb1e6b9bec251c7a8d3095570440dd6bc849f2"
+    },
+    {
+      "path": "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+      "before": "3a7f28c597379844eac47fe7f321792b54ffbd93",
+      "after": "5059c3b87c87881bbe800d8123dc03119e302791"
+    },
+    {
+      "path": "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+      "before": "f758210cb1268d887f076d60615a3b770fa4ac92",
+      "after": "a98ee4a17c0a3480d07ba43d182fd696aea12cc4"
+    },
+    {
+      "path": "packages/dacs-client/test/package-contents.test.mjs",
+      "before": "8824b36b990a9d5000aa8e493d649bb2ae2fa9d5",
+      "after": "883b89bbff547b1ad6937d20bc0b456d06a668af"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "2c14146673bbf2619a3bd697db7c33b449504993",
+      "after": "42f8f9adabc01b1556f2b7aa0c9c9df34033eaca"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-db551ba1ef05.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/src/wallet/devnet-delivery-transport.mjs",
+    "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+    "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+    "packages/dacs-client/test/node-wallet-seller-parts.test.mjs",
+    "packages/dacs-client/test/package-contents.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "scripts/release-policy.json"
+  ],
+  "note": "New package entry ./wallet/devnet-delivery-transport (src/wallet/devnet-delivery-transport.mjs) exports only createDevnetDeliveryTransport({admission, ...transportOptions}). It checks the admission shape with readAdmission before anything is built, constructs the existing internal Deliverable publication transport (devnet-native-transport.mjs, unchanged) and returns only its held facade from createHeldTransportFacade, so active members reject profile_not_admitted while held and the facade passes isDevnetSettlementTransport. The README describes the entry; the gate's pinned manifest, HOLD.json, the release policy's manifest pin and requiredExports, the exact-export tests and the entry closure name it. No other source file changes."
+}

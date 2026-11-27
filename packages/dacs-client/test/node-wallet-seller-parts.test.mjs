@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { api, agreementRequest, finalization, mnemonicBytes, setPurchaseAdmission, world } from './helpers/tp1-node-fixture.mjs';
 import { inPass, sellerPublications as publications } from './helpers/effect-gate-world.mjs';
 import { confirmThroughFacade, listingCreate, retainAcceptedCreate, signedTransaction, signingWallet } from './helpers/seller-facade-confirm.mjs';
 import { createWorld } from './helpers/native-create-world.mjs';
 import { recordingApproval } from './helpers/payment-evidence-approval-double.mjs';
 import { installNoEgress } from './helpers/no-egress.mjs';
+import { writingBoundary } from './helpers/transport-boundary.mjs';
 import * as nativeTransport from '../src/wallet/devnet-native-transport.mjs';
 
 const trap = installNoEgress();
@@ -283,6 +285,43 @@ test('binding readback snapshots its phase before the transport queues it', asyn
   await assert.rejects(w.session.transport.binding({ get phase() { return reads++ === 0 ? 'readback' : 'bind'; }, address, hash: request.hash }), { code: 'not_issued' });
   assert.equal(w.node.calls.length, 0);
   assert.deepEqual(await w.journal().entries(), []);
+});
+
+test('the packed client subpath exposes the held createDevnetDeliveryTransport; while held, active rpc and recovery reject profile_not_admitted with node calls 0; missing admission or wrong SettlementEvidence or Deliverable policy and authority refuses before any write; the broad private source path remains unexported', async t => {
+  const entry = await import('@kynesyslabs/dacs-client/wallet/devnet-delivery-transport');
+  assert.deepEqual(Object.keys(entry), ['createDevnetDeliveryTransport']);
+  const w = await seller(t, { held: true }), journal = w.journal();
+  const boundary = writingBoundary({ owner: w.owner, journal });
+  // The boundary helper admits purchase actions for its own writes; the package is held again for the delivery capability.
+  setPurchaseAdmission('held');
+  const { profile, local } = w.admission.binding;
+  const { settlementPublication, deliveryPublication } = publications();
+  const options = { expected: { network: TP1_APPROVED_IDENTITY_RECORD.network, chainIdentity: profile.chainIdentity, pinVersion: profile.pinVersion,
+    endpoint: local.endpoint, transportAuthority: local.transportAuthority }, transportOwner: w.owner, journal, boundary, fetchImpl: w.owner.fetchImpl,
+  settlementPublication, deliveryPublication, authorityBinding: w.admission.binding };
+  const before = { calls: w.node.calls.length, entries: await journal.entries() };
+
+  const delivery = entry.createDevnetDeliveryTransport({ admission: w.admission, ...options });
+  t.after(() => delivery.close());
+  assert.ok(Object.isFrozen(delivery));
+  assert.equal(api.isDevnetSettlementTransport(delivery), true);
+  assert.equal(api.isDevnetDemoTransport(delivery), false, 'a delivery capability is not a demo transport');
+  assert.equal(delivery.deliveryPublication.policy, api.DEVNET_DELIVERY_POLICY);
+  for (const name of ['rpc', 'recoverStorageWrite']) await assert.rejects(delivery[name]({}), refused, name);
+
+  const refusedBeforeWrite = [
+    [{ ...options }, /admission_required/],
+    [{ admission: { binding: w.admission.binding }, ...options }, /admission_required/],
+    [{ admission: w.admission, ...options, settlementPublication: { ...settlementPublication, policy: 'TEST-other-policy' } }, /SettlementEvidence publication policy/],
+    [{ admission: w.admission, ...options, settlementPublication: { ...settlementPublication, authority: 'unlabelled-settlement-authority' } }, /SettlementEvidence publication policy/],
+    [{ admission: w.admission, ...options, deliveryPublication: { ...deliveryPublication, policy: 'TEST-other-policy' } }, /Deliverable publication policy/],
+    [{ admission: w.admission, ...options, deliveryPublication: { ...deliveryPublication, authority: 'unlabelled-delivery-authority' } }, /Deliverable publication policy/],
+  ];
+  for (const [input, message] of refusedBeforeWrite) assert.throws(() => entry.createDevnetDeliveryTransport(input), { name: 'TypeError', message });
+  assert.deepEqual({ calls: w.node.calls.length, entries: await journal.entries() }, before);
+  for (const path of ['src/wallet/devnet-native-transport.mjs', 'src/wallet/devnet-delivery-transport.mjs', 'wallet/devnet-native-transport']) {
+    await assert.rejects(import(`@kynesyslabs/dacs-client/${path}`), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' }, path);
+  }
 });
 
 test('no socket or DNS lookup leaves the process in the seller-parts and observer suites', async t => {
