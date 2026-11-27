@@ -85,6 +85,10 @@ const PASSIVE_TRANSFER_TIMEOUT_MS = 10_000;
 // `maxBytes` (readRpc) can only lower it. The binder accepts a read up to a minute old.
 const SOURCE_READ_MAX_BYTES = 4 * 1024 * 1024;
 const IDENTITY_MAX_AGE_MS = 60000;
+// The node calls a source read may make: preparation and inclusion reads, and the storage-proof and finalized-head reads of the
+// pinned node contract (`getStorageProof` with `{ storageAddresses }`, `getFinalizedHead` with no data).
+const SOURCE_READ_MESSAGES = Object.freeze(['getBlockByNumber', 'getTxByHash', 'getTransactionStatus', 'getAddressNonce', 'getAddressInfo', 'getTransactionHistory',
+  'searchStoragePrograms', 'getNetworkInfo', 'getNetworkParameters', 'getStorageProof', 'getFinalizedHead']);
 // What a transaction signature covers once the node's signatureDomain fork is active: this prefix, the node's chain id and the hash.
 const SIGNATURE_DOMAIN_PREFIX = 'demos-tx:v1:';
 // An answer that the fork is not active is reused for this long; an active fork never goes back.
@@ -401,7 +405,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     return sourceRead(signal,async()=>{
       await makeBinder(false,signal).bind();
       if(path !== '/' && !/^\/storage-program\/stor-[0-9a-f]{40}$/.test(path)) fail('readonly_only','only bounded native storage reads are supported');
-      if(body !== undefined && (path !== '/' || body?.method !== 'nodeCall' || !['getBlockByNumber','getTxByHash','getTransactionStatus','getAddressNonce','getAddressInfo','getTransactionHistory','searchStoragePrograms','getNetworkInfo','getNetworkParameters'].includes(body?.params?.[0]?.message))) fail('readonly_only','only source-bound preparation/inclusion reads are supported');
+      if(body !== undefined && (path !== '/' || body?.method !== 'nodeCall' || !SOURCE_READ_MESSAGES.includes(body?.params?.[0]?.message))) fail('readonly_only','only source-bound preparation/inclusion reads and bounded proof/finality reads are supported');
       return fetchBoundedJson(path==='/'?pinned.endpoint:`${new URL(pinned.endpoint).origin}${path}`,{method:body===undefined?'GET':'POST',body,fetchImpl,timeoutMs,signal,maxBytes,expectedOrigin:new URL(pinned.endpoint).origin});
     });
   };

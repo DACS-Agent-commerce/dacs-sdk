@@ -808,6 +808,7 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   OS strings after it), must not be above 50 DEM, and a fee that cannot be
   summed exactly is refused. Below the ceiling the fee is not compared with any
   expected amount.
+
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
   sent. A kept CREATE whose whole debit is above the ceiling is never
   broadcast again, and until the operator clears it (below)
@@ -899,6 +900,12 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   10 s by default) or answers anything else never supersedes it. Timeouts and malformed
   replies stay held. A complete name/native-address miss can ask only the
   retained owning journal; the miss alone never authorizes a send.
+
+  SR-2 readback and the core Demos write-evidence checks support only the
+  program name returned by `logicalToStorageProgramName(logicalAddress)`.
+  For a correctly signed CREATE using another native program name:
+  A read supplied with an exact native address, a signed projection, or an address the journal retained is refused (`invalid`) with `only SDK-derived program names are supported`. A read with none of these returns `indeterminate` with `name-index visibility does not establish authenticated absence`. `createNativePaymentEvidenceConsumer().readEvidence` answers `disposition: 'indeterminate'` in both cases; its `reason` carries the naming message when a signed projection is given.
+
 - It never uses the simulated fixture substrate. Native Agreement readback and
   native artifact publication are required together, and the agent refuses a
   fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
@@ -1300,12 +1307,13 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `publications` and `diagnostics` it passes unchanged to
   `createSellerNodeWallet`, a wall `clock` (`Date.now` by default) and the
   anchor's `buyerAccess` (`null` by default, which refuses every job's write
-  and read with `buyer_access_closed`), and two optional inputs of its chain readers:
-  `participantImplementations` (`{ entriesFor }`, the host's enrollment source) and
-  `sessionOf(jobId)` (the seller's durable session view; `observePayment` answers `absent` only for a view with `settlementBound: false`, which the seller's own `durableSessionOf` carries); any other option, or one of
-  these two of another type, is a TypeError. The
+  and read with `buyer_access_closed`), and three optional inputs of its chain readers:
+  `participantImplementations` (`{ entriesFor }`, the host's enrollment source),
+  `sessionOf(jobId)` (the seller's durable session view; `observePayment` answers `absent` only for a view with `settlementBound: false`, which the seller's own `durableSessionOf` carries) and `trustedFinality` (a plain
+  object, the operator's pinned finality checkpoint); any other option, or one of
+  these three of another type, is a TypeError. The
   `endpoint` is an https root (plain http refuses `transport_mismatch`). Its readers come from
-  `createNodeAuthorityReader({ owner, claim, chain, participantImplementations, sessionOf })`:
+  `createNodeAuthorityReader({ owner, claim, chain, participantImplementations, sessionOf, trustedFinality })`:
   the read-only connection pair and three chain readers the host passes on, `sessionAdmission`,
   `readCommitmentReceipt` and `observePayment`. They read through the finalized session on every
   call and keep nothing: before finalization they refuse `wallet_session_not_finalized`, after a
@@ -1313,7 +1321,11 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `sessionAdmission` reads seller-owned Vet records and receipts back through the bound artifact
   anchor, and reads the Listing's revocation marker through a read-only SR-2 adapter; a marker
   read that cannot be authenticated, or a missing marker, is unavailable, so admission refuses
-  `session_admission_unavailable`. `observePayment` answers `verified` only for the retained
+  `session_admission_unavailable`. With `trustedFinality`, an authenticated marker's storage
+  address is also asked for its storage proof and the node for its finalized head, each reply at
+  most 64 KiB and both within 1.5 seconds. The reader does not verify the replies, and they change
+  nothing: a revoked marker still refuses and a missing one stays unavailable. Without `trustedFinality`
+  neither read is sent. `observePayment` answers `verified` only for the retained
   payment transfer observed again on this call, `absent` only when the session records no payment
   and the connection reads as the bound chain, and otherwise refuses `payment_unverified`.
   A buyer with more than one enrollment entry for this seller and Listing, for example a revoked
