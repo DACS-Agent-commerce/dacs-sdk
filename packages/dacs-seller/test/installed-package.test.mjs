@@ -549,6 +549,7 @@ test('in the installed consumer, through the documented test seams, a payment-ev
     const { createSellerNodeWallet } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-node-wallet.mjs');
     const { acquireSellerStateLock } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-state-lock.mjs');
     const { generateWalletMnemonic, deriveWalletIdentity } = await import('@kynesyslabs/dacs-seller/src/cli/node-identity.mjs');
+    const { createPaymentEvidenceWalletJournal } = await import('@kynesyslabs/dacs-seller');
     const { recordingApproval } = await import('./payment-evidence-approval-double.mjs');
     // The serving node's signed answer to a valid confirmTx, and a broadcast it applies.
     const reply = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
@@ -570,6 +571,9 @@ test('in the installed consumer, through the documented test seams, a payment-ev
     const wallet = await createSellerNodeWallet({ admission, owner, dataDirectory, journalMode: 'create', stateLock, signer: { claim: identity.claim },
       keyRecord: new TextEncoder().encode(JSON.stringify({ format: 'dacs-seller-key/v1', algorithm: 'ed25519', mnemonic })), approve, approvalMode: 'policy',
       clock: { now: () => T0 }, publications, stopped: async () => false, feeCeilingOs: '50000000000' });
+    // The journal over the adapter's one-call members, which run inside the caller's own pass.
+    const { signCreate, broadcast, readAccountNonce, readTransactionState } = wallet.paymentEvidenceAdapter;
+    const journal = createPaymentEvidenceWalletJournal({ path: dataDirectory + '/seller-payment-evidence.sqlite', signCreate, broadcast, readAccountNonce, readTransactionState, now: () => T0 });
     const steps = [], codes = error => { const found = []; for (let link = error; link instanceof Error; link = link.cause) found.push(link.code); return found; };
     const evidence = label => ({ logicalAddress: 'dacs4:payment:TEST-job-' + label + ':demos-native:DEM:2', artifact: { TEST: label }, writer: 'did:demos:agent:' + wallet.address.slice(2),
       artifactKind: 'SettlementEvidence', jobId: 'TEST-job-' + label, receiptContentHash: 'e1'.repeat(32) });
@@ -584,13 +588,13 @@ test('in the installed consumer, through the documented test seams, a payment-ev
         return await wallet.runInEffectPass(pass, work);
       } finally { fence.release(); }
     }
-    const sent = await inPass(() => wallet.paymentEvidence.anchorEvidence(evidence('a')));
+    const sent = await inPass(() => journal.anchorEvidence(evidence('a')));
     const passed = steps.splice(0);
-    const stopped = await inPass(() => wallet.paymentEvidence.anchorEvidence(evidence('b')), true).then(() => [], codes);
+    const stopped = await inPass(() => journal.anchorEvidence(evidence('b')), true).then(() => [], codes);
     const stoppedSteps = steps.splice(0);
-    const unpassed = await wallet.paymentEvidence.anchorEvidence(evidence('c')).then(() => [], codes);
-    const kept = await Promise.all(['a', 'b', 'c'].map(label => wallet.paymentEvidence.readSignedProjection({ logicalAddress: evidence(label).logicalAddress })));
-    await wallet.close(); owner.close(); stateLock.release();
+    const unpassed = await journal.anchorEvidence(evidence('c')).then(() => [], codes);
+    const kept = await Promise.all(['a', 'b', 'c'].map(label => journal.readSignedProjection({ logicalAddress: evidence(label).logicalAddress })));
+    journal.close(); await wallet.close(); owner.close(); stateLock.release();
     console.log(JSON.stringify({ sent: sent.status, signPhase: passed.filter(step => step.endsWith(':sign')), stopped: stopped.includes('TEST-stopped'), stoppedSteps,
       unpassed: unpassed.includes('effect_pass_required'), kept: kept.map(row => row !== null), confirms: node.confirms.length, broadcasts: node.broadcasts.length,
       nodeOptions: process.env.NODE_OPTIONS ?? null }));`, { nodeOptions: loaderOptions, args: [dataDirectory] });

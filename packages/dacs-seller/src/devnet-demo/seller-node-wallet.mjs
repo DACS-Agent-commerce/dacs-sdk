@@ -2,8 +2,8 @@
 // The kit has no wallet of its own: the composition signs and sends through the client's effect gate, under the kit's
 // operation guard and the client's purchase hold. This module adds the seller state directory's ownership proof, the
 // recovery of lock rows a dead holder left in the client journals it opens, the custody claim check, the approval
-// accounting of every wallet request, each request's own signing check, and the payment-evidence journal over the
-// composition's adapter.
+// accounting of every wallet request, each request's own signing check, and the composition's payment-evidence adapter,
+// with the kit operation guard checked at each of its effect calls.
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { realpathSync } from 'node:fs';
 import { join } from 'node:path';
@@ -11,7 +11,6 @@ import { createNodeSellerComposition, releaseAbandonedJournalLocks } from '@kyne
 import { openDurableWalletJournal } from '@kynesyslabs/dacs-client/wallet/durable-journal';
 import { validateMnemonic } from '../cli/node-identity.mjs';
 import { claimForAddress } from '../dacs/demos-claims.mjs';
-import { createPaymentEvidenceWalletJournal } from '../dacs/payment-evidence-wallet-journal.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
 import { OperationError } from '../operations.mjs';
 import { sellerDiagnostic } from '../seller-diagnostics.mjs';
@@ -22,7 +21,6 @@ import { SELLER_STATE_LOCK_FILE } from './seller-state-lock.mjs';
 
 // The two client durable journals are the seller's issuance journals: the composition's own and the artifact anchor's.
 const [COMPOSITION_JOURNAL, ARTIFACT_JOURNAL] = SELLER_ISSUANCE_JOURNALS;
-const PAYMENT_EVIDENCE_JOURNAL = 'seller-payment-evidence.sqlite';
 const JOURNAL_MODES = ['create', 'open'];
 const APPROVAL_MODES = ['policy', 'manual'];
 // The balance read: one getAddressInfo answer, bounded before and after decoding, under one deadline.
@@ -188,6 +186,15 @@ const passWithRequestCheck = (effectPass, check) => options => {
   return effectPass(copy);
 };
 
+// The client's payment-evidence adapter with the kit operation guard checked at each effect call; its two reads are passive.
+function kitGuardedAdapter(adapter) {
+  return Object.freeze({ ...adapter,
+    approveAhead: async (...args) => { assertKitOperationAdmitted('paymentEvidenceAdapter.approveAhead'); return adapter.approveAhead(...args); },
+    signCreate: async (...args) => { assertKitOperationAdmitted('paymentEvidenceAdapter.signCreate'); return adapter.signCreate(...args); },
+    approveSendAhead: async (...args) => { assertKitOperationAdmitted('paymentEvidenceAdapter.approveSendAhead'); return adapter.approveSendAhead(...args); },
+    broadcast: async (...args) => { assertKitOperationAdmitted('paymentEvidenceAdapter.broadcast'); return adapter.broadcast(...args); } });
+}
+
 async function composeWallet(options, opened) {
   const { admission, owner, dataDirectory, journalMode, stateLock, signer, keyRecord, approve, approvalMode, clock, publications, stopped, feeCeilingOs, diagnostics } = options;
   const stateOwnership = { directory: dataDirectory, held: () => stateLock.held() };
@@ -201,9 +208,6 @@ async function composeWallet(options, opened) {
   opened.push(() => composition.close());
   const address = composition.wallet.getPublicAccount().address;
   if (claimForAddress(address) !== signer.claim) throw new SellerKeyError('seller_key_claim_mismatch');
-  const paymentEvidence = createPaymentEvidenceWalletJournal({ path: join(dataDirectory, PAYMENT_EVIDENCE_JOURNAL),
-    ...composition.paymentEvidenceAdapter, now: () => clock.now() });
-  opened.push(() => paymentEvidence.close());
   return Object.freeze({
     address,
     walletFactory: approvedWalletFactory(composition.walletFactory, approvalAttempt),
@@ -212,7 +216,7 @@ async function composeWallet(options, opened) {
     effectPass: passWithRequestCheck(composition.effectPass, approvalAttempt.signingCheck),
     runInEffectPass: composition.runInEffectPass,
     artifactJournal,
-    paymentEvidence,
+    paymentEvidenceAdapter: kitGuardedAdapter(composition.paymentEvidenceAdapter),
     readBalance: () => readBalanceOf(composition.transport, address),
     close: () => closeAll(opened),
   });
@@ -236,8 +240,10 @@ async function composeWallet(options, opened) {
  * at confirmTx or broadcastTx. Any answer but exactly `true` resolves `not-authorized` with nothing signed or sent, and the
  * accepted request is settled released. Only a sendTransaction may carry `authorize` (any other method resolves `not-authorized`
  * before approval), and a second argument that is not exactly `{ authorize: function }` rejects TypeError before approval.
- * Resolves `{address, walletFactory, sourceCapability, observer, effectPass, runInEffectPass, artifactJournal, paymentEvidence,
+ * Resolves `{address, walletFactory, sourceCapability, observer, effectPass, runInEffectPass, artifactJournal, paymentEvidenceAdapter,
  * readBalance(), close()}`; `effectPass` adds the current request's signing check last to every pass's `synchronousChecks`.
+ * `paymentEvidenceAdapter` is the composition's payment-evidence adapter, whose four effect members check the kit operation guard
+ * (kit_operation_guard_off) at each call.
  * `readBalance` resolves `{address, balanceOs}`. `close()` closes what this opened; the host keeps `owner`.
  * Throws KitOperationGuardError (kit_operation_guard_off), OperationError (runtime_unsupported, state_ownership_required with its
  * cause), TypeError for a malformed option (`walletFactory` also for a selected `anchorJournal` without `put`), SellerKeyError (seller_key_format_invalid, seller_key_claim_mismatch), a journal's

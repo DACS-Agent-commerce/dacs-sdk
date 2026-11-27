@@ -1,0 +1,10 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record the passive slot amount check record commits",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/records/WF-1bc6dc497610.json",
+    "packages/dacs-client/records/WF-d218602451f8.json"
+  ]
+}

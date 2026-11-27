@@ -2,3 +2,5 @@
 scripts/wire/*.mjs text eol=lf
 test/wire/fixtures/*.json text eol=lf
 conformance/tp1-node-observations/*.json text eol=lf
+packages/dacs-seller/test/vectors/revocation-proof-node.json text eol=lf
+packages/dacs-seller/test/vectors/revocation-proof-node.manifest.json text eol=lf

@@ -56,8 +56,8 @@ export interface RailDispatchOptions {
   demosSecret?: string;
   /**
    * Native pay-DEM operator-safety and PC-7 recovery dependencies. Production
-   * restart recovery uses `settlementStore`, `reconcile`, and
-   * `journalPreparedTransfer`. The settlement store is required, and so is
+   * restart recovery uses `settlementStore`, `reconcile`,
+   * `journalPreparedTransfer` and `readPreparedTransfers`. The settlement store is required, and so is
    * `journalPreparedTransfer` unless `allowUnjournaled` is `true`.
    */
   payDem?: {
@@ -77,6 +77,11 @@ export interface RailDispatchOptions {
     settlementStore?: SettlementIdempotencyStore;
     /** Authoritative reconciliation for an unresolved retained intent. */
     reconcile?: PayDemSettlementReconcile;
+    /**
+     * The journal entries `journalPreparedTransfer` stored for a settlement
+     * key. Without it, a recovery that carries history never reports success.
+     */
+    readPreparedTransfers?: (settlementKey: string) => Promise<readonly PayDemPreparedTransfer[]>;
     inclusionTimeoutMs?: number;
     inclusionPollIntervalMs?: number;
     statusRequestTimeoutMs?: number;
@@ -212,6 +217,7 @@ interface CapturedPayDemOptions {
   allowUnjournaled?: boolean;
   settlementStore?: SettlementIdempotencyStore;
   reconcile?: PayDemSettlementReconcile;
+  readPreparedTransfers?: (settlementKey: string) => Promise<readonly PayDemPreparedTransfer[]>;
   inclusionTimeoutMs?: number;
   inclusionPollIntervalMs?: number;
   statusRequestTimeoutMs?: number;
@@ -522,6 +528,9 @@ function captureDispatchOptions(
         reconcile: optionalDispatchMethod<
           NonNullable<CapturedPayDemOptions["reconcile"]>
         >(payDem, "reconcile", "pay-dem reconciliation"),
+        readPreparedTransfers: optionalDispatchMethod<
+          NonNullable<CapturedPayDemOptions["readPreparedTransfers"]>
+        >(payDem, "readPreparedTransfers", "pay-dem prepared-transfer reader"),
         inclusionTimeoutMs: optionalDispatchValue<number>(
           payDem,
           "inclusionTimeoutMs",
@@ -816,6 +825,7 @@ export async function settleFromRail(
         throw new DacsError("pay-dem rail requires a caller-supplied durable settlement store");
       }
       const reconcile = payDem?.reconcile;
+      const readPreparedTransfers = payDem?.readPreparedTransfers;
       const allowUnjournaled = payDem?.allowUnjournaled;
       // Refuse before the RPC connect and wallet load; `payDemSettle` repeats
       // the check for direct callers.
@@ -874,6 +884,9 @@ export async function settleFromRail(
         ...(reconcile === undefined
           ? {}
           : { reconcile }),
+        ...(readPreparedTransfers === undefined
+          ? {}
+          : { readPreparedTransfers }),
         ...(allowUnjournaled === undefined
           ? {}
           : { allowUnjournaled }),

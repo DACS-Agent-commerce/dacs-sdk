@@ -27,11 +27,16 @@ const NOT_SHIPPED = ['src/devnet-demo/operator-custody.mjs', 'src/devnet-demo/se
 // provider's entries and the kit client's methods exist only on a capability built while the guard is on;
 // seller-effect-paths.test.mjs flips the guard off after construction and pins each refusal. The three delivery constructors guard
 // only a TP-1 token, which the off-state probe cannot make; tp1-authority.test.mjs builds each with one while the guard is off.
+// The seller Node wallet's `paymentEvidenceAdapter` exists only on a wallet built while the guard is on; seller-effect-paths.test.mjs
+// flips the guard off after construction and pins its four entries.
 const PROVIDER_ENTRIES = ['agreementContextProvider.resolveBuyer', 'agreementContextProvider.recoverBuyer', 'agreementContextProvider.resolveSeller'];
 const CLIENT_METHODS = ['propose', 'agreementState', 'commit', 'commitOnSignature', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy', 'agreementContext',
   'contextChallenge'].map((method) => `sellerAgentClient.${method}`);
 const TOKEN_CONSTRUCTORS = ['createDemDeliveryContext', 'createNativeDemDeliveryCapability', 'createDevnetDemoDeliveryCapability'];
-const SEPARATELY_PROBED_GUARD_ENTRIES = ['complete', 'terminalSession', 'sellerWalletSession.finalize', ...PROVIDER_ENTRIES, ...CLIENT_METHODS, ...TOKEN_CONSTRUCTORS];
+const EVIDENCE_EFFECTS = ['approveAhead', 'signCreate', 'approveSendAhead', 'broadcast'];
+const WALLET_ADAPTER_ENTRIES = EVIDENCE_EFFECTS.map((member) => `paymentEvidenceAdapter.${member}`);
+const SEPARATELY_PROBED_GUARD_ENTRIES = ['complete', 'terminalSession', 'sellerWalletSession.finalize', ...PROVIDER_ENTRIES, ...CLIENT_METHODS, ...TOKEN_CONSTRUCTORS,
+  ...WALLET_ADAPTER_ENTRIES];
 // The entries each module guards, named as the error's `entry` (51-2, 51-3).
 const GUARD_SITES = {
   'src/host.mjs': ['startSellerHost'],
@@ -44,6 +49,7 @@ const GUARD_SITES = {
   'src/dacs/seller-durable-state.mjs': ['signOnce', 'anchor'],
   'src/dacs/effect-boundary.mjs': ['effectBoundary'],
   'src/dacs/payment-evidence-wallet-journal.mjs': ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'],
+  'src/dacs/payment-evidence-pass.mjs': EVIDENCE_EFFECTS.map((member) => `paymentEvidence.${member}`),
   'src/dacs/native-payment-evidence-consumer.mjs': ['createNativePaymentEvidenceConsumer'],
   'src/dacs/dem-delivery-context-consumer.mjs': ['createDemDeliveryContext'],
   'src/dacs/native-dem-delivery-consumer.mjs': ['submitNativeDemDelivery', 'createNativeDemDeliveryCapability'],
@@ -53,7 +59,7 @@ const GUARD_SITES = {
   'src/devnet-demo/artifact-anchor.mjs': ['publish'],
   'src/devnet-demo/listing.mjs': ['createDevnetDemoListingPublisher'],
   'src/devnet-demo/native-delivery.mjs': ['createDevnetDemoDeliveryCapability', 'createDevnetDemoDeliveryCapability.submit'],
-  'src/devnet-demo/seller-node-wallet.mjs': ['createSellerNodeWallet'],
+  'src/devnet-demo/seller-node-wallet.mjs': ['createSellerNodeWallet', ...WALLET_ADAPTER_ENTRIES],
   'src/devnet-demo/seller-wallet-session.mjs': ['createSellerWalletSession', 'sellerWalletSession.finalize'],
   'src/devnet-demo/storage-write-recovery.mjs': ['storageWriteRpcSigner'],
   'src/seller-key.mjs': ['sellerKey.sign', 'sellerKey.readOnlyAnswerSigner'],

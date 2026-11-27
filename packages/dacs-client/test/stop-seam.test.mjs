@@ -633,7 +633,7 @@ const MEMBER_TABLE = {
     value: ['actionsAdmitted', 'available', 'chainReadback', 'nativePaymentReadbackAvailable'],
   },
   service: {
-    passive: ['nativePaymentLaneRead', 'planRunning', 'portalEvidence', 'portalOperation', 'status', 'verifyDeal'],
+    passive: ['nativePaymentLaneRead', 'planRunning', 'portalEvidence', 'portalOperation', 'status', 'verifyDeal', 'verifyDealPassive'],
     active: ['agreementDelegation', 'agreementIdentity', 'agreementPlan', 'agreementSubmit', 'approve', 'cancel', 'completionCountersign', 'completionRequest', 'issueApprovalChallenge',
       'nativePaymentLane', 'prepare', 'prepareHandoff', 'protocolRecheck', 'reportWalletResult', 'sessionRenewal', 'sessionRenewalAccept'],
     value: ['actionsAdmitted'],
@@ -665,7 +665,7 @@ function pendingPurchase(w, key) {
   return purchase;
 }
 
-// The thirteen passive members, each called on one purchase.
+// The fourteen passive members, each called on one purchase.
 const passiveCalls = (w, { operation, token }) => ({
   status: () => w.service.status(ACCOUNT_ID, operation.id, token),
   portalOperation: () => w.service.portalOperation(operation.id, token),
@@ -673,6 +673,7 @@ const passiveCalls = (w, { operation, token }) => ({
   verifyDeal: () => w.service.verifyDeal({ accountId: ACCOUNT_ID, operationId: operation.id, token }),
   planRunning: () => w.service.planRunning(operation),
   nativePaymentLaneRead: () => w.service.nativePaymentLaneRead({ operationId: operation.id, token, key: 'TEST-lane' }),
+  verifyDealPassive: () => w.service.verifyDealPassive({ accountId: ACCOUNT_ID, operationId: operation.id, stage: 'payment' }),
   readRetainedNativePaymentLane: () => w.protocol.readRetainedNativePaymentLane(operation, 'TEST-lane'),
   assertBuyerAccess: () => w.protocol.assertBuyerAccess(operation.terms.buyer.wallet, operation),
   supportsMode: () => w.protocol.supportsMode('TEST-mode'),
@@ -760,7 +761,7 @@ test('one table enumerates every method on the real objects returned by both pur
   assert.deepEqual(passiveEffects(w), [0, 0, 0, 0]);
 });
 
-test('a passiveOnly purchase composition keeps all thirteen passive members callable while held, stopped and with a failing binding; every active name is absent and calling it throws TypeError before any read or write; without admission both factories still throw admission_required with zero SQLite, journal and custody opens', async t => {
+test('a passiveOnly purchase composition keeps all fourteen passive members callable while held, stopped and with a failing binding; every active name is absent and calling it throws TypeError before any read or write; without admission both factories still throw admission_required with zero SQLite, journal and custody opens', async t => {
   const stop = { calls: 0 };
   const w = await compositionWorld(t, { passiveOnly: true, stopped: () => { stop.calls++; return true; } });
   t.after(() => setPurchaseAdmission('held'));
