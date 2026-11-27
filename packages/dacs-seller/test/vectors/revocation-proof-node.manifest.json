@@ -1,0 +1,346 @@
+{
+  "nodeCommit": "a98cad194c5a41c3af9867371dee037609709253",
+  "command": "bun run test/dacs-revocation-vectors.tmp.mjs --output ../sdk/packages/dacs-seller/test/vectors/revocation-proof-node.json",
+  "exitStatus": 0,
+  "sourceDigests": {
+    "src/libs/blockchain/finality/verify.test.ts": "fa88260886d68cb2fd83341aa63d70f5d5fb8f656e7d179cda263df07390d237",
+    "src/libs/blockchain/finality/storageRoot.test.ts": "ba2883bcca2ba361efc8c531bea4ea73f1d6cf785276402600ea33522420497a",
+    "src/libs/blockchain/finality/requesterFixtures.test.ts": "3b738a1d6a8babb452a7d4bcc00c83cb9f2728a75421437637ec358f13a2aa25",
+    "src/libs/crypto/merkle/sparse.test.ts": "95514992e34ef71190d6db769c4bc0021f64ff76d48fcbc2f370771f44a146bb",
+    "src/libs/blockchain/finality/__fixtures__/requester-1059-1060/MANIFEST.json": "f6cb9588b3d271867d6c3ebce05dd989b040cb6116de7a9727158dd819265e87",
+    "src/libs/consensus/v2/quorum.ts": "db71b13474c6618c3c975c9353ad9c0fdcaea9710c6df62cdc141c1fb9bd1472",
+    "src/libs/consensus/v2/commitLock/messages.ts": "1b9864116da73a787b15afe17d780fe0179cbb505f6aa1f8e4563db450bfc615",
+    "src/libs/consensus/v2/routines/poolRules.ts": "20661277fe9b89ecf72e3f043069c80f4e334af461727283588045e653578483",
+    "src/libs/blockchain/finality/validatorSetRecord.ts": "2395cd9d889e1cd1d519271486b28465efa55360798c1a6c19878f3431727d91",
+    "src/libs/blockchain/finality/proofTestKit.ts": "a9d4b5c7b7740bcf7d5f5f02f54d60af3ff5c4d2c582d9c1427872cdab1df046",
+    "src/libs/blockchain/finality/verify.ts": "521834f5d794099e8fce4960834579651899e332fc241cef2a9870215cf2f6b3",
+    "src/libs/crypto/canonicalJson.ts": "802a01f8f15f8c6653b0ed980b33615ffd139a5cb4f692dc14b83e1d6aa6b69b",
+    "src/libs/crypto/jcs.ts": "8f53e1fca1380d6b8f937cfc7218128c0c40cbd58ebb855f9fff41a6d9e6d738",
+    "src/libs/crypto/hashing.ts": "92c3ac21f82a6ff5c8d2b59c37264bd3b3396f6df64097188c74b35cf90be638",
+    "src/libs/crypto/merkle/hex.ts": "ef11cd659ab77dec897d0ad74d56a0214df766502d054aa76e82a415437d0f40",
+    "src/libs/crypto/merkle/sparse.ts": "f6e46cc8a56b868087d9321444f2986534a7cc6313468bfed59a71fa7bb633c0",
+    "src/libs/blockchain/finality/storageRecord.ts": "1b848f585acfcab5d5843fe628bff9f7d3fbd59466deb288991545a97e3e4c4e",
+    "src/libs/network/routines/nodecalls/getStorageProof.ts": "f58b2ef34febd1a58faac483e89b079f55663fb0c70e108950824a93b5e7ecd6",
+    "src/libs/network/routines/nodecalls/getFinalizedHead.ts": "eca147807ff42d98f6a2821bde5f42f1446fe78dfef1516f999d64e521e8233b"
+  },
+  "fileSha256": "87c72aeeb6d19b5cd09e0ece6603d645263ed6ae6e773e5c7ae2128a9b7e3984",
+  "required": [
+    "membership-sibling",
+    "membership-deleted",
+    "membership-acl",
+    "nonmembership-empty",
+    "nonmembership-other-leaf",
+    "head-matching",
+    "head-stale",
+    "nonce-competing",
+    "commit-lock",
+    "bare-hash",
+    "bare-hash-wrong-message",
+    "pool-large-no-committee",
+    "pool-large-valid-committee",
+    "signer-inactive-control",
+    "signer-inactive-excluded",
+    "signer-not-yet-valid-control",
+    "signer-not-yet-valid-excluded",
+    "signer-peerlist-control",
+    "signer-peerlist-excluded",
+    "peerlist-fallback-control",
+    "duplicate-signer-control",
+    "duplicate-signer-repeated",
+    "committee-active-control",
+    "committee-inactive-excluded",
+    "staked-over-shard-trusted-parent",
+    "validator-null-status-control",
+    "anchor-65536-control",
+    "anchor-65537-over",
+    "parent-65536-control",
+    "parent-65537-over",
+    "signatures-256-control",
+    "signatures-257-over",
+    "validators-256-control",
+    "validators-257-over",
+    "siblings-256-control",
+    "siblings-257-over"
+  ],
+  "vectors": {
+    "membership-sibling": {
+      "sha256": "d7eb8e9649c4a6a6a8fec143b6962724a45fafabf4e8370ab833313350588235",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "membership-deleted": {
+      "sha256": "3240da2b6ffe91b539a6453bdf59b63828011a679d26a4c3d1a15ae05b7b32a3",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "membership-acl": {
+      "sha256": "e70f97ba9bfc0831f27191f7bc6a759f9d32685e831b320652ce371d72a2ecd5",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "nonmembership-empty": {
+      "sha256": "90c2dc2b6fd55e769db903edde81224ec46fda51e7c8cc3a4b64d7e1715783dc",
+      "nodeVerdict": "final",
+      "sdkDisposition": "unproven"
+    },
+    "nonmembership-other-leaf": {
+      "sha256": "864a92a93bfbdde07bcebd899ce6e8a87dd084a4a7446fa6b9a47f399d243c95",
+      "nodeVerdict": "final",
+      "sdkDisposition": "unproven"
+    },
+    "head-matching": {
+      "sha256": "d7eb8e9649c4a6a6a8fec143b6962724a45fafabf4e8370ab833313350588235",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "head-stale": {
+      "sha256": "87fa4c68ed219cc16448606976c7419a67b776497c974330e366d3290283d563",
+      "nodeVerdict": "final",
+      "sdkDisposition": "unproven"
+    },
+    "nonce-competing": {
+      "sha256": "970330d9a52b37d32139b4a821215838e9d6c154ee899577e84f65ba3dbfcb91",
+      "nodeVerdict": {
+        "7": "final",
+        "8": "final"
+      },
+      "sdkDisposition": {
+        "7": "present",
+        "8": "unproven"
+      }
+    },
+    "commit-lock": {
+      "sha256": "26532a8ba22ff5b490cb9843f3e3875095484e11de469063a80d73d0bb465273",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "bare-hash": {
+      "sha256": "e081f0770132b031858ac8bc1213d1f9973b2449e20a33c004933f5a8a28c0fb",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "bare-hash-wrong-message": {
+      "sha256": "0a995f55f9297623affd96ca5d725cf192e0e8c43f8f1570529de3ca5745d272",
+      "nodeVerdict": "invalid",
+      "sdkDisposition": "unproven"
+    },
+    "pool-large-no-committee": {
+      "sha256": "eeac6b0472d6fc171cf4d61792256afae675cc817b46d38434ae29597764b993",
+      "nodeVerdict": "indeterminate",
+      "sdkDisposition": "unproven"
+    },
+    "pool-large-valid-committee": {
+      "sha256": "da47bb617fd1f63a27d280ad2f81c859f906f3a217926cf783eec6187ece4a08",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "signer-inactive-control": {
+      "sha256": "628ede316e97c8078118ea782f8cb5fa80dac154d103f933b1e9c8bc67ec9320",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "signer-inactive-excluded": {
+      "sha256": "3d30251143fea8c5f0fc5384220559a874f0cdad706741cdcbd268c90b6046d2",
+      "nodeVerdict": "invalid",
+      "sdkDisposition": "unproven"
+    },
+    "signer-not-yet-valid-control": {
+      "sha256": "6a0f105e8eaca135fc2ee73798bf5e329d11a41b1243272a00c3f51f1c122b46",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "signer-not-yet-valid-excluded": {
+      "sha256": "123747245685da9ac8db34cf7bc8bca87d0de76bc19bdeea17578ef7e1d47a9a",
+      "nodeVerdict": "invalid",
+      "sdkDisposition": "unproven"
+    },
+    "signer-peerlist-control": {
+      "sha256": "1113c955a824c851c81b7b11a59b34fdd910507b758138d434f69adbeec4bbff",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "signer-peerlist-excluded": {
+      "sha256": "3d05de8cb21ce61201fd73d6621e9d861c8dd3b115dee33197a1380d2baf9bc1",
+      "nodeVerdict": "invalid",
+      "sdkDisposition": "unproven"
+    },
+    "peerlist-fallback-control": {
+      "sha256": "2bd1873ce58dedfdd8d2555aa19400e87a5d6545c1502f4087e0261656cddb38",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "duplicate-signer-control": {
+      "sha256": "df2079877be4f1227089ff2d728f2cae55fcb7b1f14d3a357498a4a1777f9c3e",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "duplicate-signer-repeated": {
+      "sha256": "e90a31f0b0babe0329ee185e629c9477b33f83d06fde761d337d7d41199ae2de",
+      "nodeVerdict": "invalid",
+      "sdkDisposition": "unproven"
+    },
+    "committee-active-control": {
+      "sha256": "753056ead6940ed637952dbbfcd5db09431db0b452fab8d31eddb8fc7725f925",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "committee-inactive-excluded": {
+      "sha256": "e5a395ed1ace624ad7f9ee34f1b6c08116e7eef6ec2fb5fd1c27473a531aa9d8",
+      "nodeVerdict": "invalid",
+      "sdkDisposition": "unproven"
+    },
+    "staked-over-shard-trusted-parent": {
+      "sha256": "319c5d689638928660f5ec1b4219c40e8f2db186bda9e5e46000e2b7a678ffd5",
+      "nodeVerdict": "final",
+      "noLookupVerdict": "indeterminate",
+      "sdkDisposition": "present"
+    },
+    "validator-null-status-control": {
+      "sha256": "2acfbb7b92c21a8484b11563258b808732b9ead2db0d521d0a40f81f3b5f2a2c",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "anchor-65536-control": {
+      "sha256": "9b601606fd09412a547c71c3a43ee31299864c9914cd8e5150ca27db5a5944e4",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "anchor-65537-over": {
+      "sha256": "bf9789ff9c5a0185280fb6318d17cfbaec67d5da87fe31032040ddb5f9af26ec",
+      "nodeVerdict": "final",
+      "sdkDisposition": "unproven"
+    },
+    "parent-65536-control": {
+      "sha256": "a1c58b99a3b1eb97d6c4d2e520ab03a1a44c4992e21a7a33048f4013270880ef",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "parent-65537-over": {
+      "sha256": "da377bcafdf82e5ac98c0568a3001c79e0980ebce5f67d41c2b43dcd79f0037a",
+      "nodeVerdict": "final",
+      "sdkDisposition": "unproven"
+    },
+    "signatures-256-control": {
+      "sha256": "bece4b57e7482c7813f964f8d7d5b9a802977e0034a5c4620be768be1896c040",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "signatures-257-over": {
+      "sha256": "195705431b798e44025ead0535f4137507964b4d5175e875a4d03051e4cad0ef",
+      "nodeVerdict": "final",
+      "sdkDisposition": "unproven"
+    },
+    "validators-256-control": {
+      "sha256": "7414da289ab6c25928236936144e1227322cfd8be4ebacaef3a7de51d93b4062",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "validators-257-over": {
+      "sha256": "aaccb0c28ba854d148978e332ebcc6ffca95995e5f018d675eef92a464caf44e",
+      "nodeVerdict": "final",
+      "sdkDisposition": "unproven"
+    },
+    "siblings-256-control": {
+      "sha256": "13c8dc54586c406910c51fe6221ebb8cb5f6e6d21f05040bbac9ec0a14683112",
+      "nodeVerdict": "final",
+      "sdkDisposition": "present"
+    },
+    "siblings-257-over": {
+      "sha256": "783b8db0841be3556af8a861294d739c0952ba6d5415726a93ec9254a390bf27",
+      "nodeVerdict": "invalid",
+      "sdkDisposition": "unproven"
+    }
+  },
+  "encoderCases": {
+    "sdk-null": {
+      "sha256": "50199e18a0808e4167aed773c3c35a488d7f0c189023d5b7366eed5e29d1bbaa"
+    },
+    "sdk-true": {
+      "sha256": "20a24014d19026f9ca632b196ad24f8a5b8e24b928c95291856ce5fff47cf745"
+    },
+    "sdk-false": {
+      "sha256": "73e080b79de72cbb7e22176735f0e7937a76ab170c190e7e5732dc65d10a9397"
+    },
+    "sdk-zero": {
+      "sha256": "5d44470984fc6f0f98cf01429ab2ce4f02eff7e64c9dff3488f3c139a18f33b4"
+    },
+    "sdk-negative": {
+      "sha256": "6371f69288e6df76122bd35fb816863d908d38f59e141c3560ce4a20663c035d"
+    },
+    "sdk-max-safe": {
+      "sha256": "b015750101a40266422157d06c6cdca259309ee5d9ce945643702e220ad6b614"
+    },
+    "sdk-min-safe": {
+      "sha256": "5543af9e90f9fe3fff9d3f84eeeadcd594e5b1d0051c41e5e82c2accd2cc7aa1"
+    },
+    "sdk-empty-text": {
+      "sha256": "20b3382661ef922d68ad2bcf44466cabd7f6ddce68bcfc71b38a161c404d9c9e"
+    },
+    "sdk-ascii": {
+      "sha256": "30af9fb747572c5bc51a0a9683cc81d0d8704019edefaa985a7f6301d0fe7183"
+    },
+    "sdk-decomposed-value": {
+      "sha256": "258908eeabe502cfc48948966c4e92f2a6521a8faf9f790f2477e07c0af458e2"
+    },
+    "sdk-astral-value": {
+      "sha256": "a94e63aaea05306d0f1d1fb8b1d035e796b8b274eeb4fa013834de805ce03a77"
+    },
+    "sdk-controls": {
+      "sha256": "5211745db2a5d05f4b89a6239f65c9fc544da1156b43b0223ce78b196e7ada70"
+    },
+    "sdk-empty-array": {
+      "sha256": "2b980a241246b51572e8e8b1c52838590a0e4616b03f870cb8c49992b11b0780"
+    },
+    "sdk-empty-object": {
+      "sha256": "41b51120c4644fa8bcc4a6c7e7d1a3d03751e66c807cd630e741e83c3160a5d2"
+    },
+    "sdk-nested": {
+      "sha256": "42640584e8895f2ddcd5728a06ceb116ce7618f60c211b154c89ddfdaa829b7f"
+    },
+    "sdk-decomposed-key": {
+      "sha256": "d680998726e1248379cc557255f3e3839ddc1086fad1c8905595402badd6145f"
+    },
+    "sdk-composed-key": {
+      "sha256": "ad44b848384f1e87875ccab2178e1e25d7b574d1b07e666f62f517b4e456a36f"
+    },
+    "sdk-composed-key-order": {
+      "sha256": "c42288719ad3d0cde29c2ae2e3dd1825cc3bab2fa51a4c30f8917f2352f63ec0"
+    },
+    "sdk-decomposed-key-order": {
+      "sha256": "e0956197d6eb6d177c7ddd6a6b4e5715675f4e0519530a145d0a0be31b3f8524"
+    },
+    "sdk-astral-key-order": {
+      "sha256": "700e2e660cebffde3a24f9c694d245dcb4be3bb05a782949a9a22cb9076e09cc"
+    },
+    "sdk-numeric-key-order": {
+      "sha256": "b6df9d8738e32eec99aabf9df7d58a14b971a328c7d69ad292fef659af704c10"
+    },
+    "sdk-value-key-normalization": {
+      "sha256": "ab73500390b5829cd9ad2d19846172343eb84234b6858b9c908759d2c1dd8c05"
+    },
+    "sdk-fraction": {
+      "sha256": "cf579bbd01453a36c7288dcb5ef5d477c5869604f78436189723e40d8e971140"
+    },
+    "sdk-above-safe": {
+      "sha256": "dbaebfda78b50a4ce57c5fe0ac0c8e9a42c142abb4571101ac77a707e2129705"
+    },
+    "sdk-below-safe": {
+      "sha256": "fc74e7d44491cbeeaced67d0c1d4df248d9667891c218599aeefe38788972edc"
+    },
+    "sdk-nan": {
+      "sha256": "7b0451849d57dea056e9c7fd03764101e00577f3091937ca1fe2b80fc3c524b7"
+    },
+    "sdk-infinity": {
+      "sha256": "48529119e68c4a036974fc15bb2da70eaf618fe145187ba52c1e7452abcbbf86"
+    },
+    "sdk-bigint": {
+      "sha256": "af455e23c93f36460dec111981e571a4a69206b6e35462144b2497a23796adb9"
+    },
+    "sdk-cycle": {
+      "sha256": "4f8289c71c18c498ced74f51b958c67d4f959c5b58f55b5527bf18433668d97f"
+    },
+    "sdk-undefined": {
+      "sha256": "eee118c290c86419a79326f3ad1d82313fbc1777e951be4faee163c3fa8472d5"
+    }
+  }
+}

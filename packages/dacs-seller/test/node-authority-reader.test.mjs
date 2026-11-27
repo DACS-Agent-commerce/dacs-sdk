@@ -1,4 +1,4 @@
-// The node-facing authority reader: the two read-only members createNodeAuthorityReader builds over the production port's owner,
+// The node-facing authority reader: the read-only connection pair createNodeAuthorityReader builds over the production port's owner,
 // and the staged seller reader openSellerStages wraps around them, which reads the host's enrollment for each job through
 // readParticipantEvidence. The node is the client's scripted TP-1 node; the enrollment source and the retained job rows are the test's.
 import test, { mock } from 'node:test';
@@ -9,8 +9,10 @@ import { jsonResponse, keyRecordBytes, ok, privateDataDirectory, replayNode, spy
 
 const { createSellerWalletSession, LISTING_PIN, portOptions } = await import('./helpers/seller-wallet-session-world.mjs');
 const { enrolled, enrollment } = await import('./helpers/kit-wallet-session.mjs');
-const { buyer, testWallet } = await import('./helpers/protocol-fixture.mjs');
+const { buyer, seller: markerWriter, testWallet } = await import('./helpers/protocol-fixture.mjs');
 const { createNodeAuthorityReader } = await import('../src/devnet-demo/seller-wallet-session.mjs');
+const { createNodeChainReaders } = await import('../src/devnet-demo/node-chain-readers.mjs');
+const { markerWorld } = await import('./helpers/revocation-marker-world.mjs');
 const { openDoctorNode } = await import('../src/devnet-demo/doctor-node.mjs');
 const { createSellerAuthorityReader } = await import('../src/dacs/authority-reader.mjs');
 const { openSellerStages } = await import('../src/dacs/host-stages.mjs');
@@ -66,16 +68,30 @@ function mockedDeadlines(t) {
   t.after(() => { mock.timers.reset(); heldClock.mock.restore(); });
 }
 
-test('createNodeAuthorityReader({ owner, claim }) returns exactly frozen { authority, connectionAuthority } and refuses extra inputs; openSellerStages wraps its connection member with createSellerAuthorityReader before bindTp1Profile admits the composition, with custody and journal opens 0 until then', async (t) => {
+test('createNodeAuthorityReader returns exactly the frozen five members, accepts exactly owner, claim, chain, participantImplementations, sessionOf and trustedFinality, forwards trustedFinality to its chain readers and refuses any other input', async (t) => {
   const node = replayNode();
   const owner = (await import('@kynesyslabs/dacs-client/node-wallet')).createNodeTransportOwner({ endpoint: 'https://rpc.example.invalid/', transportAuthority: 'vector-authority', fetchImpl: node.fetch });
   t.after(() => owner.close());
-  const pair = createNodeAuthorityReader({ owner, claim: () => 'TEST-claim' });
-  assert.deepEqual(Object.keys(pair).sort(), ['authority', 'connectionAuthority']);
-  assert.ok(Object.isFrozen(pair) && typeof pair.connectionAuthority === 'function' && typeof pair.authority.authorityRpc === 'function');
-  for (const extra of [{ chain: () => null }, { participantImplementations: { entriesFor: () => [] } }, { sessionOf: () => null }]) {
-    assert.throws(() => createNodeAuthorityReader({ owner, claim: () => 'TEST-claim', ...extra }), (error) => error instanceof TypeError && error.message.includes(Object.keys(extra)[0]));
+  const inputs = { owner, claim: () => 'TEST-claim', chain: () => assert.fail('building reads no chain'), participantImplementations: { entriesFor: () => assert.fail('building reads no enrollment') },
+    sessionOf: () => assert.fail('building reads no session'), trustedFinality: {} };
+  for (const given of [{ owner, claim: inputs.claim }, inputs]) {
+    const pair = createNodeAuthorityReader(given);
+    assert.deepEqual(Object.keys(pair).sort(), ['authority', 'connectionAuthority', 'observePayment', 'readCommitmentReceipt', 'sessionAdmission']);
+    assert.ok(Object.isFrozen(pair) && typeof pair.connectionAuthority === 'function' && typeof pair.authority.authorityRpc === 'function');
   }
+  for (const extra of [{ clock: { now: () => 0 } }, { verifyProof: () => 'present' }]) {
+    assert.throws(() => createNodeAuthorityReader({ ...inputs, ...extra }), (error) => error instanceof TypeError && error.message.includes(Object.keys(extra)[0]));
+  }
+  // The chain readers ask for the marker's storage proof and the finalized head only with the forwarded trusted finality.
+  for (const [trustedFinality, optionalReads] of [[undefined, []], [{ TEST: 'operator pin' }, ['getStorageProof', 'getFinalizedHead']]]) {
+    const markers = await markerWorld(t);
+    markers.answer = (_path, body) => (['getStorageProof', 'getFinalizedHead'].includes(body?.params?.[0]?.message) ? ok({ TEST: 'discarded' }) : undefined);
+    const { sessionAdmission } = createNodeAuthorityReader({ owner: markers.owner, claim: () => markerWriter.claim, chain: markers.chain(), ...(trustedFinality ? { trustedFinality } : {}) });
+    assert.equal((await sessionAdmission.readRevocationSurfaces({ jobId: JOB_A, listingPin: markers.listingPin }, { timeoutMs: DEADLINE_MS }))[0].status, 'revoked');
+    const asked = markers.rpc.map(({ body }) => body?.params?.[0]?.message).filter((message) => ['getStorageProof', 'getFinalizedHead'].includes(message));
+    assert.deepEqual(asked, optionalReads);
+  }
+  const pair = createNodeAuthorityReader({ owner, claim: () => 'TEST-claim' });
   const decision = await pair.connectionAuthority({ local: owner.currentLocal(), sessionId: JOB_A, participants: [buyer.claim, 'TEST-other'] });
   assert.deepEqual(decision.participants, [], 'the pair answers the connection scope only');
 
@@ -85,6 +101,15 @@ test('createNodeAuthorityReader({ owner, claim }) returns exactly frozen { autho
   await world.jobRead(JOB_A);
   assert.equal(world.source.reads, 1, 'a job scope reads the host enrollment through the staged seller reader');
   assert.deepEqual({ keyLoads: world.keyLoads, files: readdirSync(world.directory) }, { keyLoads: 0, files: [] });
+});
+
+test('the chain reader accepts its five named inputs and refuses a sixth', () => {
+  const unread = (name) => () => assert.fail(`building reads no ${name}`);
+  const inputs = { claim: unread('claim'), chain: unread('chain'), participantImplementations: { entriesFor: unread('enrollment') }, sessionOf: unread('session'), trustedFinality: {} };
+  assert.deepEqual(Object.keys(createNodeChainReaders(inputs)).sort(), ['observePayment', 'readCommitmentReceipt', 'sessionAdmission']);
+  for (const extra of [{ clock: { now: () => 0 } }, { verifyProof: () => 'present' }]) {
+    assert.throws(() => createNodeChainReaders({ ...inputs, ...extra }), (error) => error instanceof TypeError && error.message.includes(Object.keys(extra)[0]));
+  }
 });
 
 test('an authority reply declared over 4 MiB or streamed past 4 MiB makes authorityRpc refuse authority_reply_too_large before JSON decode, with the original byte-cap error as cause; doctor readAuthority and the port connection reader refuse NetworkBindingError(unavailable) with authority_reply_too_large as cause and the byte-cap OutboundError below it; malformed JSON remains invalid, and a decoded list over 1,024 entries refuses authority_list_too_large directly at authorityRpc and through the same reader cause layer', async (t) => {

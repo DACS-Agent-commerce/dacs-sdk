@@ -1,11 +1,23 @@
 // DC-CW11: behaviour of the packed archives after the hold is switched. The switched
 // copy rewrites only purchase-admission-state.mjs (P35's diff) in a temporary
 // directory; nothing here is committed, published or pinned.
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { installPackedPair, packageDir, switchedCopy } from './helpers/packed-install.mjs';
+
+// The node RPC endpoint tests share one app with the packed client as it ships, plus the URL cases they judge.
+const rpcEndpointCleanups = [];
+after(() => { for (const cleanup of rpcEndpointCleanups) cleanup(); });
+let rpcEndpointApp;
+function installedRpcEndpointApp() {
+  if (!rpcEndpointApp) {
+    rpcEndpointApp = installPackedPair({ after: cleanup => rpcEndpointCleanups.push(cleanup) });
+    cpSync(join(packageDir, 'test/helpers/rpc-endpoint-cases.mjs'), join(rpcEndpointApp.app, 'rpc-endpoint-cases.mjs'));
+  }
+  return rpcEndpointApp;
+}
 
 // What the composition test needs besides the installed package, copied into the empty app.
 const COMPOSITION_FILES = ['test/public-composition.test.mjs', 'test/helpers/public-composition-world.mjs', 'test/helpers/purchase-integrity-operations.mjs',
@@ -87,6 +99,18 @@ test('the installed ./substrate/demos entry exports one testnet-pinned reader th
   run(process.execPath, ['demos-reader.mjs'], app);
 });
 
+test('the installed root exports the Agreement CREATE storage reserve as a positive decimal OS string and the anchor write read as a function (packed archive in an empty directory)', t => {
+  const { app, run } = installPackedPair(t);
+  writeFileSync(join(app, 'anchor-exports.mjs'), `
+    import assert from 'node:assert/strict';
+    import { CREATE_STORAGE_RESERVE_OS, readAnchorReservedWriteId } from '@kynesyslabs/dacs-client';
+    assert.equal(typeof CREATE_STORAGE_RESERVE_OS, 'string');
+    assert.match(CREATE_STORAGE_RESERVE_OS, /^[1-9][0-9]*$/);
+    assert.equal(typeof readAnchorReservedWriteId, 'function');
+  `);
+  run(process.execPath, ['anchor-exports.mjs'], app);
+});
+
 test('a binding made through the consumer\'s own @kynesyslabs/dacs/wire import is accepted by the packed client (switched-copy archive)', t => {
   const { app, run } = installPackedPair(t, { clientDir: switchedCopy(t) });
   writeFileSync(join(app, 'identity.mjs'), `
@@ -106,4 +130,72 @@ test('a binding made through the consumer\'s own @kynesyslabs/dacs/wire import i
     await assert.rejects(cloned.prepareTerms({}), error => error.code === 'profile_not_admitted' && error.cause?.code === 'tp1_binding_required');
   `);
   run(process.execPath, ['identity.mjs'], app);
+});
+
+test('packed RPC endpoint subpath resolves alone and imports no wallet signing journal transport or sqlite module', () => {
+  const { app, run } = installedRpcEndpointApp();
+  writeFileSync(join(app, 'rpc-endpoint-graph.mjs'), `
+    import assert from 'node:assert/strict';
+    import { registerHooks } from 'node:module';
+    // The whole import graph the subpath may have; resolving anything else throws inside the import.
+    const allowed = new Set(['@kynesyslabs/dacs-client/rpc-endpoint', './dacs/network-binding.mjs', '@kynesyslabs/dacs/wire/node-endpoint', 'node:crypto', 'node:util']);
+    const resolved = [];
+    registerHooks({ resolve(specifier, context, next) {
+      if (!allowed.has(specifier)) throw new Error('refused import of ' + specifier);
+      const result = next(specifier, context);
+      resolved.push(result.url);
+      return result;
+    } });
+    // The read-only floor: a Node 20.19 runtime with no write permission.
+    Object.defineProperty(process, 'version', { value: 'v20.19.0' });
+    assert.equal(process.permission.has('fs.write'), false);
+    const entry = await import('@kynesyslabs/dacs-client/rpc-endpoint');
+    assert.deepEqual(Object.keys(entry), ['assertNodeRpcEndpoint']);
+    assert.equal(entry.assertNodeRpcEndpoint({ rpcUrl: 'https://h/' }), 'https://h/');
+    const installed = new URL('node_modules/@kynesyslabs/', import.meta.url).href;
+    assert.deepEqual(resolved.map(url => url.replace(installed, '')),
+      ['dacs-client/src/rpc-endpoint.mjs', 'dacs-client/src/dacs/network-binding.mjs', 'node:crypto', 'node:util', 'dacs/dist/wire/node-endpoint.js']);
+    // The guard is live: the wallet, journal, signing wire and SQLite modules are refused.
+    for (const specifier of ['node:sqlite', '@kynesyslabs/dacs/wire', '@kynesyslabs/dacs', '@kynesyslabs/dacs-client', '@kynesyslabs/dacs-client/node-wallet',
+      '@kynesyslabs/dacs-client/wallet/durable-journal', '@kynesyslabs/demosdk/websdk']) {
+      await assert.rejects(import(specifier), { message: 'refused import of ' + specifier }, specifier);
+    }
+  `);
+  run(process.execPath, ['--permission', '--allow-fs-read=*', 'rpc-endpoint-graph.mjs'], app);
+});
+
+test('packed RPC endpoint agrees with the installed wire predicate', () => {
+  const { app, run } = installedRpcEndpointApp();
+  writeFileSync(join(app, 'rpc-endpoint-agreement.mjs'), `
+    import assert from 'node:assert/strict';
+    import { assertNodeRpcEndpoint } from '@kynesyslabs/dacs-client/rpc-endpoint';
+    import { canonicalNodeEndpoint, TP1_APPROVED_CHAIN_IDENTITY } from '@kynesyslabs/dacs/wire/node-endpoint';
+    import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
+    import { pinContexts, RPC_URL_CASES, wireAnswer } from './rpc-endpoint-cases.mjs';
+    const installed = new URL('node_modules/@kynesyslabs/', import.meta.url).href;
+    for (const specifier of ['@kynesyslabs/dacs-client/rpc-endpoint', '@kynesyslabs/dacs/wire/node-endpoint']) {
+      assert.ok(import.meta.resolve(specifier).startsWith(installed), specifier + ' resolves inside the installed app');
+    }
+    const approved = TP1_APPROVED_IDENTITY_RECORD.chainIdentity;
+    assert.equal(TP1_APPROVED_CHAIN_IDENTITY, approved);
+    const contexts = pinContexts(approved, 'd'.repeat(64));
+    const answer = record => {
+      try { return assertNodeRpcEndpoint(record); } catch (error) {
+        assert.deepEqual([error.name, error.code], ['NetworkBindingError', 'rpc_endpoint_invalid'], JSON.stringify(record));
+        return null;
+      }
+    };
+    const accepted = [];
+    for (const rpcUrl of RPC_URL_CASES) {
+      for (const context of contexts) {
+        const record = { rpcUrl, ...context }, root = answer(record);
+        assert.equal(root, wireAnswer(canonicalNodeEndpoint, record), JSON.stringify(record));
+        if (root !== null && context.network === 'testnet' && context.chainIdentity === approved) accepted.push(root);
+      }
+    }
+    assert.deepEqual(accepted, ['https://h/', 'https://h:8443/', 'http://h/']);
+    // Plain http passes only under the testnet label with the approved identity, the first context.
+    assert.deepEqual(contexts.map(context => answer({ rpcUrl: 'http://h/', ...context })), ['http://h/', null, null, null, null, null, null]);
+  `);
+  run(process.execPath, ['rpc-endpoint-agreement.mjs'], app);
 });

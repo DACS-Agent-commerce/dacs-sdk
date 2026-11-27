@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test the keyless Agreement relay transport and the pure Agreement profile",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/keyless-agreement-transport.test.mjs",
+      "before": null,
+      "after": "5f682fa5fb6a0cdb718a8df8c91df3f5ac76bfd6"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-72972d508b48.json",
+    "packages/dacs-client/test/keyless-agreement-transport.test.mjs"
+  ]
+}

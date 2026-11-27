@@ -1,0 +1,10 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "chore(client): record the node observer files-list fix",
+  "sha": "c1e0e9a9448d2e1bce035ded2299a960deb52279",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/records/WF-435d19d92f3c.json"
+  ]
+}

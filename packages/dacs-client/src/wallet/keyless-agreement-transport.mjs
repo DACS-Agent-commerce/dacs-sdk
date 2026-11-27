@@ -1,7 +1,10 @@
 // A key-free Agreement relay view over a caller's transport owner and journal, and the pure public Agreement profile.
+import { canonicalize } from '@kynesyslabs/dacs';
+import { assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
 import { normalizeDemosAddress } from '../signatures.mjs';
-import { approvedPins, approvedSourcePolicy, checkAdmission, checkConstruction, fail, readExpectedPins } from './approved-record-pins.mjs';
+import { settleOnAbort } from '../util/http.mjs';
+import { approvedPins, approvedSourcePolicy, checkConstruction, fail, readExpectedPins, withinAuthorityDeadline } from './approved-record-pins.mjs';
 import { agreementProfileFor, createDevnetAgreementTransport, registerHeldTransportFacade, BOUNDARY_METHODS } from './devnet-native-transport.mjs';
 import { JOURNAL_METHODS } from './keystore-wallet-opener.mjs';
 
@@ -32,6 +35,14 @@ function checkKeylessOptions(options) {
   let canonical = false;
   try { canonical = normalizeDemosAddress(walletAddress) === walletAddress; } catch { /* a malformed address is refused below */ }
   if (!canonical) throw new TypeError('wallet_address_invalid');
+}
+
+// The wire's binding check under the authority deadline, then the connection must be the one that was checked.
+async function checkKeylessAdmission({ binding, currentLocal }, owner) {
+  const local = owner.currentLocal(), checked = canonicalize(local);
+  try { await withinAuthorityDeadline(({ signal }) => settleOnAbort(assertTp1Binding(binding, local), signal)); }
+  catch (error) { throw notAdmittedError(error); }
+  if (canonicalize(currentLocal()) !== checked || canonicalize(owner.currentLocal()) !== checked) fail('tp1_local_binding_changed');
 }
 
 // A request the relay may forward: exactly a readback or a release of the bound wallet, rebuilt from the checked values.
@@ -74,7 +85,7 @@ export async function createKeylessAgreementTransport(options) {
   checkConstruction(options);
   checkKeylessOptions(options);
   const { admission, owner, journal, walletAddress } = options;
-  await checkAdmission(admission, owner);
+  await checkKeylessAdmission(admission, owner);
   const expected = readExpectedPins(admission.binding, owner);
   const inner = createDevnetAgreementTransport({ expected, transportOwner: owner, journal, fetchImpl: (input, init) => owner.fetchImpl(input, init),
     boundary: createRefusingBoundary(), ...approvedSourcePolicy() });

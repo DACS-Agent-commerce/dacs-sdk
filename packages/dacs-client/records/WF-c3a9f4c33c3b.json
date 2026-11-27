@@ -1,0 +1,84 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF save the anchor write record at prepare and export its read and the CREATE storage reserve from the client root",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "10007a8885c103d99cf608aee431c2bb8dd12cea",
+      "after": "a859d52c9483f87a623aa38be0cd5cc4ae17ae11"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "4d3f38ac3dbc579c2d942cfafb3bf37bb7d17e12",
+      "after": "eb22b03a61f6e3a84af2828843bd025d00ee604b"
+    },
+    {
+      "path": "packages/dacs-client/src/public-admission.mjs",
+      "before": "471ab2dfa0a97477cb2afb1acfbd16b694ddf18d",
+      "after": "f8ee34e03daa01887368fb28d5330fd36ad0e85a"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "f6e7ef8489e3bf5836130a5fce06878445373ead",
+      "after": "fe427c8227064e4fde81fc7eb24e6e67c045b37d"
+    },
+    {
+      "path": "packages/dacs-client/test/anchor-write.test.mjs",
+      "before": null,
+      "after": "bbf469242d7ddc97a02eaa164a063d67e90f3ade"
+    },
+    {
+      "path": "packages/dacs-client/test/create-storage-reserve.test.mjs",
+      "before": null,
+      "after": "610759487cf81f5a9be25266034ae32c35d0242d"
+    },
+    {
+      "path": "packages/dacs-client/test/fixtures/plugin-import-inventory.json",
+      "before": "653d6a10cd366ea8f71d7d82fd5940c16447b6af",
+      "after": "445f84c9763983cadc3dd830f7bedead2d3c8973"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/stored-request-flows.mjs",
+      "before": "38dbc85a04865d92e0ae726a5a7dfc92dd51a616",
+      "after": "92e939b4a2e9de979b269039495e1943b4b8451a"
+    },
+    {
+      "path": "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+      "before": "6841b7b79dece95e51c8b46abf549d0370fb4789",
+      "after": "f188c20a9fad723cb607a18ed3f1dc8391d3fa52"
+    },
+    {
+      "path": "packages/dacs-client/test/packed-consumer.test.mjs",
+      "before": "f2f609157634323be6d760298fc6243295df3c22",
+      "after": "84bd9034960eaad7684fc2fcbc92d2353017a886"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "ac2267c0091862e03b11bd32d150051f22405bdd",
+      "after": "8f5288e374d80618f012e4969d1ccb0ba0bbae55"
+    },
+    {
+      "path": "packages/dacs-client/test/purchase-expiry-clocks.test.mjs",
+      "before": "fd0b0dd51c4fc12d8ab7c83f2b89c87b391047d1",
+      "after": "02eaebd6b39e61e3ae3525753ea8b8e95cdf9c2f"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-c3a9f4c33c3b.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/public-admission.mjs",
+    "packages/dacs-client/src/purchases.mjs",
+    "packages/dacs-client/test/anchor-write.test.mjs",
+    "packages/dacs-client/test/create-storage-reserve.test.mjs",
+    "packages/dacs-client/test/fixtures/plugin-import-inventory.json",
+    "packages/dacs-client/test/helpers/stored-request-flows.mjs",
+    "packages/dacs-client/test/job-id-uniqueness.test.mjs",
+    "packages/dacs-client/test/packed-consumer.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "packages/dacs-client/test/purchase-expiry-clocks.test.mjs"
+  ]
+}

@@ -26,7 +26,7 @@ const SELLER_BIN = 'bin/dacs-seller.mjs';
 const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOURCES.md', 'package.json'];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
   'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerAuthorityReader', 'createSellerContextRoute', 'createSellerHttpHandler',
-  'createSellerTransportStore', 'createSellerWalletSession', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
+  'createSellerTransportStore', 'createSellerWalletSession', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'openVerifiedEnrollmentReader', 'startSellerHost', 'validateListing'];
 // The seller's Node wallet suites.
 const NODE_WALLET_TESTS = ['node-wallet-approval.test.mjs', 'node-wallet-balance.test.mjs', 'node-wallet-composition.test.mjs', 'node-wallet-payment-evidence.test.mjs', 'node-wallet-sr2-bounds.test.mjs'];
 const INSTALLED_RUN_TIMEOUT_MS = 120000;
@@ -352,7 +352,7 @@ test('packed and installed outside the checkout, the kit contains src/dacs/autho
     'the installed host read the buyer\'s enrollment, and refuses its signed request once that enrollment is withdrawn');
 });
 
-test('the packed seller ships capability-authority.mjs, connection-authority.mjs, doctor-node.mjs, createNodeAuthorityReader, openDoctorNode, readSellerBalance and SELLER_TRANSPORT_AUTHORITY; its installed consumer gets the frozen two-member reader and the real held composition with TP1 publication declarations through the documented test seam, and the archive holds no seam', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
+test('the packed seller ships capability-authority.mjs, connection-authority.mjs, doctor-node.mjs, createNodeAuthorityReader, openDoctorNode, readSellerBalance and SELLER_TRANSPORT_AUTHORITY; its installed consumer gets the frozen node authority reader and the real held composition with TP1 publication declarations through the documented test seam, and the archive holds no seam', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
   const packed = sellerPackFiles();
   for (const file of ['src/dacs/capability-authority.mjs', 'src/devnet-demo/connection-authority.mjs', 'src/devnet-demo/doctor-node.mjs']) assert.ok(packed.includes(file), `${file} ships`);
   assert.deepEqual(packed.filter((path) => /kit-guard-fixture|(?:^|\/)test\//.test(path)), [], 'the archive holds no test seam');
@@ -387,8 +387,35 @@ test('the packed seller ships capability-authority.mjs, connection-authority.mjs
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS,
     env: { PATH: process.env.PATH, TMPDIR: work, NODE_OPTIONS: kitGuardLoaderOptions(app, work) } });
   assert.equal(child.status, 0, `the installed authority run failed\n${child.stdout}\n${child.stderr}`);
-  assert.deepEqual(JSON.parse(child.stdout.trim().split('\n').at(-1)), { pair: ['authority', 'connectionAuthority'], pairFrozen: true, doctor: ['close', 'observer', 'owner', 'readAuthority'],
-    transportAuthority: 'dacs-seller-tp1-node', anchorAuthority: true, unbound: 'authority_unbound', closed: 'transport_closed' });
+  assert.deepEqual(JSON.parse(child.stdout.trim().split('\n').at(-1)), { pair: ['authority', 'connectionAuthority', 'observePayment', 'readCommitmentReceipt', 'sessionAdmission'], pairFrozen: true,
+    doctor: ['close', 'observer', 'owner', 'readAuthority'], transportAuthority: 'dacs-seller-tp1-node', anchorAuthority: true, unbound: 'authority_unbound', closed: 'transport_closed' });
+});
+
+test('the packed seller also ships node-chain-readers.mjs and the installed port exposes the three chain readers and options', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
+  assert.ok(sellerPackFiles().includes('src/devnet-demo/node-chain-readers.mjs'), 'node-chain-readers.mjs ships');
+  const app = preparedConsumer();
+  const work = realpathSync(mkdtempSync(join(tmpdir(), 'dacs-seller-chain-readers-')));
+  t.after(() => rmSync(work, { recursive: true, force: true }));
+  const script = `
+    const { createSellerWalletSession } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-wallet-session.mjs');
+    const fetchImpl = async () => { throw new Error('TEST-offline'); };
+    const options = { endpoint: 'https://rpc.example.invalid/', transportAuthority: 'TEST-node', fetchImpl,
+      signer: { claim: 'TEST-claim', sign: () => new Uint8Array(64) }, loadKeyRecord: async () => new Uint8Array(1), approve: async () => true, approvalMode: 'policy',
+      journalMode: 'create', publications: { demoArtifactPublication: { authority: 'TEST-authority', policy: 'TEST-policy', artifactKinds: [] } },
+      participantImplementations: { entriesFor: () => [] }, sessionOf: () => null };
+    const port = createSellerWalletSession(options);
+    const codeOf = (work) => work.then(() => null, (error) => error.code);
+    const refusals = [await codeOf(port.readCommitmentReceipt({ record: {}, anchorReceipt: {} })), await codeOf(port.sessionAdmission.admit({}, {})), await codeOf(port.observePayment({}, {}))];
+    let malformed = null;
+    try { createSellerWalletSession({ ...options, sessionOf: 1 }); } catch (error) { malformed = error.message.includes('sessionOf') ? error.name : error.message; }
+    await port.close();
+    process.stdout.write(JSON.stringify({ members: Object.keys(port).filter((name) => ['sessionAdmission', 'readCommitmentReceipt', 'observePayment'].includes(name)),
+      admission: Object.keys(port.sessionAdmission).length, chainIdentity: Object.hasOwn(port.readCommitmentReceipt, 'chainIdentity'), refusals, malformed }) + '\\n');`;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], { cwd: app, encoding: 'utf8', timeout: INSTALLED_RUN_TIMEOUT_MS,
+    env: { PATH: process.env.PATH, TMPDIR: work, NODE_OPTIONS: kitGuardLoaderOptions(app, work) } });
+  assert.equal(child.status, 0, `the installed chain-reader run failed\n${child.stdout}\n${child.stderr}`);
+  assert.deepEqual(JSON.parse(child.stdout.trim().split('\n').at(-1)), { members: ['sessionAdmission', 'readCommitmentReceipt', 'observePayment'], admission: 6, chainIdentity: true,
+    refusals: ['wallet_session_not_finalized', 'wallet_session_not_finalized', 'wallet_session_not_finalized'], malformed: 'TypeError' });
 });
 
 test('from the packed archive with no hooks, a key opened while off yields its claim, and its returned sign refuses kit_operation_guard_off with zero cryptographic signer calls. (Round 4.) Its read-only role, given no current binding, signs nothing', { timeout: INSTALLED_TEST_TIMEOUT_MS }, (t) => {
@@ -549,6 +576,7 @@ test('in the installed consumer, through the documented test seams, a payment-ev
     const { createSellerNodeWallet } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-node-wallet.mjs');
     const { acquireSellerStateLock } = await import('@kynesyslabs/dacs-seller/src/devnet-demo/seller-state-lock.mjs');
     const { generateWalletMnemonic, deriveWalletIdentity } = await import('@kynesyslabs/dacs-seller/src/cli/node-identity.mjs');
+    const { createPaymentEvidenceWalletJournal } = await import('@kynesyslabs/dacs-seller');
     const { recordingApproval } = await import('./payment-evidence-approval-double.mjs');
     // The serving node's signed answer to a valid confirmTx, and a broadcast it applies.
     const reply = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
@@ -570,6 +598,9 @@ test('in the installed consumer, through the documented test seams, a payment-ev
     const wallet = await createSellerNodeWallet({ admission, owner, dataDirectory, journalMode: 'create', stateLock, signer: { claim: identity.claim },
       keyRecord: new TextEncoder().encode(JSON.stringify({ format: 'dacs-seller-key/v1', algorithm: 'ed25519', mnemonic })), approve, approvalMode: 'policy',
       clock: { now: () => T0 }, publications, stopped: async () => false, feeCeilingOs: '50000000000' });
+    // The journal over the adapter's one-call members, which run inside the caller's own pass.
+    const { signCreate, broadcast, readAccountNonce, readTransactionState } = wallet.paymentEvidenceAdapter;
+    const journal = createPaymentEvidenceWalletJournal({ path: dataDirectory + '/seller-payment-evidence.sqlite', signCreate, broadcast, readAccountNonce, readTransactionState, now: () => T0 });
     const steps = [], codes = error => { const found = []; for (let link = error; link instanceof Error; link = link.cause) found.push(link.code); return found; };
     const evidence = label => ({ logicalAddress: 'dacs4:payment:TEST-job-' + label + ':demos-native:DEM:2', artifact: { TEST: label }, writer: 'did:demos:agent:' + wallet.address.slice(2),
       artifactKind: 'SettlementEvidence', jobId: 'TEST-job-' + label, receiptContentHash: 'e1'.repeat(32) });
@@ -584,13 +615,13 @@ test('in the installed consumer, through the documented test seams, a payment-ev
         return await wallet.runInEffectPass(pass, work);
       } finally { fence.release(); }
     }
-    const sent = await inPass(() => wallet.paymentEvidence.anchorEvidence(evidence('a')));
+    const sent = await inPass(() => journal.anchorEvidence(evidence('a')));
     const passed = steps.splice(0);
-    const stopped = await inPass(() => wallet.paymentEvidence.anchorEvidence(evidence('b')), true).then(() => [], codes);
+    const stopped = await inPass(() => journal.anchorEvidence(evidence('b')), true).then(() => [], codes);
     const stoppedSteps = steps.splice(0);
-    const unpassed = await wallet.paymentEvidence.anchorEvidence(evidence('c')).then(() => [], codes);
-    const kept = await Promise.all(['a', 'b', 'c'].map(label => wallet.paymentEvidence.readSignedProjection({ logicalAddress: evidence(label).logicalAddress })));
-    await wallet.close(); owner.close(); stateLock.release();
+    const unpassed = await journal.anchorEvidence(evidence('c')).then(() => [], codes);
+    const kept = await Promise.all(['a', 'b', 'c'].map(label => journal.readSignedProjection({ logicalAddress: evidence(label).logicalAddress })));
+    journal.close(); await wallet.close(); owner.close(); stateLock.release();
     console.log(JSON.stringify({ sent: sent.status, signPhase: passed.filter(step => step.endsWith(':sign')), stopped: stopped.includes('TEST-stopped'), stoppedSteps,
       unpassed: unpassed.includes('effect_pass_required'), kept: kept.map(row => row !== null), confirms: node.confirms.length, broadcasts: node.broadcasts.length,
       nodeOptions: process.env.NODE_OPTIONS ?? null }));`, { nodeOptions: loaderOptions, args: [dataDirectory] });

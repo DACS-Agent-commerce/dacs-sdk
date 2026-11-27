@@ -11,4 +11,5 @@ export {
   isDevnetAgreementTransport,
   isDevnetDemoTransport,
   isDevnetSettlementTransport,
+  isQualificationObserverSource,
 } from '@kynesyslabs/dacs-client/node-wallet';

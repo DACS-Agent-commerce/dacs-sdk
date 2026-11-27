@@ -15,7 +15,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   // Constructing it signs nothing; its answers are signed only through the roles it is given: the effect role inside a pass of the
   // guarded effect boundary, and the closed read-only role otherwise. Its returned signAnswer is classified in RETURNED_CLASSIFICATION.
   'src/dacs/answer-signers.mjs': { effect: {}, pure: ['createAnswerSigners'] },
-  'src/dacs/authority-reader.mjs': { effect: {}, pure: ['createSellerAuthorityReader'] },
+  'src/dacs/authority-reader.mjs': { effect: {}, pure: ['createSellerAuthorityReader', 'currentEnrollment'] },
   'src/dacs/bootstrap-scope.mjs': { effect: {}, pure: ['createBootstrapScopes'] },
   'src/dacs/bounded-call.mjs': { effect: {  }, pure: ['boundedCall', 'isBoundedCallTimeout'] },
   'src/dacs/bounded-reads.mjs': { effect: {  }, pure: ['readFailureCode', 'readRetainedBounded'] },
@@ -31,7 +31,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/dem-delivery-context-consumer.mjs': { effect: { createDemDeliveryContext: ['createDemDeliveryContext'] }, pure: ['demDeliveryContextConfig', 'demDeliveryContextHost', 'demDeliveryContextUsage', 'demDeliveryContextVetMode', 'isDemDeliveryContextAuthority', 'releaseDemDeliveryContext', 'resolveDemDeliverySellerContext'] },
   'src/dacs/demos-claims.mjs': { effect: {  }, pure: ['DemosClaimFormatError', 'addressForClaim', 'claimForAddress', 'decodeSignature', 'isCanonicalEd25519Signature', 'isSmallOrderPublicKey', 'normalizeDemosAddress', 'verifyDemosSignature'] },
   'src/dacs/demos-sr2-adapter.mjs': { effect: {  }, pure: ['DemosSr2Error', 'createDemosSr2Adapter', 'createInMemoryDemosSr2Journal', 'demosSr2TxRef'] },
-  'src/dacs/devnet-source.mjs': { effect: {  }, pure: ['isDevnetAgreementTransport', 'isDevnetDemoTransport', 'isDevnetSettlementTransport'] },
+  'src/dacs/devnet-source.mjs': { effect: {  }, pure: ['isDevnetAgreementTransport', 'isDevnetDemoTransport', 'isDevnetSettlementTransport', 'isQualificationObserverSource'] },
   'src/dacs/effect-boundary.mjs': { effect: { createEffectBoundary: ['effectBoundary'] }, pure: ['effectBoundaryBinding', 'effectPassRemainingMs', 'jobPassContext'] },
   'src/dacs/effect-history.mjs': { effect: {  }, pure: ['createEffectHistory', 'initHistory'] },
   'src/dacs/enrollment-proof.mjs': { effect: {}, pure: ['parseTrustedNodePin', 'verifyEnrollmentAnswer'] },
@@ -44,9 +44,12 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/native-observation-evidence.mjs': { effect: {  }, pure: ['reportNativeRefusal', 'withNativeObservationEvidence'] },
   'src/dacs/native-payment-evidence-consumer.mjs': { effect: { createNativePaymentEvidenceConsumer: ['createNativePaymentEvidenceConsumer'] }, pure: ['checkNativePaymentEvidence', 'nativeEvidenceReadOutcome', 'nativePaymentEvidenceConfig', 'observedTransferMatches', 'usesNativePaymentEvidence'] },
   'src/dacs/payment-evidence-wallet-journal.mjs': { effect: { createPaymentEvidenceWalletJournal: ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence'], createSignedCreateJournal: ['anchorEvidence', 'reconcilePaymentEvidence', 'ensureEvidence', 'guardedCreate'] }, pure: ['isPaymentEvidenceWalletJournalPair', 'paymentEvidenceWalletJournalOf'] },
+  'src/dacs/payment-evidence-pass.mjs': { effect: { createPaymentEvidencePass: ['paymentEvidence.approveAhead', 'paymentEvidence.signCreate', 'paymentEvidence.approveSendAhead', 'paymentEvidence.broadcast'] }, pure: [] },
   'src/dacs/process-lease.mjs': { effect: {  }, pure: ['ProcessLeaseError', 'leaseFile', 'leaseHolderState', 'leaseState', 'takeLease'] },
   'src/dacs/purchase-protocol.mjs': { effect: {  }, pure: ['agreementInput', 'agreementTerms', 'assembleBundleCopies', 'bundleAddress', 'bundleSession', 'bundleSigningPlan', 'claimPublicKeyRaw', 'commitmentReader', 'commitmentSession', 'commitmentVerifier', 'contributionVerifier', 'deliverableAddress', 'deliveryEvidenceAddress', 'finalityCommitmentAddress', 'fixedPriceAgreementLogicalAddress', 'listingPin', 'paymentEvidenceAddress', 'plainJson', 'protocolSupport', 'verifyAnchoredCopy', 'verifyDelivery', 'verifyPaymentEvidence', 'vetNotPerformedRef'] },
   'src/dacs/rail-authority.mjs': { effect: {  }, pure: ['intakeRailDefinition', 'railAuthorityConfig', 'validateSellerListing'] },
+  'src/dacs/revocation-proof-encoding.mjs': { effect: {}, pure: ['nodeCanonicalJson', 'nodeJcs'] },
+  'src/dacs/revocation-proof-storage.mjs': { effect: {}, pure: ['verifyRevocationStorage'] },
   'src/dacs/seller-agent.mjs': { effect: { createSellerAgent: ['createSellerAgent'] }, pure: ['SellerAgentError', 'buildReport', 'canonicalSignature', 'isFinalPaymentAnswer', 'isPendingPaymentAnswer', 'paymentTxHash', 'proposalTimeProblem', 'receiptFeeCeilingsConfig', 'transportOutcome'] },
   'src/dacs/seller-admission-transaction.mjs': { effect: { createContextAdmissionTransaction: ['begin', 'runningCheck', 'reserveContext', 'complete', 'compensate'] }, pure: ['admissionTransactionInternals', 'assertAdmissionJobLease', 'evidenceProof', 'storedCause'] },
   'src/dacs/seller-challenge-ledger.mjs': { effect: { createSellerChallengeLedger: ['issue'] }, pure: ['deepFreeze'] },
@@ -81,6 +84,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/deliverable.mjs': { effect: {  }, pure: ['createDevnetPurchasedReportProducer', 'isDevnetPurchasedReport'] },
   'src/devnet-demo/deployment-qualification.mjs': { effect: {  }, pure: ['assertQualifiedDeployment'] },
   'src/devnet-demo/doctor-node.mjs': { effect: {}, pure: ['openDoctorNode', 'readSellerBalance'] },
+  'src/devnet-demo/node-chain-readers.mjs': { effect: {}, pure: ['createNodeChainReaders', 'createReadOnlyDemosSr2Journal'] },
   'src/devnet-demo/durable-file.mjs': { effect: {  }, pure: ['publishFileExclusive', 'syncDirectory', 'syncFile'] },
   'src/devnet-demo/late-write-watch.mjs': { effect: {  }, pure: ['lateWriteWatchOpen', 'watchLateWrite'] },
   'src/devnet-demo/listing.mjs': { effect: { createDevnetDemoListingPublisher: ['createDevnetDemoListingPublisher'] }, pure: [] },
@@ -88,6 +92,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/operator-approval.mjs': { effect: {  }, pure: ['composeSellerApproval', 'confirmedWriteOs', 'createExactOperatorApproval', 'createSellerContextAdmission', 'cutTornContextLine', 'decidedFromJournals', 'heldPolicyBudget', 'parsePolicyLedger', 'policyRefusal', 'releaseSellerContextHolds', 'sellerApprovalSettings', 'sellerIssuanceJournalIds', 'sellerPurchaseSource', 'serializedPolicy', 'stillAuthorizedToSign', 'stillOpenBeforePayment', 'withContextHolds'] },
   'src/devnet-demo/party-vet-store.mjs': { effect: {  }, pure: ['createInMemoryPartyVetStore', 'openPartyVetStore'] },
   'src/devnet-demo/seller-node-wallet.mjs': { effect: { createSellerNodeWallet: ['createSellerNodeWallet'] }, pure: [] },
+  'src/devnet-demo/seller-enrollment-reader.mjs': { effect: {  }, pure: ['openVerifiedEnrollmentReader'] },
   'src/devnet-demo/seller-purchase-source.mjs': { effect: {  }, pure: ['isPaymentTxRef', 'sellerHeldEvidenceJobs', 'sellerHoldNotice', 'sellerRecordsPurchaseResolver'] },
   'src/devnet-demo/seller-state-lock.mjs': { effect: {  }, pure: ['acquireSellerStateLock'] },
   'src/devnet-demo/seller-wallet-session.mjs': { effect: { createSellerWalletSession: ['createSellerWalletSession', 'sellerWalletSession.finalize', 'publish'] }, pure: ['createNodeAuthorityReader', 'isSellerWalletSession'] },
@@ -132,11 +137,25 @@ const TRANSPORT_PASSIVE = ['readRpc', 'observeBinding', 'chainReader', 'nativeTr
   'isWalletIdle', 'profile', 'onPurchaseStep', 'onStorageWriteResend', 'reserveRpcAuth', 'close'];
 const LOCAL_JOURNAL = ['appendUnderLock', 'close', 'entries', 'get', 'inspectLocks', 'put', 'releaseAbandonedLock', 'withOwnedOrAcquiredLane', 'withWalletLock'];
 const EVIDENCE_JOURNAL_KEY = 'src/dacs/payment-evidence-wallet-journal.mjs#createPaymentEvidenceWalletJournal';
+const EVIDENCE_CONSUMER_KEY = 'src/dacs/native-payment-evidence-consumer.mjs#createNativePaymentEvidenceConsumer';
+const EVIDENCE_PASS_KEY = 'src/dacs/payment-evidence-pass.mjs#createPaymentEvidencePass';
+const EVIDENCE_EFFECTS = ['approveAhead', 'signCreate', 'approveSendAhead', 'broadcast'];
+const EVIDENCE_READS = ['readAccountNonce', 'readTransactionState'];
+// The four effect members of a payment-evidence adapter or pass, named `<member>` after `memberPrefix`, each guarded at its call
+// as `<guardPrefix>.<member>`.
+const evidenceEffects = (guardPrefix, memberPrefix = '') => Object.fromEntries(EVIDENCE_EFFECTS.map((member) => [`${memberPrefix}${member}`, [`${guardPrefix}.${member}`]]));
 // The seller's Node wallet composition, as createSellerNodeWallet returns it and the port's finalize hands it on; `transport` is the
 // facade's member name (`sourceCapability` on the wallet). Its wallet factory and passes sign only through the client's effect gate.
-const nodeWalletRow = (transport, extraPure = []) => ({ role: [], as: { paymentEvidence: EVIDENCE_JOURNAL_KEY },
+const nodeWalletRow = (transport, extraPure = []) => ({ role: [],
   effect: Object.fromEntries([['walletFactory', CLIENT_HOLD], ['effectPass', CLIENT_HOLD], ['runInEffectPass', CLIENT_HOLD], ...prefixed(transport, TRANSPORT_ACTIVE).map((name) => [name, CLIENT_HOLD])]),
   pure: ['close', 'readBalance', ...extraPure, ...prefixed('artifactJournal', LOCAL_JOURNAL), ...prefixed('observer', ['observe', 'provenance', 'readNodeInfo']), ...prefixed(transport, TRANSPORT_PASSIVE)] });
+// The wallet hands out the client's payment-evidence adapter, guarded at each effect call; the finalized session hands out instead
+// its own journal over the session's passes, the consumer anchoring through it, and endApprovalWaits, which only aborts a signal.
+const walletRow = () => {
+  const row = nodeWalletRow('sourceCapability');
+  return { ...row, effect: { ...row.effect, ...evidenceEffects('paymentEvidenceAdapter', 'paymentEvidenceAdapter.') }, pure: [...row.pure, ...prefixed('paymentEvidenceAdapter', EVIDENCE_READS)] };
+};
+const sessionRow = () => ({ ...nodeWalletRow('transport', ['acquireConnectionFence', 'endApprovalWaits']), as: { paymentEvidence: EVIDENCE_JOURNAL_KEY, nativePaymentEvidence: EVIDENCE_CONSUMER_KEY } });
 const EVIDENCE_JOURNAL = { role: [], effect: { anchorEvidence: ['anchorEvidence'], ensureEvidence: ['ensureEvidence'], reconcilePaymentEvidence: ['reconcilePaymentEvidence'] },
   pure: ['clearHeldWrite', 'close', 'readSignedProjection'] };
 const DELIVERABLE_JOURNAL = { role: [], effect: { submitAuthorized: ['guardedCreate'], resume: ['guardedCreate'] }, pure: ['clearHeldWrite', 'close', 'readSignedProjection'] };
@@ -146,9 +165,13 @@ const EFFECT_ROUTE_PATHS = ['/dacs/v1/agreements/proposals', '/dacs/v1/bundles/c
 const PARTY_VET_STORE = { role: [], effect: {}, pure: ['close', 'entries', 'read', 'update', 'usage'] };
 // The read-only connection pair: the client's authority capability (no sign or send) and its connection reader.
 const CONNECTION_PAIR = { role: [], effect: {}, pure: ['connectionAuthority', 'authority.authorityRpc', 'authority.claim', 'authority.context', 'authority.connectionGeneration'] };
+// The chain readers only read the finalized session: nothing they call signs or sends.
+const CHAIN_READER_MEMBERS = ['observePayment', 'readCommitmentReceipt', 'sessionAdmission.admit', 'sessionAdmission.resolveVetRecord', 'sessionAdmission.readVetAnchorReceipt',
+  'sessionAdmission.verifyVetAnchorReceipt', 'sessionAdmission.readRevocationSurfaces', 'sessionAdmission.readRevocationMarker'];
 export const RETURNED_CLASSIFICATION = Object.freeze({
-  'src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession.finalize()': nodeWalletRow('transport', ['acquireConnectionFence']),
-  'src/devnet-demo/seller-node-wallet.mjs#createSellerNodeWallet': nodeWalletRow('sourceCapability'),
+  'src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession.finalize()': sessionRow(),
+  'src/devnet-demo/seller-node-wallet.mjs#createSellerNodeWallet': walletRow(),
+  [EVIDENCE_PASS_KEY]: { role: [], effect: evidenceEffects('paymentEvidence'), pure: EVIDENCE_READS },
   'src/dacs/host-stages.mjs#openSellerStages': { role: [], effect: { finalize: ['sellerWalletSession.finalize', 'effectBoundary'] }, pure: ['bootstrap.current', 'bootstrap.enter', 'close', 'local'] },
   'src/seller-key.mjs#loadKeyFile': { role: [], effect: {}, pure: ['bytes', 'destroy', 'redact', 'text', 'toJSON'] },
   'src/devnet-demo/create-pass.mjs#currentAuthorizationFor': { role: [], effect: {}, pure: ['()'] },
@@ -231,6 +254,7 @@ export const RETURNED_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/operator-approval.mjs#createSellerContextAdmission': { role: [], effect: {}, pure: ['release', 'reserve'] },
   'src/devnet-demo/party-vet-store.mjs#createInMemoryPartyVetStore': PARTY_VET_STORE,
   'src/devnet-demo/party-vet-store.mjs#openPartyVetStore': PARTY_VET_STORE,
+  'src/devnet-demo/seller-enrollment-reader.mjs#openVerifiedEnrollmentReader': { role: [], effect: {}, pure: ['close', 'entriesFor'] },
   'src/devnet-demo/seller-purchase-source.mjs#sellerRecordsPurchaseResolver': { role: [], effect: {}, pure: ['()'] },
   'src/devnet-demo/seller-state-lock.mjs#acquireSellerStateLock': { role: [], effect: {}, pure: ['held', 'release'] },
   'src/devnet-demo/storage-write-recovery.mjs#storageWriteRpcSigner': { role: [], effect: { '()': ['storageWriteRpcSigner'] }, pure: [] },
@@ -245,8 +269,10 @@ export const RETURNED_CLASSIFICATION = Object.freeze({
     effect: { finalize: ['sellerWalletSession.finalize'], runCreate: ['effectBoundary'], 'artifactAnchor.publish': ['publish'], 'artifactAnchor.read': ['effectBoundary'],
       'artifactAnchor.readRetained': ['effectBoundary'] },
     pure: ['close', 'connectionAuthority', 'authority.authorityRpc', 'authority.claim', 'authority.context', 'authority.connectionGeneration', 'artifactAnchor.retainedSignedCreate',
-      'artifactAnchor.hasIntent', 'artifactAnchor.verifyReceipt'] },
-  'src/devnet-demo/seller-wallet-session.mjs#createNodeAuthorityReader': CONNECTION_PAIR,
+      'artifactAnchor.hasIntent', 'artifactAnchor.verifyReceipt', ...CHAIN_READER_MEMBERS] },
+  'src/devnet-demo/seller-wallet-session.mjs#createNodeAuthorityReader': { ...CONNECTION_PAIR, pure: [...CONNECTION_PAIR.pure, ...CHAIN_READER_MEMBERS] },
+  'src/devnet-demo/node-chain-readers.mjs#createNodeChainReaders': { role: [], effect: {}, pure: CHAIN_READER_MEMBERS },
+  'src/devnet-demo/node-chain-readers.mjs#createReadOnlyDemosSr2Journal': { role: [], effect: {}, pure: ['get', 'put', 'records', 'withWalletLock'] },
   'src/devnet-demo/connection-authority.mjs#createConnectionAuthorityReader': CONNECTION_PAIR,
   // The doctor's read-only owner, connection reader and observer: the owner's fence is a read-ordering lease, and nothing signs or sends.
   'src/devnet-demo/doctor-node.mjs#openDoctorNode': { role: [], effect: {},

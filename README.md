@@ -588,7 +588,10 @@ const settlementStore = createIdempotencyStore(durableSettlementLog);
 const x402SettlePayment = x402Settle(x402Rail, x402Paywall, { store: settlementStore });
 const evmSettle = evmErc20Settle(evmRail, evmConfig, { store: settlementStore });
 // demRail is built with journalPreparedTransfer; payDemSettle refuses one without it.
-const demSettle = payDemSettle(demRail, {}, { store: settlementStore, reconcile: demReconcile });
+// readPreparedTransfers reads that journal back by settlement key for recovery.
+const demSettle = payDemSettle(demRail, {}, {
+  store: settlementStore, reconcile: demReconcile, readPreparedTransfers: readDemJournal,
+});
 ```
 
 `durableSettlementLog` is an application-provided `SettlementLog` whose intent
@@ -601,7 +604,7 @@ For registry dispatch, pass the same store as top-level `settlementStore` for
 x402 and ERC-20 or as `payDem.settlementStore` for native DEM.
 When the rail is selected through `settleFromRail`, supply these dependencies
 under `payDem`: `maxTotalDebitOs`, `journalPreparedTransfer`,
-`settlementStore`, and `reconcile`. `journalPreparedTransfer` is required
+`settlementStore`, `reconcile` and `readPreparedTransfers`. `journalPreparedTransfer` is required
 unless `payDem.allowUnjournaled` is `true`. The rail's timing bounds
 `inclusionTimeoutMs`, `inclusionPollIntervalMs`, `statusRequestTimeoutMs`,
 `nonceVisibilityTimeoutMs` and `transactionRecordTimeoutMs` are forwarded from
@@ -632,7 +635,14 @@ even when its rail log is empty. All retained native attempts must name the same
 hash and network (at most 256 entries). The reconciler receives that canonical
 hash as `context.txHash`; it must load the original prepared-transfer journal and
 authenticate its signed nonce and payment tuple, throwing if the journal is
-missing or conflicting. Retained recovery also requires `readOutcome(key, binding)`
+missing or conflicting. The bridge does not rely on the reconciler alone: it
+returns a retained success only when the journal entry it reads through
+`readPreparedTransfers` binds this job, payer, payee and amount, and its own
+rail's read of the node finds that transaction `confirmed` at the reconciled
+block. Without `readPreparedTransfers` it withholds every retained success. A
+history that records a success while reconciliation reports a permanent failure
+leaves the payment unresolved (an error, not a failure result), so it is never
+paid again. Retained recovery also requires `readOutcome(key, binding)`
 on the settlement store (and `readOutcome(key)` on its backing log). This read
 must return the immutable recorded outcome or `null` without claiming or renewing
 a generation. The bridge checks the exact payment binding and transaction
