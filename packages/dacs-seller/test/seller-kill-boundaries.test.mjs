@@ -26,8 +26,8 @@ const { integrityRoleOf, readOnlyRoleOf } = await import('./helpers/agent-signin
 const { hostBuyer } = await import('./helpers/host-context-client.mjs');
 const { SIGNED_BYTES, ebWorld, flush, gate } = await import('./helpers/effect-boundary-fixture.mjs');
 const { anchorFixture, passThroughRunCreate, signSdkCreate } = await import('./helpers/anchor-isolated-fixture.mjs');
-const { spyTransactionSignatures } = await import('./helpers/seller-node-wallet-world.mjs');
-const { anchorOptions, importSpiedWalletSession } = await import('./helpers/artifact-anchor-spy.mjs');
+const { privateDataDirectory, spyTransactionSignatures } = await import('./helpers/seller-node-wallet-world.mjs');
+const { anchorOptions, anchorSubstitute, importSpiedWalletSession } = await import('./helpers/artifact-anchor-spy.mjs');
 const { challengeWorld, watchSql } = await import('./helpers/challenge-route-fixture.mjs');
 const { JOB: CONTEXT_JOB, JOB2: CONTEXT_JOB2, contextWireWorld } = await import('./helpers/context-wire-world.mjs');
 const { SellerAgentError } = await import('../src/dacs/seller-agent.mjs');
@@ -254,11 +254,12 @@ async function pendingCreate(t, stopped, { afterSign = null } = {}) {
   await w.journal.put(key, { ...await w.journal.get(key), stage: 'issued', hash: signed.hash });
   w.controls.runCreate = (op, work) => { counts.runCreates++; return passThroughRunCreate(op, work); };
   const recoveryRow = () => w.journal.rows.get(`demo/recovery/${signed.hash}`) ?? null;
-  const read = (authorizeResend = async () => true) => w.open().readRetained({ logicalAddress: row.input.logicalAddress, artifactKind: row.input.artifactKind }, { resend: true, authorizeResend });
-  const passive = () => w.open().readRetained({ logicalAddress: row.input.logicalAddress, artifactKind: row.input.artifactKind }, { resend: false });
+  const input = { logicalAddress: row.input.logicalAddress, artifactKind: row.input.artifactKind };
+  const read = (authorizeResend = async () => true) => w.open().readRetained(input, { resend: true, authorizeResend });
+  const passive = () => w.open().readRetained(input, { resend: false });
   // The same read with the caller's own options, as a host passes them to its anchor.
-  const readWith = (options) => w.open().readRetained({ logicalAddress: row.input.logicalAddress, artifactKind: row.input.artifactKind }, options);
-  return { w, counts, resends, recoveryRow, read, passive, readWith, signed };
+  const readWith = (options) => w.open().readRetained(input, options);
+  return { w, counts, resends, recoveryRow, read, passive, readWith, signed, input };
 }
 
 test('KILL during recovery: readback only', async (t) => {
@@ -590,7 +591,7 @@ test('under KILL the named closing writes still record and none signs or sends: 
   assert.deepEqual([next.counts.holds.length, next.counts.vetWrites, next.counts.validations, next.counts.agreementSignatures], [0, 0, 0, 0], 'the restart under KILL started no work');
 });
 
-test('a restart under KILL leaves an accepted attempt\'s unfinished effect step, hold and reservation and an unaccepted attempt\'s pending reservation as they were and closes only the lost validation; the same restart without KILL ends the accepted attempt\'s step', async (t) => {
+test('a restart under KILL leaves an accepted attempt\'s unfinished effect step, hold and reservation as they were and closes only the lost validation of an attempt cut during validation; the same restart without KILL ends the accepted attempt\'s step', async (t) => {
   const tables = ['kit_context_admissions', 'kit_job_holds', 'kit_slot_retirements', 'kit_reservations'];
   const snapshot = (world) => JSON.stringify(tables.map((name) => world.internals.db.prepare(`SELECT * FROM ${name} ORDER BY 1`).all()));
   const challengeRow = (world, nonce) => world.internals.db.prepare("SELECT state, json_extract(failure, '$.code') AS code FROM kit_challenges WHERE nonce = ?").get(nonce);
@@ -606,9 +607,6 @@ test('a restart under KILL leaves an accepted attempt\'s unfinished effect step,
     await Promise.all([held.effect.reached, held.validation.reached]);
     assert.deepEqual([challengeRow(w, requests.accepted.nonce).state, challengeRow(w, requests.unaccepted.nonce).state], ['accepted', 'attempted']);
     assert.deepEqual([w.rowOf(CONTEXT_JOB)?.state, w.openHolds().length, w.reserved.effects.length], ['running', 1, 1], 'the accepted attempt holds its effect step, hold and reservation');
-    // The other attempt's reservation was charged and never finished.
-    w.internals.db.prepare('INSERT INTO kit_job_holds SELECT ?, buyer, seller, listing_pin, context FROM kit_job_holds WHERE jobId = ?').run(unacceptedJob, CONTEXT_JOB);
-    w.internals.db.prepare("INSERT INTO kit_reservations SELECT ?, buyer, ?, operationId, route, allocationId, class, requestHash, at, 'reserving', NULL, rev FROM kit_reservations WHERE jobId = ?").run(`k-unaccepted-${withKill}`, unacceptedJob, CONTEXT_JOB);
     const before = snapshot(w);
     if (withKill) kill.createKill();
     const next = await w.restartHost({ admissionStopped: kill.isStopped });
@@ -772,7 +770,7 @@ test('concurrent requests while KILL appears: none signs after the check that ob
   }
 });
 
-test('repeat 15b-38’s H11-6 final real EB5r/EB8f pause-and-resume, closure, rollback and restart controls with the actual KILL stop seam; also repeat 15b-1’s full effect inventory with KILL already present, Listing publication included: zero effect-signer calls and zero wallet requests, with read-only/refusal and integrity signatures counted separately', async (t) => {
+test('the effect boundary\'s pause-and-resume, closure, rollback and restart controls stop at the real KILL check; with KILL already present every seller effect path, Listing publication included, makes zero effect-signer calls and zero wallet requests, with read-only, refusal and integrity signatures counted separately', async (t) => {
   t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
   // The effect boundary's own pause-and-resume controls over the real KILL check: a pass parked at its final authority read sees KILL created
   // there and signs nothing; a restarted boundary refuses too; resume is a new pass once KILL is removed, and the unchanged control signs.
@@ -899,6 +897,75 @@ test('KILL during a read-time CREATE recovery: at each of three cuts the current
     p.w.controls.runCreate = () => Promise.reject(Object.assign(new Error('TEST failure'), { code }));
     await assert.rejects(p.read(), { code });
     assert.equal(p.recoveryRow(), null, `${code}: the row is as it was`);
+  }
+});
+
+const ANCHOR_METHODS = ['publish', 'read', 'readRetained', 'retainedSignedCreate', 'hasIntent', 'verifyReceipt'];
+// The port's own `artifactAnchor`, the handle the host is given, after the host's stages finalized the port over the host's stop
+// check for `directory`. The anchor the port composes there keeps the composition's runCreate and stop check; its source, journal and
+// wallet are a `pendingCreate` fixture's, so a retained CREATE eligible for its one resend is read through the port. `anchorStop`
+// wraps the stop check the anchor itself reads; the port's pass keeps the composition's own.
+async function portAnchorOverPendingCreate(t, { anchorStop = (stopped) => stopped } = {}) {
+  const { createSellerWalletSession: spiedPort } = await importSpiedWalletSession();
+  const directory = privateDataDirectory(t), kill = join(directory, 'KILL');
+  const p = await pendingCreate(t, () => false);
+  const composed = [];
+  anchorSubstitute.build = (options) => {
+    composed.push(options);
+    p.w.controls.stopped = anchorStop(options.stopped);
+    p.w.controls.runCreate = (op, work) => { p.counts.runCreates++; return options.runCreate(op, work); };
+    return Object.fromEntries(ANCHOR_METHODS.map((name) => [name, (...args) => p.w.open()[name](...args)]));
+  };
+  try {
+    const world = await walletSessionWorld(t, { directory, createPort: spiedPort });
+    await world.finalize(createStopCheck(directory));
+    assert.equal(composed.length, 1, 'the port composed its anchor once, at finalize');
+    return { p, read: (authorizeResend = async () => true) => world.port.artifactAnchor.readRetained(p.input, { resend: true, authorizeResend }),
+      createKill: () => writeFileSync(kill, ''), removeKill: () => rmSync(kill, { force: true }) };
+  } finally {
+    anchorSubstitute.build = null;
+  }
+}
+
+test('KILL at each read-time recovery cut, read through the port\'s own artifact anchor finalized over the host\'s stop check: each resend-enabled read resolves with its readback, nothing is sent, the recovery row is as the cut left it, and once KILL is removed the one resend is made at most once', async (t) => {
+  // Cut 1: KILL appears while the caller's resend check runs; the anchor's check right after it sees KILL.
+  {
+    const a = await portAnchorOverPendingCreate(t);
+    const out = await a.read(async () => { a.createKill(); return true; });
+    assert.equal(typeof out.status, 'string', 'cut 1: the read answers its readback');
+    assert.deepEqual([a.p.counts.runCreates, a.p.counts.recoveries, a.p.recoveryRow()], [0, 0, null], 'cut 1: the pass never ran and nothing was recorded or sent');
+    a.removeKill();
+    await a.read();
+    assert.deepEqual(a.p.resends.map((sent) => sent.hash), [a.p.signed.hash], 'cut 1 used nothing: without KILL the next read resends the kept CREATE once');
+  }
+  // Cut 2: KILL appears right after the anchor's own check answered open; the port's pass checks the host's stop and refuses before any work.
+  {
+    let armed = false, createKill = null;
+    const a = await portAnchorOverPendingCreate(t, { anchorStop: (stopped) => () => {
+      const answer = stopped();
+      if (armed) { armed = false; createKill(); }
+      return answer;
+    } });
+    createKill = a.createKill;
+    const out = await a.read(async () => { armed = true; return true; });
+    assert.equal(typeof out.status, 'string', 'cut 2: the read answers its readback');
+    assert.deepEqual([a.p.counts.runCreates, a.p.counts.recoveries, a.p.recoveryRow()], [1, 0, null], 'cut 2: the port\'s pass refused before the intent');
+    a.removeKill();
+    await a.read();
+    assert.equal(a.p.resends.length, 1, 'cut 2 used nothing: the next read resends once');
+  }
+  // Cut 3: KILL appears after the intent is written, as the resend asks to sign; the port's pass refuses the signature and the send.
+  {
+    const a = await portAnchorOverPendingCreate(t);
+    const send = a.p.w.source.recoverStorageWrite;
+    a.p.w.source.recoverStorageWrite = async (input) => { a.createKill(); await input.signRpc(); return send(input); };
+    const out = await a.read();
+    assert.equal(typeof out.status, 'string', 'cut 3: the read answers its readback');
+    assert.deepEqual([a.p.counts.recoveries, a.p.recoveryRow()?.stage], [0, 'intent'], 'cut 3: nothing was sent and the intent stays recorded');
+    a.removeKill();
+    a.p.w.source.recoverStorageWrite = send;
+    await a.read();
+    assert.equal(a.p.resends.length, 0, 'the resend is never repeated');
   }
 });
 

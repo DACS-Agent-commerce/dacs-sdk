@@ -104,7 +104,7 @@ function checkRequest(attempt, when) {
 
 // Accounts one wallet request in the approval ledger. `approve` records every request it accepts, then asks the request's own
 // check. A broadcast-started record written to a journal (`issuing`) marks the request sent before the write runs, so a failed
-// write still counts as sent; a signed-held record after it says the stop refused the broadcast, so the request counts as unsent. When the request ends, each recorded request is settled: released if nothing was sent; spent if
+// write still counts as sent. When the request ends, each recorded request is settled: released if nothing was sent; spent if
 // the transport itself proved inclusion or the node refused the broadcast; otherwise unknown, which keeps the hold. A 200 reply
 // alone proves nothing. A shutdown that ended the approval answers the request with OPERATOR_CLOSING, which the caller keeps
 // askable. `signingCheck` asks the current request's check again at every gate phase before transmission.
@@ -125,10 +125,7 @@ function createApprovalAttempt(approve, diagnostics) {
     },
     signingCheck: ({ phase }) => { if (!TRANSMISSION_STAGES.includes(phase)) checkRequest(scope.getStore(), 'before it was signed'); },
     issuing(value) {
-      // A signed-held record says the stop refused the broadcast after the marker: nothing was sent.
-      const attempt = scope.getStore();
-      if (attempt && value?.stage === 'broadcast-started') attempt.sent = true;
-      else if (attempt && value?.stage === 'signed-held') attempt.sent = false;
+      if (value?.stage === 'broadcast-started') { const attempt = scope.getStore(); if (attempt) attempt.sent = true; }
     },
     run(work, authorize) {
       return scope.run({ sent: false, closing: false, requests: [], authorize, withdrawn: null }, async () => {

@@ -169,7 +169,7 @@ test('a broadcast-started write that fails, or commits and then throws, leaves t
   }
 });
 
-test('a stop that appears after the broadcast-started marker and before the broadcast leaves the write held and unsent: zero broadcasts, the request settled released, never unknown', async t => {
+test('a stop that appears after the broadcast-started marker and before the broadcast keeps the marker for readback: zero broadcasts, no later record, and the request settled unknown so its hold stays', async t => {
   let stopped = false;
   const world = await settlingWorld(t, { stopped: () => stopped });
   const journal = world.wallet.artifactJournal, written = [];
@@ -180,10 +180,12 @@ test('a stop that appears after the broadcast-started marker and before the broa
   } };
   const { answer } = await artifactWrite(world, { anchorJournal: stopsAfterMarker });
   assert.equal(answer.success, false);
-  assert.equal(answer.error?.code, 'writes_stopped', JSON.stringify(answer));
+  assert.equal(answer.error?.code, 'outcome_unknown', JSON.stringify(answer));
   assert.equal(world.node.broadcasts.length, 0, 'nothing was sent');
-  assert.deepEqual(written, ['broadcast-started', 'signed-held'], 'the marker is followed by the held record');
-  assert.deepEqual(outcomes(world), ['released'], 'the unsent write releases its hold');
+  assert.deepEqual(written, ['broadcast-started'], 'the marker is the last record: only readback settles it');
+  const kept = (await journal.entries()).map(([, value]) => value).filter((value) => value?.hash === answer.data.hash);
+  assert.deepEqual(kept.map((value) => value.stage), ['broadcast-started'], 'the marker is kept for readback');
+  assert.deepEqual(outcomes(world), ['unknown'], 'the write behind the marker keeps its hold');
 });
 
 test('walletFactory refuses a selected anchor journal that cannot record writes', async t => {
