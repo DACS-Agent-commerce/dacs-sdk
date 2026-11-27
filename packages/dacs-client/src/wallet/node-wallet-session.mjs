@@ -159,11 +159,6 @@ function readCanonicalRoot(endpoint, chainIdentity) {
   return new URL(root);
 }
 
-// A plain-http reply carries no authentication, so a session that signs or sends refuses a plain-http endpoint.
-function requireHttpsEndpoint(endpoint) {
-  if (new URL(endpoint).protocol !== 'https:') fail('transport_mismatch');
-}
-
 /**
  * Returns the owner of the one connection to `endpoint`: `{local, currentLocal(), getContext(), acquireConnectionFence(claim), fetchImpl, close()}`.
  * Fences are granted one at a time in request order; `release` frees a fence once. Inside `runInEffectPass`, an acquisition shares the pass's own fence
@@ -699,7 +694,7 @@ async function composeStages({ owner, journal, key, identityRecord, listings, pu
   try {
     const authority = createNodeAuthorityCapability({ owner, claim: () => walletClaim ?? fail('session_not_finalized') });
     const readAuthority = createAuthorityReader({ authority, identityRecord, claim: authority.claim, listings, purchases, participantImplementations });
-    requireHttpsEndpoint(owner.currentLocal().endpoint);
+    if (new URL(owner.currentLocal().endpoint).protocol !== 'https:') fail('transport_mismatch'); // a plain-http reply carries no authentication
     const binding = await bindTp1Profile({ record: identityRecord, local: owner.currentLocal(), readAuthority });
     const composition = await buildNodeComposition({ ...session, owner, journal, key, admission: { binding, currentLocal: owner.currentLocal } }, false, requirePass);
     try { walletClaim = claimForAddress(composition.wallet.getPublicAccount().address); }
@@ -734,7 +729,7 @@ async function buildNodeComposition(options, seller, requirePass = false) {
     if (seller && !PAYMENT_EVIDENCE_APPROVAL_MEMBERS.every(name => typeof paymentEvidenceApproval?.[name] === 'function')) fail('invalid_params');
     const { Demos, validateMnemonic } = await loadNodeDemos();
     const expected = readExpectedPins(admission.binding, owner);
-    requireHttpsEndpoint(expected.endpoint);
+    if (new URL(expected.endpoint).protocol !== 'https:') fail('transport_mismatch');
     const effectBoundary = finalizeEffectBoundary({ owner, journal, admission, stopped, feeCeilingOs });
     const attempts = new AsyncLocalStorage(), selectedJournal = new AsyncLocalStorage();
     const gate = createEffectGate({ owner, expectedLocal: admission.binding.local, clock, qualify, passRequired: seller || requirePass, jobContextRequired: seller });

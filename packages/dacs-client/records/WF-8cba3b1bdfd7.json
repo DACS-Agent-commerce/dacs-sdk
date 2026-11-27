@@ -1,0 +1,23 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF require the Agreement binding endpoint to be the exact https origin",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "before": "2467428793d276ce1551de2573e706547952edcc",
+      "after": "ff8f31669e3e7f158a8f6e00feb6268fff192950"
+    },
+    {
+      "path": "packages/dacs-client/test/node-wallet-session.test.mjs",
+      "before": "309348144ec91a40f1d182c4d86c6a09dff5ed7b",
+      "after": "76de9e247e43f0e331e6946df1fecf8c6205917c"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-8cba3b1bdfd7.json",
+    "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+    "packages/dacs-client/test/node-wallet-session.test.mjs"
+  ]
+}
