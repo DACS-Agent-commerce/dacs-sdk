@@ -433,7 +433,8 @@ test('the wire context is checked where it is made and where the handler takes i
     agent: { agent: {} }, continuationEvidence: { agent: { transportAgreementOf: () => null } }, readCommitmentReceipt: { readCommitmentReceipt: 'reader' },
     requireDelegation: { requireDelegation: 'no' }, binding: { binding: null }, journal: { journal: undefined },
     'a signer without the read-only role': { signer: { claim: seller.claim, sign: seller.signBytes } }, 'no effect boundary': { effectBoundary: undefined },
-    'an object that is not the kit\'s boundary': { effectBoundary: { withFence() {} } }, 'a boundary over another binding': { effectBoundary: testEffectBoundary().effectBoundary } };
+    'an object that is not the kit\'s boundary': { effectBoundary: { withFence() {} } }, 'a boundary over another binding': { effectBoundary: testEffectBoundary().effectBoundary },
+    'a stop check that is not a function': { stopped: 'yes' } };
   for (const [label, change] of Object.entries(wrongKinds)) assert.throws(() => createWireContext({ ...valid, ...change }), TypeError, label);
   const handlerWith = (wire) => createSellerHttpHandler(w.agent, { wire });
   assert.throws(() => handlerWith({ ...w.handle.wire }), /createWireContext/, 'an unbranded copy');

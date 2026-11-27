@@ -77,7 +77,7 @@ for (const jump of [-60_000, 60_000]) {
     });
     const claim = 'seller';
     const agent = { claim, retainsPaymentWork() {}, assertSettlementCredit() {} };
-    const wire = { signer: { claim }, requireDelegation: false, publicEndpoint: null };
+    const wire = { signer: { claim }, requireDelegation: false, publicEndpoint: null, stopped: () => false };
     const handler = create(agent, { wire, maxRequestsPerWindow: 1, rateWindowMs: 10 });
     let status;
     const request = () => handler({ socket: {}, url: '/missing', headersDistinct: {} }, {
