@@ -28,6 +28,12 @@ runInNewContext(source + `; globalThis.check = () => {
 assert.equal(context.check(), true);assert.equal(await context.anchorCheck(origin),'invalid_params');assert.equal(await context.anchorCheck('https://other.invalid'),'unsupported');
 assert.match(source, /devnetAgreementAnchorPlan\(request, address, transport, relayOrigin/);
 });
+test("an Agreement transport binding is accepted only with the exact https origin and a bare root path as its endpoint", async () => {
+const {createDevnetAgreementWalletTransport}=await import('../src/public/portal/embedded-wallet/sdk-provider.mjs'); const relayOrigin='https://node-wallet.invalid';
+const descriptor=endpoint=>({profile:'devnet-agreement',network:'testnet',rpcUrl:relayOrigin+'/portal/api/devnet-native-wallet-rpc',bindingUrl:relayOrigin+'/portal/api/devnet-native-wallet-binding',transportBinding:{source:'devnet-agreement-transport/v1',bindingVersion:'dacs-demos-network-binding/v1',bindingId:'a'.repeat(64),network:'testnet',chainIdentity:'b'.repeat(64),pinVersion:'TEST-origin',endpoint,transportAuthority:'vector-authority'}});
+assert.ok(createDevnetAgreementWalletTransport(descriptor('https://rpc.example.invalid/'),{relayOrigin}));
+for(const endpoint of ['https://rpc.example.invalid/rpc?token=x','https://rpc.example.invalid/rpc','https://rpc.example.invalid/?q=1','https://rpc.example.invalid/#f','https://user:pass@rpc.example.invalid/','https://rpc.example.invalid','http://rpc.example.invalid/',42,null]) assert.throws(()=>createDevnetAgreementWalletTransport(descriptor(endpoint),{relayOrigin}),{code:'held_for_review'},String(endpoint));
+});
 
 test("held, every write request rejects profile_not_admitted with signer 0 and node calls 0", async t => {
 const w = await world(t, {held:true});const {Demos}=await (await import('../src/wallet/node-demos-loading.mjs')).loadNodeDemos();let signs=0;for(const name of ['sign','signMessage'])t.mock.method(Demos.prototype,name,async()=>{signs++;throw new Error('TEST-held-signer-called');}); for (const method of ['sendTransaction','sign','signMessage','signTransaction','registerIdentity','getWeb2IdentityProofPayload','anchorAgreement']) { const pending = w.session.wallet.request(method==='sendTransaction'?w.request:{method,params:method==='sign'?['TEST-held']:[]}); assert.ok(pending instanceof Promise); await assert.rejects(pending, refusal('profile_not_admitted')); } assert.equal(w.node.calls.length, 0); assert.equal((await w.journal().entries()).length, 0);assert.equal(signs,0);
