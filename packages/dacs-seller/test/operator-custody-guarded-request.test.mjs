@@ -110,12 +110,12 @@ test('a request whose authorize refuses after the operator approved it signs not
   assert.equal(globalThis[STATE_NAME].signatures, before, 'nothing was signed');
 });
 
-test('an approved write whose broadcast a stop refused after the broadcast-started marker is settled released, and one with only the marker is settled unknown', async () => {
+test('an approved write whose broadcast a stop refused after the broadcast-started marker is settled unknown, and no record written after the marker releases its hold', async () => {
   const settled = [];
   const approve = Object.assign(async () => true, { settle: async (request, outcome) => { settled.push([request.id, outcome]); } });
   const attempt = custody.createOperatorApprovalAttempt(approve);
   const refused = { success: false, data: null, error: { code: 'writes_stopped' } };
-  for (const [id, records, outcome] of [['started', ['broadcast-started'], 'unknown'], ['held', ['broadcast-started', 'signed-held'], 'released']]) {
+  for (const [id, records, outcome] of [['started', ['broadcast-started'], 'unknown'], ['later record', ['broadcast-started', 'signed-held'], 'unknown']]) {
     const answer = await attempt.run(async () => {
       await attempt.approve({ id });
       for (const stage of records) attempt.issuing({ stage });

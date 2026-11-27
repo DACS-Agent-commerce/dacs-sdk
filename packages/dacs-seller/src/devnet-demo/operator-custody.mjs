@@ -145,8 +145,7 @@ export function createOperatorApprovalAttempt(approve){
         }
       };
     },
-    // A signed-held record says the stop refused the broadcast after the marker: nothing was sent.
-    issuing(value){const attempt=scope.getStore();if(attempt&&value?.stage==='broadcast-started')attempt.sent=true;else if(attempt&&value?.stage==='signed-held')attempt.sent=false;},
+    issuing(value){if(value?.stage==='broadcast-started'){const attempt=scope.getStore();if(attempt)attempt.sent=true;}},
     run(work,authorize){return scope.run({sent:false,closing:false,requests:[],authorize},async()=>{
       const attempt=scope.getStore();let result;
       try{

@@ -17,7 +17,7 @@ const NETWORK = 'TEST-loopback-network';
 const MARKER = 'broadcast-started';
 
 // One session over the fixture chain. `cuts` hooks run as the SDK's sign and confirm return and as the marker is written.
-async function world(t, { stopped, failHeldRecord = false } = {}) {
+async function world(t, { stopped } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'embedded-wallet-kill-span-'));
   const dataDirectory = join(root, 'data');
   mkdirSync(dataDirectory, { mode: 0o700 });
@@ -30,11 +30,7 @@ async function world(t, { stopped, failHeldRecord = false } = {}) {
   }
   const memory = memoryAnchorJournal();
   let markerWrites = 0;
-  const journal = { ...memory, put: (key, value) => {
-    if (failHeldRecord && value?.stage === 'signed-held') throw new Error('TEST held record not written');
-    memory.put(key, value);
-    if (value?.stage === MARKER) { markerWrites += 1; cuts.afterMarker?.(); }
-  } };
+  const journal = { ...memory, put: (key, value) => { memory.put(key, value); if (value?.stage === MARKER) { markerWrites += 1; cuts.afterMarker?.(); } } };
   const session = createSdkWalletSession({ DemosCtor: CutDemos, validateMnemonic, anchorJournal: journal,
     transactionTransport: { profile: 'simulated-loopback', network: NETWORK, rpcUrl: `${chain.url}/portal/api/wallet-rpc` }, approve: async () => true,
     stopped: stopped ?? createStopCheck(dataDirectory) });
@@ -47,7 +43,6 @@ async function world(t, { stopped, failHeldRecord = false } = {}) {
     removeKill: () => rmSync(kill, { force: true }),
     send: () => session.request({ method: 'sendTransaction', params: [anchorRequest(account.address, NETWORK)] }),
     counts: () => ({ confirms: chain.record.confirms.length, broadcasts: chain.record.broadcastAttempts.length, markers: markerWrites }),
-    retained: () => memory.snapshot().map(([, value]) => value),
     retainedMarkers: () => memory.snapshot().filter(([, value]) => value?.stage === MARKER).length,
   };
 }
@@ -83,27 +78,17 @@ test('the provider checks KILL after signing, after confirmation before the issu
     assert.deepEqual(w.counts(), { confirms: 2, broadcasts: 1, markers: 1 }, 'a later unstopped write uses the same nonce');
   });
 
-  await t.test('KILL created as the marker is written: the signed bytes stay held for readback, unsent, and nothing is broadcast or retried', async (s) => {
+  await t.test('KILL created as the marker is written: the marker stays for readback, nothing is broadcast or retried', async (s) => {
     const w = await world(s);
     w.cuts.afterMarker = w.createKill;
     refusedWith(await w.send(), 'writes_stopped');
     assert.deepEqual(w.counts(), { confirms: 1, broadcasts: 0, markers: 1 });
-    const [held, ...others] = w.retained();
-    assert.deepEqual([others.length, held?.stage], [0, 'signed-held'], 'the one lane row no longer says a broadcast started');
-    assert.deepEqual([w.retainedMarkers(), typeof held.hash, held.signedTransaction?.hash === held.hash], [0, 'string', true], 'the signed bytes are kept');
+    assert.equal(w.retainedMarkers(), 1, 'the issued marker is kept for readback');
     delete w.cuts.afterMarker;
     w.removeKill();
     await w.send();
-    assert.equal(w.counts().broadcasts, 0, 'the held bytes are never broadcast again by this provider');
-    assert.deepEqual(w.retained(), [held], 'the lane row is unchanged');
-  });
-
-  await t.test('KILL created as the marker is written and the held record cannot be written: the marker stays, and the stop is still the refusal', async (s) => {
-    const w = await world(s, { failHeldRecord: true });
-    w.cuts.afterMarker = w.createKill;
-    refusedWith(await w.send(), 'writes_stopped');
-    assert.deepEqual(w.counts(), { confirms: 1, broadcasts: 0, markers: 1 });
-    assert.equal(w.retainedMarkers(), 1, 'readback alone settles a marker whose held record failed');
+    assert.equal(w.counts().broadcasts, 0, 'the issued marker is never broadcast again by this provider');
+    assert.equal(w.retainedMarkers(), 1);
   });
 });
 
