@@ -1,0 +1,52 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client files after carrying the part below up into the keyless signed relay part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "63ba26f1ed9915ffbf86ba12fd9d2d7c2d5a8d0c",
+      "after": "63ba26f1ed9915ffbf86ba12fd9d2d7c2d5a8d0c"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "870eb751d667a10a9cc296190f87e051e4a97577",
+      "after": "870eb751d667a10a9cc296190f87e051e4a97577"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/approved-record-pins.mjs",
+      "before": "0192a358e91dd30dd4267f91389d6bcb48d0dc43",
+      "after": "0192a358e91dd30dd4267f91389d6bcb48d0dc43"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "57a90cdecfff5f38c5e8b9b813729f350f021681",
+      "after": "57a90cdecfff5f38c5e8b9b813729f350f021681"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+      "before": "40367f47c71c08ce3582aed4d4eca16918016ee7",
+      "after": "40367f47c71c08ce3582aed4d4eca16918016ee7"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "24d2edd409222fd22472401d01c48c4de0acc912",
+      "after": "24d2edd409222fd22472401d01c48c4de0acc912"
+    },
+    {
+      "path": "packages/dacs-client/test/keyless-agreement-transport.test.mjs",
+      "before": "bef3195da0622a801e6a0df647dd3b215c1c0525",
+      "after": "bef3195da0622a801e6a0df647dd3b215c1c0525"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "fd64416b5fbe3f23883ee6335ff4c41ada36db38",
+      "after": "fd64416b5fbe3f23883ee6335ff4c41ada36db38"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-6061ef22aa58.json"
+  ],
+  "note": "Merge commit 5ebce2be5b97bf46a2b3c041d22a4dbf9bb6db27 carried the part below (its head 40aa50c8aef7482b1334b9c1098b8e949711210e) into this part. Both sides recorded these files, so their newest records disagree; this record chooses the merged copies. The keyless Agreement transport, the approved record pins, the native devnet transport, the node wallet session, the manifest, the client entry point and the public API test keep the part below's changes and this part's keyless signed relay: the pins keep the data-member and admission checks the signed relay uses, and the manifest, entry point and tests list the relay beside the part below's files, exports and subpaths. The keyless Agreement transport test keeps this part's hidden-member case. No file other than this record changes."
+}
