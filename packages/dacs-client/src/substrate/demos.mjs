@@ -30,14 +30,17 @@ const NO_SOURCE_REASON = 'native source evidence unavailable from public reader'
  * observePurchaseTransfer reports an included transfer as unavailable: this
  * reader keeps no signed native source, so it cannot settle a native purchase.
  *
+ * `identityMaxBytes` and `storageMaxBytes`, when given, narrow the byte
+ * limits of the genesis block reads and of each storage-program answer.
+ *
  * Throws OperationError `invalid_configuration` when `network` is not
  * `testnet` or `pinnedIdentity` is not a 64-hex chain identity.
  */
-export function createDemosPublicChainReader({ rpcUrl, network, pinnedIdentity, timeoutMs, fetchImpl }) {
+export function createDemosPublicChainReader({ rpcUrl, network, pinnedIdentity, timeoutMs, identityMaxBytes, storageMaxBytes, fetchImpl }) {
   if (network !== TESTNET) {
     throw new OperationError('invalid_configuration', 'the public Demos chain reader reads testnet only', { network });
   }
-  const reader = createDemosChainReader({ rpcUrl, network, pinnedIdentity, timeoutMs, fetchImpl });
+  const reader = createDemosChainReader({ rpcUrl, network, pinnedIdentity, timeoutMs, identityMaxBytes, storageMaxBytes, fetchImpl });
   if (reader.pinnedIdentity === null) {
     throw new OperationError('invalid_configuration', 'the public Demos chain reader needs the 64-hex chain identity pinned for testnet', { network });
   }
