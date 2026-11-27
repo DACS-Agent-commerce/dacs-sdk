@@ -1,0 +1,27 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client entry point, packed consumer test and public API test after carrying the installed client part up",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "5a11a219c58a0ece55f42755ed36376578dd288e",
+      "after": "5a11a219c58a0ece55f42755ed36376578dd288e"
+    },
+    {
+      "path": "packages/dacs-client/test/packed-consumer.test.mjs",
+      "before": "4456630f1994df1a18534ce0dcf7d9454514f9af",
+      "after": "4456630f1994df1a18534ce0dcf7d9454514f9af"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "2babc16fb2704c48d41e63dead21b3b98474dd55",
+      "after": "2babc16fb2704c48d41e63dead21b3b98474dd55"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-0b8b09ebf05d.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's anchor reserved write id reader export together with the lower part's node RPC endpoint export. No file other than this record changes."
+}

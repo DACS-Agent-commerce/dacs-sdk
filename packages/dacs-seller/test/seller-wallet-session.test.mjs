@@ -364,6 +364,18 @@ test('createSellerWalletSession accepts a participantImplementations source and 
   assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
 });
 
+test('trusted finality accepts only an absent or plain object option before finalization', async () => {
+  const node = replayNode();
+  let keyLoads = 0;
+  const valid = await portOptions(node, async () => { keyLoads += 1; return keyRecordBytes(); });
+  for (const trustedFinality of [undefined, {}, { checkpoint: { height: 1 }, source: 'TEST operator pin' }]) await createSellerWalletSession({ ...valid, trustedFinality }).close();
+  class OperatorPin { checkpoint = { height: 1 }; }
+  for (const trustedFinality of [null, [], 'TEST-pin', new OperatorPin()]) {
+    assert.throws(() => createSellerWalletSession({ ...valid, trustedFinality }), (error) => error instanceof TypeError && error.message.includes('trustedFinality'), String(trustedFinality));
+  }
+  assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
+});
+
 test('createSellerWalletSession refuses an endpoint that is not a canonical root, a transport authority that is not a plain token and a fetchImpl that is not a function with transport_mismatch, at construction and before any node read', async () => {
   const node = replayNode();
   let keyLoads = 0;
