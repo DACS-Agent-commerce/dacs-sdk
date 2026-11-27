@@ -15,7 +15,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   // Constructing it signs nothing; its answers are signed only through the roles it is given: the effect role inside a pass of the
   // guarded effect boundary, and the closed read-only role otherwise. Its returned signAnswer is classified in RETURNED_CLASSIFICATION.
   'src/dacs/answer-signers.mjs': { effect: {}, pure: ['createAnswerSigners'] },
-  'src/dacs/authority-reader.mjs': { effect: {}, pure: ['createSellerAuthorityReader'] },
+  'src/dacs/authority-reader.mjs': { effect: {}, pure: ['createSellerAuthorityReader', 'currentEnrollment'] },
   'src/dacs/bootstrap-scope.mjs': { effect: {}, pure: ['createBootstrapScopes'] },
   'src/dacs/bounded-call.mjs': { effect: {  }, pure: ['boundedCall', 'isBoundedCallTimeout'] },
   'src/dacs/bounded-reads.mjs': { effect: {  }, pure: ['readFailureCode', 'readRetainedBounded'] },
@@ -31,7 +31,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/dem-delivery-context-consumer.mjs': { effect: { createDemDeliveryContext: ['createDemDeliveryContext'] }, pure: ['demDeliveryContextConfig', 'demDeliveryContextHost', 'demDeliveryContextUsage', 'demDeliveryContextVetMode', 'isDemDeliveryContextAuthority', 'releaseDemDeliveryContext', 'resolveDemDeliverySellerContext'] },
   'src/dacs/demos-claims.mjs': { effect: {  }, pure: ['DemosClaimFormatError', 'addressForClaim', 'claimForAddress', 'decodeSignature', 'isCanonicalEd25519Signature', 'isSmallOrderPublicKey', 'normalizeDemosAddress', 'verifyDemosSignature'] },
   'src/dacs/demos-sr2-adapter.mjs': { effect: {  }, pure: ['DemosSr2Error', 'createDemosSr2Adapter', 'createInMemoryDemosSr2Journal', 'demosSr2TxRef'] },
-  'src/dacs/devnet-source.mjs': { effect: {  }, pure: ['isDevnetAgreementTransport', 'isDevnetDemoTransport', 'isDevnetSettlementTransport'] },
+  'src/dacs/devnet-source.mjs': { effect: {  }, pure: ['isDevnetAgreementTransport', 'isDevnetDemoTransport', 'isDevnetSettlementTransport', 'isQualificationObserverSource'] },
   'src/dacs/effect-boundary.mjs': { effect: { createEffectBoundary: ['effectBoundary'] }, pure: ['effectBoundaryBinding', 'effectPassRemainingMs', 'jobPassContext'] },
   'src/dacs/effect-history.mjs': { effect: {  }, pure: ['createEffectHistory', 'initHistory'] },
   'src/dacs/enrollment-proof.mjs': { effect: {}, pure: ['parseTrustedNodePin', 'verifyEnrollmentAnswer'] },
@@ -48,6 +48,8 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/process-lease.mjs': { effect: {  }, pure: ['ProcessLeaseError', 'leaseFile', 'leaseHolderState', 'leaseState', 'takeLease'] },
   'src/dacs/purchase-protocol.mjs': { effect: {  }, pure: ['agreementInput', 'agreementTerms', 'assembleBundleCopies', 'bundleAddress', 'bundleSession', 'bundleSigningPlan', 'claimPublicKeyRaw', 'commitmentReader', 'commitmentSession', 'commitmentVerifier', 'contributionVerifier', 'deliverableAddress', 'deliveryEvidenceAddress', 'finalityCommitmentAddress', 'fixedPriceAgreementLogicalAddress', 'listingPin', 'paymentEvidenceAddress', 'plainJson', 'protocolSupport', 'verifyAnchoredCopy', 'verifyDelivery', 'verifyPaymentEvidence', 'vetNotPerformedRef'] },
   'src/dacs/rail-authority.mjs': { effect: {  }, pure: ['intakeRailDefinition', 'railAuthorityConfig', 'validateSellerListing'] },
+  'src/dacs/revocation-proof-encoding.mjs': { effect: {}, pure: ['nodeCanonicalJson', 'nodeJcs'] },
+  'src/dacs/revocation-proof-storage.mjs': { effect: {}, pure: ['verifyRevocationStorage'] },
   'src/dacs/seller-agent.mjs': { effect: { createSellerAgent: ['createSellerAgent'] }, pure: ['SellerAgentError', 'buildReport', 'canonicalSignature', 'isFinalPaymentAnswer', 'isPendingPaymentAnswer', 'paymentTxHash', 'proposalTimeProblem', 'receiptFeeCeilingsConfig', 'transportOutcome'] },
   'src/dacs/seller-admission-transaction.mjs': { effect: { createContextAdmissionTransaction: ['begin', 'runningCheck', 'reserveContext', 'complete', 'compensate'] }, pure: ['admissionTransactionInternals', 'assertAdmissionJobLease', 'evidenceProof', 'storedCause'] },
   'src/dacs/seller-challenge-ledger.mjs': { effect: { createSellerChallengeLedger: ['issue'] }, pure: ['deepFreeze'] },
@@ -82,6 +84,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/deliverable.mjs': { effect: {  }, pure: ['createDevnetPurchasedReportProducer', 'isDevnetPurchasedReport'] },
   'src/devnet-demo/deployment-qualification.mjs': { effect: {  }, pure: ['assertQualifiedDeployment'] },
   'src/devnet-demo/doctor-node.mjs': { effect: {}, pure: ['openDoctorNode', 'readSellerBalance'] },
+  'src/devnet-demo/node-chain-readers.mjs': { effect: {}, pure: ['createNodeChainReaders', 'createReadOnlyDemosSr2Journal'] },
   'src/devnet-demo/durable-file.mjs': { effect: {  }, pure: ['publishFileExclusive', 'syncDirectory', 'syncFile'] },
   'src/devnet-demo/late-write-watch.mjs': { effect: {  }, pure: ['lateWriteWatchOpen', 'watchLateWrite'] },
   'src/devnet-demo/listing.mjs': { effect: { createDevnetDemoListingPublisher: ['createDevnetDemoListingPublisher'] }, pure: [] },
@@ -89,6 +92,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/operator-approval.mjs': { effect: {  }, pure: ['composeSellerApproval', 'confirmedWriteOs', 'createExactOperatorApproval', 'createSellerContextAdmission', 'cutTornContextLine', 'decidedFromJournals', 'heldPolicyBudget', 'parsePolicyLedger', 'policyRefusal', 'releaseSellerContextHolds', 'sellerApprovalSettings', 'sellerIssuanceJournalIds', 'sellerPurchaseSource', 'serializedPolicy', 'stillAuthorizedToSign', 'stillOpenBeforePayment', 'withContextHolds'] },
   'src/devnet-demo/party-vet-store.mjs': { effect: {  }, pure: ['createInMemoryPartyVetStore', 'openPartyVetStore'] },
   'src/devnet-demo/seller-node-wallet.mjs': { effect: { createSellerNodeWallet: ['createSellerNodeWallet'] }, pure: [] },
+  'src/devnet-demo/seller-enrollment-reader.mjs': { effect: {  }, pure: ['openVerifiedEnrollmentReader'] },
   'src/devnet-demo/seller-purchase-source.mjs': { effect: {  }, pure: ['isPaymentTxRef', 'sellerHeldEvidenceJobs', 'sellerHoldNotice', 'sellerRecordsPurchaseResolver'] },
   'src/devnet-demo/seller-state-lock.mjs': { effect: {  }, pure: ['acquireSellerStateLock'] },
   'src/devnet-demo/seller-wallet-session.mjs': { effect: { createSellerWalletSession: ['createSellerWalletSession', 'sellerWalletSession.finalize', 'publish'] }, pure: ['createNodeAuthorityReader', 'isSellerWalletSession'] },
@@ -162,6 +166,9 @@ const EFFECT_ROUTE_PATHS = ['/dacs/v1/agreements/proposals', '/dacs/v1/bundles/c
 const PARTY_VET_STORE = { role: [], effect: {}, pure: ['close', 'entries', 'read', 'update', 'usage'] };
 // The read-only connection pair: the client's authority capability (no sign or send) and its connection reader.
 const CONNECTION_PAIR = { role: [], effect: {}, pure: ['connectionAuthority', 'authority.authorityRpc', 'authority.claim', 'authority.context', 'authority.connectionGeneration'] };
+// The chain readers only read the finalized session: nothing they call signs or sends.
+const CHAIN_READER_MEMBERS = ['observePayment', 'readCommitmentReceipt', 'sessionAdmission.admit', 'sessionAdmission.resolveVetRecord', 'sessionAdmission.readVetAnchorReceipt',
+  'sessionAdmission.verifyVetAnchorReceipt', 'sessionAdmission.readRevocationSurfaces', 'sessionAdmission.readRevocationMarker'];
 export const RETURNED_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession.finalize()': sessionRow(),
   'src/devnet-demo/seller-node-wallet.mjs#createSellerNodeWallet': walletRow(),
@@ -249,6 +256,7 @@ export const RETURNED_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/operator-approval.mjs#createSellerContextAdmission': { role: [], effect: {}, pure: ['release', 'reserve'] },
   'src/devnet-demo/party-vet-store.mjs#createInMemoryPartyVetStore': PARTY_VET_STORE,
   'src/devnet-demo/party-vet-store.mjs#openPartyVetStore': PARTY_VET_STORE,
+  'src/devnet-demo/seller-enrollment-reader.mjs#openVerifiedEnrollmentReader': { role: [], effect: {}, pure: ['close', 'entriesFor'] },
   'src/devnet-demo/seller-purchase-source.mjs#sellerRecordsPurchaseResolver': { role: [], effect: {}, pure: ['()'] },
   'src/devnet-demo/seller-state-lock.mjs#acquireSellerStateLock': { role: [], effect: {}, pure: ['held', 'release'] },
   'src/devnet-demo/storage-write-recovery.mjs#storageWriteRpcSigner': { role: [], effect: { '()': ['storageWriteRpcSigner'] }, pure: [] },
@@ -263,8 +271,10 @@ export const RETURNED_CLASSIFICATION = Object.freeze({
     effect: { finalize: ['sellerWalletSession.finalize'], runCreate: ['effectBoundary'], 'artifactAnchor.publish': ['publish'], 'artifactAnchor.read': ['effectBoundary'],
       'artifactAnchor.readRetained': ['effectBoundary'] },
     pure: ['close', 'connectionAuthority', 'authority.authorityRpc', 'authority.claim', 'authority.context', 'authority.connectionGeneration', 'artifactAnchor.retainedSignedCreate',
-      'artifactAnchor.hasIntent', 'artifactAnchor.verifyReceipt'] },
-  'src/devnet-demo/seller-wallet-session.mjs#createNodeAuthorityReader': CONNECTION_PAIR,
+      'artifactAnchor.hasIntent', 'artifactAnchor.verifyReceipt', ...CHAIN_READER_MEMBERS] },
+  'src/devnet-demo/seller-wallet-session.mjs#createNodeAuthorityReader': { ...CONNECTION_PAIR, pure: [...CONNECTION_PAIR.pure, ...CHAIN_READER_MEMBERS] },
+  'src/devnet-demo/node-chain-readers.mjs#createNodeChainReaders': { role: [], effect: {}, pure: CHAIN_READER_MEMBERS },
+  'src/devnet-demo/node-chain-readers.mjs#createReadOnlyDemosSr2Journal': { role: [], effect: {}, pure: ['get', 'put', 'records', 'withWalletLock'] },
   'src/devnet-demo/connection-authority.mjs#createConnectionAuthorityReader': CONNECTION_PAIR,
   // The doctor's read-only owner, connection reader and observer: the owner's fence is a read-ordering lease, and nothing signs or sends.
   'src/devnet-demo/doctor-node.mjs#openDoctorNode': { role: [], effect: {},

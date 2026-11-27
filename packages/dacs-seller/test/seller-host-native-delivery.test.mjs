@@ -43,6 +43,7 @@ import { createNativeRetrySeam } from './helpers/native-retry-seam.mjs';
 import { hostAuthority } from './helpers/kit-wallet-session.mjs';
 import { FIXTURE_PROFILE } from './helpers/wire-authority-fixture.mjs';
 import { SELLER_REQUIREMENT } from '../src/devnet-demo/agreement-context.mjs';
+import { createNodeChainReaders } from '../src/devnet-demo/node-chain-readers.mjs';
 import { sdkRegeneratesSignedCreate } from './helpers/payment-evidence-wallet-sdk.mjs';
 import { hostJobCapacityTests } from './helpers/host-job-capacity-cases.mjs';
 
@@ -757,7 +758,9 @@ async function world(t, { guardedDelivery = true, deliveryJournal = false, buyer
   };
   // Another write of the seller's account takes the nonce a kept CREATE signed.
   const overtakeWallet = () => node.create(sellerKey, { logicalAddress: 'dacs4:TEST-other-write', artifact: { TEST: 'another write of the seller wallet' }, artifactKind: 'TEST-other' });
-  return { node, effects, faults, hostFetch, purchase, restart, restartWallet, replaceWallet, replaceDeliveryWallet, openDeliveryJournal, overtakeWallet, deliveryWallet: () => deliveryJournalWallet, retainedSession, crashMidClaim, cutClaim, endFinishCut, beforeRetry: retrySeam.beforeRetry, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
+  // The running host agent's own view of a job's session, read with the host still serving.
+  const liveDurableSession = (jobId) => hostAgent.durableSessionOf(jobId);
+  return { node, effects, faults, hostFetch, purchase, restart, restartWallet, replaceWallet, replaceDeliveryWallet, openDeliveryJournal, overtakeWallet, deliveryWallet: () => deliveryJournalWallet, retainedSession, liveDurableSession, crashMidClaim, cutClaim, endFinishCut, beforeRetry: retrySeam.beforeRetry, startShipped, evidenceConsumer, openJournal, walletJournal: () => journal,
     host: () => host, capabilities, dataDirectory, loseJobLock, createsAt, signedCreate, writtenAt, sellerKey, buyerKey, listing, rails, otherRail: () => railSteward().railAuthority(), agentFor, signedClaim, refreshPayment, wireState, advance, editRetainedSession,
     unguardedCapability: () => deliveryCapability(false), useGuardedDelivery: (guarded) => { guardedStart = guarded; },
     useDeliveryJournal: (on) => { journalInUse = on; } };
@@ -2111,6 +2114,77 @@ test('a seller signer failure while signing the payment evidence does not strand
     assert.equal(answer.delivery?.status, 'delivery-ready', `restart ${restart}: ${shown(answer)}`);
     assert.equal(w.createsAt(paymentAddress(p)), 1);
   }
+});
+
+// The seller's payment observer over a chain stand-in that counts the reads it makes.
+const BOUND_CHAIN_IDENTITY = 'a1'.repeat(32), OBSERVED_AT = NOW + 1000;
+function paymentObserverOver(w, sessionOf) {
+  const reads = { identity: 0, transfer: 0 };
+  const chain = { binding: { profile: { chainIdentity: BOUND_CHAIN_IDENTITY } }, observeIdentity: async () => { reads.identity++; return BOUND_CHAIN_IDENTITY; }, clock: { now: () => NOW },
+    transport: { chainReader: () => ({ observeTransfer: async () => { reads.transfer++; return { status: 'not-found' }; } }) } };
+  const readers = createNodeChainReaders({ claim: () => w.sellerKey.claim, chain: () => chain, sessionOf });
+  const observe = (jobId, agreementHash) => readers.observePayment({ jobId, agreementHash, observedAt: OBSERVED_AT }, { timeoutMs: 10_000, maxBytes: 1024 }).then((answer) => answer, (error) => error);
+  return { observe, reads };
+}
+// The session row as stored, read with its own read-only connection.
+function storedSessionRow(w, jobId) {
+  const db = new DatabaseSync(join(w.dataDirectory, 'seller', 'seller-state.sqlite'), { readonly: true });
+  try { return db.prepare('SELECT value FROM seller_jobs WHERE job=?').get(jobId).value; } finally { db.close(); }
+}
+
+// The claim binds the settlement to the job before it writes its checkpoint. A
+// claim that stops between the two leaves the settlement bound and no payment in
+// the session, and the payment observer then must not answer that no payment exists.
+test('a payment claim that stopped between the settlement bind and its checkpoint never reads as absent after a restart', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay();
+  w.faults.sign.push('throw-evidence');
+  const refused = await p.claim(tx);
+  assert.deepEqual([refused.status, refused.reason], ['indeterminate', 'seller_native_evidence_not_started'], shown(refused));
+  const view = await w.retainedSession(p.jobId);
+  assert.equal(view.settlementBound, true);
+  for (const member of ['payment', 'paymentWork', 'nativeEvidenceWork']) assert.equal(view[member], undefined, member);
+  const { observe, reads } = paymentObserverOver(w, () => view);
+  const refusal = await observe(p.jobId, view.agreementHash);
+  assert.deepEqual([refusal.code, refusal.message], ['payment_unverified', 'a settlement is bound to the job without its payment reference'], shown(refusal));
+  assert.deepEqual([reads.identity, reads.transfer], [0, 0], 'no chain read');
+  await w.restart();
+  const answer = await p.claim(tx);
+  assert.equal(answer.status, 'payment-evidenced', shown(answer));
+  assert.equal(w.createsAt(paymentAddress(p)), 1, 'one CREATE');
+  assert.ok((await w.retainedSession(p.jobId)).nativeEvidenceWork, 'the retry wrote the checkpoint');
+});
+
+test('the durable session view reports no bound settlement before any payment, without storing the flag', async (t) => {
+  const w = await world(t), p = await w.purchase();
+  const before = storedSessionRow(w, p.jobId);
+  const view = await w.retainedSession(p.jobId);
+  assert.ok(Object.hasOwn(view, 'settlementBound'));
+  assert.equal(view.settlementBound, false);
+  assert.equal(storedSessionRow(w, p.jobId), before, 'reading the view changed nothing');
+  assert.ok(!before.includes('settlementBound'), 'the stored session has no such member');
+});
+
+test('the durable session view sees a settlement bound by the running seller without a restart', async (t) => {
+  const w = await world(t), p = await w.purchase(), tx = p.pay();
+  assert.equal(w.liveDurableSession(p.jobId).settlementBound, false);
+  w.faults.sign.push('throw-evidence');
+  assert.equal((await p.claim(tx)).status, 'indeterminate');
+  assert.equal(w.liveDurableSession(p.jobId).settlementBound, true, 'the bind is seen on the next read');
+  await w.retainedSession(p.jobId);
+  assert.ok(!storedSessionRow(w, p.jobId).includes('settlementBound'), 'the stored session has no such member');
+});
+
+test('an unreadable settlement table makes the view throw and the payment observer refuse', async (t) => {
+  const w = await world(t), p = await w.purchase();
+  const failure = new Error('TEST settlement table unreadable'), prepare = DatabaseSync.prototype.prepare;
+  DatabaseSync.prototype.prepare = function (sql, ...args) { if (sql === 'SELECT 1 FROM seller_settlements WHERE job=?') throw failure; return prepare.call(this, sql, ...args); };
+  try {
+    assert.throws(() => w.liveDurableSession(p.jobId), (error) => error === failure);
+    const { observe, reads } = paymentObserverOver(w, (jobId) => w.liveDurableSession(jobId));
+    const refusal = await observe(p.jobId, p.agreementHash);
+    assert.deepEqual([refusal.code, refusal.cause], ['payment_unverified', failure], shown(refusal));
+    assert.deepEqual([reads.identity, reads.transfer], [0, 0]);
+  } finally { DatabaseSync.prototype.prepare = prepare; }
 });
 
 // The transport admits a 0x-prefixed transaction hash; the agent reads it as

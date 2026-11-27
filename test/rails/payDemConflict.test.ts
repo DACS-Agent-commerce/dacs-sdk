@@ -101,9 +101,12 @@ describe("pay-dem retained identity conflict quarantine", () => {
       await expect(store.readOutcome!("pay-dem:conflicting-native:0", binding))
         .resolves.toEqual(stored(paid ? executed() : failed(hashA)));
       // Correct history still audits A. A conflict never clears its identity.
+      // A has no prepared-transfer reader to confirm its success, and history
+      // claims a success that A's permanent failure contradicts.
       reconcile.mockImplementation(async () => paid ? executed() : failed(hashA));
-      await expect(resumed(history(hashA))).resolves.toMatchObject({ txHash: hashA, ok: paid });
-      await expect(resumed(request)).resolves.toMatchObject({ txHash: hashA, ok: paid });
+      const withheld = paid ? /cannot be confirmed/ : /stays unresolved and must not be paid again/;
+      await expect(resumed(history(hashA))).rejects.toThrow(withheld);
+      await expect(resumed(request)).rejects.toThrow(withheld);
       expect(claimIntent).not.toHaveBeenCalled();
       expect(putOutcome).not.toHaveBeenCalled();
     },

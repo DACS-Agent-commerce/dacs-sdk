@@ -12,7 +12,7 @@ import { createDemosNetworkBinder } from '../dacs/network-binding.mjs';
 import { chainIdentityRead } from './chain-identity-read.mjs';
 import { fetchBoundedJson, observeWithDeadline, settleOnAbort } from '../util/http.mjs';
 import { verifyDemosSignature } from '../signatures.mjs';
-import { createEffectHistory } from './effect-history.mjs';
+import { canonicalChainIdentity, createEffectHistory, nativeWalletLaneKey } from './effect-history.mjs';
 import { assertCurrentAuthorization, currentPassContext, insideEffectPass, runInPassContext } from './pass-context.mjs';
 import { classifyDispatchHistory, nothingSent } from './native-dispatch-history.mjs';
 import { signerReservationKey } from './signer-reservation.mjs';
@@ -85,6 +85,10 @@ const PASSIVE_TRANSFER_TIMEOUT_MS = 10_000;
 // `maxBytes` (readRpc) can only lower it. The binder accepts a read up to a minute old.
 const SOURCE_READ_MAX_BYTES = 4 * 1024 * 1024;
 const IDENTITY_MAX_AGE_MS = 60000;
+// The node calls a source read may make: preparation and inclusion reads, and the storage-proof and finalized-head reads of the
+// pinned node contract (`getStorageProof` with `{ storageAddresses }`, `getFinalizedHead` with no data).
+const SOURCE_READ_MESSAGES = Object.freeze(['getBlockByNumber', 'getTxByHash', 'getTransactionStatus', 'getAddressNonce', 'getAddressInfo', 'getTransactionHistory',
+  'searchStoragePrograms', 'getNetworkInfo', 'getNetworkParameters', 'getStorageProof', 'getFinalizedHead']);
 // What a transaction signature covers once the node's signatureDomain fork is active: this prefix, the node's chain id and the hash.
 const SIGNATURE_DOMAIN_PREFIX = 'demos-tx:v1:';
 // An answer that the fork is not active is reused for this long; an active fork never goes back.
@@ -129,7 +133,7 @@ const isTestRunLabel = (value) => typeof value === 'string' && /^TEST-RUN-[A-Za-
 // A publication policy as the transport declares it: a frozen copy whose authority is its label. A token counts only for `binding`.
 const declaredPolicy = (policy, binding, isFixtureLabel, requirement) => Object.freeze(clone({ ...policy, authority: authorityLabel(policy.authority, binding, isFixtureLabel, requirement) }));
 // What the transport calls on the effect boundary (the required `boundary` option of the transport constructors).
-const BOUNDARY_METHODS = ['holdFence', 'withOperation', 'signPass', 'dispatchPass', 'signAuthentication'];
+export const BOUNDARY_METHODS = ['holdFence', 'withOperation', 'signPass', 'dispatchPass', 'signAuthentication'];
 // The lease's expiry timer fires this long after the lease expires, so a timer that fires early still finds it expired.
 const LEASE_EXPIRY_MARGIN_MS = 1;
 // The fee members of a confirmation's gas operation, each a canonical decimal OS string.
@@ -162,14 +166,28 @@ export function registerHeldTransportFacade(facade, inner) {
   set.add(facade);
 }
 
-const BARE_CHAIN_IDENTITY = /^(?:0x)?([0-9a-f]{64})$/;
-// A lower-case 64-hex chain identity, with or without 0x, is returned bare. Any
-// other value is returned unchanged, never lower-cased or trimmed, so the
-// network binder refuses it with its own cause.
-const canonicalChainIdentity = (chainIdentity) => (typeof chainIdentity === 'string' ? BARE_CHAIN_IDENTITY.exec(chainIdentity)?.[1] ?? chainIdentity : chainIdentity);
+const pinnedFrom = (expected) => Object.freeze({ ...expected, chainIdentity:canonicalChainIdentity(expected.chainIdentity) });
 
-/** Returns the journal key of the native write lane for `address` on the pinned network and chain. The chain identity is keyed in its bare lower-case form, with or without a 0x prefix. */
-export const nativeWalletLaneKey = ({ network, chainIdentity }, address) => `devnet/native-wallet/${JSON.stringify([network, canonicalChainIdentity(chainIdentity), address])}`;
+// The declaration a transport signs into its terms and the profile it publishes. Both are built here, so a transport and a
+// caller that only has the pins state byte-for-byte the same binding. `publications` holds the declared publication policies, if any.
+const transportDeclaration = (pinned, publications) => Object.freeze({ source:DEVNET_AGREEMENT_SOURCE,bindingVersion:'dacs-demos-network-binding/v1',bindingId:sha(JSON.stringify(['dacs-demos-network-binding/v1',...['network','chainIdentity','pinVersion','endpoint','transportAuthority'].map(k=>pinned?.[k])])),...pinned,...publications });
+function transportProfile({ pinned, publicOrigin, declaration, publications, agreement, settlement, delivery, demo }) {
+  return { profile:agreement?DEVNET_AGREEMENT_PROFILE:DEVNET_NATIVE_PROFILE,network:pinned.network,
+    rpcUrl:`${publicOrigin}${DEVNET_NATIVE_RPC_PATH}`,bindingUrl:`${publicOrigin}${DEVNET_NATIVE_BINDING_PATH}`,
+    ...(agreement?{transportBinding:declaration,agreementBroker:{enabled:true,kind:'explicit-pinned-source'},...publications}:{}),
+    capabilities:{ native:true,identity:false,publication:false,agreementCreate:agreement,settlementEvidenceCreate:settlement,deliverableCreate:delivery,demoArtifactCreate:demo },
+    evidenceMode:'explicit-pinned-transport-single-node',authority:pinned.transportAuthority,
+    limits:'source capability only; no default live authority, independent review, native purchase commitment or finality' };
+}
+
+/** Returns the public profile of a plain Agreement transport (no publication policy) pinned to `expected`, as that transport's own `profile(publicOrigin)` gives it. Pure: it opens nothing. */
+export function agreementProfileFor(expected, publicOrigin) {
+  const pinned = pinnedFrom(expected);
+  return transportProfile({ pinned, publicOrigin, declaration:transportDeclaration(pinned, {}), publications:{}, agreement:true, settlement:false, delivery:false, demo:false });
+}
+
+/** nativeWalletLaneKey(pins, address) returns the journal key of the native write lane every native write of `address` takes (effect-history.mjs). */
+export { nativeWalletLaneKey };
 
 // transportOwner owns the ACTUAL endpoint/connection. acquireConnectionFence()
 // returns { context, release() }, holding that connection until release; its
@@ -334,7 +352,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // The protected binder validates the exact source-supplied HTTPS pin schema.
   // There is no observed-node pin admission or default fallback here.
   // The chain identity is canonicalised here once; every key, binding and comparison below uses this form.
-  const pinned = expected ? Object.freeze({ ...expected, chainIdentity:canonicalChainIdentity(expected.chainIdentity) }) : expected;
+  const pinned = expected ? pinnedFrom(expected) : expected;
   if (blockZeroErrorEnvelope !== null && blockZeroErrorEnvelope !== DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE) throw new TypeError('the native block-zero error envelope policy is unsupported');
   if (blockZeroErrorEnvelope !== null && fallback === null) throw new TypeError('the native block-zero error envelope requires an explicit binder fallback');
   if (blockOneLayout !== null && blockOneLayout !== DEVNET_NODE2_BLOCK_LAYOUT) throw new TypeError('the native block-one layout policy is unsupported');
@@ -361,7 +379,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // Keep the binder's established identity unchanged: the separate signed
   // publication declaration narrows what this capability may relay, but does
   // not invent a different observed network.
-  const declaration = agreement ? Object.freeze({ source:DEVNET_AGREEMENT_SOURCE,bindingVersion:'dacs-demos-network-binding/v1',bindingId:sha(JSON.stringify(['dacs-demos-network-binding/v1',...['network','chainIdentity','pinVersion','endpoint','transportAuthority'].map(k=>pinned?.[k])])),...pinned,...(publication?{settlementPublication:publication}:{}),...(deliveryDeclaration?{deliveryPublication:deliveryDeclaration}:{}),...(demoDeclaration?{demoArtifactPublication:demoDeclaration}:{}) }) : null;
+  const publications = { ...(publication?{settlementPublication:publication}:{}),...(deliveryDeclaration?{deliveryPublication:deliveryDeclaration}:{}),...(demoDeclaration?{demoArtifactPublication:demoDeclaration}:{}) };
+  const declaration = agreement ? transportDeclaration(pinned, publications) : null;
   const context = async () => {
     if (closed) fail('transport_closed', 'the native transport is closed');
     const c = await transportOwner.getContext();
@@ -405,7 +424,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     return sourceRead(signal,async()=>{
       await makeBinder(false,signal).bind();
       if(path !== '/' && !/^\/storage-program\/stor-[0-9a-f]{40}$/.test(path)) fail('readonly_only','only bounded native storage reads are supported');
-      if(body !== undefined && (path !== '/' || body?.method !== 'nodeCall' || !['getBlockByNumber','getTxByHash','getTransactionStatus','getAddressNonce','getAddressInfo','searchStoragePrograms','getNetworkInfo','getNetworkParameters'].includes(body?.params?.[0]?.message))) fail('readonly_only','only source-bound preparation/inclusion reads are supported');
+      if(body !== undefined && (path !== '/' || body?.method !== 'nodeCall' || !SOURCE_READ_MESSAGES.includes(body?.params?.[0]?.message))) fail('readonly_only','only source-bound preparation/inclusion reads and bounded proof/finality reads are supported');
       return fetchBoundedJson(path==='/'?pinned.endpoint:`${new URL(pinned.endpoint).origin}${path}`,{method:body===undefined?'GET':'POST',body,fetchImpl,timeoutMs,signal,maxBytes,expectedOrigin:new URL(pinned.endpoint).origin});
     });
   };
@@ -1232,12 +1251,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     }));
   }
   const implementation = {
-    profile(publicOrigin) { return { profile:agreement?DEVNET_AGREEMENT_PROFILE:DEVNET_NATIVE_PROFILE,network:pinned.network,
-      rpcUrl:`${publicOrigin}${DEVNET_NATIVE_RPC_PATH}`,bindingUrl:`${publicOrigin}${DEVNET_NATIVE_BINDING_PATH}`,
-      ...(agreement?{transportBinding:declaration,agreementBroker:{enabled:true,kind:'explicit-pinned-source'},...(publication?{settlementPublication:publication}:{}),...(deliveryDeclaration?{deliveryPublication:deliveryDeclaration}:{}),...(demoDeclaration?{demoArtifactPublication:demoDeclaration}:{})}:{}),
-      capabilities:{ native:true,identity:false,publication:false,agreementCreate:agreement,settlementEvidenceCreate:settlement,deliverableCreate:delivery,demoArtifactCreate:demo },
-      evidenceMode:'explicit-pinned-transport-single-node',authority:pinned.transportAuthority,
-      limits:'source capability only; no default live authority, independent review, native purchase commitment or finality' }; },
+    profile(publicOrigin) { return transportProfile({ pinned, publicOrigin, declaration, publications, agreement, settlement, delivery, demo }); },
     async binding(request) {
       const { phase,address }=request ?? {};
       if (!ADDRESS.test(address ?? '')) fail('invalid_params','the native wallet address is required');
@@ -1546,7 +1560,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     ...(demo?{withWalletNonceLock:(scope,work)=>tracked(()=>withWalletNonceLock(scope,work))}:{}),
     ...(settlement?{recoverStorageWrite:(request)=>tracked(()=>recoverStorageWrite(request)),
       onStorageWriteResend(listener) { if(typeof listener!=='function')throw new TypeError('resend listener required');resendListeners.add(listener);return()=>resendListeners.delete(listener); }}:{}),
-    ...(agreement?{pins:pinned,transportBinding:declaration,journal,...(publication?{settlementPublication:publication}:{}),...(deliveryDeclaration?{deliveryPublication:deliveryDeclaration}:{}),...(demoDeclaration?{demoArtifactPublication:demoDeclaration}:{}),
+    ...(agreement?{pins:pinned,transportBinding:declaration,journal,...publications,
       inspectWalletNonceLane:(scope)=>tracked(()=>inspectWalletNonceLane(scope)),
       // What the source, in any process on this journal, has claimed of one
       // prepared transfer (payload: the unsigned transfer the plugin handed

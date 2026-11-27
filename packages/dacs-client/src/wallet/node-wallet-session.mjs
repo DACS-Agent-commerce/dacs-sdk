@@ -9,20 +9,21 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalize } from '@kynesyslabs/dacs';
 import { assertTp1Binding, bindTp1Profile, canonicalNodeEndpoint, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
-import { OperationError } from '../client-errors.mjs';
 import { isTp1AuthorityLabel } from '../dacs/tp1-authority-label.mjs';
 import { assertPurchaseActionsAdmitted } from '../dacs/action-admission.mjs';
 import { authorityLabel, isTp1AuthorityToken, registerTp1Token } from '../dacs/tp1-authority-token.mjs';
 import { AUTHORITY_READ_DEADLINE_MS, POSITIVE_OS_AMOUNT, admitPublicFactory, notAdmittedError, purchaseActionsAdmitted } from '../public-admission.mjs';
 import { claimForAddress } from '../signatures.mjs';
 import { observeWithDeadline, OutboundError, RESPONSE_BYTE_LIMIT, settleOnAbort } from '../util/http.mjs';
+import { NODE_WALLET_NETWORK, approvedSourcePolicy, checkConstruction, fail, readExpectedPins } from './approved-record-pins.mjs';
 import { createAuthorityReader } from './authority-reader.mjs';
-import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade, DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE, DEVNET_NODE2_BLOCK_LAYOUT, TP1_REVIEWED_BLOCK_TWO_HASH } from './devnet-native-transport.mjs';
+import { createDevnetAgreementTransport, createDevnetDemoTransport, createSourceObserver, registerHeldTransportFacade } from './devnet-native-transport.mjs';
 import { createEffectBoundary } from './effect-boundary.mjs';
 import { createEffectFence } from './effect-fence.mjs';
 import { createEffectHistory } from './effect-history.mjs';
 import { createReopenGrants } from './withheld-reopen-grants.mjs';
 import { loadNodeDemos } from './node-demos-loading.mjs';
+import { createNodeObserver, withinAuthorityDeadline } from './node-observer.mjs';
 import { createPaymentEvidenceCreateAdapter } from './node-payment-evidence-adapter.mjs';
 import { assertCurrentAuthorization, currentPassContext, isPassContext, passContext, relayPassContext, runInPassContext } from './pass-context.mjs';
 import { createReadQueue } from './read-queue.mjs';
@@ -34,20 +35,16 @@ import { createDevnetAgreementWalletTransport, createSdkWalletSession, EmbeddedW
 // A comparison value inside the descriptor only: `_doPost` checks the URL it is given equals the
 // descriptor's `rpcUrl` and never fetches it, and `bindingRelay` replaces the binding fetches.
 const NODE_WALLET_RELAY_ORIGIN = 'https://node-wallet.invalid';
-const NODE_WALLET_NETWORK = TP1_APPROVED_IDENTITY_RECORD.network;
-const IDENTITY_RECORD_DIGEST = createHash('sha256').update(canonicalize(TP1_APPROVED_IDENTITY_RECORD)).digest('hex');
 const TRANSPORT_AUTHORITY = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/;
 const PASSIVE_METHODS = ['getPublicAccount', 'getWriteProfile', 'isLocked', 'lock'];
 // The facade members that only read or observe; every other function member is an effect entry (DN-4). `binding` is split by phase.
 const PASSIVE_TRANSPORT_METHODS = ['readRpc', 'observeBinding', 'chainReader', 'nativeTransferClaimed', 'nativeTransferCancelled',
   'nativeTransferRefused', 'nativeNonceConsumer', 'isWalletIdle', 'profile', 'onPurchaseStep', 'onStorageWriteResend', 'reserveRpcAuth', 'close'];
 const READBACK_PHASE = 'readback';
-const NODE_INFO_MESSAGES = Object.freeze(['getNetworkInfo', 'getNetworkParameters']);
 const AUTHORITY_READ_MESSAGES = Object.freeze(['getBlockByNumber', 'getNetworkInfo']);
 const AUTHORITY_READ_MAX_LIST_ENTRIES = 1024;
 const AUTHORITY_READ_CONCURRENCY = 4;
 const PAYMENT_EVIDENCE_APPROVAL_MEMBERS = ['prepare', 'open', 'reopen', 'confirm', 'settle'];
-const OBSERVER_PROVENANCE_PREFIX = `dacs-node-observer:${TP1_APPROVED_IDENTITY_RECORD.recordId}`;
 const RPC_FAILED = 'node_wallet_rpc_failed';
 const RPC_INVALID = 'node_wallet_rpc_invalid';
 const STAGE_NOT_DISPATCHED = 'not_dispatched';
@@ -73,8 +70,12 @@ const liveLeases = new WeakSet();
 const passFence = new AsyncLocalStorage();
 // Each seller composition's signer reservations, over its own journal; never a member of the composition.
 const sellerReservations = new WeakMap();
-
-const fail = (code, cause) => { throw new OperationError(code, code, undefined, cause === undefined ? undefined : { cause }); };
+// Every owner `createNodeTransportOwner` has made.
+const transportOwners = new WeakSet();
+// Every qualification source `createQualificationObserverSource` has made, with the binding, currentLocal and observer it was made with.
+const qualificationSources = new WeakMap();
+// The publications a qualification source declares, as a registered demo transport declares them.
+const QUALIFICATION_PUBLICATIONS = Object.freeze(['settlementPublication', 'deliveryPublication', 'demoArtifactPublication']);
 
 /**
  * Makes the context of a job pass for `effectPass({..., context})`; the seller composition takes no other pass. The host that owns the job
@@ -83,8 +84,12 @@ const fail = (code, cause) => { throw new OperationError(code, code, undefined, 
  */
 export { passContext } from './pass-context.mjs';
 
-/** Removes dead holders' lock rows from a client durable journal, given the host's state-ownership proof; see `signer-reservation.mjs`. */
+/** The key-free Agreement relay view and the pure public Agreement profile; see `keyless-agreement-transport.mjs`. */
+export { createKeylessAgreementTransport, keylessAgreementProfile } from './keyless-agreement-transport.mjs';
+
+/** Dead-holder journal lock cleanup, given the host's state-ownership proof (`signer-reservation.mjs`); one bounded JSON read posted to a transport owner's own endpoint (`node-wallet-http.mjs`). */
 export { releaseAbandonedJournalLocks } from './signer-reservation.mjs';
+export { fetchBoundedNodeJson } from './node-wallet-http.mjs';
 
 /** Capability identity checks (return a boolean, never throw) and the transport's profile and publication constants, re-exported so a kit imports one source. */
 export { isDevnetAgreementTransport, isDevnetSettlementTransport, isDevnetDemoTransport,
@@ -187,59 +192,22 @@ export function createNodeTransportOwner({ endpoint, transportAuthority, fetchIm
     liveLeases.add(lease); held.add(lease);
     return lease;
   }
-  return Object.freeze({ local, currentLocal, getContext: () => { currentLocal(); return context; }, acquireConnectionFence,
+  const owner = Object.freeze({ local, currentLocal, getContext: () => { currentLocal(); return context; }, acquireConnectionFence,
     fetchImpl(input, init) {
       currentLocal();
       if (new URL(input).origin !== url.origin) fail('transport_mismatch');
       return fetchImpl(input, { ...init, redirect: 'error' });
     },
     close() { closed = true; for (const lease of held) lease.release(); } });
+  transportOwners.add(owner);
+  return owner;
 }
 
-// Runs one authority or node read under the 10 s deadline; a timeout is tp1_authority_timeout with the timer's error as cause.
-async function withinAuthorityDeadline(read, signal) {
-  try { return await observeWithDeadline(read, { timeoutMs: AUTHORITY_READ_DEADLINE_MS, signal }); }
-  catch (error) {
-    if (error instanceof OutboundError && error.kind === 'timeout') throw new OperationError('tp1_authority_timeout', 'the authority read did not answer within the deadline', undefined, { cause: error });
-    throw error;
-  }
-}
+/** The fence-free, read-only observer of a node owner's connection; see `node-observer.mjs`. */
+export { createNodeObserver } from './node-observer.mjs';
 
-/**
- * Returns the fence-free, read-only observer for a node owner: {observe({signal}),
- * readNodeInfo(message, {signal}), provenance()}. Its expected identity and block-one fallback
- * come only from TP1_APPROVED_IDENTITY_RECORD. It acquires no connection fence, takes no
- * journal lock and signs nothing, so it works while a fence is held and before any journal or
- * custody is opened. observe resolves {local, chainIdentity, provenance} for the owner's current
- * connection once the node's chain matches the record; readNodeInfo resolves the node's answer
- * to getNetworkInfo or getNetworkParameters and refuses every other message (readonly_only).
- * Every node reply is limited to 4 MiB before decoding and each call to one 10 s deadline
- * (tp1_authority_timeout, cause kept); a caller's abort rejects with its own reason and starts
- * no further read. A reader failure keeps its original error. provenance() names the connection
- * generation (the owner's connectionId) and throws transport_closed after close.
- * Throws TypeError for an owner without currentLocal, getContext and fetchImpl.
- */
-export function createNodeObserver({ owner, clock = { now: () => Date.now() } } = {}) {
-  const source = createSourceObserver({ record: TP1_APPROVED_IDENTITY_RECORD, owner, now: () => clock.now(), timeoutMs: AUTHORITY_READ_DEADLINE_MS });
-  const provenanceOf = connectionId => `${OBSERVER_PROVENANCE_PREFIX}:${connectionId}`;
-  return Object.freeze({
-    provenance: () => provenanceOf(owner.currentLocal().connectionId),
-    observe: ({ signal } = {}) => withinAuthorityDeadline(async ({ signal: stop }) => {
-      const { endpoint, transportAuthority, connectionId, chainIdentity } = await source.bind({ signal: stop });
-      return { local: { endpoint, transportAuthority, connectionId }, chainIdentity, provenance: provenanceOf(connectionId) };
-    }, signal),
-    async readNodeInfo(message, { signal } = {}) {
-      if (!NODE_INFO_MESSAGES.includes(message)) fail('readonly_only');
-      const answer = await withinAuthorityDeadline(({ signal: stop }) => source.post({ method: 'nodeCall', params: [{ message, data: {} }] }, {}, { signal: stop }), signal);
-      if (answer?.result !== 200) fail('upstream_unavailable');
-      return answer.response;
-    },
-  });
-}
-
-// True when no array or object anywhere in `value` has more than `limit` entries. Iterative, and members are pushed
-// one at a time, so neither nesting nor width can overflow the stack.
-function listsWithin(value, limit) {
+/** True when no array or object anywhere in `value` has more than `limit` entries; iterative, so deep or wide input cannot overflow the stack. */
+export function listsWithin(value, limit) {
   const pending = [value];
   while (pending.length > 0) {
     const next = pending.pop();
@@ -300,6 +268,34 @@ export async function admitTp1Authority({ binding, currentLocal } = {}) {
   const token = Object.freeze({ label: tp1AuthorityLabel(binding) });
   registerTp1Token(token, { binding, assertAdmitted: assertPurchaseActionsAdmitted });
   return token;
+}
+
+/**
+ * Resolves a frozen `{observer, source, currentLocal}` for a read-only qualification read over `owner`, an open owner from
+ * `createNodeTransportOwner`, once `admitTp1Authority` admits `binding` on its connection. `observer` is `createNodeObserver({owner, clock})`,
+ * `currentLocal` is `owner.currentLocal`, and `source` is a frozen declaration of the three publications, each `{authority}` with the
+ * admitted token's TP-1 label, registered for `isQualificationObserverSource`. The token goes to no effect capability, and nothing here loads
+ * a key, opens a wallet or journal, takes a lock or sends a write, so it works while purchase actions are held. Rejects transport_mismatch
+ * for any other owner, transport_closed, and admitTp1Authority's refusals (tp1_binding_required, the wire's binding codes,
+ * tp1_local_binding_changed, tp1_authority_timeout with cause); a refused construction registers nothing.
+ */
+export async function createQualificationObserverSource({ owner, binding, clock } = {}) {
+  if (!transportOwners.has(owner)) fail('transport_mismatch');
+  const { currentLocal } = owner;
+  const { label } = await admitTp1Authority({ binding, currentLocal });
+  const observer = createNodeObserver({ owner, clock });
+  const source = Object.freeze(Object.fromEntries(QUALIFICATION_PUBLICATIONS.map(name => [name, Object.freeze({ authority: label })])));
+  qualificationSources.set(source, Object.freeze({ binding, currentLocal, observer }));
+  return Object.freeze({ observer, source, currentLocal });
+}
+
+/**
+ * Returns true only for a `source` `createQualificationObserverSource` made, given the very `binding`, `currentLocal` and `observer`
+ * it was made with; a copy, another owner's or binding's members, or a demo transport is false. Grants no effect.
+ */
+export function isQualificationObserverSource(source, { binding, currentLocal, observer } = {}) {
+  const made = qualificationSources.get(source);
+  return made !== undefined && made.binding === binding && made.currentLocal === currentLocal && made.observer === observer;
 }
 
 export { isTp1AuthorityToken, authorityLabel as capabilityAuthorityLabel }; // the token module's rule a capability constructor admits its authority by
@@ -561,15 +557,6 @@ function nodeDemosClass(Demos, { transport, rpcUrl, stamps, attempts, gate, boun
   };
 }
 
-// The pins come from the admitted binding alone (DN-10), and only for the SDK-held approved record.
-function readExpectedPins(binding, owner) {
-  const { profile, local, recordDigest } = binding;
-  if (recordDigest !== IDENTITY_RECORD_DIGEST || typeof profile?.chainIdentity !== 'string' || typeof profile.pinVersion !== 'string'
-    || typeof local?.endpoint !== 'string' || typeof local.transportAuthority !== 'string') fail('admission_required');
-  if (typeof owner?.fetchImpl !== 'function') fail('invalid_transport_owner');
-  return { network: NODE_WALLET_NETWORK, chainIdentity: profile.chainIdentity, pinVersion: profile.pinVersion, endpoint: local.endpoint, transportAuthority: local.transportAuthority };
-}
-
 function decodeMnemonic(keyBytes) {
   try { return new TextDecoder('utf-8', { fatal: true }).decode(keyBytes); } catch (cause) { return fail('invalid_mnemonic', cause); }
 }
@@ -581,9 +568,6 @@ function createBindingRelay(transport) {
     catch (error) { return Object.assign(new Response(JSON.stringify({ error: error.code ?? 'network_binding_unavailable' }), { status: 409 }), { cause: error }); }
   };
 }
-
-// P52's construction checks (admission shape, untrusted options, Node floor) run before anything is built or imported.
-const checkConstruction = admitPublicFactory(options => ({ options }), { purchase: true });
 
 /**
  * Returns a Promise for `{wallet, walletFactory({anchorJournal}), internalCauseOf(envelope), effectPass(pass), runInEffectPass(handle, work), effectBoundary, transport, withheldReopen, close()}`.
@@ -747,9 +731,7 @@ async function buildNodeComposition(options, seller, requirePass = false) {
     const stamps = createRpcStampSource(clock);
     const reopenGrants = createReopenGrants();
     const transportOptions = { expected, transportOwner: owner, journal, fetchImpl, boundary: effectBoundary, now: () => clock.now(), stamps, reopenGrants: { consume: reopenGrants.consume },
-      fallback: { blockZeroUnavailable: 'literal-error', documentation: TP1_APPROVED_IDENTITY_RECORD.provenance.documentation },
-      blockZeroErrorEnvelope: DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE,
-      blockOneLayout: DEVNET_NODE2_BLOCK_LAYOUT, reviewedBlockTwoHash: TP1_REVIEWED_BLOCK_TWO_HASH, authorityBinding: admission.binding };
+      ...approvedSourcePolicy(), authorityBinding: admission.binding };
     transport = seller
       ? createDevnetDemoTransport({ ...transportOptions, settlementPublication: publications?.settlementPublication, deliveryPublication: publications?.deliveryPublication,
         demoArtifactPublication: publications?.demoArtifactPublication,
