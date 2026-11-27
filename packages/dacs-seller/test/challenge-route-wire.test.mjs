@@ -6,7 +6,6 @@ import { causeOf } from './helpers/refusal-body.mjs';
 import * as guard from '../src/kit-operation-guard.mjs';
 import { DACS_SELLER_HTTP_HEADER } from '@kynesyslabs/dacs/wire';
 import { SellerTransportError, sellerContextScopeHash } from '../src/dacs/seller-transport-auth.mjs';
-import { createSellerHttpHandler } from '../src/dacs/seller-http.mjs';
 import { createSellerContextRoute } from '../src/dacs/seller-context-route.mjs';
 import { exchange } from './helpers/d5-http-fixture.mjs';
 import { createOldDomainRequestSigner } from './helpers/old-domain-request.mjs';
@@ -545,7 +544,7 @@ test('challenge-last-slot-winner-restart', async (t) => {
 
 test('a wire challenge without the host stop predicate refuses construction', async (t) => {
   const w = await challengeWorld(t);
-  assert.throws(() => createSellerHttpHandler(w.agent, { context: w.route, wire: w.makeWire({ stopped: undefined }) }), { name: 'TypeError', message: /stop predicate/ });
+  assert.throws(() => w.makeWire({ stopped: undefined }), { name: 'TypeError', message: /stop check/ });
 });
 
 test('the challenge route is built from a Listing and buyer access alone, and refuses a missing buyer access or a known-job port that is not a function', async (t) => {
