@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add the read-only Listing verifier entry with a fresh pinned chain read on every call",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/listing/read-only-verifier.mjs",
+      "before": null,
+      "after": "87c154ad29dd2220778adc3abfd81004e4dfbf9b"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-8059390941d6.json",
+    "packages/dacs-client/src/listing/read-only-verifier.mjs"
+  ]
+}
