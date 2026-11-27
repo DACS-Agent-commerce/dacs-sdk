@@ -1,0 +1,27 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client purchase service, entry point and public API test after carrying the installed client part up again",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "3fae85da6598c114ea064003ef9c1d0f3f53e7cc",
+      "after": "3fae85da6598c114ea064003ef9c1d0f3f53e7cc"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "4fe6f85fa8c9442abef820808ff602aa3a8d33a6",
+      "after": "4fe6f85fa8c9442abef820808ff602aa3a8d33a6"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "2d8c1d252384709d6ad1d371ca14775869b15910",
+      "after": "2d8c1d252384709d6ad1d371ca14775869b15910"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-1eb3669fd0e8.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's changes together with the lower part's checked operation history and passive deal verifier exports. No file other than this record changes."
+}
