@@ -9,9 +9,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import * as core from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_DOMAINS, TP1_APPROVED_IDENTITY_RECORD, WireError, bindTp1Profile } from '@kynesyslabs/dacs/wire';
-import { T0, evidenceInput, inWalletPass, jsonResponse, privateDataDirectory, replyTo, runWalletChild, sellerApproval, sellerWalletWorld,
+import { ENDPOINT, T0, evidenceInput, inWalletPass, jsonResponse, privateDataDirectory, replyTo, runWalletChild, sellerApproval, sellerWalletWorld,
   spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
+import { shippedBuildEvidence } from './helpers/shipped-build-evidence.mjs';
 import { approvingChainJournal, causeCodes, heldOperator, holdableStop, journalOverAdapter, journalOverPass, manualSellerApproval,
   PAYMENT_EVIDENCE_JOURNAL } from './helpers/payment-evidence-test-journals.mjs';
 import { evidenceInput as chainEvidenceInput, newWalletChainState, walletChain } from './helpers/payment-evidence-wallet-chain.mjs';
@@ -70,15 +71,18 @@ const JOB_LANES = [
 ];
 
 // The production port finalized over the scripted node, with authority reads counted; `baseline()` zeroes every counter.
-async function finalizedWorld(t) {
+// `options` replace port options.
+async function finalizedWorld(t, options = {}) {
   const signatures = await spyTransactionSignatures(t.mock);
-  const world = await walletSessionWorld(t, { countAuthority: true });
+  const world = await walletSessionWorld(t, { countAuthority: true, options });
   const { session } = await world.finalize();
   world.baseline = () => { world.authorityReads = 0; world.node.reads.length = 0; signatures.length = 0; };
   world.effects = () => ({ authorityReads: world.authorityReads, nodeReads: [...world.node.reads], signatures: signatures.length });
   return { world, session, anchor: world.port.artifactAnchor };
 }
 const NOTHING = Object.freeze({ authorityReads: 0, nodeReads: [], signatures: 0 });
+// The host's deployment evidence of a commit no reviewed build has: the publish preflight refuses it before any node read.
+const UNREVIEWED_BUILD = Object.freeze({ readDeploymentEvidence: () => ({ ...shippedBuildEvidence({ endpoint: ENDPOINT, observedAt: T0 }), commit: 'c'.repeat(40) }) });
 // An admitted publish makes one authority read, the node's block read behind the binding check, and then refuses the unqualified
 // deployment, before any nonce read or signature.
 const BINDING_READ_ONLY = Object.freeze({ authorityReads: 1, nodeReads: ['getBlockByNumber'], signatures: 0 });
@@ -121,7 +125,7 @@ test('with the guard off, the Listing and the five job CREATE lanes refuse kit_o
 });
 
 test('a publish without its pass operationClass or currentAuthorization check refuses at publish\'s parameter check, before any read, storing no intent and signing nothing', async (t) => {
-  const { world, anchor } = await finalizedWorld(t);
+  const { world, anchor } = await finalizedWorld(t, UNREVIEWED_BUILD);
   const input = { logicalAddress: LISTING_ADDRESS, artifact: fixtureListing(world.signer, { now: T0 }), artifactKind: 'Listing' };
   world.baseline();
   for (const [label, pass] of [['neither', {}], ['no check', { operationClass: 'job-create' }], ['no class', { currentAuthorization: () => true }],
@@ -134,7 +138,7 @@ test('a publish without its pass operationClass or currentAuthorization check re
 });
 
 test('the Listing publisher passes operationClass job-create and its publication check: over the real session its publish passes publish\'s parameter check and stops at deployment_unqualified, storing no intent, while a publish without them refuses at the parameter check', async (t) => {
-  const { world, anchor } = await finalizedWorld(t);
+  const { world, anchor } = await finalizedWorld(t, UNREVIEWED_BUILD);
   const inputs = [];
   const recording = Object.freeze({ ...anchor, publish: (input) => { inputs.push(input); return anchor.publish(input); } });
   const { publish, draft } = listingPublisher(world, recording);

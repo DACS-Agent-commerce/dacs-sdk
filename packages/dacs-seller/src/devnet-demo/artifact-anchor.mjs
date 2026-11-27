@@ -1,4 +1,3 @@
-import {assertQualifiedDeployment} from './deployment-qualification.mjs';
 import { verifyComponent } from '../dacs/listing.mjs';
 import { isDevnetPurchasedReport } from './deliverable.mjs';
 import { boundedResolutionValue, resolveWithDeadline } from '../util/bounded-resolution.mjs';
@@ -188,10 +187,13 @@ export function createDevnetDemoArtifactAnchor(options) {
 // one resend of a retained CREATE run inside it; a TypeError without it.
 // options.stopped: the host's synchronous stop check (shutdown or KILL). While it
 // answers stopped, a read stays readback only and starts no resend; a TypeError without it.
-function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,signer,buyerAccess=null,now=()=>Date.now(),vetMode:vetModeOption,binding,observeIdentity,runCreate,stopped},ports={}) {
+// options.qualify: the seller composition's node qualification step ({phase}). Publish and
+// the recovery resend await it as a preflight; the effect gate checks again inside each pass.
+function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,signer,buyerAccess=null,now=()=>Date.now(),vetMode:vetModeOption,binding,observeIdentity,runCreate,stopped,qualify},ports={}) {
   const vetMode=sellerFulfilmentVetModeOf(vetModeOption);
   if(vetMode===null) throw new TypeError('unsupported Vet mode');
   if(typeof runCreate!=='function') throw new TypeError('runCreate from createSellerCreatePass is required');
+  if(typeof qualify!=='function') throw new TypeError('qualify from the seller composition is required');
   if(typeof stopped!=='function') throw new TypeError('stopped, the host\'s stop check, is required');
   const isStopped=()=>readStopPredicate(stopped).stopped;
   // Only the seller's own Listing has no purchase. Every other write, new or
@@ -283,7 +285,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
 
   // The one place a retained accepted CREATE is sent again: its exact stored bytes, at most once. Only an active read reaches it;
   // eligibility is decided by observeSource. The caller's check is asked once, under the recovery lock, after the awaited
-  // deployment check and right before the intent is recorded, so authority that closed during that check sends and records nothing.
+  // qualification preflight and right before the intent is recorded, so authority that closed during that check sends and records nothing.
   // The resend runs in runCreate. Its current-authorization check (publish's own check, or for a read the caller's resend check)
   // is asked synchronously before each RPC-authentication signature and transmission; one that answers asynchronously refuses.
   // The intent is recorded inside that pass, so a refusal before it leaves the one resend unused.
@@ -300,7 +302,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
         // transport said it never dispatched left its slot unused.
         if(prior.stage!==UNSENT_RECOVERY_STAGE)return;
       }
-      await assertQualifiedDeployment(sourceCapability);
+      await qualify({phase:'recovery'});
       if(await authorizeResend()!==true)return;
       if(isStopped())return;
       let answer;
@@ -526,7 +528,7 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       }
       if(!retained&&(await snapshot()).addresses.has(logicalAddress)) return {status:'indeterminate',reason:'signed CREATE retained without an intent',noResend:true};
       authorizeJob(artifactKind,jobId);
-      await assertQualifiedDeployment(sourceCapability);
+      await qualify({phase:'publish'});
       // Another application seam (for example native SettlementEvidence)
       // may have used this same seller/source nonce lane immediately before
       // delivery. Authenticate and release that exact retained transaction;

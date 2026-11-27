@@ -11,7 +11,8 @@ import { entropyToMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { agreementRequest } from '../../dacs-client/test/helpers/tp1-node-fixture.mjs';
-import { ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, T0, api, evidenceInput, finalization, jsonResponse, keyRecordBytes, ok, privateDataDirectory, replayNode, replyTo,
+import { shippedBuildEvidence } from './helpers/shipped-build-evidence.mjs';
+import { ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, ENDPOINT, T0, api, evidenceInput, finalization, jsonResponse, keyRecordBytes, ok, privateDataDirectory, replayNode, replyTo,
   sellerPublications, setPurchaseAdmission, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { allZero, createSellerWalletSession, portOptions, walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
 import { heldOperator, manualSellerApproval, PAYMENT_EVIDENCE_JOURNAL } from './helpers/payment-evidence-test-journals.mjs';
@@ -212,7 +213,9 @@ test('the finalized session\'s pass needs a live fence from its own owner: a rel
 
 test('after finalization the port\'s artifactAnchor is the anchor composed over the finalized session: its writer, authority, source and Vet mode are unchanged from before finalization and match the session\'s address and declared publication; a Listing publish whose signing check is not a function refuses not-authorized and one with a signing check or without refuses deployment_unqualified, and a job\'s retained read with the default buyer access refuses buyer_access_closed, each before any artifact read, storing no intent and signing and sending nothing', async (t) => {
   const signatures = await spyTransactionSignatures(t.mock);
-  const world = await walletSessionWorld(t);
+  // The host's deployment evidence names a commit no reviewed build has, so the publish preflight refuses.
+  const unreviewed = () => ({ ...shippedBuildEvidence({ endpoint: ENDPOINT, observedAt: T0 }), commit: 'c'.repeat(40) });
+  const world = await walletSessionWorld(t, { options: { readDeploymentEvidence: unreviewed } });
   const anchor = world.port.artifactAnchor;
   const before = staticsOf(anchor);
   assert.deepEqual(before, { source: 'dacs-devnet-demo-native-artifacts/v1', authority: sellerPublications().demoArtifactPublication.authority, writer: world.signer.claim,
