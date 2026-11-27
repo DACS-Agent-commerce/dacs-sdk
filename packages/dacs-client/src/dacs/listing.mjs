@@ -1,29 +1,24 @@
-// Listing construction (for wallet signing) and Standard validation.
+// Listing construction (for wallet signing) and the purchase-support policy.
+// Standard validation lives in ./listing-read-only.mjs and is re-exported here.
 //
 // Contracts: DACS-Standard d45c0a292006b2fd2e40d2dbe0cd7ed518ad0f20,
 // CORE CF-1 / CF-2 / SIG-1 and DACS-1 Listing reader. Implementation imports
 // resolve to this repository's SDK workspace; no historical demo is authority.
+import { canonicalize, contentHash, sha256Hex, listingAddress, baseUnits, canonicalizeDecimal } from '@kynesyslabs/dacs/canonical';
 import {
-  canonicalize,
-  contentHash,
-  sha256Hex,
   signedBytes,
-  ed25519Verify,
-  publicKeyFromRaw,
   identityBundleHash,
   isIdentityBundle,
   isListingDraft,
-  validateListingArtifact,
-  listingAddress,
-  baseUnits,
-  canonicalizeDecimal,
   DACS_STANDARD_PIN,
   VERSION as DACS_SDK_VERSION,
-} from '@kynesyslabs/dacs';
+} from '@kynesyslabs/dacs/listing/read-only';
 import { addressForClaim, claimForAddress, decodeSignature } from '../signatures.mjs';
 import { OS_INTEGER, OS_VERIFIABLE_MAX } from './chain.mjs';
+import { DEM_RAIL, verifyComponent } from './listing-read-only.mjs';
 
-export const DEM_RAIL = Object.freeze({ railId: 'demos-native:DEM', railVersion: 1 });
+export { DEM_RAIL, verifyComponent, validateListing } from './listing-read-only.mjs';
+
 export const DEM_DECIMALS = 9;
 export const SDK_PROVENANCE = Object.freeze({
   package: '@kynesyslabs/dacs',
@@ -32,7 +27,6 @@ export const SDK_PROVENANCE = Object.freeze({
   standardPin: DACS_STANDARD_PIN,
 });
 
-const DID_PREFIX = 'did:demos:agent:';
 const LISTING_SEPARATOR = 'dacs-listing:v1:';
 const PRESENTATION_SEPARATOR = 'dacs-bundle-presentation:v1:';
 const SESSION_NONCE = /^[0-9a-f]{64}$/;
@@ -45,17 +39,6 @@ export function utf8(bytes) {
 // so the wallet message is exactly that string.
 export function listingSigningMessage(draft) {
   return utf8(signedBytes(LISTING_SEPARATOR, contentHash(draft)));
-}
-
-export function verifyComponent({ signedBytes: bytes, signature }) {
-  if (signature?.algorithm !== 'ed25519' || typeof signature.value !== 'string' || !signature.signer?.startsWith(DID_PREFIX)) return false;
-  try {
-    const raw = Buffer.from(signature.signer.slice(DID_PREFIX.length), 'hex');
-    if (raw.length !== 32) return false;
-    return ed25519Verify(bytes, Buffer.from(signature.value, 'base64url'), publicKeyFromRaw(raw));
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -163,27 +146,6 @@ export function attachListingSignature(draft, walletSignature) {
 
 export function logicalListingAddress(listing) {
   return listingAddress(listing.seller.identity.presentedBy, listing.listingId, listing.listingVersion);
-}
-
-// Ordered DACS-1 reader via the SDK. Revocation surfaces come from the caller;
-// a missing or stale catalog observation yields `indeterminate`, never `absent`.
-export async function validateListing(listing, { now, revocationSurfaces, readMarker }) {
-  return validateListingArtifact(listing, {
-    nowMs: () => now(),
-    verifyListingSignature: verifyComponent,
-    verifyIdentityPresentation: ({ bundle, signedBytes: bytes }) => {
-      const proof = bundle.presentation?.kind === 'per-claim' && bundle.presentation.signatures.find((entry) => entry.ref === bundle.presentedBy);
-      return Boolean(proof && verifyComponent({ signedBytes: bytes, signature: { algorithm: 'ed25519', signer: bundle.presentedBy, value: proof.signature } }));
-    },
-    verifySellerControl: ({ bundle, signer }) => bundle.presentedBy === signer && bundle.claims.some((claim) => claim.ref === signer),
-    revocation: { surfaces: revocationSurfaces, readMarker, verifyMarkerSignature: verifyComponent },
-    loadRailResolution: () => ({
-      trustPhase: 'PA-1',
-      trustPolicyAcceptsPA1: true,
-      registry: { state: 'not-used', entries: [], definitions: [] },
-      inCodeDefinitions: [{ railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion, phaseHandler: 'pay-dem', governanceAnchoring: 'in-code', signatureValid: true, availability: 'disabled' }],
-    }),
-  });
 }
 
 // The Listing's declared deliverable access model. Absent means public (as
