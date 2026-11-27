@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test the https-only binding check of the wallet provider and the plain http owner",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/node-endpoint.test.mjs",
+      "before": "1edaac03fccf1ebd7e2419aa067b9cb3064afd40",
+      "after": "8b57aa7dd3b70fa10b4cfa6407a38b4f0082f675"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-651d49454ea6.json",
+    "packages/dacs-client/test/node-endpoint.test.mjs"
+  ]
+}
