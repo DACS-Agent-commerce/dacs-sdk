@@ -808,6 +808,7 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   OS strings after it), must not be above 50 DEM, and a fee that cannot be
   summed exactly is refused. Below the ceiling the fee is not compared with any
   expected amount.
+
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
   sent. A kept CREATE whose whole debit is above the ceiling is never
   broadcast again, and until the operator clears it (below)
@@ -899,6 +900,12 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   10 s by default) or answers anything else never supersedes it. Timeouts and malformed
   replies stay held. A complete name/native-address miss can ask only the
   retained owning journal; the miss alone never authorizes a send.
+
+  SR-2 readback and the core Demos write-evidence checks support only the
+  program name returned by `logicalToStorageProgramName(logicalAddress)`.
+  For a correctly signed CREATE using another native program name:
+  A read supplied with an exact native address, a signed projection, or an address the journal retained is refused (`invalid`) with `only SDK-derived program names are supported`. A read with none of these returns `indeterminate` with `name-index visibility does not establish authenticated absence`. `createNativePaymentEvidenceConsumer().readEvidence` answers `disposition: 'indeterminate'` in both cases; its `reason` carries the naming message when a signed projection is given.
+
 - It never uses the simulated fixture substrate. Native Agreement readback and
   native artifact publication are required together, and the agent refuses a
   fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
