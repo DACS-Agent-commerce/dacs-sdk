@@ -1,4 +1,4 @@
-// The node-facing authority reader: the two read-only members createNodeAuthorityReader builds over the production port's owner,
+// The node-facing authority reader: the read-only connection pair createNodeAuthorityReader builds over the production port's owner,
 // and the staged seller reader openSellerStages wraps around them, which reads the host's enrollment for each job through
 // readParticipantEvidence. The node is the client's scripted TP-1 node; the enrollment source and the retained job rows are the test's.
 import test, { mock } from 'node:test';
@@ -66,16 +66,21 @@ function mockedDeadlines(t) {
   t.after(() => { mock.timers.reset(); heldClock.mock.restore(); });
 }
 
-test('createNodeAuthorityReader({ owner, claim }) returns exactly frozen { authority, connectionAuthority } and refuses extra inputs; openSellerStages wraps its connection member with createSellerAuthorityReader before bindTp1Profile admits the composition, with custody and journal opens 0 until then', async (t) => {
+test('createNodeAuthorityReader returns exactly the frozen five members, accepts exactly owner, claim, chain, participantImplementations and sessionOf, and refuses any other input', async (t) => {
   const node = replayNode();
   const owner = (await import('@kynesyslabs/dacs-client/node-wallet')).createNodeTransportOwner({ endpoint: 'https://rpc.example.invalid/', transportAuthority: 'vector-authority', fetchImpl: node.fetch });
   t.after(() => owner.close());
-  const pair = createNodeAuthorityReader({ owner, claim: () => 'TEST-claim' });
-  assert.deepEqual(Object.keys(pair).sort(), ['authority', 'connectionAuthority']);
-  assert.ok(Object.isFrozen(pair) && typeof pair.connectionAuthority === 'function' && typeof pair.authority.authorityRpc === 'function');
-  for (const extra of [{ chain: () => null }, { participantImplementations: { entriesFor: () => [] } }, { sessionOf: () => null }]) {
-    assert.throws(() => createNodeAuthorityReader({ owner, claim: () => 'TEST-claim', ...extra }), (error) => error instanceof TypeError && error.message.includes(Object.keys(extra)[0]));
+  const inputs = { owner, claim: () => 'TEST-claim', chain: () => assert.fail('building reads no chain'), participantImplementations: { entriesFor: () => assert.fail('building reads no enrollment') },
+    sessionOf: () => assert.fail('building reads no session') };
+  for (const given of [{ owner, claim: inputs.claim }, inputs]) {
+    const pair = createNodeAuthorityReader(given);
+    assert.deepEqual(Object.keys(pair).sort(), ['authority', 'connectionAuthority', 'observePayment', 'readCommitmentReceipt', 'sessionAdmission']);
+    assert.ok(Object.isFrozen(pair) && typeof pair.connectionAuthority === 'function' && typeof pair.authority.authorityRpc === 'function');
   }
+  for (const extra of [{ trustedFinality: {} }, { clock: { now: () => 0 } }]) {
+    assert.throws(() => createNodeAuthorityReader({ ...inputs, ...extra }), (error) => error instanceof TypeError && error.message.includes(Object.keys(extra)[0]));
+  }
+  const pair = createNodeAuthorityReader({ owner, claim: () => 'TEST-claim' });
   const decision = await pair.connectionAuthority({ local: owner.currentLocal(), sessionId: JOB_A, participants: [buyer.claim, 'TEST-other'] });
   assert.deepEqual(decision.participants, [], 'the pair answers the connection scope only');
 

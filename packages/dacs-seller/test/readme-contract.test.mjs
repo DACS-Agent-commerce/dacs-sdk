@@ -19,6 +19,13 @@ test('the packaged readers\' authority claim names the TEST- label and the bound
   assert.match(readme, /`broadcast` is the operator's own callback/);
 });
 
+test('the README and ADMISSION.md warn operators that a buyer with several enrollment entries for the seller and Listing is refused until re-enrollment is supported', () => {
+  const admission = readFileSync(new URL('ADMISSION.md', packageUrl), 'utf8');
+  for (const text of [readme, admission]) {
+    assert.match(text, /A buyer with more than one enrollment entry for this seller\s+and Listing, for example a revoked\s+entry and a later re-enrollment, is refused; re-enrollment is planned for a later release\./);
+  }
+});
+
 test('the required-capability bullet does not claim the host cannot start against a real node', () => {
   assert.doesNotMatch(readme, /so the host does not start against a real node/);
   const bullet = readme.match(/It starts only with the whole chain to delivery:[\s\S]*?\n- It signs no completed DACS-5 bundle/)?.[0] ?? '';
