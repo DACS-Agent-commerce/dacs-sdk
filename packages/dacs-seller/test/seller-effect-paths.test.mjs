@@ -825,6 +825,44 @@ async function paymentEvidenceRefusals(t) {
   }
 }
 
+// The payment-evidence entries under a real KILL file: each call's approval is real and given before KILL appears, then the journal's
+// ensureEvidence, the pass's signCreate and its broadcast refuse seller_stopped, and nothing is signed, confirmed or broadcast.
+async function paymentEvidenceUnderKill(t) {
+  const signatures = await spyTransactionSignatures(t.mock), signal = new AbortController().signal, authorize = () => true;
+  const refusedStopped = async (entry, run) => {
+    const outcome = await settled(run());
+    assert.ok(outcome.codes?.includes('seller_stopped'), `${entry}: refused seller_stopped under KILL, got ${outcome.codes}`);
+  };
+  const kill = (directory) => writeFileSync(join(directory, 'KILL'), '');
+  // The journal, and the pass's signCreate with an approval given before KILL.
+  {
+    const directory = mkdtempSync(join(tmpdir(), 'TEST-evidence-kill-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const world = await sellerWalletWorld(t), input = evidenceInput(world);
+    const { journal, pass } = journalOverPass(world, { stopped: createStopCheck(directory) });
+    const approval = (await pass.approveAhead(input, { signal, authorize })).approval;
+    kill(directory);
+    await refusedStopped('paymentEvidence.signCreate', () => pass.signCreate(input, { signal, approval, authorize }));
+    await refusedStopped('ensureEvidence', () => evidenceAt(journal, input));
+    assert.deepEqual({ signatures: signatures.length, ...executeCounts(world.node) }, { signatures: 0, confirmTx: 0, broadcastTx: 0 }, 'under KILL nothing is signed, confirmed or broadcast');
+    await world.wallet.close();
+  }
+  // The pass's broadcast of a CREATE signed before KILL, with its send approval given before KILL: held, never sent.
+  {
+    const directory = mkdtempSync(join(tmpdir(), 'TEST-evidence-kill-'));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    const world = await sellerWalletWorld(t), input = evidenceInput(world), before = signatures.length;
+    const { pass } = journalOverPass(world, { stopped: createStopCheck(directory) });
+    const signed = await pass.signCreate(input, { signal, approval: (await pass.approveAhead(input, { signal, authorize })).approval, authorize });
+    const retained = { signedTransaction: signed.signedTransaction, txHash: signed.txHash };
+    const approval = (await pass.approveSendAhead(retained, { signal, authorize })).approval;
+    kill(directory);
+    await refusedStopped('paymentEvidence.broadcast', () => pass.broadcast(retained, { signal, approval, authorize, jobId: input.jobId }));
+    assert.deepEqual({ signatures: signatures.length - before, ...executeCounts(world.node) }, { signatures: 1, confirmTx: 0, broadcastTx: 0 }, 'the CREATE signed before KILL was not confirmed or broadcast');
+    await world.wallet.close();
+  }
+}
+
 test('the approved record signs and transmits on every seller inventory path', async (t) => {
   for (const row of await inventory(t, passOver())) {
     await row.attempt();
@@ -943,11 +981,16 @@ test('read-only and refusal answers are signed after the binding check only, thr
 });
 
 // A pass whose authority reads and stop checks can each be paused at a chosen call: `gate.pause('authority' | 'stop', at)` holds that
-// call until `gate.resume()`; `gate.closed` makes the authority refuse and `gate.stop` makes the stop check answer true.
-async function pausablePass() {
+// call until `gate.resume()`; `gate.closed` makes the authority refuse and `gate.stopNow()` makes the stop check answer true, by the
+// in-process flag or, with `stopSeam` 'a KILL file', by a KILL entry in a private data directory read by the kit's stop check.
+async function pausablePass(t, stopSeam = 'the stop flag') {
+  const killed = stopSeam === 'a KILL file' ? mkdtempSync(join(tmpdir(), 'TEST-paused-kill-')) : null;
+  if (killed !== null) t.after(() => rmSync(killed, { recursive: true, force: true }));
+  const killCheck = killed === null ? () => false : createStopCheck(killed);
   const reader = authorityReader();
   const gate = { calls: { authority: 0, stop: 0 }, at: null, held: null, closed: false, stop: false,
     pause(kind, at) { this.calls = { authority: 0, stop: 0 }; this.at = { kind, at }; },
+    stopNow() { if (killed === null) this.stop = true; else writeFileSync(join(killed, 'KILL'), ''); },
     resume() { const held = this.held; this.held = null; held?.(); } };
   const hold = async (kind) => { gate.calls[kind] += 1; if (gate.at?.kind === kind && gate.at.at === gate.calls[kind]) await new Promise((resume) => { gate.held = resume; }); };
   const readAuthority = async (scope) => {
@@ -956,14 +999,14 @@ async function pausablePass() {
     return reader(scope);
   };
   const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority });
-  const stopped = async () => { await hold('stop'); return gate.stop; };
+  const stopped = async () => { await hold('stop'); return gate.stop || killCheck(); };
   const { effectBoundary } = testEffectBoundary({ binding, stopped });
   return { gate, binding, effectBoundary, runCreate: testRunCreate({ effectBoundary }).runCreate };
 }
 
 // The paths whose final checks are paused outside the composed host: each `make(pass)` gives `{ attempt(), signatures(), onSign(hook), restart? }`.
 // The presentation runs over the production Vet fixture, the Listing over the isolated anchor with an issued runCreate, and the answer
-// signer over a boundary whose stop check can be paused (the host's own stop check is the process-wide stop flag, which a test cannot hold).
+// signer over a boundary whose stop check can be paused (the host's own stop check is not held).
 const PAUSED_PATHS = [
   ['the identity presentation', async (t, pass) => {
     const p = productionFixture();
@@ -1011,7 +1054,12 @@ const heldBefore = async (gate, request, name) => {
   assert.notEqual(gate.held, null, `${name}: paused at its final await`);
 };
 
-test('run the final pause-and-resume subcases at the real final authority and stop awaits through the composed host and the real seller routes: issuance and reclamation, rollback, closure and restart, each with its expected outcome and refusal cause; closed authority grants no signature or transmission, and the unchanged authorized control succeeds; the payment-evidence leg and the CREATE-lane matrix included', async (t) => {
+// The final pause-and-resume subcases. `stopSeam` is how a stop turns true: 'the stop flag' (the gates' in-process flag) or 'a KILL file'
+// (a KILL entry in the data directory the kit's stop check reads, the seam the host itself uses); with a KILL file only the stop awaits run.
+async function finalPauseSubcases(t, stopSeam) {
+  const withKill = stopSeam === 'a KILL file';
+  const killPath = (w) => join(w.dataDirectory, 'KILL');
+  const stopNow = (w) => { if (withKill) writeFileSync(killPath(w), ''); else w.gate.stop = true; };
   // The composed host over the real Vet provider, its buyer through the real challenge and context routes. The control finds the final
   // authority read and final stop check of the first Vet component signature's pass, and the final authority read of the context answer's.
   const control = await composedVetHost(t), started = await control.start(), finals = { vet: null, answer: null };
@@ -1022,10 +1070,10 @@ test('run the final pause-and-resume subcases at the real final authority and st
   assert.deepEqual([answered.status, control.signatures.length], [200, 2], `the control signs both Vet records and answers: ${answered.text}`);
   assert.ok(finals.vet.authority >= 1 && finals.vet.stop >= 1 && finals.answer.authority > finals.vet.authority, 'the control reached each signer after its checks');
 
-  for (const kind of ['authority', 'stop']) {
+  for (const kind of withKill ? ['stop'] : ['authority', 'stop']) {
     const subcases = [
       ['the unchanged authorized control', null, null],
-      ['closure', (w) => { if (kind === 'authority') w.gate.closed = true; else w.gate.stop = true; }, kind === 'authority' ? 'tp1_participant_refused' : 'seller_stopped'],
+      ['closure', (w) => { if (kind === 'authority') w.gate.closed = true; else stopNow(w); }, kind === 'authority' ? 'tp1_participant_refused' : 'seller_stopped'],
       ['issuance and reclamation', (w) => moveContextRow(w.dataDirectory, (row) => ({ ...row, attempt: row.attempt + 1 })), 'not-pending'],
       ['rollback', (w) => moveContextRow(w.dataDirectory, (row) => ({ ...row, state: 'compensating', rev: row.rev + 1 })), 'not-pending'],
     ];
@@ -1059,7 +1107,16 @@ test('run the final pause-and-resume subcases at the real final authority and st
     await killed.kill();
     assert.ok((await ended) instanceof Error, `${name}: the killed host sends no answer`);
     assert.deepEqual([killed.signatures(), anchor.records.size, contextRow(w.dataDirectory)], [0, 0, 'running'], `${name}: the killed host signed and published nothing`);
-    const { buyer } = await w.start();
+    // A host restarted while KILL remains leaves the attempt as it was and signs nothing; the next restart without KILL fences it.
+    if (withKill) writeFileSync(killPath(w), '');
+    let restarted = await w.start();
+    if (withKill) {
+      assert.deepEqual([contextRow(w.dataDirectory), w.signatures.length], ['running', 0], `${name}: with KILL present the restarted host leaves the attempt and signs nothing`);
+      await restarted.host.close();
+      rmSync(killPath(w));
+      restarted = await w.start();
+    }
+    const { buyer } = restarted;
     assert.deepEqual([contextRow(w.dataDirectory), w.signatures.length], ['compensating', 0], `${name}: the restarted host fences the attempt and signs nothing for it`);
     const next = await buyer.requestContext(NEXT_HOST_JOB);
     assert.deepEqual([next.status, w.signatures.length, new Set(w.signatures).size], [200, 2, 2], `${name}: the next purchase signs each Vet record once`);
@@ -1067,7 +1124,7 @@ test('run the final pause-and-resume subcases at the real final authority and st
 
   // The context answer's own effect pass in the composed host, paused at its final authority read: the control answers with the effect
   // role's signature; closed there, the answer is an unsigned refusal carrying the cause, and nothing signs it.
-  for (const [subcase, closed] of [['the unchanged authorized control', false], ['closure', true]]) {
+  for (const [subcase, closed] of withKill ? [] : [['the unchanged authorized control', false], ['closure', true]]) {
     const name = `the context answer through the composed host, final authority await, ${subcase}`;
     const w = await composedVetHost(t), { buyer } = await w.start();
     w.gate.pause('authority', finals.answer.authority);
@@ -1087,22 +1144,22 @@ test('run the final pause-and-resume subcases at the real final authority and st
   // The paths that run outside the composed host (see PAUSED_PATHS).
   for (const [label, make] of PAUSED_PATHS) {
     // The control finds where the final authority read and stop check of the first signature's pass are: the last of each before the signer.
-    const probe = await pausablePass(), probed = await make(t, probe);
+    const probe = await pausablePass(t, stopSeam), probed = await make(t, probe);
     let finals = null;
     probe.gate.pause('none', 0);
     probed.onSign(() => { finals ??= { ...probe.gate.calls }; });
     await probed.attempt();
     assert.ok(finals !== null && finals.authority >= 1 && finals.stop >= 1, `${label}: the control reached its signer after its checks`);
-    for (const kind of ['authority', 'stop']) {
+    for (const kind of withKill ? ['stop'] : ['authority', 'stop']) {
       const subcases = [
         ['the unchanged authorized control', null, null],
-        ['closure', (target, gate) => { if (kind === 'authority') gate.closed = true; else gate.stop = true; }, kind === 'authority' ? 'tp1_participant_refused' : 'seller_stopped'],
+        ['closure', (target, gate) => { if (kind === 'authority') gate.closed = true; else gate.stopNow(); }, kind === 'authority' ? 'tp1_participant_refused' : 'seller_stopped'],
         ['issuance and reclamation', 'reclaim', 'not-pending'],
         ['rollback', 'rollback', 'not-pending'],
         ['restart', 'restart', null],
       ];
       for (const [subcase, change, code] of subcases) {
-        const pass = await pausablePass(), target = await make(t, pass);
+        const pass = await pausablePass(t, stopSeam), target = await make(t, pass);
         if (typeof change === 'string' && target[change] === undefined) continue;
         pass.gate.pause(kind, finals[kind]);
         const outcome = target.attempt();
@@ -1113,7 +1170,7 @@ test('run the final pause-and-resume subcases at the real final authority and st
           // The paused process dies there; a new process over the same durable state signs the same signature at most once.
           const restarted = await target.restart();
           const signedAfterRestart = target.signatures();
-          pass.gate.stop = true;
+          pass.gate.stopNow();
           pass.gate.resume();
           await outcome;
           assert.ok(signedAfterRestart <= 1 && target.signatures() === signedAfterRestart, `${name}: no second signature (${signedAfterRestart}, ${restarted.codes ?? 'answered'})`);
@@ -1131,6 +1188,32 @@ test('run the final pause-and-resume subcases at the real final authority and st
       }
     }
   }
+}
+
+test('run the final pause-and-resume subcases at the real final authority and stop awaits through the composed host and the real seller routes: issuance and reclamation, rollback, closure and restart, each with its expected outcome and refusal cause; closed authority grants no signature or transmission, and the unchanged authorized control succeeds; the payment-evidence leg and the CREATE-lane matrix included',
+  (t) => finalPauseSubcases(t, 'the stop flag'));
+
+test('repeat 15b-38’s H11-6 final real EB5r/EB8f pause-and-resume, closure, rollback and restart controls with the actual KILL stop seam; also repeat 15b-1’s full effect inventory with KILL already present, Listing publication included: zero effect-signer calls and zero wallet requests, with read-only/refusal and integrity signatures counted separately', async (t) => {
+  t.after(() => guard.setKitOperationGuardForTest('testnet-tp1'));
+  // The final pause-and-resume controls, the stop being a real KILL file read by the host's own check.
+  await finalPauseSubcases(t, 'a KILL file');
+
+  // The full inventory with KILL already present: every path refuses with zero effect-signer calls and zero wallet requests.
+  const roles = await countedKeyRoles(t);
+  const rows = await inventory(t, passOver({ stopped: createStopCheck(killedDirectory(t)) }));
+  for (const row of rows) {
+    const outcome = await row.attempt();
+    assert.ok(outcome.error !== undefined || outcome.value?.disposition !== 'present', `${row.label}: refused under KILL`);
+    assert.deepEqual([row.signatures(), row.transmissions()], [0, 0], `${row.label}: zero signatures and transmissions under KILL`);
+  }
+  await paymentEvidenceUnderKill(t);
+
+  // The integrity and read-only roles are not effects: under KILL they still sign, each counted on its own, and the effect role signs nothing.
+  roles.integritySigner.sign(Buffer.concat([Buffer.from(SELLER_STATE_SIGNING_DOMAIN), Buffer.from('TEST-journal-record')]));
+  const discoveryBinding = await keyTestBinding();
+  await (await roles.readOnlyAnswerSigner({ purpose: 'discovery', binding: discoveryBinding, local: KEY_LOCAL }))
+    .sign(wireApi.discoverySigningBytes(discoveryPayload(discoveryBinding, { seller: roles.key.claim })));
+  assert.deepEqual(roles.counts, { effect: 0, integrity: 1, readOnly: 1 }, 'under KILL the integrity and read-only roles sign on their own and the effect role signs nothing');
 });
 
 // Runs `change(w)` at the boundary's stop read inside the dispatch pass of the world's next answer: after the answer is stored,

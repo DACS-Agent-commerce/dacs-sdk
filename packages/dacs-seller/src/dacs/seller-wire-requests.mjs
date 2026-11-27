@@ -144,7 +144,6 @@ export function createWireContext({ binding, tp1Network, signer, effectBoundary,
   if (callables.some((member) => typeof member !== 'function') || typeof signer.claim !== 'string' || typeof requireDelegation !== 'boolean' ||
       [binding, journal].some((value) => value === null || typeof value !== 'object')) throw new TypeError('the wire context needs a binding, journal, signer roles, transport store, readiness, clock, retained Agreement scope, continuation evidence, commitment receipt reader and connection() of the right kinds');
   if (effectBoundaryBinding(effectBoundary) !== binding) throw new TypeError('the wire context\'s effectBoundary must be the host\'s, built over its binding');
-  if (typeof stopped !== 'function') throw new TypeError('the wire context\'s stop check must be a function');
   if (publicEndpoint !== null && typeof publicEndpoint !== 'string') throw new TypeError('the wire context\'s public endpoint must be a string');
   if (bootstrap !== null && typeof bootstrap?.enter !== 'function') throw new TypeError('the wire context\'s bootstrap scopes need enter()');
   // The transport store belongs to one seller and Listing from its first bind on: a store made for another one is refused here.
@@ -156,7 +155,7 @@ export function createWireContext({ binding, tp1Network, signer, effectBoundary,
   const context = Object.freeze({ binding, signer, journal, store, reservations, completion, requireDelegation, readCommitmentReceipt, publicEndpoint, readSigner, answers, bootstrap,
     local: () => tp1Network.connection(), tuple: (jobId) => store.purchaseProfile(jobId), now: () => now(), ready: () => ready(),
     admitPresentation: typeof agent.admitSessionPresentation === 'function' ? (input) => agent.admitSessionPresentation(input) : null,
-    stopped: () => stopped(),
+    stopped: typeof stopped === 'function' ? () => stopped() : undefined,
     retainedFor: (input) => retainedFor(agent, input, { store, capacity }), continuationFor: (input) => continuationFor(agent, input, signedListing),
     bindPlannedAgreementReader: (reader) => {
       if (typeof reader !== 'function' || readPlannedAgreement !== null) throw new TypeError('the wire context takes one planned Agreement reader, a function');
