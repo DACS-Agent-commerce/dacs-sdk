@@ -252,6 +252,16 @@ Capacity lookup work is bounded by retained rows with indexed effect/job referen
 The host supplies participant enrollment through `participantImplementations`; this package supplies none. The pair from `createNodeAuthorityReader`
 decides the connection scope alone; the staged seller reader's `readParticipantEvidence({ claim, sessionId, signal })` reads the enrollment on every job read.
 
+The wallet-session port's `sessionAdmission.admit` reads the same host source on every call and admits a buyer only with exactly one current,
+unrevoked enrollment with evidence, on the bound profile and the TP-1 module tuple. A buyer with more than one enrollment entry for this seller
+and Listing, for example a revoked entry and a later re-enrollment, is refused; re-enrollment is planned for a later release.
+
+The port's chain readers refuse `wallet_session_not_finalized` before finalization, `wallet_session_closed` after a close and `reader_input_missing`
+without the option they read (`participantImplementations` for `admit`, `sessionOf` for `observePayment`). A failed admission read refuses
+`session_admission_unavailable`. The Listing's revocation marker is read from the chain, and no read can prove that a marker is absent: a missing
+or unauthenticated marker is unavailable and refuses `session_admission_unavailable`, so an unrevoked Listing is not admitted until revocation
+absence can be proven. `observePayment` refuses `payment_unverified` whenever it cannot prove the payment verified or absent.
+
 Run the seller checks from the repository root after building the core:
 
 ```sh

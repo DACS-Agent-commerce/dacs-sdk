@@ -355,7 +355,7 @@ test('stopped: every active method of both purchase factories rejects writes_sto
   const world = await realFactories(t, { stopped: () => stop.now });
   const readsBefore = world.authority.state.calls;
   const passiveProtocol = ['assertBuyerAccess', 'supportsMode', 'readIssued', 'readIssuedPayment', 'observeReportedPayment', 'assertSellerReceiptReservation', 'readRetainedNativePaymentLane'];
-  const passiveService = ['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning', 'nativePaymentLaneRead'];
+  const passiveService = ['status', 'portalOperation', 'portalEvidence', 'verifyDeal', 'planRunning', 'nativePaymentLaneRead', 'verifyDealPassive'];
   const members = [...activeMembers(world.protocol, passiveProtocol), ...activeMembers(world.service, passiveService)];
   assert.ok(members.length > 20);
   for (const [name, member] of members) await assert.rejects(member({}), stopRefusal('writes_stopped'), name);
