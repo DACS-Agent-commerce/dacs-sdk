@@ -10,7 +10,8 @@
     "./purchase/evidence-recorder": "./src/passive-evidence-recorder.mjs",
     "./rpc-endpoint": "./src/rpc-endpoint.mjs",
     "./purchase/wallet-bridge": "./src/purchase/wallet-bridge.mjs",
-    "./wallet/effect-history": "./src/wallet/effect-history-public.mjs"
+    "./wallet/effect-history": "./src/wallet/effect-history-public.mjs",
+    "./listing/read-only": "./src/listing/read-only-verifier.mjs"
   },
   "scripts": {
     "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
@@ -38,7 +39,8 @@
     "src/devnet-demo/deliverable.mjs", "src/devnet-demo/issued-readback.mjs",
     "src/devnet-demo/operator-approval.mjs", "src/devnet-demo/stop-request.mjs",
     "src/devnet-demo/storage-write-recovery.mjs", "src/diagnostic-projection.mjs",
-    "src/index.mjs", "src/passive-evidence-recorder.mjs", "src/portal-capability.mjs", "src/purchase-limits.mjs",
+    "src/index.mjs", "src/listing/read-only-limits.mjs", "src/listing/read-only-verifier.mjs",
+    "src/passive-evidence-recorder.mjs", "src/portal-capability.mjs", "src/purchase-limits.mjs",
     "src/purchase-state-schema.mjs", "src/purchase/wallet-bridge.mjs", "src/purchases.mjs", "src/rpc-endpoint.mjs",
     "src/seams/purchase-store-not-wired.mjs", "src/seams/seller-integration-not-wired.mjs",
     "src/seams/wallet-actions-not-wired.mjs", "src/signatures.mjs",

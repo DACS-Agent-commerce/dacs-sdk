@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF export the read-only Listing verifier entry and list its modules in the packed client",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "3ad4e0eaa5f090054e893278965e579cb925f966",
+      "after": "c7361a1cd93851e4aef637ebbba912fbf4d34b3b"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-f6a39a1de037.json"
+  ]
+}
