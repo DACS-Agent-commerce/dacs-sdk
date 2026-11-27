@@ -1,5 +1,5 @@
 // Whether a retained native transaction can ever have reached the node, read from its whole dispatch history.
-// Internal: not exported by the package.
+// classifyDispatchHistory is also exported from the package's `./wallet/effect-history` entry.
 
 // The dispatch history records that never mean the bytes were sent: the signed bytes, every confirm record (the node
 // only checks the bytes), and a dispatch pass refused before its send (`dispatch-started` paired with `dispatch-withheld`).

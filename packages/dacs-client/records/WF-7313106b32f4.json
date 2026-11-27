@@ -1,0 +1,27 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest, entry point and public API test after carrying the base up into the node balance read part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "926ce6a67c72d1a9d20ff7009caec6214d06e4a7",
+      "after": "926ce6a67c72d1a9d20ff7009caec6214d06e4a7"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "1b22e01478e2366497746f1fd4516086eb5dbc54",
+      "after": "1b22e01478e2366497746f1fd4516086eb5dbc54"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "7c87209783f0f5ef8d7e3849ee4fad1c3b6a7fca",
+      "after": "7c87209783f0f5ef8d7e3849ee4fad1c3b6a7fca"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-7313106b32f4.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's node balance read and capability authority exports together with the base's payment evidence transport binding and buyer context route caller export and test."
+}

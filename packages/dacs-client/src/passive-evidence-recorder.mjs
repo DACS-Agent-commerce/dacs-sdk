@@ -1,6 +1,7 @@
 import { isCanonicalJobId } from '@kynesyslabs/dacs';
 import { OperationError } from './client-errors.mjs';
 import { assertPurchaseRuntime, readAdmission } from './public-admission.mjs';
+import { deepFreeze } from './util/deep-freeze.mjs';
 
 const PURCHASE_EVIDENCE_LIMIT = 8;
 const RESULT_KIND = 'unverified-wallet-result';
@@ -14,11 +15,6 @@ const CREATE_OPERATION = 'CREATE_STORAGE_PROGRAM';
 const laneFor = (deliveryId) => `purchase-evidence/${deliveryId}`;
 const keyFor = (deliveryId, seq) => `${laneFor(deliveryId)}/result/${seq}`;
 const membersOf = ({ deliveryId, hash, nonce, state }) => ({ deliveryId, hash, nonce, state });
-
-function deepFreeze(value) {
-  if (value !== null && typeof value === 'object') Object.values(value).forEach(deepFreeze);
-  return Object.freeze(value);
-}
 
 function isReport(report) {
   return report !== null && typeof report === 'object' && !Array.isArray(report) && Object.keys(report).sort().join() === REPORT_MEMBERS

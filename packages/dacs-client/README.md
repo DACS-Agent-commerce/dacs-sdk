@@ -100,13 +100,19 @@ The ceilings are the buyer's own limits. They need not equal the seller's, but a
 
 Active: `prepare`, `issueApprovalChallenge`, `approve`, `prepareHandoff`, `nativePaymentLane`, `reportWalletResult`, `cancel`, `agreementIdentity`, `agreementDelegation`, `sessionRenewal`, `sessionRenewalAccept`, `agreementPlan`, `agreementSubmit`, `completionRequest`, `completionCountersign`, `protocolRecheck`
 
-Passive: `status`, `portalOperation`, `portalEvidence`, `verifyDeal`, `planRunning` (synchronous), `nativePaymentLaneRead`
+Passive: `status`, `portalOperation`, `portalEvidence`, `verifyDeal`, `planRunning` (synchronous), `nativePaymentLaneRead`, `verifyDealPassive`
 
 The native payment lane readback: `nativePaymentLaneRead({ operationId, token, key })` reads back the wallet lane of a native purchase whose one-time wallet guard `nativePaymentLane` already issued. The protocol's `readRetainedNativePaymentLane(operation, key)` is the same read without the token.
 - It works while purchase actions are held and while the host is stopped. It never calls `stopped`, rechecks the commitment or Agreement on chain, asks the seller, signs, takes a lock or saves anything.
 - It needs an unexpired handoff token and buyer access. It reads back only a lane whose guard was issued once after an approved handoff; before that it rejects `native_payment_lane_held`.
 - It re-reads the stored approval, coordinates, handoff and guard events, retained Agreement receipt and seller commitment, and requires them to still match. Any mismatch, missing record or change while the lane is read rejects `native_payment_lane_unverified`; nothing is refreshed. The service also requires its configured chain to be the purchase's declared binding and reads the RPC's chain identity once (`network_identity_mismatch`).
 - It resolves `{ record: { readback: true, retained: { stage, hash, nonce } } }`: the retained Agreement CREATE's lane, with no top-level `stage`, `hash` or `nonce`, so a wallet guard reader does not take it as a second send. `nonce` is the CREATE's own nonce, not the payment's. A lane that no longer holds that CREATE rejects `wallet_fenced`; another lane key rejects `wallet_lane_mismatch`. It says nothing about the chain's current state or the payment.
+
+The passive stage read: `verifyDealPassive({ accountId, operationId, stage, signal })` on the service, or the root `verifyDealPassive({ service, accountId, operationId, stage, signal })` for a service `createPurchaseService` built (any other object rejects `TypeError('passive_service_invalid')`). It saves, moves, signs and sends nothing. `operationId` is the purchase's own `pur_` id and `stage` is `'anchor'` or `'payment'`; another member, stage or signal rejects `TypeError('passive_request_invalid')`.
+- It authenticates by the service's `accounts`, which must be the one `createLocalPurchaseAccount` returned for this `accountId` and the purchase's buyer wallet; anything else, or an unknown purchase, rejects `not_found`. A protocol buyer-access refusal rejects with that refusal.
+- It answers exactly `{ status: 'verified', stage, operationId, evidence: { txHash, nonce, chainIdentity } }`, `{ status: 'unused', stage, operationId, evidence: { reservedNonce, consumingTxHash, chainIdentity } }` or `{ status: 'unavailable', stage, operationId }`.
+- `verified`: the reported transfer of the reserved write reads back included through the chain's `observePassiveTransfer` on the bound chain, its canonical body is the buyer wallet's confirmed transaction at the reserved nonce, and payer, payee, amount and block agree; a native payment also needs its retained signed transfer. `unused` needs `nonceSlotProof: 'account'` and another confirmed transaction from the wallet at the reserved nonce; this purchase's own payment is never `unused`.
+- The anchor stage, a held service and a `passiveOnly` service answer `unavailable` with no chain read. A read failure, the `chainReadTimeoutMs` deadline, an abort, a hold landing or a saved row changing during the reads also answer `unavailable`.
 
 ### createListingVerifier
 
@@ -147,6 +153,13 @@ It returns a frozen `{ anchor(input), resume(input), verifyReceipt(input) }`, th
 - `verifyReceipt({ receipt, logicalAddress, artifact, expectedWriter, artifactKind })` resolves `valid`, `invalid` or `indeterminate`. It reads the native record, its creating transaction and its block again through the source capability, so a receipt is never accepted on its own.
 
 Construction throws a `DemosSr2BridgeError` with code `wallet-required` before any wallet request, signature or write when `walletFactory` is not a function, its result has no `requestWallet` function, or `requestWallet` returns no packaged wallet. The storage-anchor bridge's own refusals keep their codes, such as `profile-held` for a missing source capability and `journal-required`. An error thrown by `walletFactory` reaches the caller unchanged.
+
+### Wallet effect history
+
+`import { createEffectHistoryReader, withCheckedOperationHistory, classifyDispatchHistory, nativeWalletLaneKey, isNativeWalletLaneKey } from '@kynesyslabs/dacs-client/wallet/effect-history'`. These read the dispatch history the wallet keeps in the durable journal from `./wallet/durable-journal`; nothing here appends to it. `withCheckedOperationHistory` is also a root export.
+- `nativeWalletLaneKey({ network, chainIdentity }, address)` returns the lane every native write of `address` takes; `isNativeWalletLaneKey(lane)` says whether a string is exactly such a key. `createEffectHistoryReader(journal)` returns `{ read({ lane, artifactHash }), readOperation({ lane, operationId }) }`, the records in commit order.
+- `withCheckedOperationHistory({ journal, lane, operationId }, work)` holds the lane through `work` and resolves what `work` returns. `journal` must be the handle `openDurableWalletJournal` returned, unchanged, and `lane` a native wallet lane key that fits the journal's key limit; otherwise it throws `TypeError` (`checked_history_request_invalid`, `checked_history_journal_invalid`, `checked_history_lane_invalid`) before reading. `work({ records, laneOwner, readChecked })` gets that operation's frozen records after the whole lane was checked. Afterwards the lane must still be held and its records unchanged. Any unreadable, malformed, changed, busy, closed or lost lane rejects `OperationError('eb_history_unavailable')` with the journal error as `cause`; a rejection after `work` returned does not undo what `work` did, so call `readChecked()` last before committing inside `work`.
+- `classifyDispatchHistory(records)` classifies one artifact's records as `never-transmitted`, `earlier-possible` or `unavailable`. Group the callback's `records` by `artifactHash` first.
 
 ### Other exports
 
