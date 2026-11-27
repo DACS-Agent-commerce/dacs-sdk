@@ -44,7 +44,7 @@ function assertStateOwnership(dataDirectory, stateLock) {
   if (!held) throw withCause(new OperationError('state_ownership_required', 'the seller state lock for this data directory must be held'), cause);
 }
 
-// A mode outside its two values is refused, never read as the other one; the deployment evidence reader has no default.
+// A mode outside its two values is refused, never read as the other one.
 function checkModes({ journalMode, approvalMode, readDeploymentEvidence }) {
   if (!JOURNAL_MODES.includes(journalMode)) throw new TypeError("journalMode must be 'create' or 'open'");
   if (!APPROVAL_MODES.includes(approvalMode)) throw new TypeError("approvalMode must be 'policy' or 'manual'");
@@ -197,8 +197,7 @@ function kitGuardedAdapter(adapter) {
     broadcast: async (...args) => { assertKitOperationAdmitted('paymentEvidenceAdapter.broadcast'); return adapter.broadcast(...args); } });
 }
 
-// The effect gate's first step in every pass: the serving node build qualifies on the composition's own observer and
-// registered transport. A pass cannot start before the composition exists; a call before then refuses.
+// The effect gate's first step in every pass, over the composition's observer and transport (a call before it exists refuses).
 function qualificationStep({ admission, readDeploymentEvidence, clock = { now: () => Date.now() } }, compositionOf) {
   return async ({ phase, signal }) => {
     const composition = compositionOf();
@@ -256,17 +255,15 @@ async function composeWallet(options, opened) {
  * at confirmTx or broadcastTx. Any answer but exactly `true` resolves `not-authorized` with nothing signed or sent, and the
  * accepted request is settled released. Only a sendTransaction may carry `authorize` (any other method resolves `not-authorized`
  * before approval), and a second argument that is not exactly `{ authorize: function }` rejects TypeError before approval.
- * `readDeploymentEvidence({signal})` (required, no default) resolves the host's deployment evidence of the serving node build; the
- * composition's effect gate awaits `qualify` first in every pass, before each transaction signature and each confirmTx and broadcastTx,
- * which runs assertQualifiedDeployment over that reader, the composition's observer and its registered transport.
+ * `readDeploymentEvidence({signal})` (required; a TypeError before anything opens) feeds `qualify({phase, signal})`, assertQualifiedDeployment
+ * over the composition's observer and transport, which the effect gate awaits first before each signature and confirmTx and broadcastTx.
  * Resolves `{address, walletFactory, sourceCapability, observer, effectPass, runInEffectPass, artifactJournal, paymentEvidenceAdapter,
- * qualify({phase, signal}), readBalance(), close()}`; `effectPass` adds the current request's signing check last to every pass's `synchronousChecks`.
+ * qualify, readBalance(), close()}`; `effectPass` adds the current request's signing check last to every pass's `synchronousChecks`.
  * `paymentEvidenceAdapter` is the composition's payment-evidence adapter, whose four effect members check the kit operation guard
- * (kit_operation_guard_off) at each call. `qualify` is the gate's step, which the artifact anchor also runs as a preflight.
+ * (kit_operation_guard_off) at each call.
  * `readBalance` resolves `{address, balanceOs}`. `close()` closes what this opened; the host keeps `owner`.
  * Throws KitOperationGuardError (kit_operation_guard_off), OperationError (runtime_unsupported, state_ownership_required with its
- * cause), TypeError for a malformed option (`readDeploymentEvidence` before anything in `dataDirectory` opens; `walletFactory` also for
- * a selected `anchorJournal` without `put`), SellerKeyError (seller_key_format_invalid, seller_key_claim_mismatch), a journal's
+ * cause), TypeError for a malformed option (`walletFactory` also for a selected `anchorJournal` without `put`), SellerKeyError (seller_key_format_invalid, seller_key_claim_mismatch), a journal's
  * refusal, or the composition's own error. `readBalance` rejects seller_balance_unavailable (cause kept) or seller_balance_invalid.
  */
 export async function createSellerNodeWallet(options) {

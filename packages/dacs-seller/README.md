@@ -24,9 +24,7 @@ new jobs before admission at `maxJobs` (default 10,000) unless completed work
 can safely retire. Terminal DACS-5 bundle completion is not wired; slot retirement
 needs a terminal session state, which the `contextSessionState` capability or the
 host's own reading of abandoned purchases (described below) supplies.
-Native writes refuse unless the serving node's build qualifies: the host's
-deployment evidence must name a reviewed build (`QUALIFIED_NODE_BUILDS`) for the
-bound endpoint and chain, and the node must report that build's version (see
+Native writes refuse unless the serving node's build qualifies (see
 `createSellerNodeWallet` below).
 
 The repository's `engines` require Node.js `^22.22.2 || ^24.15.0`; the
@@ -681,9 +679,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   (`createSellerNodeWallet`, below); `isDevnetDemoTransport`
   (`src/dacs/devnet-source.mjs`, the client's own check) refuses any other
   value. Every write it makes is still held by the kit operation guard and the
-  client's purchase hold. It needs `qualify({ phase, signal })` from the resolved
-  seller Node wallet: `publish` and the recovery resend run it as a preflight,
-  and the effect gate runs it again inside each pass. It also needs `runCreate` from
+  client's purchase hold. `publish` and the recovery resend run the wallet's `qualify`
+  as a preflight; the effect gate runs it again. It also needs `runCreate` from
   `createSellerCreatePass` (`src/devnet-demo/create-pass.mjs`): each wallet
   CREATE, and the one resend of a retained CREATE, runs after the kit effect
   boundary's checks, under its fence, inside one effect pass of the wallet
@@ -1300,24 +1297,12 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   operation guard is off or the client's purchase hold is held, which is how
   both ship. `start` does not build the wallet. The delivery constructors take a `TEST-` label or a TP-1 token with
   the composition's own `binding`; a token is refused in that same state, and a `TP1-` label string grants nothing.
-  `createSellerNodeWallet` requires `readDeploymentEvidence({ signal })`, a function with no default
-  (a TypeError before any owner or journal opens), and returns it wrapped as `qualify({ phase, signal })`.
-  Native writes need a qualified node build (`src/devnet-demo/deployment-qualification.mjs`): the
-  evidence the function answers (UTF-8 JSON bytes or a JSON value with exactly `dirty`, `commit`,
-  `artifactSha256`, `reportedVersion`, `chainIdentity`, `qualifiedOperations`, `endpoint` and
-  `observedAt`) must match a reviewed entry of `QUALIFIED_NODE_BUILDS` and the bound endpoint and
-  chain, list exactly the fee, nonce, broadcast and confirmation operations and be within the entry's
-  age bound (30 days); then the node's own `getNetworkInfo` version must be the entry's, on an
-  unchanged connection. The effect gate runs this check first before each transaction signature and
-  each transmission, within 10 seconds, and refuses `deployment_unqualified` with the reason
-  (`node_build_unverified`, `node_build_drift`, `node_build_unavailable` or `node_build_timeout`) and
-  the original error as its cause. The one reviewed build is the approved testnet's, which reports
-  local edits (`dirty: true`, accepted only for that chain). Its signed deployment record ships in
-  `vectors/testnet-records/`: `readPackagedDeploymentRecord` reads it and
-  `createVerifiedDeploymentEvidenceReader` verifies it against the pinned digest and deployer key and
-  answers the production `readDeploymentEvidence`. The pinned deployer key is a testnet-only test key
-  and proves nothing about mainnet. A release compares a fresh `readQualificationObservation` with the
-  pinned build through `assertReleaseQualification`.
+  `createSellerNodeWallet` requires `readDeploymentEvidence({ signal })` (a TypeError before anything
+  opens) and returns `qualify({ phase, signal })`, which the effect gate runs first before each signature
+  and transmission: the evidence must match a reviewed `QUALIFIED_NODE_BUILDS` entry, the bound endpoint
+  and chain and its 30-day bound, and the node's `getNetworkInfo` version must be the entry's, else
+  `deployment_unqualified`. The one reviewed build is the approved testnet's (`dirty: true`, accepted only
+  there); its record in `vectors/testnet-records/` is signed by a testnet-only key that proves nothing about mainnet.
 - `createSellerWalletSession` (`src/devnet-demo/seller-wallet-session.mjs`) is
   the host's production `walletSession` port. It takes the node connection
   (`endpoint`, `transportAuthority`, `fetchImpl`), the seller `signer`,

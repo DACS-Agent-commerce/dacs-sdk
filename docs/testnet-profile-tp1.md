@@ -75,11 +75,9 @@ On 2026-10-20 the deployment reported branch `stabilisation`,
 artifact digest or overlay was supplied with those captures. This source commit is an immutable
 inspection baseline, not a pin of the deployment's executable bytes; node
 composition qualification remains open until those bytes can be identified.
-Separately and later, the seller kit gained a native-write check of the serving
-build: one reviewed testnet entry (commit `e6af8f4`, which also reports `dirty: true`,
-with the digest of a rebuild rather than of the deployed bytes) and a signed deployment
-record the kit ships (`packages/dacs-seller/src/devnet-demo/deployment-qualification.mjs`).
-It does not close the deployment qualification described here.
+The seller kit's later native-write check of the serving build (one reviewed `dirty: true`
+testnet entry with a rebuild's digest, and a signed record) is a separate step and does
+not close the deployment qualification described here.
 The 2026-10-18 captures of the previous chain are kept unchanged as history
 ([historical manifest](https://github.com/DACS-Agent-commerce/dacs-sdk/blob/main/conformance/tp1-node-observations/manifest.json)). That build
 reported source commit `61b8e75aa8db5e408c49e1c3a89db4d673f45578`,

@@ -264,31 +264,21 @@ blocked by unresolved custody/issuance dependencies and the supersession restart
 vector (`wallet_journal_conflict`). This stack has no complete seller-suite pass.
 Use focused affected files during development; CI runs the complete seller set.
 
-Native publication requires a qualified serving node build
-(`src/devnet-demo/deployment-qualification.mjs`). The seller Node wallet's required
-host reader `readDeploymentEvidence({ signal })` answers deployment evidence with
-exactly the keys `dirty`, `commit`, `artifactSha256`, `reportedVersion`,
-`chainIdentity`, `qualifiedOperations`, `endpoint` and `observedAt`. The evidence
-must match a reviewed entry of `QUALIFIED_NODE_BUILDS` on chain identity, commit,
-artifact SHA-256, reported version and `dirty`, name the bound endpoint and chain,
-list exactly the fee, nonce, broadcast and confirmation operations and be within the
-entry's age bound. The node's own `getNetworkInfo` version must then be the entry's,
-on an unchanged connection. A refusal is `deployment_unqualified` with the reason
-`node_build_unverified`, `node_build_drift`, `node_build_unavailable` or
-`node_build_timeout` and the original error as its cause. The production reader
-verifies the signed testnet record this package ships in `vectors/testnet-records/`
-against the pinned digest and a testnet-only deployer key.
+Native publication requires a qualified serving node build (`deployment-qualification.mjs`): the
+evidence the wallet's required `readDeploymentEvidence({ signal })` answers (eight keys, from `dirty`
+to `observedAt`) must match a reviewed `QUALIFIED_NODE_BUILDS` entry, the bound endpoint and chain, the
+four write operations and the age bound, and the node's `getNetworkInfo` version must be the entry's.
+A refusal is `deployment_unqualified` with `node_build_unverified`, `_drift`, `_unavailable` or `_timeout`.
 
 Native CREATE preparation requires the source capability's
 `withWalletNonceLock({owner, network, chainIdentity}, work)`. The source must hold
 one durable atomic lane across nonce reads, reservations and wallet outcomes for
 **every** writer of that wallet, including writers with separate journals. A
 source without this capability refuses new CREATEs with `nonce_lane_unavailable`.
-This package supplies no wallet nonce lane for this contract; the operator's wallet
-must. It does supply the reviewed-build check, through `QUALIFIED_NODE_BUILDS`,
-`readDeploymentEvidence` and the wallet's `qualify`. Retained recovery runs that check
-as a preflight and again inside the effect gate before its unchanged resend, and
-permits at most one unchanged resend per original transaction;
+This package supplies no wallet nonce lane for this contract; the operator's wallet must.
+It supplies the reviewed-build check (`QUALIFIED_NODE_BUILDS`, `readDeploymentEvidence`,
+the wallet's `qualify`), which retained recovery runs as a preflight and again in the
+effect gate, and permits at most one unchanged resend per original transaction;
 an uncertain resend remains held for authenticated readback.
 Definitively rejected CREATEs remain rejected during retained reads and retries,
 including after restart, and are never resent. Their nonce may be used by a

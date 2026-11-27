@@ -73,8 +73,7 @@ export function createNodeAuthorityReader(inputs) {
 
 // The one place the kit builds the artifact anchor over a finalized session, with the host's binding and connection reader.
 // Its wallet CREATEs and resends run through runCreate, the port's one pass over the host's effect boundary and this session;
-// `stopped`, the host's stop check, keeps a read under a stop to its readback; `qualify`, the wallet's node qualification step,
-// is the anchor's publish and recovery preflight.
+// `stopped`, the host's stop check, keeps a read under a stop to its readback; `qualify` is the wallet's qualification step.
 function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, binding, observeIdentity, runCreate, stopped, qualify }) {
   return createDevnetDemoArtifactAnchor({ sourceCapability: session.transport, journal: session.artifactJournal, walletFactory: session.walletFactory,
     network: session.transport.pins.network, signer, buyerAccess, now: () => clock.now(), vetMode: VET_MODE, binding, observeIdentity, runCreate, stopped, qualify });
@@ -110,10 +109,9 @@ function withPaymentEvidence(finalized, { journal, nativePaymentEvidence, endApp
  * `transportAuthority`, `fetchImpl` (the node connection), `signer` `{ claim, sign }` (the seller signer the host takes),
  * `loadKeyRecord()` (resolves fresh `dacs-seller-key/v1` bytes), `approve`, `approvalMode`, `journalMode`, `publications` and
  * `diagnostics` (passed to the seller Node wallet; see finalize for a `TP1-` label), `clock` (wall-clock milliseconds, `Date.now` by default),
- * `buyerAccess` (the anchor's, `null` by default), the chain readers' optional host inputs `participantImplementations`
- * `{ entriesFor(claim, { sessionId, signal }) }` (the host's enrollment source) and `sessionOf(jobId)` (the seller's durable session view),
- * and `readDeploymentEvidence({ signal })` (required, no default): the host's deployment evidence of the serving node build, which the
- * seller Node wallet's node qualification reads before every signature and transmission (see deployment-qualification.mjs).
+ * `buyerAccess` (the anchor's, `null` by default), and the chain readers' optional host inputs `participantImplementations`
+ * `{ entriesFor(claim, { sessionId, signal }) }` (the host's enrollment source) and `sessionOf(jobId)` (the seller's durable session view).
+ * `readDeploymentEvidence({ signal })` (required, no default) goes to the seller Node wallet's node qualification.
  * Returns a frozen port `{ authority, connectionAuthority, sessionAdmission, readCommitmentReceipt, observePayment, artifactAnchor, runCreate,
  * finalize(input), close() }`:
  * - `authority` is the read-only capability (no sign or send); its `claim()` throws wallet_session_not_finalized until finalize.
@@ -248,8 +246,7 @@ export function createSellerWalletSession(options) {
         const finalized = sessionOver(wallet);
         const { runCreate } = createSellerCreatePass({ effectBoundary, session: finalized, stopped, feeCeilingOs, clock });
         evidence = composeSellerPaymentEvidence({ runCreate, wallet, dataDirectory, clock, binding, observeIdentity: observeConnectionIdentity });
-        const composedAnchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity, runCreate, stopped,
-          qualify: wallet.qualify });
+        const composedAnchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity, runCreate, stopped, qualify: wallet.qualify });
         const composed = withPaymentEvidence(finalized, evidence);
         anchor = composedAnchor;
         finalizedRunCreate = runCreate;
