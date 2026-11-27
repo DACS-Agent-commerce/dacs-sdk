@@ -85,7 +85,7 @@ function scriptedNode(published) {
   return node;
 }
 
-/** A passive reader over a scripted node that holds the seller's Listing; `read(options)` reads it as P32aa's readback does. */
+/** A passive reader over a scripted node that holds the seller's Listing; `read(options)` reads it as a Listing readback does, with the writer, signed projection and native address. */
 function readerWorld(t, { endpoint = HTTPS_ROOT, ...listingOptions } = {}) {
   const published = publishedListing(listingOptions), node = scriptedNode(published);
   const reader = createPassiveListingReader({ endpoint, fetchImpl: node.fetch });
