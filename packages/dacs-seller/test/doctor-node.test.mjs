@@ -184,13 +184,15 @@ test('readSellerBalance uses the same owner as the pin; abort and close refuse. 
   assert.equal(signatures.length, 0);
 });
 
-test('the production seller port given a canonical plain-HTTP root, with the approved testnet identity present, refuses `transport_mismatch` from its three-argument `createNodeTransportOwner` call before binding, with no signature or publication; the doctor\'s HTTP acceptance is unchanged; passing `chainIdentity` at the port\'s owner call fails this test', async (t) => {
+test('the seller port admits the approved testnet plain http root that the bare owner call still refuses', async (t) => {
   const signatures = await spyTransactionSignatures(t.mock);
   const node = scriptedNode();
   let keyLoads = 0;
   const options = await portOptions(node, async () => { keyLoads += 1; return keyRecordBytes(); }, { endpoint: HTTP_ROOT });
-  assert.equal(canonicalNodeEndpoint(HTTP_ROOT, { chainIdentity: CHAIN }), HTTP_ROOT, 'the approved identity would admit this root');
-  assert.throws(() => createSellerWalletSession(options), { name: 'OperationError', code: 'transport_mismatch' });
+  const port = createSellerWalletSession(options);
+  t.after(() => port.close());
+  assert.throws(() => createNodeTransportOwner({ endpoint: HTTP_ROOT, transportAuthority: SELLER_TRANSPORT_AUTHORITY, fetchImpl: node.fetch }),
+    { name: 'OperationError', code: 'transport_mismatch' });
   assert.deepEqual({ calls: node.calls.length, keyLoads, signatures: signatures.length }, { calls: 0, keyLoads: 0, signatures: 0 });
   const doctor = openDoctorNode({ rpcUrl: HTTP_ROOT, sellerClaim: SELLER_CLAIM, fetchImpl: node.fetch });
   t.after(() => doctor.close());

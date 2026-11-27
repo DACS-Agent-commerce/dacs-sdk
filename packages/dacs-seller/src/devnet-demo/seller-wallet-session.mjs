@@ -4,7 +4,7 @@
 // owner, binds the one artifact anchor handle the operator gave the host and builds the payment-evidence journal over its passes.
 import { join } from 'node:path';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
-import { WireError, assertTp1Binding } from '@kynesyslabs/dacs/wire';
+import { TP1_APPROVED_IDENTITY_RECORD, WireError, assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { admitTp1Authority, createNodeTransportOwner, tp1AuthorityLabel } from '@kynesyslabs/dacs-client/node-wallet';
 import { boundedCall, isBoundedCallTimeout } from '../dacs/bounded-call.mjs';
 import { effectBoundaryBinding } from '../dacs/effect-boundary.mjs';
@@ -143,8 +143,8 @@ function withPaymentEvidence(finalized, { journal, nativePaymentEvidence, endApp
  *     approval is held still runs;
  *   - `close()` closes the journal and the wallet, once; the port keeps its owner.
  * - `close()` closes a live session, then the owner, once.
- * `endpoint` is a canonical root URL over https; a plain-http root refuses transport_mismatch. Binding then refuses a node whose
- * live chain is another before any key load or signature.
+ * `endpoint` is a canonical root URL over https, or over plain http only for the approved TP-1 testnet chain identity; any other
+ * root refuses transport_mismatch. Binding then refuses a node whose live chain is another before any key load or signature.
  * Throws KitOperationGuardError, TypeError naming a malformed option (a `participantImplementations` without `entriesFor`, a
  * `sessionOf` that is not a function, a `trustedFinality` that is not a plain object, among others), or the client's transport_mismatch. `finalize` rejects with
  * KitOperationGuardError, wallet_session_finalize_once, wallet_session_closed (the wallet build's refusal as `cause` when it failed),
@@ -157,7 +157,7 @@ export function createSellerWalletSession(options) {
   checkOptions(options);
   const { endpoint, transportAuthority, fetchImpl, signer, loadKeyRecord, approve, approvalMode, journalMode, publications, diagnostics,
     clock = { now: () => Date.now() }, buyerAccess = null, participantImplementations, sessionOf, trustedFinality } = options;
-  const owner = createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl });
+  const owner = createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl, chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
   let finalizeCalled = false, closed = false, closing = null, session = null, anchor = null, finalizedRunCreate = null, finalizedChain = null;
   // The finalized session the chain readers read through: wallet_session_closed after a close, wallet_session_not_finalized before finalize.
   const chain = () => {
