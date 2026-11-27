@@ -44,7 +44,7 @@ const ROOT = {
     'createDemDeliveryContext', 'createDemDeliveryContextRouteCaller', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport', 'createSellerSessionKeys',
     'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'assertNodeRpcEndpoint', 'createAuthorityReader', 'createPublicSellerClient',
     'createPurchaseOperations', 'isPurchaseOperationId', 'createPurchaseChallenges', 'purchaseApprovalChallengeText', 'createLocalPurchaseAccount', 'readAnchorReservedWriteId',
-    'verifyDealPassive', 'withCheckedOperationHistory'],
+    'verifyDealPassive', 'withCheckedOperationHistory', 'createKeylessSignedRelayTransport'],
   classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
     'SellerRefusedError', 'SellerUnavailableError', 'SellerTlsUnusableError', 'DemosSr2BridgeError', 'DemosSr2Error', 'NetworkBindingError', 'BuyerChainReadbackUnsupported', 'WalletFormatError'],
   values: ['PURCHASE_STATE_SCHEMA', 'PURCHASE_STATUS_HELP', 'DEM_DECIMAL', 'OS_INTEGER', 'vetNotPerformedRef', 'AGREEMENT_CONTEXT_SOURCE', 'DEM_DELIVERY_CONTEXT_SOURCE',
@@ -89,6 +89,7 @@ const modules = {
   "util/ids.mjs": "isPurchaseOperationId",
   "host/purchase-challenges.mjs": "createPurchaseChallenges purchaseApprovalChallengeText",
   "host/local-account.mjs": "createLocalPurchaseAccount",
+  "wallet/keyless-signed-relay.mjs": "createKeylessSignedRelayTransport",
   "wallet/effect-history.mjs": "withCheckedOperationHistory",
   "index.mjs": "PAID_WRITE_FEE_CEILING_OS verifyDealPassive"
 };
@@ -375,9 +376,31 @@ test("node-wallet publicly exports the keyless transport and pure Agreement prof
  assert.equal(child.status,0,child.stderr);
  assert.deepEqual(child.result,{names:['function','function'],demosdkImports:0});
  assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource','createNodeAuthorityCapability','composeNodeWalletSession','openKeystoreWalletSession',
-   'createHeldTransportFacade','createKeylessAgreementTransport','keylessAgreementProfile','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','capabilityAuthorityLabel','readNodeAddressBalance','createQualificationObserverSource','isQualificationObserverSource','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport','releaseAbandonedJournalLocks','passContext','fetchBoundedNodeJson','listsWithin',
+   'createHeldTransportFacade','createKeylessAgreementTransport','keylessAgreementProfile','createKeylessSignedRelayTransport','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','capabilityAuthorityLabel','readNodeAddressBalance','createQualificationObserverSource','isQualificationObserverSource','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport','releaseAbandonedJournalLocks','passContext','fetchBoundedNodeJson','listsWithin',
    'DEVNET_AGREEMENT_PROFILE','DEVNET_AGREEMENT_KIND','DEVNET_AGREEMENT_SOURCE','DEVNET_SETTLEMENT_KIND','DEVNET_SETTLEMENT_POLICY',
    'DEVNET_DELIVERY_KIND','DEVNET_DELIVERY_POLICY','DEVNET_DEMO_ARTIFACT_KIND','DEVNET_DEMO_ARTIFACT_POLICY','DEVNET_DEMO_ARTIFACT_TYPES'].sort());
+});
+
+test('the packed root and node-wallet subpath export one keyless signed relay factory', async t => {
+  const client = await import('@kynesyslabs/dacs-client');
+  const nodeWallet = await import('@kynesyslabs/dacs-client/node-wallet');
+  assert.equal(typeof client.createKeylessSignedRelayTransport, 'function');
+  assert.equal(nodeWallet.createKeylessSignedRelayTransport, client.createKeylessSignedRelayTransport);
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.resolve('@kynesyslabs/dacs-client'))));
+  assert.deepEqual(Object.keys(manifest.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder', './rpc-endpoint', './purchase/wallet-bridge', './wallet/effect-history'], 'no subpath is added');
+  // Construction needs the owner's members and the journal's methods; it calls no journal method and sends nothing.
+  const { binding, currentLocal } = await bindFixture();
+  const refuse = () => { throw new Error('TEST-not-called'); };
+  const owner = { currentLocal, getContext: refuse, acquireConnectionFence: refuse, fetchImpl: refuse };
+  const journal = Object.fromEntries(['get', 'put', 'entries', 'withWalletLock', 'appendUnderLock', 'withOwnedOrAcquiredLane'].map(name => [name, refuse]));
+  const built = await client.createKeylessSignedRelayTransport({ admission: { binding, currentLocal }, owner, journal, stopped: () => false, feeCeilingOs: client.PAID_WRITE_FEE_CEILING_OS });
+  const relay = built.nativeTransport;
+  t.after(() => relay.close());
+  assert.equal(Object.isFrozen(built), true);
+  assert.equal(Object.isFrozen(relay), true);
+  assert.deepEqual(Object.keys(relay).sort(), ['binding', 'close', 'rpc', 'walletBinding']);
+  assert.equal(nodeWallet.isDevnetAgreementTransport(relay), true);
+  for (const isOther of [nodeWallet.isDevnetSettlementTransport, nodeWallet.isDevnetDemoTransport]) assert.equal(isOther(relay), false);
 });
 
 const SELLER_CLIENT_ACTIONS = ['propose', 'agreementState', 'commit', 'submitPayment', 'bundleRequest', 'countersign', 'confirmBuyerCopy'];

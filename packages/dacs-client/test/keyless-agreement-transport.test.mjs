@@ -277,3 +277,14 @@ test('a pure keyless Agreement profile matches the inner transport without a buy
   }
   assert.throws(() => api.keylessAgreementProfile(), isRefusal('admission_required'));
 });
+
+test('a keyless relay view rebuilds a readback or release request so a hidden member never reaches the inner transport', async t => {
+  const w = await world(t);
+  const address = walletOf(w), hash = await retainedTransfer(w);
+  const { relay } = await openRelay(t, w);
+  const hidden = base => Object.defineProperty({ ...base }, 'writeProof', { value: { disposition: 'included' }, enumerable: false });
+  const plain = await relay.walletBinding(readback(address, hash), {});
+  assert.deepEqual(await relay.walletBinding(hidden(readback(address, hash)), {}), plain);
+  assert.deepEqual(await relay.binding(hidden(readback(address, hash))), plain);
+  assert.deepEqual(await relay.walletBinding(hidden(release(address, 'TEST-lease')), {}), { released: true });
+});

@@ -1,0 +1,54 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF export a keyless Agreement relay transport and a pure Agreement profile from node-wallet",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "4015c72223017a91ca704434bf53854185848068",
+      "after": "aef9866fe49288629d74d07215e8ee9cf656c242"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/approved-record-pins.mjs",
+      "before": null,
+      "after": "98beb9642c8cb16e6220afb33768c98a196c3109"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "26f84fc37061782dba50b0c3dd22509d58946e3a",
+      "after": "892d8ef1464c8c5dd0188d7c0c2ec53b0aac6371"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+      "before": null,
+      "after": "40367f47c71c08ce3582aed4d4eca16918016ee7"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "bc07d0969125601e104451059162eef25f4ec868",
+      "after": "a2e54680dd5030f0f252ae80f5445e3ac8dfdaf5"
+    },
+    {
+      "path": "packages/dacs-client/test/keyless-agreement-transport.test.mjs",
+      "before": null,
+      "after": "5f682fa5fb6a0cdb718a8df8c91df3f5ac76bfd6"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "5b8f3428781fb75048f82ab2dec6735307d00003",
+      "after": "5dc1578c4350b1a5288b8445a2293dc45953ac06"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-10371a6e6537.json",
+    "packages/dacs-client/src/wallet/approved-record-pins.mjs",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+    "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+    "packages/dacs-client/test/keyless-agreement-transport.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs"
+  ]
+}

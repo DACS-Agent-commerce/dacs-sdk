@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildNativeTransferPayload } from '../../src/dacs/wallet-transactions.mjs';
-import { createDevnetNativeTransport, nativeWalletLaneKey } from '../../src/wallet/devnet-native-transport.mjs';
+import { createDevnetAgreementTransport, createDevnetNativeTransport, nativeWalletLaneKey } from '../../src/wallet/devnet-native-transport.mjs';
 import { openDurableWalletJournal } from '../../src/wallet/durable-journal.mjs';
 import { createEffectFence } from '../../src/wallet/effect-fence.mjs';
 import { createEffectHistory } from '../../src/wallet/effect-history.mjs';
@@ -74,7 +74,8 @@ function firstComeOwner(fence, gate) {
   return { getContext: async () => { await gate.pass(); return connection(); }, acquireConnectionFence: acquire };
 }
 
-export function nativeWorld(t, { bound } = {}) {
+/** With `agreement`, `open` builds the Agreement transport (which also sends native transfers) instead of the native-only one. */
+export function nativeWorld(t, { bound, agreement = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'native-effect-paths-')), path = join(dir, 'journal.sqlite');
   const node = testNode(), fence = { acquired: 0, released: 0 };
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
@@ -97,16 +98,18 @@ export function nativeWorld(t, { bound } = {}) {
   const open = (pins, extra = {}) => {
     owner = firstComeOwner(fence, gate);
     if (bound) buildBoundary();
-    transport = createDevnetNativeTransport({ expected: { ...PINS, ...(bound ? { pinVersion: bound.binding.profile.pinVersion } : {}), ...pins }, journal, fetchImpl: node.fetch, inclusionWaitMs: 0, inclusionPollMs: 1, sleep: async () => {},
+    transport = (agreement ? createDevnetAgreementTransport : createDevnetNativeTransport)({ expected: { ...PINS, ...(bound ? { pinVersion: bound.binding.profile.pinVersion } : {}), ...pins }, journal, fetchImpl: node.fetch, inclusionWaitMs: 0, inclusionPollMs: 1, sleep: async () => {},
       boundary: bound ? world.boundary : writingBoundary({ owner, journal }), ...extra, transportOwner: owner });
     return transport;
   };
   t.after(async () => { await transport?.close(); journal.close(); rmSync(dir, { recursive: true, force: true }); if (bound) setPurchaseAdmission('held'); });
   // `signedOver` maps the hash to the text the signature covers: the hash itself unless a test signs another form.
-  const signedTransfer = (nonce, amountOs = '2500000000', signedOver = hash => hash) => {
+  // `transactionFee` is the signed `transaction_fee` (default 1 DEM network fee and 1 DEM rpc fee).
+  const signedTransfer = (nonce, amountOs = '2500000000', signedOver = hash => hash,
+    transactionFee = { network_fee: '1000000000', rpc_fee: '1000000000', additional_fee: '0', rpc_address: null }) => {
     const payload = buildNativeTransferPayload({ from: address, to: PAYEE, amountOs, nonce, timestamp: Date.now(), encoding: 'os-string' });
     const content = structuredClone(payload.content), edit = (type, operation, account, amount) => ({ type, operation, isRollback: false, account, txhash: '', amount });
-    Object.assign(content, { from: address, from_ed25519_address: address, nonce, transaction_fee: { network_fee: '1000000000', rpc_fee: '1000000000', additional_fee: '0', rpc_address: null },
+    Object.assign(content, { from: address, from_ed25519_address: address, nonce, transaction_fee: transactionFee,
       gcr_edits: [edit('balance', 'remove', address, content.amount), edit('balance', 'add', content.to, content.amount), edit('balance', 'remove', address, '1000000000'), edit('nonce', 'add', address, 1)] });
     const hash = sha(JSON.stringify(content));
     return { content, signature: { type: 'ed25519', data: signText(signedOver(hash)) }, hash, status: '', blockNumber: null };

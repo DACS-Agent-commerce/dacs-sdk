@@ -1,0 +1,32 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest, index, node wallet session and public API test after merging the base into the keyless signed relay part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "b2a2df1597237413f40f0091c2ea3e4c7edc1698",
+      "after": "b2a2df1597237413f40f0091c2ea3e4c7edc1698"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "8b962d7f54973256f40e9b17a977bca0c9307971",
+      "after": "8b962d7f54973256f40e9b17a977bca0c9307971"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "2f52c907a2b829fd4d96daf1a732d81131b9efa1",
+      "after": "2f52c907a2b829fd4d96daf1a732d81131b9efa1"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "b9f9d28a1f6cc86f9b7c809b7b62f6f511c8c9fd",
+      "after": "b9f9d28a1f6cc86f9b7c809b7b62f6f511c8c9fd"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-9c314e2662f1.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's keyless signed relay transport and export together with the base's node address balance read, capability authority label and buyer context route caller."
+}

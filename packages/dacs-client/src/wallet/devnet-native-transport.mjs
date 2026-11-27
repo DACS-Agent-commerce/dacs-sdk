@@ -234,6 +234,12 @@ export { nativeWalletLaneKey };
 // then needs the lane waits at most the journal's lock timeout. Every Agreement transport also has
 // `inspectWalletNonceLane({owner, network, chainIdentity})`, which reads that lane's retained stage under the same lock and the
 // same refusals, and takes no work; the held facade does not carry it.
+//
+// Two options belong to the Agreement constructor alone (every other constructor refuses them), for a relay of a wallet's own
+// signed bytes. `networkFeeCeilingOnly` compares the fee ceiling with the sum of the three signed fees at signing, confirmation
+// and broadcast, and with zero at the lease holds, never with the amount. `noRepeatUnknownConfirm` refuses `eb_readback_required`
+// for bytes whose confirmation may have reached the node unanswered, also after a restart, and serializes confirmations on the
+// wallet's lane. Both default to false.
 export function createDevnetNativeTransport(options) { return constructTransport(options,false); }
 export function createDevnetAgreementTransport(options) { return constructTransport(options,true); }
 // Separate opt-in composition. The Agreement-only constructor above remains
@@ -330,7 +336,10 @@ export function createSourceObserver({ record, owner, stabilisedGenesis = null, 
 function constructTransport({ expected, transportOwner, journal, fallback = null, stabilisedGenesis = null, blockZeroErrorEnvelope = null, blockOneLayout = null, reviewedBlockTwoHash = null,
   fetchImpl = globalThis.fetch, now = () => Date.now(), stamps = { next: () => now() }, monotonicNow = () => performance.now(), timeoutMs = 10000,
   leaseMs = 30000, inclusionWaitMs = 120000, inclusionPollMs = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, authorityBinding, approveConfirmedWrite = null, boundary, reopenGrants = null } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
+  settlementPublication = null, deliveryPublication = null, demoArtifactPublication = null, authorityBinding, approveConfirmedWrite = null, boundary, reopenGrants = null,
+  networkFeeCeilingOnly = false, noRepeatUnknownConfirm = false } = {}, agreement = false, settlement = false, delivery = false, demo = false) {
+  const relayOptions = [networkFeeCeilingOnly, noRepeatUnknownConfirm];
+  if (relayOptions.some((option) => typeof option !== 'boolean') || (relayOptions.includes(true) && (!agreement || settlement))) throw new TypeError('networkFeeCeilingOnly and noRepeatUnknownConfirm are boolean options of the Agreement transport only');
   if (!BOUNDARY_METHODS.every((name) => typeof boundary?.[name] === 'function')) throw new TypeError(`the effect boundary needs ${BOUNDARY_METHODS.join(', ')}`);
   if (reopenGrants !== null && typeof reopenGrants?.consume !== 'function') throw new TypeError('reopenGrants is null or an object with a consume function');
   if (!transportOwner || typeof transportOwner.getContext !== 'function' || typeof transportOwner.acquireConnectionFence !== 'function') throw new TypeError('actual transport-owner context and connection fencing are required');
@@ -806,9 +815,10 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   }
   // The signature lease's connection fence. With a boundary it is the boundary's hold on the
   // owner's fence: admission, stop, fee and binding are checked before the wait and again once
-  // it is held, and the lease's confirmation passes run inside the hold.
+  // it is held, and the lease's confirmation passes run inside the hold. With `networkFeeCeilingOnly` nothing is signed yet, so
+  // the hold's fee check reads zero; the declared amount is never compared with the ceiling.
   const acquireLeaseFence = async (address, operationId, transfer) => {
-    const hold = await boundary.holdFence({ operationId, lane:lane(address), kind:'native', paidWrite:true, debitOs:transfer?.amountOs ?? '0', pinVersion:pinned.pinVersion });
+    const hold = await boundary.holdFence({ operationId, lane:lane(address), kind:'native', paidWrite:true, debitOs:networkFeeCeilingOnly ? '0' : transfer?.amountOs ?? '0', pinVersion:pinned.pinVersion });
     try { return { hold, context:await context(), release:() => hold.release() }; }
     catch (error) { await hold.release().catch(() => {}); throw error; }
   };
@@ -904,8 +914,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     if (approveConfirmedWrite && (await approveConfirmedWrite(answer)) !== true) fail('approval_required','the seller policy refused the confirmed write');
   };
   // The exact signed bytes as the boundary's signed record. A repeated request for the same bytes reuses it.
-  const retainSigned = async (operation, bytes) => {
-    try { return await boundary.signPass(operation, async () => bytes); } catch (error) {
+  const retainSigned = async (operation, bytes, feeView) => {
+    try { return await boundary.signPass(operation, async () => bytes, feeView); } catch (error) {
       if (error?.code === 'eb_operation_signed' && error.details?.artifactHash === sha(bytes)) return { ...operation, artifactHash:error.details.artifactHash };
       throw error;
     }
@@ -916,9 +926,14 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // Runs `confirmOnce(bytes, final)` as the boundary's confirm stage inside the lease's hold: the signed
   // bytes, `confirm-started` before the node sees them, then `confirm-acknowledged` with the
   // node's answer and gas when `accepted()`, or `confirm-unknown` with the cause.
+  // With `networkFeeCeilingOnly` signing and the confirmation check the fee view of the signed bytes against the ceiling. With
+  // `noRepeatUnknownConfirm` the history is read again under the wallet's lane, held until the stage's record is written, so two
+  // transports over one journal confirm the same bytes at most once; an acknowledgement found there is another operation's.
   const confirmAsStage = async (lease, tx, confirmOnce, accepted) => {
-    return lease.fence.hold.run(async () => boundary.dispatchPass(await retainSigned(operationOf(lease, tx), Buffer.from(JSON.stringify(tx))), confirmOnce,
-      { explicit:true, stage:'confirm', material:(answer) => accepted() ? { confirmation:answer, gasOperation:answer.response.data.gas_operation ?? null } : undefined }));
+    const feeView = networkFeeCeilingOnly ? { confirmedDebitOs:feeCeilingDebitOs(tx) } : undefined;
+    const confirm = () => lease.fence.hold.run(async () => boundary.dispatchPass(await retainSigned(operationOf(lease, tx), Buffer.from(JSON.stringify(tx)), feeView), confirmOnce,
+      { explicit:true, stage:'confirm', ...feeView, material:(answer) => accepted() ? { confirmation:answer, gasOperation:answer.response.data.gas_operation ?? null } : undefined }));
+    return noRepeatUnknownConfirm ? laneLock(tx.content.from, async () => { await refuseUnsureConfirm(tx, { acknowledged:true }); return confirm(); }) : confirm();
   };
   // Every record of one signed artifact names the same operation. When an earlier lease signed these exact bytes and
   // nothing in their history may have sent them (then the same request again), the lease takes over that operation: its
@@ -960,6 +975,23 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     return canonicalDecimal(declaredOs) && fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), BigInt(declaredOs))) : null;
   };
   const signedFeeOs = (fee) => (canonicalDecimal(fee) ? fee : Number.isSafeInteger(fee) && fee >= 0 ? String(BigInt(fee) * 1_000_000_000n) : null);
+  // The fee view `networkFeeCeilingOnly` compares with the ceiling: the sum of the three signed fees alone, or `null` (refused).
+  const feeCeilingDebitOs = (tx) => signedDebitOs('0', tx.content.transaction_fee);
+  // Whether the history may hold a confirmation the node received without its answer being kept: a confirm-unknown after the
+  // last acknowledgement, or a confirm-started after it whose pass was not withheld (refused before its request).
+  const confirmUnsure = (records) => {
+    const later = records.slice(records.findLastIndex((record) => record.state === 'confirm-acknowledged') + 1);
+    return later.some((record) => record.state === 'confirm-unknown'
+      || (record.state === 'confirm-started' && !later.some((other) => other.passId === record.passId && other.state === 'confirm-withheld')));
+  };
+  // With `noRepeatUnknownConfirm`, bytes whose confirmation may have reached the node are read back only, never confirmed again;
+  // with `acknowledged`, so are bytes with any acknowledged confirmation.
+  const refuseUnsureConfirm = async (tx, { acknowledged = false } = {}) => {
+    if (!noRepeatUnknownConfirm) return;
+    const records = await historyOf({ lane:lane(tx.content.from),artifactHash:sha(JSON.stringify(tx)) });
+    if (confirmUnsure(records)) fail('eb_readback_required','confirmation outcome unknown; do not reuse these bytes');
+    if (acknowledged && records.some((record) => record.state === 'confirm-acknowledged')) fail('eb_readback_required','another operation confirmed these bytes; read them back, do not reuse them');
+  };
   // Whether a confirmation's fee view is absent (`null`), or names each signed fee exactly as a canonical decimal OS string.
   const feeViewIsSigned = (gasOperation, transactionFee) => gasOperation === null || FEE_MEMBERS.every((member) => {
     const fee = gasOperation?.fees?.[member];
@@ -1336,6 +1368,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
       const create=tx.content.type === 'storageProgram';
       if(call.extra === 'confirmTx') {
         l.confirmed=null;l.readyHash=null;
+        // Read before the issued intent, so uncertain bytes refuse with this code even when an intent exists too.
+        await refuseUnsureConfirm(tx);
         const issuedBefore=await journal.get(intent(tx.hash));
         if(issuedBefore && !withheldBroadcast(issuedBefore)){refuseRetiredPin(issuedBefore);await refuseIssued(tx.hash,'an issued native hash is readback-only, never reconfirmed or resent',reopen);}
         const transfer=await identityOf(tx.content);
@@ -1444,7 +1478,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             };
             // The wallet's broadcast is a fresh request of its own: a dispatch an earlier lease withheld before its send goes on.
             // The pass's authority is checked before the lane and intent are retained, so a job withdrawn by now leaves the lane free.
-            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ explicit:true,stage:'dispatch',confirmedDebitOs:signedDebitOs(artifact.debitOs,tx.content.transaction_fee),authorize:() => assertCurrentAuthorization(pass) }));
+            const confirmedDebitOs=networkFeeCeilingOnly ? feeCeilingDebitOs(tx) : signedDebitOs(artifact.debitOs,tx.content.transaction_fee);
+            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ explicit:true,stage:'dispatch',confirmedDebitOs,authorize:() => assertCurrentAuthorization(pass) }));
           });
         });
         if (accepted?.result === 200) {

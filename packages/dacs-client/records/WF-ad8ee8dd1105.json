@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF list the evidence recorder export in the node-wallet export test",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "3fcc3933f88cb0f1f6536680fa95af894ca62226",
+      "after": "d598c00b32e46bacfaae02be3db6296bde230e26"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-ad8ee8dd1105.json",
+    "packages/dacs-client/test/public-api.test.mjs"
+  ]
+}

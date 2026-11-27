@@ -48,8 +48,8 @@
     "src/util/immutable-readbacks.mjs", "src/util/purchase-readback-cache.mjs",
     "src/util/text.mjs", "src/wallet/approval-hold.mjs", "src/wallet/approved-record-pins.mjs", "src/wallet/authority-reader.mjs", "src/wallet/chain-identity-read.mjs", "src/wallet/demos-quiet-hooks.mjs", "src/wallet/devnet-native-transport.mjs",
     "src/wallet/durable-journal.mjs", "src/wallet/effect-boundary.mjs", "src/wallet/effect-fence.mjs", "src/wallet/effect-history.mjs", "src/wallet/effect-history-public.mjs", "src/wallet/journal-identity.mjs",
-    "src/wallet/holder-incarnation.mjs", "src/wallet/keyless-agreement-transport.mjs", "src/wallet/keystore-file.mjs", "src/wallet/keystore-wallet-opener.mjs", "src/wallet/node-demos-loading.mjs", "src/wallet/node-observer.mjs",
-    "src/wallet/native-dispatch-history.mjs", "src/wallet/node-address-balance.mjs", "src/wallet/node-wallet-http.mjs", "src/wallet/node-wallet-session.mjs", "src/wallet/node-payment-evidence-adapter.mjs", "src/wallet/paid-approval.mjs", "src/wallet/pass-context.mjs", "src/wallet/read-queue.mjs", "src/wallet/signer-reservation.mjs", "src/wallet/withheld-reopen-grants.mjs", "src/public/portal/embedded-wallet/sdk-provider.mjs",
+    "src/wallet/held-transport-facade.mjs", "src/wallet/holder-incarnation.mjs", "src/wallet/keyless-agreement-transport.mjs", "src/wallet/keyless-signed-relay.mjs", "src/wallet/keystore-file.mjs", "src/wallet/keystore-wallet-opener.mjs", "src/wallet/node-demos-loading.mjs", "src/wallet/node-observer.mjs",
+    "src/wallet/native-dispatch-history.mjs", "src/wallet/node-address-balance.mjs", "src/wallet/node-wallet-http.mjs", "src/wallet/node-wallet-session.mjs", "src/wallet/node-payment-evidence-adapter.mjs", "src/wallet/paid-approval.mjs", "src/wallet/pass-context.mjs", "src/wallet/read-queue.mjs", "src/wallet/shared-wallet-effect-boundary.mjs", "src/wallet/signer-reservation.mjs", "src/wallet/withheld-reopen-grants.mjs", "src/public/portal/embedded-wallet/sdk-provider.mjs",
     "src/wallet/payload-helpers.mjs", "src/wallet/wallet-lane.mjs",
     "README.md", "LICENSE",
     "src/public-admission.mjs", "src/public-guidance.mjs", "src/public-verification.mjs"
