@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF check the import graph of the read-only Listing verifier entry",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/read-only-listing-graph.test.mjs",
+      "before": "73e2e9d1cc6bc5b1943ff92f6107b1d7535c64be",
+      "after": "fb8221b93c8af86d9a16ebfabc83dcbc89fe038f"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-7e5ef9d65682.json",
+    "packages/dacs-client/test/read-only-listing-graph.test.mjs"
+  ]
+}
