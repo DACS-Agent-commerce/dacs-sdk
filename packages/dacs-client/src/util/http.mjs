@@ -1,4 +1,4 @@
-import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs';
+import { admitRawJson, RawJsonAdmissionError } from '@kynesyslabs/dacs/canonical';
 // Bounded outbound JSON requests: fixed origin, no redirects, hard timeout,
 // post-decompression byte cap, no ambient credentials. Failures are typed so
 // callers can distinguish "timeout" and "unavailable" from "invalid". A
