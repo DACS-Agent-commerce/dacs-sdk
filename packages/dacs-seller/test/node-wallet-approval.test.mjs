@@ -169,6 +169,23 @@ test('a broadcast-started write that fails, or commits and then throws, leaves t
   }
 });
 
+test('a stop that appears after the broadcast-started marker and before the broadcast leaves the write held and unsent: zero broadcasts, the request settled released, never unknown', async t => {
+  let stopped = false;
+  const world = await settlingWorld(t, { stopped: () => stopped });
+  const journal = world.wallet.artifactJournal, written = [];
+  const stopsAfterMarker = { ...journal, put: async (key, value) => {
+    written.push(value?.stage);
+    await journal.put(key, value);
+    if (value?.stage === 'broadcast-started') stopped = true;
+  } };
+  const { answer } = await artifactWrite(world, { anchorJournal: stopsAfterMarker });
+  assert.equal(answer.success, false);
+  assert.equal(answer.error?.code, 'writes_stopped', JSON.stringify(answer));
+  assert.equal(world.node.broadcasts.length, 0, 'nothing was sent');
+  assert.deepEqual(written, ['broadcast-started', 'signed-held'], 'the marker is followed by the held record');
+  assert.deepEqual(outcomes(world), ['released'], 'the unsent write releases its hold');
+});
+
 test('walletFactory refuses a selected anchor journal that cannot record writes', async t => {
   const world = await settlingWorld(t);
   assert.throws(() => world.wallet.walletFactory({ anchorJournal: {} }), TypeError);
