@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add the read-only Listing validation module",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/listing-read-only.mjs",
+      "before": null,
+      "after": "72c49fda008c229f7c4138f59a9a14c002d095e6"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-c97c02193aa8.json",
+    "packages/dacs-client/src/dacs/listing-read-only.mjs"
+  ]
+}
