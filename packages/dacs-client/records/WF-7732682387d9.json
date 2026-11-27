@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test that CI runs the packed read-only Listing test on Node 20.19.0",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/runtime-floor.test.mjs",
+      "before": "8303abcba2188f15012d7c355214263e898a03d2",
+      "after": "a73791d473feeb6094830a19efc74d91cf131e92"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-7732682387d9.json",
+    "packages/dacs-client/test/runtime-floor.test.mjs"
+  ]
+}
