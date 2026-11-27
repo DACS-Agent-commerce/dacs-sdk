@@ -76,7 +76,7 @@ test('under the unshipped test loader, the artifact anchor, payment evidence and
   const world = await sellerWalletWorld(t), { sourceCapability } = world.wallet;
   const identity = { binding: world.admission.binding, observeIdentity: productionObserveIdentity(world) };
   const artifacts = createDevnetDemoArtifactAnchor({ sourceCapability, ...identity, journal: world.wallet.artifactJournal, walletFactory: world.wallet.walletFactory,
-    network: sourceCapability.pins.network, signer: { claim: `did:demos:agent:${world.wallet.address.slice(2)}` }, runCreate: () => assert.fail('no CREATE runs here') });
+    network: sourceCapability.pins.network, signer: { claim: `did:demos:agent:${world.wallet.address.slice(2)}` }, runCreate: () => assert.fail('no CREATE runs here'), stopped: () => false });
   assert.equal(typeof artifacts.publish, 'function');
   const evidence = createNativePaymentEvidenceConsumer({ rpcUrl: sourceCapability.pins.endpoint, sourceCapability, ...identity, anchorEvidence: journalOverAdapter(world).anchorEvidence,
     readSignedProjection: journalOverAdapter(world).readSignedProjection });

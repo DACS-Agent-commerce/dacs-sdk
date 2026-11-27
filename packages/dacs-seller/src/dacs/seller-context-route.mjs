@@ -5,6 +5,7 @@ import { identityBundleHash, isCanonicalClaimReference, isCanonicalJobId, isIden
 import { DACS_SELLER_HTTP_PATHS as PATHS, admitPreAgreementRequest, admitWireRequestBody, inspectWireOperation, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { boundedCall } from './bounded-call.mjs';
 import { KitOperationGuardError, kitOperationAdmitted } from '../kit-operation-guard.mjs';
+import { readStopPredicate } from '../kill-switch.mjs';
 import { addressForClaim, isCanonicalEd25519Signature } from './demos-claims.mjs';
 import { AGREEMENT_CONTEXT_SOURCE } from './agreement-context-consumer.mjs';
 import { DEM_RAIL, canonicalize, purchaseSupport, verifyComponent } from './listing.mjs';
@@ -61,11 +62,8 @@ const expiryRecheck = (now, request, delegationExpiresAt) => ({
  */
 function assertOpenForChallenges(stopped) {
   if (!kitOperationAdmitted()) throw new SellerTransportError('kit_operation_guard_off', 503);
-  let answer;
-  try { answer = stopped(); } catch { throw new SellerTransportError('seller_stopped', 503, { cause: 'stop_check_failed' }); }
-  if (typeof answer?.then === 'function') Promise.resolve(answer).then(undefined, () => {});
-  if (typeof answer !== 'boolean') throw new SellerTransportError('seller_stopped', 503, { cause: 'stop_check_invalid' });
-  if (answer) throw new SellerTransportError('seller_stopped', 503);
+  const stop = readStopPredicate(stopped);
+  if (stop.stopped) throw new SellerTransportError('seller_stopped', 503, stop.cause === null ? undefined : { cause: stop.cause });
 }
 
 function bundleAuthentic(bundle) {

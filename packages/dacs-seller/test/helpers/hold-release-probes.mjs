@@ -46,7 +46,7 @@ function contextStart(f, jobId) {
 }
 function contextTransaction(f, calls) {
   const purchaseCapacity = purchaseCapacityOf(f.store());
-  return createContextAdmissionTransaction({ store: f.store(), capacity: purchaseCapacity, now: f.now, ready: () => true, deadlines: { policyMs: 10000 },
+  return createContextAdmissionTransaction({ store: f.store(), capacity: purchaseCapacity, now: f.now, ready: () => true, stopped: () => false, deadlines: { policyMs: 10000 },
     policy: { reserve: async () => { calls.reserve++; return null; }, release: async () => { calls.release++; } },
     effectEvidence: async () => [], inspectContextOutcome: () => ({ state: 'none' }), completeWire: () => {} });
 }

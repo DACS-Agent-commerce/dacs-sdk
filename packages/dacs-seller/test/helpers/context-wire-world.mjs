@@ -33,7 +33,8 @@ export function presentationFor(presenter, nonce, at) {
   return { ...bundle, presentation: { kind: 'per-claim', signatures: [{ ref: presenter.claim, signature: presenter.signBytes(Buffer.from(`dacs-bundle-presentation:v1:${identityBundleHash(bundle)}`)).toString('base64url') }] } };
 }
 
-export async function contextWireWorld(t, { requireDelegation = false, storeOptions = {}, resume = null, sellerRoles = null } = {}) {
+// `admissionStopped` is the stop check of the world's admission transaction (never stopped by default); the route's own is `state.stop`.
+export async function contextWireWorld(t, { requireDelegation = false, storeOptions = {}, resume = null, sellerRoles = null, admissionStopped = () => false } = {}) {
   const w = await challengeWorld(t, { requireDelegation, store: storeOptions, resume, sellerRoles });
   const { state, calls, agent, buyer, seller, other } = w;
   const now = () => state.time;
@@ -69,7 +70,7 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
   };
   const admission = createContextAdmissionTransaction({ store: w.store, policy, capacity,
     effectEvidence: async (row) => [row.vetAddresses.buyer, row.vetAddresses.seller].map((address) => ({ address, kind: behaviour.evidenceKind })),
-    inspectContextOutcome: operationOf, completeWire, now, ready: () => state.ready(), deadlines: { policyMs: POLICY_DEADLINE_MS } });
+    inspectContextOutcome: operationOf, completeWire, now, ready: () => state.ready(), stopped: admissionStopped, deadlines: { policyMs: POLICY_DEADLINE_MS } });
   const coordinator = createReservationCoordinator({ accounting: w.store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target), admissionTransaction: admission });
   const reserved = { calls: 0, ownerships: [], effects: [] };
   const reserveCoordinated = coordinator.reserveCoordinated.bind(coordinator);
@@ -209,10 +210,10 @@ export async function contextWireWorld(t, { requireDelegation = false, storeOpti
    * A fresh host on this world's store and journal files, as after a restart: this host's store and journal are closed, its in-memory work is
    * gone, and the new world starts at this one's wall clock with a new store generation.
    */
-  const restartHost = async () => {
+  const restartHost = async ({ admissionStopped: nextStopped } = {}) => {
     w.store.close();
     journal.close?.();
-    const next = await contextWireWorld(t, { requireDelegation, storeOptions, resume: { directory: w.directory, generation: state.generation } });
+    const next = await contextWireWorld(t, { requireDelegation, storeOptions, resume: { directory: w.directory, generation: state.generation }, admissionStopped: nextStopped });
     next.state.time = state.time;
     return next;
   };

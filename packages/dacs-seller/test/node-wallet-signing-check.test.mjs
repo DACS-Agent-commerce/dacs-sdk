@@ -184,7 +184,7 @@ async function listingAnchor(world) {
   const { sourceCapability } = world.wallet, signer = await fixtureSigner();
   const anchor = createDevnetDemoArtifactAnchor({ sourceCapability, binding: world.admission.binding, observeIdentity: productionObserveIdentity(world),
     journal: world.wallet.artifactJournal, walletFactory: world.wallet.walletFactory, network: sourceCapability.pins.network, signer: { claim: signer.claim },
-    runCreate: () => assert.fail('no CREATE reaches runCreate here') });
+    runCreate: () => assert.fail('no CREATE reaches runCreate here'), stopped: () => false });
   return { anchor, listing: fixtureListing(signer, { now: T0 }) };
 }
 

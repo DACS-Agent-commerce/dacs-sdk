@@ -13,6 +13,7 @@ import { completeWireEffect, DACS_SELLER_DISCOVERY_PATH, DACS_SELLER_HTTP_HEADER
 import { transportOutcome, UNCERTAIN } from './seller-agent.mjs';
 import { boundedCall } from './bounded-call.mjs';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
+import { readStopPredicate } from '../kill-switch.mjs';
 import { OperationError } from '../operations.mjs';
 import { admitRawJson, isCanonicalJobId } from '@kynesyslabs/dacs';
 import { SellerTransportError } from './seller-transport-auth.mjs';
@@ -251,7 +252,7 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
   if (wire.signer.claim !== agent.claim) throw new Error('seller transport identity must match the independently configured agent');
   if (wire.requireDelegation && typeof agent.transportAgreementOf !== 'function') throw new Error('delegated seller transport needs retained Agreement scope');
   if (context !== null && (context?.path !== DACS_SELLER_HTTP_PATHS.context || context?.challengePath !== DACS_SELLER_HTTP_PATHS.contextChallenge || typeof context.challengeOnWire !== 'function' || (context.handleContext !== undefined && typeof context.handleContext !== 'function'))) throw new TypeError('the seller context route needs its paths and its wire challenge (challengeOnWire), and its context step (handleContext) must be a function when given');
-  if (context !== null && typeof wire.stopped !== 'function') throw new TypeError('the wire challenge route needs the host\'s stop predicate (wire.stopped)');
+  if (typeof wire.stopped !== 'function') throw new TypeError('the wire routes need the host\'s stop predicate (wire.stopped)');
   if (publicSignedCreates !== null && typeof publicSignedCreates !== 'function') throw new Error('publicSignedCreates must be the seller\'s signed CREATE pointer function');
   // DACS_BUYER_CHAIN_READBACK=on: a successful commit or payment answer (the
   // only answers the buyer takes pointers from) also names the seller's
@@ -418,6 +419,10 @@ export function createSellerHttpHandler(agent, { authentication, bodyTimeoutMs =
         // A read that carries the Agreement co-signature transmits it too, inside its answer pass.
         return await send(res, outcome.status, outcome.value, request, { cosignature: outcome.value?.[COSIGNATURE_ANSWER] });
       }
+      // A stopped host (shutdown or KILL) answers every effect route with a signed refusal before it reserves or runs anything,
+      // replays and uncertain reconciliations included.
+      const stop = readStopPredicate(wire.stopped);
+      if (stop.stopped) throw new SellerTransportError('seller_stopped', 503, stop.cause === null ? undefined : { cause: stop.cause });
       // Payment evidence is taken only on an assembled settlement profile.
       if (req.url === PAYMENT_PATH) agent.assertAuthenticatedPayment?.();
       reservation = await auth.store.reserve(request);
