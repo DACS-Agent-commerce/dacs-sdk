@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "fix(client): ship the node observer module in the packed client",
+  "sha": "435d19d92f3c7c44286526318cb0fec55948641a",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "669ffef0487331ecf209637bd7d899cca1139086",
+      "after": "ad70362438d3b2ebf3cb9d3af5693f09ab8f3384"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/package.json"
+  ]
+}
