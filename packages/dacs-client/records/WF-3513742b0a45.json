@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test the packed read-only Listing verifier on Node 20.19.0",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/read-only-listing-packed.test.mjs",
+      "before": null,
+      "after": "76957d62da74942a526983c88aa66d43d742bddc"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-3513742b0a45.json",
+    "packages/dacs-client/test/read-only-listing-packed.test.mjs"
+  ]
+}
