@@ -7,7 +7,7 @@ import { CLAIM, LISTING_ID, createDirectoryClient } from '../dacs/directory.mjs'
 import { checkCatalogObservation, validateListing } from '../dacs/listing-read-only.mjs';
 import { addressForClaim } from '../dacs/read-only-address.mjs';
 import { createDemosPublicChainReader } from '../substrate/demos.mjs';
-import { settleOnAbort } from '../util/http.mjs';
+import { RESPONSE_BYTE_LIMIT, settleOnAbort } from '../util/http.mjs';
 import {
   LISTING_CALL_TIMEOUT_MS, LISTING_CHAIN_IDENTITY_MAX_BYTES, LISTING_CHAIN_TIMEOUT_MS, LISTING_DIRECTORY_DETAIL_MAX_BYTES,
   LISTING_DIRECTORY_PAGE_MAX_BYTES, LISTING_DIRECTORY_TIMEOUT_MS, LISTING_MAX_FETCHES, LISTING_STORAGE_MAX_BYTES,
@@ -83,7 +83,7 @@ function reasonFor(error, { budget, deadline, stage }) {
   if (deadline.aborted) return 'listing_read_timeout';
   if (error instanceof ReadOnlyListingError) return error.reason;
   if (error?.kind === 'timeout') return 'listing_read_timeout';
-  if (error?.code === 'response_too_large') return 'listing_read_limit';
+  if (error?.code === RESPONSE_BYTE_LIMIT) return 'listing_read_limit';
   if (error?.code === 'network_identity_mismatch') return 'listing_chain_identity_mismatch';
   if (error?.code === 'directory_row_malformed' && error.member === 'catalogObservedAt') return 'listing_catalog_stale';
   return STAGE_REASONS[stage];
