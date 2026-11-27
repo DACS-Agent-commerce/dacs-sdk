@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest and node wallet session after carrying the base up into the qualification observer part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "3ad4e0eaa5f090054e893278965e579cb925f966",
+      "after": "3ad4e0eaa5f090054e893278965e579cb925f966"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "adcfb0a798c6f6918a226618f2288e56de2703dc",
+      "after": "adcfb0a798c6f6918a226618f2288e56de2703dc"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-43409e714e73.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's qualification observer source and the base's changes together."
+}
