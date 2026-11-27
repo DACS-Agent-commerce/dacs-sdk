@@ -1,0 +1,49 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF count the SDK gas with the signed fees against the host fee ceiling",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "1af933756162967ea87b4505ea503160cfb29bc3",
+      "after": "5314a2ec4bb3462766f059dcecebf4ad02283a55"
+    },
+    {
+      "path": "packages/dacs-client/test/native-confirmed-debit.test.mjs",
+      "before": "0943e80235d8d0c7676b07c23e729c42d6f54474",
+      "after": "cfdfce6419d099fdb0ad0c103fe67db36c1ac0f6"
+    },
+    {
+      "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+      "before": "7951f16070493ea42d268db3b2f460c3eb2c35c8",
+      "after": "2910caa03fa3745940504f8005bdc5b10a3eb30d"
+    },
+    {
+      "path": "packages/dacs-client/test/native-node-fee-view.test.mjs",
+      "before": "1e9b64d15e4054ca63381d2fc4a19ab8a0fc6fa4",
+      "after": "0049afb40ac74fa7fe33268189a3380b257785b7"
+    },
+    {
+      "path": "packages/dacs-client/test/native-recovery-fee-ceiling.test.mjs",
+      "before": "e0cb4334aaaf59523e47e3a82899aeb18f9ed1e7",
+      "after": "db41fd16fa74ba2c7b4eabceb29a9a125919b34a"
+    },
+    {
+      "path": "packages/dacs-client/test/native-withheld-reopen.test.mjs",
+      "before": "587718469da493392aaf9a7fb66dbd8efce3a4f3",
+      "after": "b53d5b19632cf39a71e84076dd2a7460f671ae1c"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-5727b198a2a3.json",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/test/native-confirmed-debit.test.mjs",
+    "packages/dacs-client/test/native-effect-paths.test.mjs",
+    "packages/dacs-client/test/native-node-fee-view.test.mjs",
+    "packages/dacs-client/test/native-recovery-fee-ceiling.test.mjs",
+    "packages/dacs-client/test/native-withheld-reopen.test.mjs"
+  ],
+  "note": "The native transport counts the SDK's fixed 1 DEM gas with a send's signed network, rpc and additional fees when it compares them with the host fee ceiling at confirmation, broadcast and recovery resend, as the purchase service's fee read does. Before, a send whose fees equalled the ceiling and whose gas put it one DEM over was confirmed and broadcast. The amount the send pays is still not counted."
+}

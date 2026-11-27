@@ -134,6 +134,8 @@ const BOUNDARY_METHODS = ['holdFence', 'withOperation', 'signPass', 'dispatchPas
 const LEASE_EXPIRY_MARGIN_MS = 1;
 // The fee members of a confirmation's gas operation, each a canonical decimal OS string.
 const FEE_MEMBERS = ['network_fee', 'rpc_fee', 'additional_fee'];
+// The SDK debits 1 DEM of gas on every write, beside the fees its transaction signs.
+const SDK_GAS_OS = 1_000_000_000n;
 // The only own keys of a wallet nonce lane's scope.
 const NONCE_LANE_SCOPE_KEYS = ['owner', 'network', 'chainIdentity'];
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
@@ -184,7 +186,7 @@ export { nativeWalletLaneKey };
 // The seller policy, if any, is asked after the acknowledgement is retained; its refusal
 // leaves the acknowledgement and nothing is broadcast.
 // The broadcast then carries that retained confirmation, byte for byte with its gas, as the
-// boundary's dispatch stage: its fees (the amount it sends is not counted; the signed fees of the confirmed
+// boundary's dispatch stage: its fees (the amount it sends is not counted; the SDK gas and the signed fees of the confirmed
 // transaction) are checked against the fee ceiling first, and a
 // refusal leaves `dispatch-withheld`. A refusal at the last check, after the lane record is written and
 // before the request, finishes the lane as `failed` (withheld): nothing was sent, and a new lease may confirm
@@ -928,13 +930,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   };
   // A storage write's kept reference block for a caller, or nothing for a native transfer, which keeps none.
   const keptReferenceBlock = (row) => row.signedTransaction.content.type === 'storageProgram' ? { referenceBlock:row.storageWriteReferenceBlock ?? null } : {};
-  // The fees a signed transaction commits the sender to, in OS: the three fees of its own signed `transaction_fee`
-  // (each a decimal OS string, or a whole-DEM number as an amount is read). The amount it sends is not a fee and is
-  // not counted, and the node's fee view never enters it. `null` when any fee cannot be read, which refuses the
-  // broadcast or the recovery resend.
+  // The fees a signed transaction commits the sender to, in OS: the SDK's fixed gas charge plus the three fees of its
+  // own signed `transaction_fee` (each a decimal OS string, or a whole-DEM number as an amount is read). The amount it
+  // sends is not a fee and is not counted, and the node's fee view never enters it. `null` when any fee cannot be
+  // read, which refuses the broadcast or the recovery resend.
   const signedFeesOs = (transactionFee) => {
     const fees = FEE_MEMBERS.map((member) => signedFeeOs(transactionFee?.[member]));
-    return fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), 0n)) : null;
+    return fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), SDK_GAS_OS)) : null;
   };
   const signedFeeOs = (fee) => (canonicalDecimal(fee) ? fee : Number.isSafeInteger(fee) && fee >= 0 ? String(BigInt(fee) * 1_000_000_000n) : null);
   // Whether a confirmation's fee view is absent (`null`), or names each signed fee exactly as a canonical decimal OS string.

@@ -338,8 +338,8 @@ test('a confirmation the seller policy refuses is refused after the node acknowl
   assert.deepEqual(w.node.broadcasts, []);
 });
 
-// A signed TEST transfer pays a 1 DEM network fee and a 1 DEM rpc fee, whatever its amount.
-const SIGNED_FEES_OS = 2_000_000_000n;
+// A signed TEST transfer pays a 1 DEM network fee and a 1 DEM rpc fee, plus the SDK's 1 DEM gas, whatever its amount.
+const SIGNED_FEES_OS = 3_000_000_000n;
 
 test('a transfer whose signed fees are above the fee ceiling is refused at confirmation before the node sees it, and one at the ceiling is confirmed', async t => {
   const over = world(t, { bound: await bindFixture() });

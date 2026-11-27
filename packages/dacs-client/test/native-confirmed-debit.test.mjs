@@ -8,8 +8,8 @@ import { nativePayloadDigest } from '../src/wallet/payload-helpers.mjs';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 import { LANE_PREFIX, nativeWorld as world } from './helpers/native-effect-world.mjs';
 
-// A signed TEST transfer pays a 1 DEM network fee and a 1 DEM rpc fee on top of its amount.
-const AMOUNT_OS = '2500000000', FEES_OS = '2000000000', PAYEE = '0x' + '7'.repeat(64);
+// A signed TEST transfer pays a 1 DEM network fee and a 1 DEM rpc fee plus the SDK's 1 DEM gas, on top of its amount.
+const AMOUNT_OS = '4000000000', FEES_OS = '3000000000', PAYEE = '0x' + '7'.repeat(64);
 
 // Opens a world under `feeCeilingOs` whose node gives no fee view, and holds a lease for one transfer of AMOUNT_OS.
 async function leasedSend(t, feeCeilingOs) {

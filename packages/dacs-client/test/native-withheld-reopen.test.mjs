@@ -15,8 +15,8 @@ const { createReopenGrants } = await import('../src/wallet/withheld-reopen-grant
 
 const gas = (network, rpc) => ({ fees: { network_fee: network, rpc_fee: rpc, additional_fee: '0' } });
 const GAS = gas('1000000000', '1000000000');
-// The fees of a signed TEST transfer: the 1 DEM network fee and 1 DEM rpc fee of GAS. Its amount is not counted against the ceiling.
-const SIGNED_FEES_OS = '2000000000';
+// The fees of a signed TEST transfer: the 1 DEM network fee and 1 DEM rpc fee of GAS, plus the SDK's 1 DEM gas. Its amount is not counted against the ceiling.
+const SIGNED_FEES_OS = '3000000000';
 const STOP = { change: w => { w.stopped = true; }, cause: 'writes_stopped' };
 const REHOLD = { change: () => setPurchaseAdmission('held'), cause: 'profile_not_admitted' };
 const states = records => records.map(record => record.state);
