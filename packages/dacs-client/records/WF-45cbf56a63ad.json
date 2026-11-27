@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add the keyless Agreement relay transport and the pure Agreement profile",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs",
+      "before": null,
+      "after": "40367f47c71c08ce3582aed4d4eca16918016ee7"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-45cbf56a63ad.json",
+    "packages/dacs-client/src/wallet/keyless-agreement-transport.mjs"
+  ]
+}
