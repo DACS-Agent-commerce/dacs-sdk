@@ -296,6 +296,7 @@ test('an approved testnet HTTP root and a canonical HTTPS root each reach the ob
     assert.equal(node.calls[0], 'getBlockByNumber', endpoint);
     assert.ok(node.calls.includes(`GET /storage-program/${published.native.storageAddress}`), endpoint);
     assert.deepEqual([...new Set(node.requests.map(({ origin }) => `${origin}/`))], [endpoint]);
+    assert.deepEqual([...new Set(node.requests.map(({ redirect }) => redirect))], ['error'], 'every read refuses a redirect');
   }
 });
 
