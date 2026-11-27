@@ -35,8 +35,8 @@ const revokedSurface = [{ kind: 'catalog', status: 'revoked', readStatus: 'ok', 
 } }];
 const readMarker = async (anchor) => (anchor?.locator === markerLocator ? marker : null);
 
-async function verdict(candidate, revocationSurfaces = activeSurface, read = readMarker) {
-  const result = await readOnly.validateListing(candidate, { now: () => CHECKED_AT, revocationSurfaces, readMarker: read });
+async function verdict(candidate, revocationSurfaces = activeSurface, read = readMarker, extra = {}) {
+  const result = await readOnly.validateListing(candidate, { now: () => CHECKED_AT, revocationSurfaces, readMarker: read, ...extra });
   return { disposition: result.disposition, step: result.step, reason: result.reason };
 }
 
@@ -78,6 +78,11 @@ test('pure Listing validation retains the existing signature revocation and purc
   // identity and revocation steps and stops at the rail step, as before.
   assert.deepEqual(await verdict(listing), { disposition: 'indeterminate', step: 8, reason: 'malformed-rail-authority' });
   const forged = { ...listing, signature: { ...listing.signature, value: withBadIdentitySignature().signature.value } };
+  // The display resolution verifies the same Listing and keeps every earlier step's verdict.
+  const display = { loadRailResolution: readOnly.displayRailResolution };
+  assert.equal((await verdict(listing, activeSurface, readMarker, display)).disposition, 'verified');
+  assert.deepEqual(await verdict(forged, activeSurface, readMarker, display), { disposition: 'rejected', step: 4, reason: 'listing-signature-invalid' });
+  assert.deepEqual(await verdict(listing, revokedSurface, readMarker, display), { disposition: 'revoked', step: 5, reason: 'verified-revocation-marker' });
   assert.deepEqual(await verdict(forged), { disposition: 'rejected', step: 4, reason: 'listing-signature-invalid' });
   assert.deepEqual(await verdict(withBadIdentitySignature()), { disposition: 'rejected', step: 6, reason: 'identity-presentation-invalid' });
   assert.deepEqual(await verdict(listing, revokedSurface), { disposition: 'revoked', step: 5, reason: 'verified-revocation-marker' });

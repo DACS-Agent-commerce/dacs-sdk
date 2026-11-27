@@ -114,6 +114,6 @@ test('pure Listing validation and pinned reader load on Node 20.19 without signi
   const loaded = JSON.parse(child.stdout);
   if (NODE20) assert.equal(loaded.version, NODE20_VERSION);
   assert.deepEqual(loaded.core, CORE_KEYS);
-  assert.deepEqual(loaded.pure, ['DEM_RAIL', 'checkCatalogObservation', 'validateListing', 'verifyComponent']);
+  assert.deepEqual(loaded.pure, ['DEM_RAIL', 'checkCatalogObservation', 'displayRailResolution', 'validateListing', 'verifyComponent']);
   assert.equal(loaded.pinned, 'a'.repeat(64));
 });

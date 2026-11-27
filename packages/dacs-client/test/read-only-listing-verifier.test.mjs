@@ -29,12 +29,10 @@ const REASONS = ['listing_input_invalid', 'listing_not_found', 'listing_director
   'listing_chain_identity_mismatch', 'listing_anchor_mismatch', 'listing_catalog_stale', 'listing_standard_invalid'];
 // The Base reader defaults the verifier caps narrow.
 const READER_DEFAULTS = { page: 1_000_000, detail: 65_536, identity: 4_194_304, storage: 262_144 };
-// A Listing with no payment phase: the Standard reader can verify it while the client's DEM rail is not available.
-const DISPLAY_PIPELINE = [{ kind: 'negotiate-fixed-price' }, { kind: 'commit-payee-bound-agreement' }, { kind: 'deliver-storage-program' }];
 
 const wallet = createEphemeralWallet();
 const seller = wallet.claim;
-const listing = fixtureListing(wallet, { now: CHECKED_AT, pipeline: DISPLAY_PIPELINE });
+const listing = fixtureListing(wallet, { now: CHECKED_AT });
 const LOCATOR = fixtureLocator('read-only-listing');
 const MARKER_LOCATOR = fixtureLocator('read-only-listing-marker');
 const coordinates = { listingId: listing.listingId, version: listing.listingVersion, seller };
@@ -217,6 +215,7 @@ test('invalid Listing or identity signature and revoked Listing refuse listing_s
 });
 
 test('standard verified Listing remains readable while purchase support stays held', async () => {
+  assert.ok(listing.pipeline.some((phase) => phase.kind === 'pay-dem'), 'the Listing advertises a payment phase');
   const result = await world().verifier.verify(coordinates);
   assert.equal(result.disposition, 'verified');
   const support = purchaseSupport(result.listing);

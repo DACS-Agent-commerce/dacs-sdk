@@ -1,0 +1,42 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF verify a Listing with a payment phase under a display rail resolution in the read-only Listing verifier",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/listing-read-only.mjs",
+      "before": "72c49fda008c229f7c4138f59a9a14c002d095e6",
+      "after": "08c3e48ca419870fd095d9cea710658e65ddf3d9"
+    },
+    {
+      "path": "packages/dacs-client/src/listing/read-only-verifier.mjs",
+      "before": "4158c9c0136c0e4c4099b0eb003522fddc4354df",
+      "after": "05ad21d14f2688a72546c13fca9e4e42393c4730"
+    },
+    {
+      "path": "packages/dacs-client/test/read-only-listing-graph.test.mjs",
+      "before": "fb8221b93c8af86d9a16ebfabc83dcbc89fe038f",
+      "after": "e45c3a7824cc2cd896aba469917da0470ad5093d"
+    },
+    {
+      "path": "packages/dacs-client/test/read-only-listing-pure.test.mjs",
+      "before": "179b9b21f08bbe8c133d56ad630c50d54cd010f9",
+      "after": "8fa68844de7b9502d5c69c8ae48c334d32c4a2e4"
+    },
+    {
+      "path": "packages/dacs-client/test/read-only-listing-verifier.test.mjs",
+      "before": "0d762f81ae5dc203f46d3ac52a0b3b6150c0fc8a",
+      "after": "60a7f1b000682321315c545eb25185133a2a5607"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-906d84ce2802.json",
+    "packages/dacs-client/src/dacs/listing-read-only.mjs",
+    "packages/dacs-client/src/listing/read-only-verifier.mjs",
+    "packages/dacs-client/test/read-only-listing-graph.test.mjs",
+    "packages/dacs-client/test/read-only-listing-pure.test.mjs",
+    "packages/dacs-client/test/read-only-listing-verifier.test.mjs"
+  ]
+}

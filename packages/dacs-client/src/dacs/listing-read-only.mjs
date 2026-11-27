@@ -29,11 +29,26 @@ export function checkCatalogObservation(value, checkedAt) {
   return { observedAt, fresh };
 }
 
+const railResolution = (extra) => () => ({
+  trustPhase: 'PA-1',
+  trustPolicyAcceptsPA1: true,
+  registry: { state: 'not-used', entries: [], definitions: [] },
+  inCodeDefinitions: [{ railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion, phaseHandler: 'pay-dem', governanceAnchoring: 'in-code', signatureValid: true, ...extra }],
+});
+
+// The purchase resolution: the DEM rail names an availability the Standard reader does not accept, so a Listing with a payment phase never
+// verifies under it, and purchase support stays held.
+const heldRailResolution = railResolution({ availability: 'disabled' });
+
+/** The display resolution: the DEM rail with no availability claim. A signed, anchored Listing with a payment phase verifies under it; it grants no purchase. */
+export const displayRailResolution = railResolution({});
+
 /**
  * Resolves to the SDK's ordered DACS-1 Listing verdict. A missing or stale
  * catalog observation in the caller's revocation surfaces is `indeterminate`.
+ * `loadRailResolution` defaults to the purchase resolution.
  */
-export async function validateListing(listing, { now, revocationSurfaces, readMarker }) {
+export async function validateListing(listing, { now, revocationSurfaces, readMarker, loadRailResolution = heldRailResolution }) {
   return validateListingArtifact(listing, {
     nowMs: () => now(),
     verifyListingSignature: verifyComponent,
@@ -43,11 +58,6 @@ export async function validateListing(listing, { now, revocationSurfaces, readMa
     },
     verifySellerControl: ({ bundle, signer }) => bundle.presentedBy === signer && bundle.claims.some((claim) => claim.ref === signer),
     revocation: { surfaces: revocationSurfaces, readMarker, verifyMarkerSignature: verifyComponent },
-    loadRailResolution: () => ({
-      trustPhase: 'PA-1',
-      trustPolicyAcceptsPA1: true,
-      registry: { state: 'not-used', entries: [], definitions: [] },
-      inCodeDefinitions: [{ railId: DEM_RAIL.railId, railVersion: DEM_RAIL.railVersion, phaseHandler: 'pay-dem', governanceAnchoring: 'in-code', signatureValid: true, availability: 'disabled' }],
-    }),
+    loadRailResolution,
   });
 }

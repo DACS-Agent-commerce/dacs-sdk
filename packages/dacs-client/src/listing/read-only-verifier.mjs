@@ -4,7 +4,7 @@
 // must verify it. Nothing here holds a key, signs, writes or admits a purchase.
 import { canonicalize, contentHash } from '@kynesyslabs/dacs/listing/read-only';
 import { CLAIM, LISTING_ID, createDirectoryClient } from '../dacs/directory.mjs';
-import { checkCatalogObservation, validateListing } from '../dacs/listing-read-only.mjs';
+import { checkCatalogObservation, displayRailResolution, validateListing } from '../dacs/listing-read-only.mjs';
 import { addressForClaim } from '../dacs/read-only-address.mjs';
 import { createDemosPublicChainReader } from '../substrate/demos.mjs';
 import { RESPONSE_BYTE_LIMIT, settleOnAbort } from '../util/http.mjs';
@@ -150,6 +150,7 @@ export function createReadOnlyListingVerifier({ directoryFetchImpl = globalThis.
     let markerFailure = null;
     const standard = await validateListing(readback.data, {
       now: () => checkedAt,
+      loadRailResolution: displayRailResolution,
       revocationSurfaces: [{ kind: 'catalog', status: summary.status, readStatus: 'ok', catalogObservedAt: observedAt, ...(summary.revocation ? { binding: summary.revocation } : {}) }],
       // One marker read at most; a marker that is not found is no proof either way.
       readMarker: async (anchor) => {
