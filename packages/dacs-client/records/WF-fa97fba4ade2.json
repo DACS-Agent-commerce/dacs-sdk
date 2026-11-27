@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF route the signature check through the read-only signature predicates",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/signatures.mjs",
+      "before": "ea2845c8b7caf1b411be2e29a70005a94e4218c0",
+      "after": "70bd2166be8a7a15db2b5b1c024c73fe50ed645b"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-fa97fba4ade2.json",
+    "packages/dacs-client/src/signatures.mjs"
+  ]
+}
