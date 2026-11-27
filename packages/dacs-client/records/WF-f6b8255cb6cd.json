@@ -1,0 +1,37 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest, node wallet session, native transport and public API test after carrying the base up into the Agreement relay export part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "9ff3c2912ebed4ce428c5c46338388252cfc13d1",
+      "after": "9ff3c2912ebed4ce428c5c46338388252cfc13d1"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/approved-record-pins.mjs",
+      "before": "98beb9642c8cb16e6220afb33768c98a196c3109",
+      "after": "71fcff3f6a7944291b5fd4bca18fbac0b9527dde"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "acb9648c99fc53efb968dc78766a9573f55b4bfb",
+      "after": "acb9648c99fc53efb968dc78766a9573f55b4bfb"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "283f455728de1fe73ecefd2469fe3ac2aca8e842",
+      "after": "283f455728de1fe73ecefd2469fe3ac2aca8e842"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "a8772ea1598b68c6e8932fda9c18efc89231cc88",
+      "after": "a8772ea1598b68c6e8932fda9c18efc89231cc88"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-f6b8255cb6cd.json"
+  ],
+  "note": "Both sides of the merge of the base changed these files, so their newest records disagree; this record chooses the merged copies. The manifest lists the files of both sides. The native transport takes the wallet lane key and chain identity helper from effect-history.mjs and keeps the public Agreement profile. The node wallet session takes the node observer from node-observer.mjs and keeps the keyless Agreement transport exports. The approved-record helpers re-export the authority deadline helper of node-observer.mjs rather than keep a second copy. The public API test lists both sides' names. No file other than this record changes."
+}
