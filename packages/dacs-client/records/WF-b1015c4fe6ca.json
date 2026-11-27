@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF test the import graph of the read-only Listing modules",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/read-only-listing-graph.test.mjs",
+      "before": null,
+      "after": "73e2e9d1cc6bc5b1943ff92f6107b1d7535c64be"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-b1015c4fe6ca.json",
+    "packages/dacs-client/test/read-only-listing-graph.test.mjs"
+  ]
+}
