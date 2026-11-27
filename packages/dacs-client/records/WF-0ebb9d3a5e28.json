@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF the keyless export test lists the base subpaths of the client manifest",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "a8772ea1598b68c6e8932fda9c18efc89231cc88",
+      "after": "0812d248c80eabdd6b61cf4a839d64d0b3df8634"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-0ebb9d3a5e28.json",
+    "packages/dacs-client/test/public-api.test.mjs"
+  ],
+  "note": "The keyless export test lists every subpath of the client manifest, so it now also names the endpoint and effect history subpaths the base added."
+}

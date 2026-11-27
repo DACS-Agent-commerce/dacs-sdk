@@ -360,7 +360,7 @@ test('the README documents the admission option and each construction and call r
 test("node-wallet publicly exports the keyless transport and pure Agreement profile without adding a package subpath or loading demosdk", async t => {
  const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
  assert.equal(manifest.exports['./node-wallet'],'./src/wallet/node-wallet-session.mjs');
- assert.deepEqual(Object.keys(manifest.exports),['.','./wallet/durable-journal','./node-wallet','./substrate/demos','./purchase/evidence-recorder','./purchase/wallet-bridge']);
+ assert.deepEqual(Object.keys(manifest.exports),['.','./wallet/durable-journal','./node-wallet','./substrate/demos','./purchase/evidence-recorder','./rpc-endpoint','./purchase/wallet-bridge','./wallet/effect-history']);
  const api=await import('../src/wallet/node-wallet-session.mjs');
  const published=await import('@kynesyslabs/dacs-client/node-wallet');
  assert.equal(published.createKeylessAgreementTransport,api.createKeylessAgreementTransport);
