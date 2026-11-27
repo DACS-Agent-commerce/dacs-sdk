@@ -137,8 +137,8 @@ function withPaymentEvidence(finalized, { journal, nativePaymentEvidence, endApp
  *     approval is held still runs;
  *   - `close()` closes the journal and the wallet, once; the port keeps its owner.
  * - `close()` closes a live session, then the owner, once.
- * `endpoint` is a canonical root URL over https; a plain-http root refuses transport_mismatch. Binding then refuses a node whose
- * live chain is another before any key load or signature.
+ * `endpoint` is a canonical root URL over https: the session signs and sends, and plain http carries no authentication, so a
+ * plain-http root refuses transport_mismatch. Binding then refuses a node whose live chain is another before any key load or signature.
  * Throws KitOperationGuardError, TypeError naming a malformed option (a `participantImplementations` without `entriesFor`, a
  * `sessionOf` that is not a function, among others), or the client's transport_mismatch. `finalize` rejects with
  * KitOperationGuardError, wallet_session_finalize_once, wallet_session_closed (the wallet build's refusal as `cause` when it failed),

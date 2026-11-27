@@ -36,6 +36,8 @@ const PASS_WINDOW_MS = 10_000;
 const AUTHORITY_DEADLINE_MS = 10_000;
 const JOB_ID = '01M5YKPJG0248H248H248H248H';
 const OTHER_CHAIN = 'd'.repeat(64);
+// Plain http carries no authentication, so a signing session refuses it.
+const PLAIN_ENDPOINT = 'http://rpc.example.invalid/';
 const SECOND_MNEMONIC = entropyToMnemonic(new Uint8Array(32).fill(4), wordlist);
 const BOUNDARY_CLOCK = Object.freeze({ now: () => 0, after: () => () => {} });
 // The only node reads the stage-one capability sends: the binding check's.
@@ -373,6 +375,14 @@ test('createSellerWalletSession refuses an endpoint that is not a canonical root
     { transportAuthority: 'vector authority' }, { fetchImpl: 'x' }]) {
     assert.throws(() => createSellerWalletSession({ ...valid, ...changes }), { code: 'transport_mismatch' }, JSON.stringify(changes));
   }
+  assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
+});
+
+test('a plain-http node root, even under the approved chain, is refused at construction with transport_mismatch before any node read or key load', async () => {
+  const node = replayNode();
+  let keyLoads = 0;
+  const valid = await portOptions(node, async () => { keyLoads += 1; return keyRecordBytes(); });
+  assert.throws(() => createSellerWalletSession({ ...valid, endpoint: PLAIN_ENDPOINT }), { code: 'transport_mismatch' });
   assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
 });
 

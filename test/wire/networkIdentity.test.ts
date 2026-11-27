@@ -476,7 +476,7 @@ describe("TP-1 network identity gate", () => {
 describe("a plain-http node endpoint", () => {
   const PLAIN_A = { ...RPC_A, endpoint: "http://rpc-a.identity.invalid/" };
 
-  it("is refused for any chain identity but the approved TP-1 one, before the reader is asked or anything is signed or sent", async () => {
+  it("is refused for any other chain identity, before the reader is asked or anything is signed or sent", async () => {
     const record = synthetic("plain-http");
     let reads = 0;
     const counting = (scope: Parameters<NonNullable<BindTp1Options["readAuthority"]>>[0]) => ({ local: { ...scope.local }, chainIdentity: record.chainIdentity,
@@ -494,12 +494,14 @@ describe("a plain-http node endpoint", () => {
     expect(await errorCode(() => withTestApproval([], () => bindTp1Fixture({ record: { ...record, chainIdentity: undefined }, local: PLAIN_A })))).toBe("tp1_identity_pin_missing");
   });
 
-  it("binds under the approved TP-1 record and signs on it", async () => {
+  it("is refused under the approved TP-1 record too, and an https connection under it still binds and signs", async () => {
     const record = fixtureWire.TP1_APPROVED_IDENTITY_RECORD;
-    const binding = await withTestApproval([digest(record)], () => bindTp1Fixture({ record, local: PLAIN_A }));
-    expect(binding.local).toEqual(PLAIN_A);
+    expect(await errorCode(() => withTestApproval([digest(record)], () => bindTp1Fixture({ record, local: PLAIN_A })))).toBe("tp1_local_binding_invalid");
+    const binding = await withTestApproval([digest(record)], () => bindTp1Fixture({ record, local: RPC_A }));
+    expect(binding.local).toEqual(RPC_A);
+    expect(Object.values((await attemptEveryEffect(binding, RPC_A)).codes)).toEqual(Array(5).fill("ok"));
     const effects = await attemptEveryEffect(binding, PLAIN_A);
-    expect(Object.values(effects.codes)).toEqual(Array(5).fill("ok"));
-    expect(await errorCode(() => assertTp1Binding(binding, { ...PLAIN_A, endpoint: "http://rpc-a.identity.invalid/rpc" }))).toBe("tp1_local_binding_invalid");
+    expect(Object.values(effects.codes)).toEqual(Array(5).fill("tp1_local_binding_invalid"));
+    expect([effects.signatures, effects.sends]).toEqual([0, 0]);
   });
 });

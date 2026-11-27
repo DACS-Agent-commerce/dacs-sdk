@@ -656,8 +656,7 @@ test('P10-T09 a plain-HTTP endpoint or a revision-1 chain refuses before the loc
     return { ...walletSession, authority: { ...walletSession.authority, context: () => ({ ...walletSession.authority.context(), endpoint }) } };
   };
   const cases = [
-    // The host binds the approved record, under which a plain-HTTP root is a node endpoint; the reader must still authenticate that connection.
-    ['a plain-HTTP root the connection reader does not authenticate', plainHttp('http://rpc.example.invalid/'), 'tp1_connection_unverified'],
+    ['a plain-HTTP root', plainHttp('http://rpc.example.invalid/'), 'tp1_local_binding_invalid'],
     ['a plain-HTTP endpoint with a path', plainHttp('http://rpc.example.invalid/rpc'), 'tp1_local_binding_invalid'],
     ['a reader naming another chain', () => withConnection(async (scope, real) => ({ ...await real(scope), chainIdentity: derive('revision-1-chain') })), 'tp1_connection_unverified'],
   ];
