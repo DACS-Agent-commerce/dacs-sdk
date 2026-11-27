@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF import the narrow core entry in the Directory reader",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/directory.mjs",
+      "before": "f01b4ca1c4a59562ef0a9865c8c689b562feac86",
+      "after": "93d6dd312f43ed061edd4a063c058ed82f773fb0"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-67d3be7f7843.json",
+    "packages/dacs-client/src/dacs/directory.mjs"
+  ]
+}

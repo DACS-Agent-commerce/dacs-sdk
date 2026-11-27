@@ -12,7 +12,8 @@
 // `transactionReadiness` is `{disposition: "unassessed", reason}` and
 // `catalogObservedAt` is an integer. A row that does not match is refused,
 // never repaired, and no legacy field is read in its place.
-import { encodeAddressSegment, isRevocationBinding } from '@kynesyslabs/dacs';
+import { encodeAddressSegment } from '@kynesyslabs/dacs/canonical';
+import { isRevocationBinding } from '@kynesyslabs/dacs/listing/read-only';
 import { fetchBoundedJson, OutboundError } from '../util/http.mjs';
 import { SIMULATION_HEADER, isRecord } from './chain.mjs';
 
