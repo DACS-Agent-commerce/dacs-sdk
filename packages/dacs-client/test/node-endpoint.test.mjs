@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
-import { api, scriptedNode } from './helpers/tp1-node-fixture.mjs';
+import { api, finalization, mnemonicBytes, scriptedNode, world as admittedWorld } from './helpers/tp1-node-fixture.mjs';
 import { finalizedWorld } from './helpers/finalized-node-world.mjs';
 import { addressOfFixture, keystoreDir, PASSPHRASE } from './helpers/keystore-world.mjs';
 const { createDemosNetworkBinder } = await import('../src/dacs/network-binding.mjs');
@@ -63,11 +63,11 @@ test('the network binder pins a plain-http endpoint only under the approved iden
   }
 });
 
-test('the staged composition over a plain-http root refuses the binding before any key is loaded, signature made or effect sent, even when the node reports the approved chain', async t => {
+test('the staged composition over a plain-http root refuses before any key is loaded, signature made or effect sent, even when the node reports the approved chain', async t => {
   const { Demos } = await loadNodeDemos();
   const connects = t.mock.method(Demos.prototype, 'connectWallet');
   const world = await composedOver(t, PLAIN);
-  await assert.rejects(world.build(), { code: 'tp1_local_binding_invalid' });
+  await assert.rejects(world.build(), { code: 'transport_mismatch' });
   assert.equal(world.session, undefined);
   assert.equal(connects.mock.callCount(), 0, 'no wallet was connected, so nothing could be signed');
   assert.deepEqual([world.node.broadcasts.length, world.effects().length], [0, 0]);
@@ -80,8 +80,22 @@ test('the keystore composition over a plain-http root refuses before any signatu
   const world = await finalizedWorld(t, { node,
     input: { owner: httpOwner, keystorePath: keystoreDir(t).file(), passphrase: PASSPHRASE, expectedAddress, stopped: () => false },
     compose: options => api.openKeystoreWalletSession(Object.fromEntries(Object.entries(options).filter(([name]) => name !== 'key'))) });
-  await assert.rejects(world.build(), { code: 'tp1_local_binding_invalid' });
+  await assert.rejects(world.build(), { code: 'transport_mismatch' });
   assert.deepEqual([world.node.broadcasts.length, world.effects().length], [0, 0]);
+});
+
+test('a session built from an admission over a plain-http endpoint refuses before any wallet is connected, and zero-fills the key', async t => {
+  const w = await admittedWorld(t);
+  const { Demos } = await loadNodeDemos();
+  const connects = t.mock.method(Demos.prototype, 'connectWallet');
+  const { binding } = w.admission, key = mnemonicBytes();
+  const plain = { ...w.admission, binding: { ...binding, local: { ...binding.local, endpoint: PLAIN } } };
+  const calls = w.node.calls.length;
+  await assert.rejects(api.createNodeWalletSession({ admission: plain, owner: w.owner, journal: w.journal(), key, approve: async () => true, clock: w.clock, ...finalization }),
+    { code: 'transport_mismatch' });
+  assert.ok(key.every(byte => byte === 0));
+  assert.equal(connects.mock.callCount(), 0, 'no wallet was connected, so nothing could be signed');
+  assert.equal(w.node.calls.length, calls);
 });
 
 test('the same composition over an https root binds and sends once', async t => {
