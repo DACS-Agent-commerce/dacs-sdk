@@ -15,7 +15,7 @@ export const AUTHORITY_READ_DEADLINE_MS = 10_000;
 /** A positive OS amount: decimal digits with no sign, point or leading zero. Used for the host's per-write fee ceiling. */
 export const POSITIVE_OS_AMOUNT = /^[1-9][0-9]*$/;
 
-/** The storage fee held for a buyer Agreement CREATE, in OS: the native wallet bounds a CREATE at 24 KiB, charged 1 DEM per 10 KiB, so three chunks. */
+/** The storage fee held for a buyer Agreement CREATE, in OS: the native wallet bounds a CREATE at 24 KiB, charged 1 DEM per 10 KiB, so three chunks. The client root re-exports it. */
 export const CREATE_STORAGE_RESERVE_OS = '3000000000';
 
 /**
