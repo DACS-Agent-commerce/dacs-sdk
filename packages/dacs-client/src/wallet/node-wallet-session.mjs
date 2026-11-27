@@ -165,7 +165,8 @@ function readCanonicalRoot(endpoint, chainIdentity) {
  * and is granted at once; its `release` frees nothing. `fetchImpl` reaches only the endpoint origin and refuses redirects.
  * `chainIdentity` is the chain identity the caller pins for this connection, if any. Throws OperationError(transport_mismatch) for an endpoint
  * `canonicalNodeEndpoint` refuses under it (a canonical root over https, or over plain http only when it is the approved TP-1 chain identity)
- * or an authority that is not a plain token. After `close()`,
+ * or an authority that is not a plain token. An owner over plain http serves reads only (the observer and the authority capability):
+ * the wire's binding refuses a plain-http connection, so no session over it can sign or send. After `close()`,
  * `currentLocal`, `getContext`, `fetchImpl` and `acquireConnectionFence` throw transport_closed and queued waiters are rejected.
  */
 export function createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl = globalThis.fetch, chainIdentity } = {}) {
@@ -752,18 +753,18 @@ async function buildNodeComposition(options, seller, requirePass = false) {
         demoArtifactPublication: publications?.demoArtifactPublication,
         ...(approveConfirmedWrite === null ? {} : { approveConfirmedWrite: routeConfirmedWrite(approveConfirmedWrite, () => sellerAddress) }) })
       : createDevnetAgreementTransport(transportOptions);
-    const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN, nodeEndpoint: canonicalNodeEndpoint });
+    const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN });
     const anchorJournal = Object.fromEntries(['get', 'put', 'withWalletLock'].map(name => [name, (...args) => (selectedJournal.getStore() ?? journal)[name](...args)]));
     // The keystore's paid writes are checked against the host's one-use approval at the wallet's approval step and before the inner signature.
     const paidChecks = requirePass ? { approvedContent: (content, debit) => paidApproval.signedContentCheck(content, debit), paidApprovalCheck: callback => paidApproval.approvalCheck(callback) } : {};
     const NodeDemos = nodeDemosClass(Demos, { transport, rpcUrl: transactionTransport.rpcUrl, stamps, attempts, gate, boundary: effectBoundary, pinVersion: expected.pinVersion, approvedContent: paidChecks.approvedContent });
     session = createSdkWalletSession({ DemosCtor: NodeDemos, approve, paidApprovalCheck: paidChecks.paidApprovalCheck, transactionTransport,
-      validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, nodeEndpoint: canonicalNodeEndpoint, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity), recordCause });
+      validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity), recordCause });
     const mnemonic = decodeMnemonic(keyCopy);
     await session.importMnemonic(mnemonic);
     // Routing identity outlives signing custody, which passive wallet.lock() clears.
     if (seller) sellerAddress = session.getPublicAccount().address;
-    paidApproval = requirePass ? createPaidApproval({ session, transport, transactionTransport, relayOrigin: NODE_WALLET_RELAY_ORIGIN, nodeEndpoint: canonicalNodeEndpoint, feeCeilingOs, projectPaidWrite, EmbeddedWalletError }) : null;
+    paidApproval = requirePass ? createPaidApproval({ session, transport, transactionTransport, relayOrigin: NODE_WALLET_RELAY_ORIGIN, feeCeilingOs, projectPaidWrite, EmbeddedWalletError }) : null;
     const walletFactory = ({ anchorJournal: selected = journal } = {}) => admitPublicFactory(() => {
       const send = request => selectedJournal.run(selected, () => session.request(request));
       return { request: send, ...paidApproval?.viewFor(selected, send), ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])) };
