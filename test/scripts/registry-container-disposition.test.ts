@@ -3,7 +3,7 @@ import { projectTemplates } from "../../packages/create-dacs-agent/src/templates
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -3537,15 +3537,28 @@ describe("acceptance failure class", () => {
     expect(result.stderr).toContain("usage: --failure-summary <stage-directory> <stage> <exit-code 1-255>");
     expect(readFileSync(join(stage, "acceptance-summary.json"), "utf8")).toBe("earlier");
   });
-  it("replaces an earlier summary with a failed classification for undecodable evidence", () => {
-    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-undecodable-"));
-    scratch.push(stage);
+  it("names undecodable evidence by its final filename after the failure-summary stage moves", () => {
+    const root = mkdtempSync(join(tmpdir(), "dacs-registry-undecodable-"));
+    scratch.push(root);
+    const stage = join(root, "stage"), evidence = join(root, "registry-container-artifacts");
+    mkdirSync(stage);
     writeFileSync(join(stage, "acceptance-summary.json"), JSON.stringify({ complete: true }));
     writeFileSync(join(stage, "registry.log"), Buffer.from([0x63, 0x75, 0x72, 0x6c, 0xff]));
     expect(failureSummaryCli(stage, "registry-auth", "7").status).toBe(0);
-    expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({ complete: false,
-      failureClass: "functional", exitCode: 7,
-      failureEvidence: [`evidence classification failed: evidence is not valid UTF-8: ${join(stage, "registry.log")}`] });
+    renameSync(stage, evidence);
+    const summary = readFileSync(join(evidence, "acceptance-summary.json"), "utf8");
+    expect(JSON.parse(summary)).toMatchObject({ complete: false, failureClass: "functional", exitCode: 7,
+      failureEvidence: ["evidence classification failed: evidence is not valid UTF-8: registry.log"] });
+    expect(summary).not.toContain(stage);
+    expect(existsSync(join(evidence, "registry.log"))).toBe(true);
+  });
+  it("names the log whose line bound a failure summary exceeded in its CLI result", () => {
+    const stage = mkdtempSync(join(tmpdir(), "dacs-registry-line-limit-"));
+    scratch.push(stage);
+    writeFileSync(join(stage, "registry.log"), "x".repeat(4097));
+    expect(failureSummaryCli(stage, "registry-auth", "7").status).toBe(0);
+    expect(JSON.parse(readFileSync(join(stage, "acceptance-summary.json"), "utf8"))).toMatchObject({ failureClass: "functional",
+      failureEvidence: ["evidence classification failed: evidence line limit exceeded: registry.log"] });
   });
 
   // The audit stage is the --audit-policy command alone. Run it on `audit` and

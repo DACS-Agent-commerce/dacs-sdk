@@ -13,20 +13,24 @@ export function boundedEvidenceText(text) {
   return text;
 }
 
-// Names the file in a read error and keeps the original error as its cause.
-function namingFile(path, error) {
-  return new Error(`${error.message}: ${path}`, { cause: error });
+/** Names the file in a read error and keeps the original error as its cause. */
+export function namingFile(path, error, message = error.message) {
+  return new Error(`${message}: ${path}`, { cause: error });
 }
 
 /** Reads a regular file of at most the evidence budget; `noFollow` refuses a link at its last
  * component (ELOOP). Returns its bytes and permission bits, or undefined only for a missing file.
  * A file refused after opening (not regular, over the budget) throws an error that names `path` and
- * carries the original error as its cause; an open error other than ENOENT is thrown as the system
- * reported it. */
-export function readBoundedFile(path, { noFollow = false } = {}) {
+ * carries the original error as its cause; a named open error reports the display name without
+ * leaking the source path. An unnamed open error is thrown as the system reported it. */
+export function readBoundedFile(path, { noFollow = false, name = path } = {}) {
   let descriptor;
   try { descriptor = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (noFollow ? constants.O_NOFOLLOW : 0)); }
-  catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
+  catch (error) {
+    if (error.code === "ENOENT") return undefined;
+    if (name !== path) throw namingFile(name, error, "evidence could not be opened");
+    throw error;
+  }
   try {
     const stat = fstatSync(descriptor);
     if (!stat.isFile()) throw new Error("evidence must be a regular file");
@@ -35,23 +39,24 @@ export function readBoundedFile(path, { noFollow = false } = {}) {
     while (length < bytes.length && (count = readSync(descriptor, bytes, length, bytes.length - length, null)) > 0) length += count;
     if (length > EVIDENCE_MAX_BYTES) throw new Error("evidence byte limit exceeded");
     return { bytes: bytes.subarray(0, length), mode: stat.mode & 0o777 };
-  } catch (error) { throw namingFile(path, error); }
+  } catch (error) { throw namingFile(name, error); }
   finally { closeSync(descriptor); }
 }
 
 // A byte order mark stays in the text, as Buffer decoding kept it.
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
-// Decodes the bytes of the file at `path`; throws for invalid UTF-8 rather than substituting characters.
-function decodeEvidence(bytes, path) {
-  try { return strictUtf8.decode(bytes); } catch (error) { throw new Error(`evidence is not valid UTF-8: ${path}`, { cause: error }); }
+// Decodes the bytes of the file named `name`; throws for invalid UTF-8 rather than substituting characters.
+function decodeEvidence(bytes, name) {
+  try { return strictUtf8.decode(bytes); } catch (error) { throw namingFile(name, error, "evidence is not valid UTF-8"); }
 }
 
 /** Reads at most the evidence budget before decoding; returns undefined only for a missing file.
- * Throws for a file that is not regular, over the budget or not valid UTF-8; the error names `path`. */
-export function readEvidence(path) {
-  const file = readBoundedFile(path);
-  return file === undefined ? undefined : decodeEvidence(file.bytes, path);
+ * Throws for a file that is not regular, over the budget or not valid UTF-8; the error names `name`
+ * (default `path`). */
+export function readEvidence(path, { name = path } = {}) {
+  const file = readBoundedFile(path, { name });
+  return file === undefined ? undefined : decodeEvidence(file.bytes, name);
 }
 
 /** Reads evidence a step cannot go without, as readEvidence does; a missing file throws an

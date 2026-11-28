@@ -9,7 +9,7 @@ import { collectAuditVersions } from "./check-npm-advisories.mjs";
 import { cachedArchive, packedFileSets } from "./installation-closure.mjs";
 import { referenceInstallation, installationDifferences, npmInstallContract } from "./reference-installation.mjs";
 import { RUNTIME_IMAGE_INVENTORY_SCHEMA } from "./runtime-image-inventory.mjs";
-import { atomicWriteJson, boundedEvidenceText, evidenceLines, readEvidence, readRequiredEvidence } from "./acceptance-evidence-io.mjs";
+import { atomicWriteJson, boundedEvidenceText, evidenceLines, namingFile, readEvidence, readRequiredEvidence } from "./acceptance-evidence-io.mjs";
 // Pure classification of observed advisory IDs against the curated baseline.
 export const ACCEPTANCE_SUMMARY_SCHEMA = "dacs-registry-container-acceptance/v1";
 export const RUNTIME_IMAGE_POLICY_SCHEMA = "dacs-runtime-image-policy/v1";
@@ -650,10 +650,13 @@ function causeFailure(name, entries, programs, exitCode) {
   return retryable === undefined ? failure("functional") : failure("network", [retryable]);
 }
 
-const logLines = text => Array.from(evidenceLines(text), line => line.trim());
+// A line bound error names the log it came from and keeps the original as its cause.
+const logLines = (name, text) => {
+  try { return Array.from(evidenceLines(text), line => line.trim()); } catch (error) { throw namingFile(name, error); }
+};
 // A stage whose cause is in its own log, for the programs it runs.
 const logFailure = (name, programs) => ({ read, exitCode }) =>
-  causeFailure(name, logLines(read(name)).map(line => ({ line, text: line })), programs, exitCode);
+  causeFailure(name, logLines(name, read(name)).map(line => ({ line, text: line })), programs, exitCode);
 
 // BuildKit's plain progress: step headers, timed output and step errors.
 const BUILDKIT_HEADER = /^#(\d+) (\[[^\]]+\] .+)$/;
@@ -669,7 +672,7 @@ const SCRIPT_FREE_INSTALL_STEP =
 // The one step with an error line decides; only its own lines count. Any other
 // step, several failed steps, or a log with none (the legacy builder) is functional.
 function imageBuildFailure({ read, exitCode }) {
-  const lines = logLines(read("docker-build.log"));
+  const lines = logLines("docker-build.log", read("docker-build.log"));
   const errors = lines.filter(line => BUILDKIT_ERROR.test(line));
   const failedSteps = new Set(errors.map(line => BUILDKIT_ERROR.exec(line)[1]));
   if (failedSteps.size !== 1) return failure("functional");
@@ -1241,7 +1244,7 @@ export function extractPolicyFindings(readInput) {
     const text = source.text(name);
     if (text === undefined) return undefined;
     try { return [...evidenceLines(text)].join("\n"); }
-    catch (error) { throw new Error(`${error.message}: ${name}`, { cause: error }); }
+    catch (error) { throw namingFile(name, error); }
   };
   const lock = source.json("generated-package-lock.json", generatedLock);
   const packages = lock?.packages ?? {};
@@ -1538,7 +1541,8 @@ if (entryPath !== null && entryPath === realpathSync(fileURLToPath(import.meta.u
       throw new Error("usage: --failure-summary <stage-directory> <stage> <exit-code 1-255>");
     }
     rmSync(join(stageDirectory, "acceptance-summary.json"), { force: true });
-    const read = name => readEvidence(join(stageDirectory, name));
+    // Each file is named as it is inside the evidence folder: the shell moves this stage directory there next.
+    const read = name => readEvidence(join(stageDirectory, name), { name });
     const summary = failureSummary({ stage, exitCode: Number(exitCode), read });
     atomicWriteJson(join(stageDirectory, "acceptance-summary.json"), summary);
     const evidence = summary.failureEvidence.length ? `; ${summary.failureEvidence[0]}` : "";
