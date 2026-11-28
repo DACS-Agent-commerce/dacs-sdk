@@ -1201,7 +1201,11 @@ test("broadcast checks the node's chain identity before confirmTx: a node now se
   const w = await replayWorld(t), signed = await signIn(w, evidenceInput(w));
   w.approval.confirmResult = true;
   replyFor(w, 'getBlockByNumber', row => (row.body.params[0].data.blockNumber === 0 ? answerWith({ number: 0, status: 'confirmed', hash: 'd'.repeat(64), content: {} }) : undefined));
-  await assert.rejects(broadcastIn(w, signed), error => !codes(error).includes('outcome_unknown'));
+  await assert.rejects(broadcastIn(w, signed), error => {
+    assert.equal(error.code, 'identity_mismatch');
+    assert.equal(error.message, 'The observed chain differs from the independently reviewed pin');
+    return true;
+  });
   assert.equal(w.node.confirms.length, 0, 'no confirmTx'); assert.equal(w.approval.confirmations.length, 0, 'the approval saw no confirmation');
   assert.equal(w.node.broadcasts.length, 0, 'no broadcastTx');
   assert.equal((await recordOf(w)).active.signed.txHash, signed.txHash, 'the bytes stay held');
