@@ -107,7 +107,10 @@ function publish(directory, path, text, replace) {
 function takeOver(directory, path, text) {
   const section = new Database(leaseFile(directory, TAKEOVER));
   try {
-    try { section.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY; BEGIN EXCLUSIVE'); } catch (error) { throw refuse('held', error); }
+    try { section.exec('PRAGMA busy_timeout=0; PRAGMA journal_mode=MEMORY; BEGIN EXCLUSIVE'); } catch (error) {
+      const held = error?.code === 'SQLITE_BUSY' || error?.code === 'SQLITE_LOCKED';
+      throw refuse(held ? 'held' : 'doubt', error);
+    }
     const found = readLockOrRefuse(path);
     if (found === null) return false;
     const state = lockState(directory, found);
