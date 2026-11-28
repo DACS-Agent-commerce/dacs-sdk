@@ -38,6 +38,25 @@ test('the packed client, dacs-node and core installed outside the checkout with 
   for (const name of ['createNodeSellerComposition', 'createHeldTransportFacade', 'createNodeObserver', 'isDevnetDemoTransport']) assert.ok(child.result.exports.includes(name));
 });
 
+test('the packed client resolves the delivery transport entry with only createDevnetDeliveryTransport and refuses the private source paths', t => {
+  const child = runFreshChild(t, `
+    import assert from 'node:assert/strict';
+    import {writeFileSync} from 'node:fs';
+    const entry = await import('@kynesyslabs/dacs-client/wallet/devnet-delivery-transport');
+    assert.deepEqual(Object.keys(entry), ['createDevnetDeliveryTransport']);
+    const refused = [];
+    for (const path of ['src/wallet/devnet-native-transport.mjs', 'src/wallet/devnet-delivery-transport.mjs', 'wallet/devnet-native-transport']) {
+      await assert.rejects(import('@kynesyslabs/dacs-client/' + path), {code: 'ERR_PACKAGE_PATH_NOT_EXPORTED'}, path);
+      refused.push(path);
+    }
+    writeFileSync('result.json', JSON.stringify({refused: refused.length}));
+  `, [], { directory: installed.app });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(child.stdout, '');
+  assert.equal(childOwnStderr(child.stderr), '');
+  assert.deepEqual(child.result, { refused: 3 });
+});
+
 test('in a fresh child in the consumer directory, the packed node-wallet entry constructs a wallet from a generated valid mnemonic, completes an offline native-send control and writes nothing to stdout or stderr', t => {
   const { app } = installed;
   for (const name of ['purchase-admission-hook.mjs', 'purchase-admission-double.mjs']) cpSync(new URL('./helpers/' + name, import.meta.url), join(app, name));

@@ -150,7 +150,8 @@ test('candidate manifest uses release metadata and the exact public boundary', a
   assert.deepEqual(client.peerDependencies, { '@kynesyslabs/dacs': core.version });
   assert.deepEqual(client.exports, { '.': './src/index.mjs', './wallet/durable-journal': './src/wallet/durable-journal.mjs', './node-wallet': './src/wallet/node-wallet-session.mjs',
     './substrate/demos': './src/substrate/demos.mjs', './purchase/evidence-recorder': './src/passive-evidence-recorder.mjs', './rpc-endpoint': './src/rpc-endpoint.mjs',
-    './purchase/wallet-bridge': './src/purchase/wallet-bridge.mjs', './wallet/effect-history': './src/wallet/effect-history-public.mjs' });
+    './purchase/wallet-bridge': './src/purchase/wallet-bridge.mjs', './wallet/effect-history': './src/wallet/effect-history-public.mjs',
+    './wallet/devnet-delivery-transport': './src/wallet/devnet-delivery-transport.mjs' });
   assert.equal(client.publishConfig, undefined, 'release-set admission is pending');
   assert.deepEqual(client.repository, { type: 'git', url: core.repository.url, directory: 'packages/dacs-client' });
   assert.equal(client.bugs.url, core.bugs.url);
@@ -164,7 +165,7 @@ test('the client manifest declares exactly demosdk ^4.0.16 and dacs-node and @sc
   assert.equal(client.dependencies['@kynesyslabs/demosdk'], '^4.0.16');
   assert.equal(client.dependencies['@kynesyslabs/dacs-node'], core.version);
   assert.match(client.dependencies['@scure/bip39'], /^\d+\.\d+\.\d+$/);
-  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder', './rpc-endpoint', './purchase/wallet-bridge', './wallet/effect-history'], 'no export is added for the loading modules');
+  assert.deepEqual(Object.keys(client.exports), ['.', './wallet/durable-journal', './node-wallet', './substrate/demos', './purchase/evidence-recorder', './rpc-endpoint', './purchase/wallet-bridge', './wallet/effect-history', './wallet/devnet-delivery-transport'], 'no export is added for the loading modules');
   const script = `import * as module from 'node:module';
     const refuse = (specifier, context, next) => {
       if (/demosdk|demos-loader|demos-quiet-hooks|node-demos-loading/.test(specifier)) throw new Error('unexpected import of ' + specifier);
@@ -361,7 +362,7 @@ test('the README documents the admission option and each construction and call r
 test("node-wallet publicly exports the keyless transport and pure Agreement profile without adding a package subpath or loading demosdk", async t => {
  const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
  assert.equal(manifest.exports['./node-wallet'],'./src/wallet/node-wallet-session.mjs');
- assert.deepEqual(Object.keys(manifest.exports),['.','./wallet/durable-journal','./node-wallet','./substrate/demos','./purchase/evidence-recorder','./rpc-endpoint','./purchase/wallet-bridge','./wallet/effect-history']);
+ assert.deepEqual(Object.keys(manifest.exports),['.','./wallet/durable-journal','./node-wallet','./substrate/demos','./purchase/evidence-recorder','./rpc-endpoint','./purchase/wallet-bridge','./wallet/effect-history','./wallet/devnet-delivery-transport']);
  const api=await import('../src/wallet/node-wallet-session.mjs');
  const published=await import('@kynesyslabs/dacs-client/node-wallet');
  assert.equal(published.createKeylessAgreementTransport,api.createKeylessAgreementTransport);

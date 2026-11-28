@@ -1414,6 +1414,24 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `SELLER_TRANSPORT_AUTHORITY`; http only for the approved TP-1 testnet), and
   `readSellerBalance({ owner, address, signal })` reads an exact OS balance in
   65,536 bytes and 10,000 ms. Neither opens a wallet, key or journal.
+- `createPassiveListingReader({ endpoint, fetchImpl })`
+  (`src/devnet-demo/passive-listing-reader.mjs`) opens one read-only connection
+  (a canonical root: https, or plain http only on the approved TP-1 testnet
+  identity) and returns `{ readPublishedListing, close() }`. `readPublishedListing({ logicalAddress,
+  writer, signedProjection, nativeAddress, signal })` checks the node's chain
+  against the approved identity record, then reads the writer's Listing CREATE
+  and authenticates it against the included transaction and the signed
+  projection. It resolves `{ status: 'present', listing, receipt, demosEvidence,
+  evidenceMode, finality: 'not-established' }`. The receipt keeps the Demos
+  labels a live receipt has, but this read establishes no finality. It refuses
+  `writer-required`, `invalid` or `indeterminate` (cause kept, also for a node
+  on another chain or an answer that carries the simulation marker), the
+  signal's abort reason, and `transport_closed` after `close()`. Each reply is
+  limited to 1 MiB, each name-index page to 50 rows and each read to 10 s. It
+  never writes, signs or recovers, and keeps nothing after it closes. `fetchImpl`
+  is required, with no default (a missing or non-function value refuses
+  `transport_mismatch` before any read); the simulation marker is refused on
+  every reply, including the identity reads.
 - Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).

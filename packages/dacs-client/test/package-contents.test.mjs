@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { installPackedPair } from './helpers/packed-install.mjs';
 import { LOADING_MODULES, entryPointClosure, packageDir } from './helpers/entry-point-closure.mjs';
 
-test('npm pack ships the seven entry points, their reviewed import closure and the quiet loading hook', t => {
+test('npm pack ships every package entry point, their reviewed import closure and the quiet loading hook', t => {
   const directory = mkdtempSync(join(tmpdir(), 'dacs-client-pack-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const path of ['src', 'package.json', 'README.md', 'LICENSE']) {

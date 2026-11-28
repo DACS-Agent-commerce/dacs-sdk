@@ -70,6 +70,7 @@ import { createNodeChainReaders, createReadOnlyDemosSr2Journal } from '../../src
 import { composeSellerApproval, createExactOperatorApproval, createSellerContextAdmission } from '../../src/devnet-demo/operator-approval.mjs';
 import { lateWriteWatchOpen } from '../../src/devnet-demo/late-write-watch.mjs';
 import { createInMemoryPartyVetStore, openPartyVetStore } from '../../src/devnet-demo/party-vet-store.mjs';
+import { createPassiveListingReader } from '../../src/devnet-demo/passive-listing-reader.mjs';
 import { openVerifiedEnrollmentReader } from '../../src/devnet-demo/seller-enrollment-reader.mjs';
 import { sellerRecordsPurchaseResolver } from '../../src/devnet-demo/seller-purchase-source.mjs';
 import { testOnlyNodeKey, trustedNodeFor } from './enrollment-signing.mjs';
@@ -105,6 +106,7 @@ export function capabilityBuilders(t) {
     ['src/devnet-demo/deployment-qualification.mjs#createVerifiedDeploymentEvidenceReader', () => createVerifiedDeploymentEvidenceReader({ recordBytes: new Uint8Array(0),
       evidenceMaxAgeMs: 2_592_000_000, clock: { now: never('clock.now') } })],
     ['src/devnet-demo/doctor-node.mjs#openDoctorNode', (w) => onClose(openDoctorNode({ rpcUrl: 'https://rpc.example.invalid/', sellerClaim: seller.claim, fetchImpl: w.nodeWallet.node.fetch }))],
+    ['src/devnet-demo/passive-listing-reader.mjs#createPassiveListingReader', () => onClose(createPassiveListingReader({ endpoint: 'https://rpc.example.invalid/', fetchImpl: never('a fetch') }))],
     ['src/devnet-demo/listing.mjs#createDevnetDemoListingPublisher', () => createDevnetDemoListingPublisher({ anchor: { publish: async () => {}, read: async () => {}, verifyReceipt: async () => {} },
       sign: signer.sign, scanOwnListings: async () => ({ status: 'ok', anchors: [] }), loadRailResolution: async () => null, runCreate: testRunCreate().runCreate })],
     ['src/devnet-demo/create-pass.mjs#createSellerCreatePass', () => testRunCreate()],

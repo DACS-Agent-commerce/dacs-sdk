@@ -11,7 +11,7 @@ export const LOADING_MODULES = ['src/wallet/demos-quiet-hooks.mjs'];
 /** Modules the package ships that no entry point imports. */
 const PACKED_UNREACHED_MODULES = ['src/wallet/effect-fence.mjs', 'src/wallet/effect-boundary.mjs', 'src/dacs/seller-https-connector.mjs'];
 
-/** Package-relative paths of every module reachable from the seven entry points, plus the packed unreached modules, sorted. Throws if an import leaves `src/`. */
+/** Package-relative paths of every module reachable from the package's entry points, plus the packed unreached modules, sorted. Throws if an import leaves `src/`. */
 export function entryPointClosure() {
   const files = new Set();
   function visit(path) {
@@ -31,6 +31,7 @@ export function entryPointClosure() {
   visit('src/rpc-endpoint.mjs');
   visit('src/purchase/wallet-bridge.mjs');
   visit('src/wallet/effect-history-public.mjs');
+  visit('src/wallet/devnet-delivery-transport.mjs');
   for (const path of PACKED_UNREACHED_MODULES) files.add(path);
   return [...files].sort();
 }
