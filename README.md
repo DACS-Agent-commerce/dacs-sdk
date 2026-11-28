@@ -639,7 +639,11 @@ missing or conflicting. The bridge does not rely on the reconciler alone: it
 returns a retained success only when the journal entry it reads through
 `readPreparedTransfers` binds this job, payer, payee and amount, and its own
 rail's read of the node finds that transaction `confirmed` at the reconciled
-block. Without `readPreparedTransfers` it withholds every retained success. A
+block with balance edits that show the payer's debit. The same check applies to
+a repeat of a success the bridge remembers and to a durable success it
+re-authenticates after a restart. Without `readPreparedTransfers` it withholds
+every such success. A recovery request without history that the store settles
+through its own `recover` does not get this check. A
 history that records a success while reconciliation reports a permanent failure
 leaves the payment unresolved (an error, not a failure result), so it is never
 paid again. Retained recovery also requires `readOutcome(key, binding)`

@@ -936,7 +936,8 @@ export interface PayDemRail {
    * Only rails returned by createPayDemRail are accepted by payDemSettle.
    * Settle one payment. Success requires reading the transaction record and
    * verifying literal `confirmed` status, hash, nonce, inclusion block, payer,
-   * payee and amount, then returning `execution: "executed"`. Status-index
+   * payee and amount, and the payer's debit in its balance edits, then
+   * returning `execution: "executed"`. Status-index
    * inclusion alone must return a not-ok outcome retaining the signed hash.
    */
   settle(
@@ -2729,6 +2730,9 @@ export function requireUnjournaledOptOut(allowUnjournaled: boolean | undefined):
  * and the rail's own read of the node's transaction record agree with the
  * reconciled success. When history records a success and reconciliation
  * reports a permanent failure, it throws and the payment stays unresolved.
+ * A repeat of a success this bridge returned before, and a durable success it
+ * re-authenticates after a restart, get the same two reads before they are
+ * returned; without `opts.readPreparedTransfers` they are withheld.
  *
  * The rail must be built with `journalPreparedTransfer`, so a crash after the
  * broadcast leaves the signed hash to recover from. A rail without one is
