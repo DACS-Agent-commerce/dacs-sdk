@@ -688,9 +688,11 @@ describe("payDemSettle (settlement bridge — §9.5.9 DEM→OS conversion and pa
     expect(() => {
       (first.finality as { model: string }).model = "mutated";
     }).toThrow();
-    const second = await settle(req());
+    // A bridge without a prepared-transfer reader cannot check the remembered
+    // success again, so the repeat is withheld rather than paid or repeated.
+    await expect(settle(req())).rejects.toThrow(
+      "pay-dem retained success cannot be confirmed without a prepared-transfer reader");
     expect(transfers).toBe(1);
-    expect(second).toEqual(first);
     expect(first).not.toHaveProperty("execution");
   });
 
@@ -743,7 +745,7 @@ describe("payDemSettle (settlement bridge — §9.5.9 DEM→OS conversion and pa
     expect(transfers).toBe(1);
   });
 
-  test("an injected durable store dedupes across bridge instances after restart", async () => {
+  test("an injected durable store dedupes across bridge instances after restart and withholds a success it cannot confirm", async () => {
     const client = fakeClient();
     let transfers = 0;
     const rail: PayDemRail = {
@@ -767,12 +769,11 @@ describe("payDemSettle (settlement bridge — §9.5.9 DEM→OS conversion and pa
       amountOs: context.amountOs,
       execution: "executed" as const,
     }));
-    const resumed = await payDemSettle(rail, { network: "demos" }, {
+    await expect(payDemSettle(rail, { network: "demos" }, {
       store,
       reconcile,
-    })(req());
+    })(req())).rejects.toThrow("pay-dem retained success cannot be confirmed without a prepared-transfer reader");
     expect(transfers).toBe(1);
-    expect(resumed.txHash).toBe(TX_HASH);
     expect(reconcile).toHaveBeenCalledTimes(1);
   });
 

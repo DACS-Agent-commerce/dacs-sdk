@@ -95,8 +95,12 @@ the execution guide; it must omit successful execution and finality.
 these definitive outcomes (see
 [the pay-dem execution gate](./pay-dem-execution.md)). After restart, even a
 cached success is reconciled before reuse. A success for a hash from recovery
-history also needs the journal entry, read through `readPreparedTransfers`, and
-the bridge's own node read to agree. An authoritative `null` proves only
+history, a repeat of a success the bridge remembers, and a durable success it
+re-authenticates after a restart each need the journal entry, read through
+`readPreparedTransfers`, and the bridge's own node read, showing the payer's
+debit, to agree. A call that finds an unfinished payment whose lease has
+expired, including a recovery request without history, is settled by the
+store's own reconcile and does not get this check. An authoritative `null` proves only
 that no transfer has landed yet; it cannot revoke a possibly-live old process
 or signed transaction and does not authorize a new native transfer.
 Non-observation, absence without an independent replay fence, or an ambiguous

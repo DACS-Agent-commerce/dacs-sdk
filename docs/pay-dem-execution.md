@@ -10,19 +10,20 @@ deadline). It returns `ok: true` only when the record:
 
 - has status `confirmed`;
 - is at the observed inclusion block;
-- binds the signed hash and nonce; and
-- binds the prepared payer, payee and amount.
+- binds the signed hash and nonce;
+- binds the prepared payer, payee and amount; and
+- has balance edits that show the payer's debit.
 
 A `confirmed` record says only that the node applied the transaction's own
 `content.gcr_edits`. The node applies a native transaction whose `gcr_edits` are
 absent or empty as a successful no-op and still records it `confirmed`, so a
 matching status and send body do not by themselves show that value moved. The
-rail does not parse the record's `gcr_edits`. It relies on the transaction it
-signed: demosdk's `sign` derives the edits (payer debit, payee credit, fee and
-nonce) from the send body and hashes them into the signed hash, so a `confirmed`
-record for that hash is the node's statement that it applied those edits. A
-client that does not sign this way must check the edits itself; see [Custom
-native clients](#custom-native-clients).
+rail therefore reads the confirmed record's balance edits. It settles only when
+they remove the amount from the payer, credit it to the payee, and show the
+payer's whole debit (the amount plus the fee the chain burns). That debit is the
+settled total debit. The record's declared fee (`transaction_fee`) is not read
+for this. A confirmed record whose edits do not show the payer's debit is
+indeterminate: nothing is sent again and the payment stays unresolved.
 
 A `failed` record that binds the same facts is a failed transfer. A `confirmed`
 or `failed` record for the signed hash whose nonce, block, payer, payee or
@@ -31,7 +32,8 @@ records exceeding depth, node or collection limits are indeterminate at once. A
 missing, pending, unreadable or malformed record, or a record that carries
 another hash, is read again every `inclusionPollIntervalMs` until
 `transactionRecordTimeoutMs` (default 30 seconds) ends, then it is
-indeterminate. Every not-ok result keeps the transaction hash. A bound failed
+indeterminate. Every not-ok result keeps the transaction hash, and a not-ok
+result from `rail.settle` carries the rail's `message` when it has one. A bound failed
 record carries `errorClass: "permanent"` and a `failureProof` containing its
 hash, signed nonce, block, payer, payee and OS amount. The rail itself keeps no log: the
 settlement store passed to the bridge records this terminal outcome and returns it
@@ -45,10 +47,24 @@ acknowledgment was lost. Reuse requires the anchored transaction and block to
 match the retained permanent proof. Configured network labels such as
 `demos:testnet` are bound by the rail's recovery context and durable outcome.
 
-When the rail authenticates the payer's total debit, a successful result may
-include `networkFeeOs`, a canonical non-negative integer OS string. The
-settlement store records it with the outcome. The evidence's payment amount
-continues to describe the agreed transfer amount.
+A successful result includes `networkFeeOs`, a canonical non-negative integer
+OS string: the debit the node record shows, minus the amount. It includes
+`recordFeeOs`, the fee the confirmation declared, only when the rail read a
+confirmation before the broadcast. The settlement store records both with the
+outcome. The evidence's payment amount continues to describe the agreed
+transfer amount.
+
+The rail also reads the payer's debit from the confirmation before the
+broadcast, when it can, and journals it with the prepared transfer. If the node
+record later shows a different debit, the node record is what happened. At or
+below the authorised maximum (`maxTotalDebitOs`), or with no maximum set, the
+payment settles with the node record's figure, and the `message` of the
+`rail.settle` result names both figures. Above the maximum the payment is not
+settled: `rail.settle` returns a not-ok result whose `message` names the
+executed, maximum and confirmed figures. The intent stays held and nothing is
+sent again; every later call for that key reports the same. The bridge's result
+carries no message. After a restart the bridge applies the same rule with the
+journalled maximum, and above it throws an error that names the figures.
 
 After a restart, a recorded outcome is not trusted on its own. When the
 settlement store returns an outcome that this bridge has not itself produced or
@@ -61,10 +77,13 @@ transaction, and it refuses when `reconcile` returns `null`. Built without
 Keep the original signed-transfer journal. Absent, indeterminate or conflicting
 observations withhold success and never authorize a replacement debit.
 
-The reconciled result is what the bridge returns after a restart, and it does
-not compare `networkFeeOs` with the recorded fee. A restarted payment therefore
-reports a fee only if your `reconcile` function returns one. Copy the fee into
-your own session checkpoints when you first receive it.
+After a restart the bridge returns a reconciled success only after the journal
+read and its own node read described below. Its `networkFeeOs` is set from the
+node record's debit minus the amount; a `reconcile` result with a different
+value is refused. Its `recordFeeOs` comes only from the fee journalled with the
+prepared transfer before the broadcast; a different value is refused, and with
+none journalled a supplied one is dropped. You do not need to copy fees into
+your own checkpoints for the bridge to report them.
 
 The bridge keeps no durable mark of that authentication, so every new process
 repeats it.
@@ -85,13 +104,27 @@ retained hash, with this job's recovery context, payer, payee, amount, a valid
 nonce and a denomination. It then reads the node itself through its own rail,
 with that entry's nonce, payer, payee and amount: the status index must report
 the transaction included, and its record must be `confirmed` at the reconciled
-block. Otherwise the success is withheld with an error and nothing is written.
+block with balance edits that show the payer's debit, within the journalled
+maximum. Otherwise the success is withheld with an error and nothing is written.
 A bridge built without `readPreparedTransfers`, or around a rail that
 `createPayDemRail` did not build, withholds every retained success. When the
 history records a success (`ok: true`) and reconciliation reports a permanent
 failure, the bridge throws instead of returning the failure: the payment stays
 unresolved and must not be paid again. A history with no success entry still
 gets the bound permanent failure.
+
+The same check runs outside the history audit. A repeat call for a success this
+bridge already returned, and a durable success the bridge re-authenticates after
+a restart, are returned only after the same journal read and node read. A fresh
+payment is not checked again. So a bridge built without `readPreparedTransfers`,
+or around a rail built without a journal (`allowUnjournaled: true`), throws on a
+repeat of a settled payment instead of returning the success. The same holds for
+every `settleFromRail` retry of a settled key, because `settleFromRail` builds a
+new bridge for each call. Nothing is paid again either way. One path does not
+get this check: a call that finds an unfinished payment whose lease has
+expired, including a recovery request without history (`recoveryOnly: true`),
+is settled by the store's own reconcile and returns the reconciled success
+without the journal read and node read.
 
 Repeated calls audit again without relying on an in-memory success cache. Once
 this bridge has retained an audit identity, later calls for the same key remain
@@ -245,8 +278,9 @@ The dacs-node fixed-price buyer reconciler also requires an included
 `DemosTransferObservation` to carry `execution: "executed"`. The default
 observer sets it only after the transaction record is `confirmed` and its hash,
 nonce, block, payer, payee and amount have been checked against the confirmed
-block and native send payload. Like the rail, it does not parse the record's
-`gcr_edits`. It carries the validated record nonce as a safe non-negative
+block and native send payload. Unlike the rail, which settles only when the
+confirmed record's balance edits show the payer's debit, it does not parse the
+record's `gcr_edits`. It carries the validated record nonce as a safe non-negative
 integer `nonce`. The buyer reconciler requires that value to equal the retained
 prepared transfer's signed nonce before returning `completed`; missing or
 conflicting nonces require operator recovery. Custom observers must supply the

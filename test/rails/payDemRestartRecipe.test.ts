@@ -14,6 +14,7 @@ import {
   type PayDemSettlementRecoveryContext,
 } from "../../src/rails/payDem.js";
 import type { SettleRequest } from "../../src/rails/settlementTypes.js";
+import { nativeSendEdits } from "../support/payDemEdits.js";
 
 // Walks the documented restart recipe (docs/pay-dem-execution.md, "Recovering a
 // pay-dem purchase after a restart") through each crash point. The rail, the
@@ -127,7 +128,10 @@ beforeEach(() => {
     const content = record.transaction.content as Record<string, unknown>;
     return {
       ...record.transaction,
-      content: { ...content, nonce: String(content.nonce) },
+      content: {
+        ...content, nonce: String(content.nonce),
+        gcr_edits: nativeSendEdits({ payer: String(content.from), payee: String(content.to), amount: String(content.amount) }),
+      },
       status: record.status,
       blockNumber: INCLUSION_BLOCK,
     };

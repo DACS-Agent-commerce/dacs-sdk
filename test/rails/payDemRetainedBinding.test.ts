@@ -12,9 +12,11 @@ import {
   withRecoveredAttempts,
   type PayDemPreparedTransfer,
   type PayDemRail,
+  type PayDemSettlementReconcile,
   type PayDemSettlementRecoveryContext,
 } from "../../src/rails/payDem.js";
-import type { SettleRequest } from "../../src/rails/settlementTypes.js";
+import type { SettleRequest, SettleResult } from "../../src/rails/settlementTypes.js";
+import { nativeSendEdits, type NativeSendEdit } from "../support/payDemEdits.js";
 
 // A retained pay-dem success (a request carrying history) is reported only when
 // the job's prepared-transfer record and the SDK's own read of the node agree.
@@ -88,9 +90,16 @@ let journal: PayDemPreparedTransfer[];
 let log: SettlementLog;
 let signed: number;
 let broadcastCalls: number;
+// The fee the confirmation declares; when set, the confirmation also carries
+// the send's edits, so the rail journals a confirmed debit and declared fee.
+let confirmedFee: Record<string, string> | undefined;
+// Changes the balance edits the node's record of a send shows.
+let editRecord: (edits: NativeSendEdit[]) => NativeSendEdit[];
 let rpcCounter = 0;
 
 const hashOf = (ordinal: number) => ordinal.toString(16).padStart(2, "0").repeat(32);
+const sendEdits = (content: Record<string, unknown>) =>
+  nativeSendEdits({ payer: String(content.from), payee: String(content.to), amount: String(content.amount) });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -99,6 +108,8 @@ beforeEach(() => {
   log = createInMemorySettlementLog();
   signed = 0;
   broadcastCalls = 0;
+  confirmedFee = undefined;
+  editRecord = (edits) => edits;
   rpcCounter += 1;
 
   vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
@@ -120,7 +131,9 @@ beforeEach(() => {
     };
   });
   demosSdk.confirm.mockImplementation(async (input: { hash: string; content: Record<string, unknown> }) => ({
-    response: { data: { transaction: { hash: input.hash, content: input.content } } },
+    response: { data: { transaction: { hash: input.hash, content: confirmedFee === undefined ? input.content : {
+      ...input.content, transaction_fee: confirmedFee, gcr_edits: sendEdits(input.content),
+    } } } },
   }));
   demosSdk.broadcast.mockImplementation(async (validity: {
     response: { data: { transaction: { hash: string; content: Record<string, unknown> } } };
@@ -142,7 +155,7 @@ beforeEach(() => {
     const content = record.transaction.content as Record<string, unknown>;
     return {
       ...record.transaction,
-      content: { ...content, nonce: String(content.nonce) },
+      content: { ...content, nonce: String(content.nonce), gcr_edits: editRecord(sendEdits(content)) },
       status: record.status,
       blockNumber: record.blockNumber,
     };
@@ -193,26 +206,39 @@ const reconcileWithoutReading = vi.fn(async (context: Readonly<PayDemSettlementR
   finality: { model: "bft-final" as const }, execution: "executed" as const,
 }));
 
-async function buildRail(timing: Partial<typeof SHORT_READS> = {}) {
+interface RailOptions {
+  timing?: Partial<typeof SHORT_READS> & { nonceVisibilityTimeoutMs?: number };
+  network?: string;
+  maxTotalDebitOs?: bigint;
+  journaled?: boolean;
+}
+
+async function buildRail(options: RailOptions = {}) {
   return createPayDemRail({
     rpc: `https://retained-binding-${rpcCounter}.test`,
     secret: "test-secret",
-    ...timing,
-    journalPreparedTransfer: async (prepared: Readonly<PayDemPreparedTransfer>) => { journal.push(prepared); },
+    ...options.timing,
+    ...(options.network === undefined ? {} : { network: options.network }),
+    ...(options.maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs: options.maxTotalDebitOs }),
+    ...(options.journaled === false ? {} : {
+      journalPreparedTransfer: async (prepared: Readonly<PayDemPreparedTransfer>) => { journal.push(prepared); },
+    }),
   });
 }
 
 interface AuditOptions {
   rail?: PayDemRail;
-  reconcile?: typeof reconcileFromJournalAndNode;
+  reconcile?: PayDemSettlementReconcile;
   readPreparedTransfers?: ReadPreparedTransfers | null;
   timing?: Partial<typeof SHORT_READS>;
   restartNumber?: number;
+  network?: string;
+  allowUnjournaled?: boolean;
 }
 
 /** A restarted process: a new rail, store and bridge over the surviving log, journal and node. */
 async function restartedBridge(options: AuditOptions = {}) {
-  const rail = options.rail ?? await buildRail(options.timing);
+  const rail = options.rail ?? await buildRail({ timing: options.timing });
   const claimIntent = vi.spyOn(log, "claimIntent");
   const putOutcome = vi.spyOn(log, "putOutcome");
   const store = createIdempotencyStore(log, {
@@ -222,23 +248,24 @@ async function restartedBridge(options: AuditOptions = {}) {
   const readPreparedTransfers = options.readPreparedTransfers === undefined
     ? vi.fn(journalFor)
     : options.readPreparedTransfers;
-  const bridge = payDemSettle(rail, {}, {
+  const bridge = payDemSettle(rail, options.network === undefined ? {} : { network: options.network }, {
     store,
     reconcile: options.reconcile ?? reconcileFromJournalAndNode,
     ...(readPreparedTransfers === null ? {} : { readPreparedTransfers }),
+    ...(options.allowUnjournaled === true ? { allowUnjournaled: true } : {}),
   });
   const effects = () => ({
     claims: claimIntent.mock.calls.length, outcomes: putOutcome.mock.calls.length,
     onces: once.mock.calls.length, signed, broadcastCalls,
   });
-  return { bridge, effects };
+  return { bridge, effects, readPreparedTransfers };
 }
 
 const NO_NEW_EFFECTS = { claims: 0, outcomes: 0, onces: 0, signed: 1, broadcastCalls: 1 };
 
 /** Pay once through the real rail; the process dies before the outcome is recorded. */
-async function payAndLoseOutcome(request: SettleRequest) {
-  const rail = await buildRail();
+async function payAndLoseOutcome(request: SettleRequest, railOptions: RailOptions = {}) {
+  const rail = await buildRail(railOptions);
   const store = createIdempotencyStore({
     ...log, putOutcome: async () => { throw new Error("process died before the outcome was recorded"); },
   }, { now: () => CRASH_AT, leaseDurationMs: LEASE_MS });
@@ -255,6 +282,12 @@ const expectPublicSuccess = (result: Awaited<ReturnType<ReturnType<typeof payDem
   expect(result).not.toHaveProperty("amountOs");
   expect(Object.isFrozen(result)).toBe(true);
   expect(Object.isFrozen(result.finality)).toBe(true);
+};
+
+/** The status index reports every stored record as included, failed ones too, as the node does. */
+const statusIncluded = () => {
+  demosSdk.nodeCall.mockImplementation(async (_message: string, args: { hash: string }) =>
+    ({ state: "included", blockNumber: node.get(args.hash)?.blockNumber ?? BLOCK }));
 };
 
 describe("a retained pay-dem success is bound to the journal record and a fresh node read", () => {
@@ -344,10 +377,6 @@ describe("a retained pay-dem success is bound to the journal record and a fresh 
     const record = node.get(journal[0]?.txHash ?? "");
     if (record === undefined) throw new Error("the payment left no node record");
     change(record);
-  };
-  const statusIncluded = () => {
-    demosSdk.nodeCall.mockImplementation(async (_message: string, args: { hash: string }) =>
-      ({ state: "included", blockNumber: node.get(args.hash)?.blockNumber ?? BLOCK }));
   };
   it.each([
     { case: "pending", alter: alterRecord((record) => { record.status = "pending"; }),
@@ -548,5 +577,472 @@ describe("a retained pay-dem success is bound to the journal record and a fresh 
     expectPublicSuccess(await bridge(auditOf(request)));
     expect(captured).toHaveBeenCalledWith(keyOf(request));
     expect(replacement).not.toHaveBeenCalled();
+  });
+});
+
+// The confirmation declares network + rpc fees of 2 DEM; the node's edits
+// remove the amount and a 1 DEM gas burn unless a test changes the burn.
+const DECLARED_FEE = { network_fee: "1000000000", rpc_fee: "1000000000", additional_fee: "0" };
+const FEES = { networkFeeOs: "1000000000", recordFeeOs: "2000000000" };
+const withGas = (gas: string) => (edits: NativeSendEdit[]) =>
+  edits.map((edit, index) => (index === 2 ? { ...edit, amount: gas } : edit));
+const withoutPayerDebit = (edits: NativeSendEdit[]) => edits.filter((edit) => edit.operation !== "remove");
+const NO_PAYER_DEBIT = "the confirmed record's balance edits do not show the payer's debit";
+const settleDirect = (rail: PayDemRail, maxTotalDebitOs?: string) =>
+  rail.settle({ recipient: PAYEE.slice(2), amount: AMOUNT_OS, ...(maxTotalDebitOs === undefined ? {} : { maxTotalDebitOs }) });
+const reconcileReporting = (fees: { networkFeeOs?: string; recordFeeOs?: string }) =>
+  vi.fn<PayDemSettlementReconcile>(async (context) => ({ ...(await reconcileWithoutReading(context)), ...fees }));
+const readsOfNode = () => demosSdk.getTxByHash.mock.calls.length;
+
+const proofOf = (result: SettleResult) => {
+  if (result.failureProof === undefined) throw new Error("the result carries no failure proof");
+  return result.failureProof;
+};
+/** A reconciler's reply agreeing with a permanent failure the rail reported. */
+const failureReply = (failure: SettleResult) => ({
+  ...failure, ok: false as const, errorClass: "permanent" as const, failureProof: { ...proofOf(failure) }, amountOs: AMOUNT_OS,
+});
+/** The node records every later send as failed while its status index reports it included. */
+const recordFailedSends = () => {
+  demosSdk.broadcast.mockImplementation(async (validity: {
+    response: { data: { transaction: { hash: string; content: Record<string, unknown> } } };
+  }) => {
+    broadcastCalls += 1;
+    const { transaction } = validity.response.data;
+    node.set(transaction.hash, { status: "failed", transaction, blockNumber: BLOCK });
+    return { response: { hash: transaction.hash } };
+  });
+  statusIncluded();
+};
+/** Checks the returned proof is frozen, then tries a silent edit a caller could make. */
+const expectFrozenProof = (result: SettleResult) => {
+  const proof = proofOf(result);
+  expect(Object.isFrozen(proof)).toBe(true);
+  expect(() => Object.assign(proof, { amountOs: "1" })).toThrow(TypeError);
+  Reflect.set(proof, "blockNumber", BLOCK + 1);
+};
+const outcomeOf = (request: SettleRequest) =>
+  createIdempotencyStore(log, { now: () => CRASH_AT, leaseDurationMs: LEASE_MS }).readOutcome!(keyOf(request), {
+    bindingVersion: "1", railId: "pay-dem", jobId: request.jobId, phaseIndex: 0, phase: "pay-dem",
+    amount: AMOUNT_OS, agreementAsset: "DEM", settlementAsset: "DEM", payer: PAYER.slice(2), payee: PAYEE.slice(2),
+    network: "demos", finality: { model: "bft-final" },
+  });
+
+describe("a remembered pay-dem success is checked again before it is repeated", () => {
+  it("a repeated settlement reads the job's record and the node again before it repeats a success", async () => {
+    const reconcile = vi.fn<PayDemSettlementReconcile>(reconcileFromJournalAndNode);
+    const withReader = await restartedBridge({ reconcile, timing: SHORT_READS });
+    const withoutReader = await restartedBridge({ readPreparedTransfers: null });
+    const unjournaled = await restartedBridge({
+      rail: await buildRail({ journaled: false }), readPreparedTransfers: null, allowUnjournaled: true,
+    });
+    const request = requestFor("repeat-with-reader");
+
+    // A fresh payment is never checked again, whatever readers the bridge has.
+    const first = await withReader.bridge(request);
+    expect(first).toMatchObject({ ok: true });
+    for (const [arm, jobId] of [[withoutReader, "repeat-no-reader"], [unjournaled, "repeat-unjournaled"]] as const) {
+      const reads = readsOfNode();
+      await expect(arm.bridge(requestFor(jobId))).resolves.toMatchObject({ ok: true });
+      expect(readsOfNode()).toBe(reads + 1);
+    }
+    expect(withReader.readPreparedTransfers).not.toHaveBeenCalled();
+    expect(readsOfNode()).toBe(3);
+
+    await expect(withReader.bridge(request)).resolves.toEqual(first);
+    expect(withReader.readPreparedTransfers).toHaveBeenCalledTimes(1);
+    expect(readsOfNode()).toBe(4);
+
+    const readNode = demosSdk.getTxByHash.getMockImplementation();
+    if (readNode === undefined) throw new Error("the node stand-in has no record reader");
+    demosSdk.getTxByHash.mockRejectedValue(new Error("record read refused"));
+    await expect(withReader.bridge(request)).rejects.toThrow(/not confirmed by the node: transaction record read failed/);
+    // The remembered success is kept: the next repeat checks it again without reconciling.
+    demosSdk.getTxByHash.mockImplementation(readNode);
+    await expect(withReader.bridge(request)).resolves.toEqual(first);
+    expect(reconcile).not.toHaveBeenCalled();
+    expect({ signed, broadcastCalls }).toEqual({ signed: 3, broadcastCalls: 3 });
+  });
+
+  it("two calls for one new payment on one bridge send once, and the second repeats the success only after checking it", async () => {
+    const { bridge, effects, readPreparedTransfers } = await restartedBridge();
+    const request = requestFor("two-callers");
+
+    const [first, second] = await Promise.all([bridge(request), bridge(request)]);
+    expect(first).toMatchObject({ ok: true });
+    expect(second).toEqual(first);
+    expect(readPreparedTransfers).toHaveBeenCalledTimes(1);
+    expect(readsOfNode()).toBe(2);
+    expect(effects()).toMatchObject({ signed: 1, broadcastCalls: 1 });
+  });
+
+  it("a repeated settlement on a bridge with no reader does not repeat a success unchecked", async () => {
+    const reconcile = vi.fn<PayDemSettlementReconcile>(reconcileFromJournalAndNode);
+    const { bridge, effects } = await restartedBridge({ reconcile, readPreparedTransfers: null });
+    const request = requestFor("repeat-without-reader");
+
+    await expect(bridge(request)).resolves.toMatchObject({ ok: true });
+    for (let repeat = 0; repeat < 2; repeat += 1) {
+      await expect(bridge(request)).rejects.toThrow(
+        "pay-dem retained success cannot be confirmed without a prepared-transfer reader");
+    }
+    // Neither repeat dropped the remembered success, so neither reconciled.
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(effects()).toMatchObject({ outcomes: 1, signed: 1, broadcastCalls: 1 });
+  });
+});
+
+describe("authenticated pay-dem fees and labels are kept", () => {
+  it("an audit keeps the fee the rail authenticated when the reconciler omits it", async () => {
+    confirmedFee = DECLARED_FEE;
+    const reconcile = vi.fn<PayDemSettlementReconcile>(reconcileFromJournalAndNode);
+    const { bridge, effects } = await restartedBridge({ reconcile });
+    const request = requestFor("audit-fees");
+
+    const first = await bridge(request);
+    expect(first).toMatchObject({ ok: true, ...FEES });
+    expect(journal[0]).toMatchObject({ confirmedTotalDebitOs: "2000000000", confirmedRecordFeeOs: "2000000000" });
+    await expect(bridge(auditOf(request))).resolves.toEqual(first);
+
+    reconcile.mockImplementationOnce(async (context) => {
+      const reply = await reconcileFromJournalAndNode(context);
+      return reply === null ? null : { ...reply, networkFeeOs: "5" };
+    });
+    await expect(bridge(auditOf(request))).rejects.toThrow("pay-dem: the reported fee differs from the debit the node record shows");
+    await expect(bridge(auditOf(request))).resolves.toEqual(first);
+    expect(effects()).toMatchObject({ signed: 1, broadcastCalls: 1 });
+  });
+
+  it("the journalled transfer carries the payment's network label", async () => {
+    const labelled = await restartedBridge({ rail: await buildRail({ network: "TEST-A" }), network: "TEST-B" });
+    await expect(labelled.bridge(requestFor("label-differs"))).resolves.toMatchObject({ ok: true, chainId: "TEST-B" });
+    expect(journal[0]).toMatchObject({ network: "TEST-B", recovery: { network: "TEST-B" } });
+
+    const defaults = await restartedBridge();
+    await expect(defaults.bridge(requestFor("label-default"))).resolves.toMatchObject({ ok: true, chainId: "demos" });
+    expect(journal[1]).toMatchObject({ network: "demos", recovery: { network: "demos" } });
+
+    // With no recovery context the rail's own label is what it has.
+    await expect(settleDirect(await buildRail({ network: "TEST-A" }))).resolves.toMatchObject({ ok: true });
+    expect(journal[2]?.network).toBe("TEST-A");
+    expect(journal[2]).not.toHaveProperty("recovery");
+  });
+
+  it("a returned failure proof cannot change the retained outcome after an audit", async () => {
+    recordFailedSends();
+    const reconcile = vi.fn<PayDemSettlementReconcile>();
+    const { bridge, effects } = await restartedBridge({ reconcile });
+    const request = requestFor("proof-audit");
+    const first = await bridge(request);
+    expect(first).toMatchObject({ ok: false, errorClass: "permanent" });
+    reconcile.mockImplementation(async () => failureReply(first));
+
+    const audited = await bridge(auditOf(request, false));
+    expect(audited).toEqual(first);
+    expectFrozenProof(audited);
+    await expect(bridge(auditOf(request, false))).resolves.toEqual(first);
+    expect(effects()).toMatchObject({ signed: 1, broadcastCalls: 1 });
+  });
+
+  it("a returned failure proof cannot change the retained outcome after a restart", async () => {
+    recordFailedSends();
+    const reconcile = vi.fn<PayDemSettlementReconcile>();
+    const request = requestFor("proof-restart");
+    const first = await (await restartedBridge({ reconcile })).bridge(request);
+    expect(first).toMatchObject({ ok: false, errorClass: "permanent" });
+    reconcile.mockImplementation(async () => failureReply(first));
+
+    const { bridge, effects } = await restartedBridge({ reconcile, restartNumber: 2 });
+    const restarted = await bridge(request);
+    expect(restarted).toEqual(first);
+    expectFrozenProof(restarted);
+    await expect(bridge(request)).resolves.toEqual(first);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(effects()).toMatchObject({ signed: 1, broadcastCalls: 1 });
+  });
+});
+
+describe("a live pay-dem settlement needs the payer's debit in the node's record", () => {
+  it("a confirmed record whose balance edits show no debit is not a settlement", async () => {
+    confirmedFee = DECLARED_FEE;
+    editRecord = withoutPayerDebit;
+    const rail = await buildRail();
+
+    const held = await settleDirect(rail);
+    expect(held).toMatchObject({ ok: false, message: `pay-dem execution was not established: ${NO_PAYER_DEBIT}` });
+    expect(held).not.toHaveProperty("execution");
+    expect(broadcastCalls).toBe(1);
+
+    editRecord = (edits) => edits;
+    const settled = await settleDirect(rail);
+    expect(settled).toMatchObject({ ok: true, execution: "executed", ...FEES });
+    expect(settled).not.toHaveProperty("message");
+    expect(broadcastCalls).toBe(2);
+  });
+
+  it("a confirmed record with no payer debit is not recorded as a settlement through the bridge", async () => {
+    editRecord = withoutPayerDebit;
+    const { bridge, effects } = await restartedBridge();
+    const request = requestFor("bridge-no-debit");
+
+    const held = await bridge(request);
+    expect(held).toMatchObject({ ok: false });
+    expect(held).not.toHaveProperty("finality");
+    expect(await outcomeOf(request)).not.toMatchObject({ ok: true });
+    expect(effects()).toMatchObject({ signed: 1, broadcastCalls: 1 });
+  });
+
+  it("a payment with no fee read before the broadcast settles with the debit the node record shows", async () => {
+    const settled = await settleDirect(await buildRail());
+    expect(settled).toMatchObject({ ok: true, execution: "executed", networkFeeOs: FEES.networkFeeOs });
+    expect(settled).not.toHaveProperty("recordFeeOs");
+  });
+
+  it("a node debit that differs from the confirmed one within the maximum settles with the node's figure and names both", async () => {
+    confirmedFee = DECLARED_FEE;
+    editRecord = withGas("1500000000");
+    const differing = "pay-dem: settled with the executed debit 2500000000 OS; the debit confirmed before the broadcast was 2000000000 OS";
+
+    const settled = await settleDirect(await buildRail({ maxTotalDebitOs: 3000000000n }));
+    expect(settled).toMatchObject({ ok: true, networkFeeOs: "1500000000", recordFeeOs: "2000000000", message: differing });
+
+    demosSdk.waitForNonce.mockImplementationOnce(() => new Promise(() => undefined));
+    const lateNonce = await settleDirect(
+      await buildRail({ maxTotalDebitOs: 3000000000n, timing: { nonceVisibilityTimeoutMs: 5 } }));
+    expect(lateNonce.message).toBe(`${differing}; pay-dem: account nonce read did not reach ${NONCE + 1} ` +
+      "before nonceVisibilityTimeoutMs; payment is final");
+  });
+
+  it("a node debit above the maximum is not settled, names every figure and keeps the executed nonce", async () => {
+    confirmedFee = DECLARED_FEE;
+    editRecord = withGas("2000000000");
+    demosSdk.waitForNonce.mockImplementationOnce(() => new Promise(() => undefined));
+    const rail = await buildRail({ maxTotalDebitOs: 2500000000n, timing: { nonceVisibilityTimeoutMs: 5 } });
+
+    const held = await settleDirect(rail);
+    expect(held).toEqual({
+      ok: false, txHash: hashOf(1), chainId: "demos", payer: PAYER, payee: PAYEE.slice(2),
+      message: "pay-dem execution was not established: the executed debit 3000000000 OS exceeds the authorised " +
+        "maximum 2500000000 OS; the debit confirmed before the broadcast was 2000000000 OS",
+    });
+    expect(broadcastCalls).toBe(1);
+
+    // The transfer executed, so the payer's next payment first waits for its nonce.
+    demosSdk.waitForNonce.mockClear();
+    editRecord = (edits) => edits;
+    await expect(settleDirect(rail)).resolves.toMatchObject({ ok: true });
+    expect(demosSdk.waitForNonce.mock.calls[0]).toEqual([PAYER, NONCE]);
+    expect(broadcastCalls).toBe(2);
+  });
+
+  it("through the bridge a differing debit within the maximum settles with no message and one above it stays unresolved", async () => {
+    confirmedFee = DECLARED_FEE;
+    const { bridge, effects } = await restartedBridge({ rail: await buildRail({ maxTotalDebitOs: 2600000000n }) });
+
+    editRecord = withGas("1500000000");
+    const settled = await bridge(requestFor("bridge-within"));
+    expect(settled).toMatchObject({ ok: true, networkFeeOs: "1500000000", recordFeeOs: "2000000000" });
+    expect(settled).not.toHaveProperty("message");
+
+    editRecord = withGas("2000000000");
+    const above = requestFor("bridge-above");
+    const held = await bridge(above);
+    expect(held).toMatchObject({ ok: false });
+    expect(held).not.toHaveProperty("message");
+    expect(await outcomeOf(above)).not.toMatchObject({ ok: true });
+    expect(effects()).toMatchObject({ signed: 2, broadcastCalls: 2 });
+  });
+});
+
+describe("a recovered pay-dem success needs the node record's debit", () => {
+  const ABOVE_MAXIMUM = "pay-dem: the executed debit 3500000000 OS exceeds the authorised maximum 3000000000 OS; " +
+    "the debit confirmed before the broadcast was 2000000000 OS; the payment stays unresolved";
+  const payWithConfirmedFee = async (request: SettleRequest) => {
+    confirmedFee = DECLARED_FEE;
+    await payAndLoseOutcome(request, { maxTotalDebitOs: 3000000000n });
+  };
+
+  it("a recovered success needs the node record's debit, within the authorised maximum", async () => {
+    const request = requestFor("recovered-debit");
+    await payWithConfirmedFee(request);
+
+    editRecord = withoutPayerDebit;
+    const noDebit = await restartedBridge({ reconcile: reconcileWithoutReading });
+    await expect(noDebit.bridge(auditOf(request))).rejects.toThrow(
+      `pay-dem retained success is not confirmed by the node: ${NO_PAYER_DEBIT}`);
+    expect(noDebit.effects()).toEqual(NO_NEW_EFFECTS);
+
+    editRecord = withGas("1500000000");
+    const within = await (await restartedBridge({ reconcile: reconcileWithoutReading, restartNumber: 2 })).bridge(auditOf(request));
+    expectPublicSuccess(within);
+    expect(within).toMatchObject({ networkFeeOs: "1500000000", recordFeeOs: "2000000000" });
+    expect(within).not.toHaveProperty("message");
+    expect(journal[0]).toMatchObject({ maxTotalDebitOs: "3000000000", confirmedTotalDebitOs: "2000000000" });
+
+    editRecord = withGas("2500000000");
+    for (const restartNumber of [3, 4]) {
+      const above = await restartedBridge({ reconcile: reconcileWithoutReading, restartNumber });
+      await expect(above.bridge(auditOf(request))).rejects.toThrow(ABOVE_MAXIMUM);
+      expect(above.effects()).toEqual(NO_NEW_EFFECTS);
+    }
+
+    editRecord = (edits) => edits;
+    const equal = await (await restartedBridge({ reconcile: reconcileWithoutReading, restartNumber: 5 })).bridge(auditOf(request));
+    expect(equal).toMatchObject({ ok: true, ...FEES });
+  });
+
+  it("a recovered success checks the fees a reconciler reports against the node's debit and the journalled fee", async () => {
+    const request = requestFor("recovered-fees");
+    await payWithConfirmedFee(request);
+    let restartNumber = 0;
+    const freshBridge = async (fees: { networkFeeOs?: string; recordFeeOs?: string }) =>
+      (await restartedBridge({ reconcile: reconcileReporting(fees), restartNumber: ++restartNumber })).bridge;
+
+    await expect((await freshBridge({ networkFeeOs: "5" }))(auditOf(request))).rejects.toThrow(
+      "pay-dem: the reported fee differs from the debit the node record shows");
+    await expect((await freshBridge({ networkFeeOs: FEES.networkFeeOs, recordFeeOs: "7" }))(auditOf(request))).rejects.toThrow(
+      "pay-dem: the reported declared fee differs from the one journalled with the prepared transfer");
+    for (const fees of [{}, { networkFeeOs: FEES.networkFeeOs }, FEES]) {
+      await expect((await freshBridge(fees))(auditOf(request))).resolves.toMatchObject({ ok: true, ...FEES });
+    }
+    expect({ signed, broadcastCalls }).toEqual({ signed: 1, broadcastCalls: 1 });
+  });
+
+  it("a recovered success drops a declared fee when none was journalled before the broadcast", async () => {
+    const request = requestFor("recovered-unjournalled-fee");
+    await payAndLoseOutcome(request);
+    expect(journal[0]).not.toHaveProperty("confirmedRecordFeeOs");
+    const { bridge } = await restartedBridge({ reconcile: reconcileReporting({ ...FEES, recordFeeOs: "7" }) });
+
+    const recovered = await bridge(auditOf(request));
+    expect(recovered).toMatchObject({ ok: true, networkFeeOs: FEES.networkFeeOs });
+    expect(recovered).not.toHaveProperty("recordFeeOs");
+  });
+
+  it.each([
+    { case: "a hex debit", change: { confirmedTotalDebitOs: "0x10" } },
+    { case: "a debit with a leading space", change: { confirmedTotalDebitOs: " 10" } },
+    { case: "a debit below the amount", change: { confirmedTotalDebitOs: "10" } },
+    { case: "a maximum with a leading zero", change: { maxTotalDebitOs: "03000000000" } },
+    { case: "a declared fee without a debit", change: { confirmedRecordFeeOs: "10" } },
+  ])("a recovered success refuses a journalled entry with $case", async ({ change }) => {
+    const request = requestFor("recovered-malformed-entry");
+    await payAndLoseOutcome(request);
+    const readPreparedTransfers = vi.fn(async () => [{ ...journal[0], ...change }] as PayDemPreparedTransfer[]);
+    const { bridge, effects } = await restartedBridge({ reconcile: reconcileWithoutReading, readPreparedTransfers });
+
+    await expect(bridge(auditOf(request))).rejects.toThrow(
+      "pay-dem: the journalled prepared transfer carries a malformed debit or fee field");
+    expect(effects()).toEqual(NO_NEW_EFFECTS);
+  });
+});
+
+describe("a durable pay-dem success found after a restart is checked before it is returned", () => {
+  const payAndRecord = async (request: SettleRequest) => (await restartedBridge()).bridge(request);
+  // The store path passes no hash; this reconciler reports the paid one and reads nothing else.
+  const reconcileUnread = (fees: { networkFeeOs?: string; recordFeeOs?: string } = {}) => vi.fn<PayDemSettlementReconcile>(async (context) =>
+    ({ ...(await reconcileWithoutReading({ ...context, txHash: journal[0]?.txHash })), ...fees }));
+
+  it("after a restart a durable success is returned only after the job's record and the node confirm it", async () => {
+    confirmedFee = DECLARED_FEE;
+    const request = requestFor("durable-success");
+    const first = await payAndRecord(request);
+    expect(first).toMatchObject({ ok: true, ...FEES });
+    const reads = readsOfNode();
+
+    const reconcile = reconcileUnread();
+    const { bridge, effects, readPreparedTransfers } = await restartedBridge({ reconcile, restartNumber: 2 });
+    await expect(bridge(request)).resolves.toEqual(first);
+    expect(readPreparedTransfers).toHaveBeenCalledTimes(1);
+    expect(readsOfNode()).toBe(reads + 1);
+    // The remembered result carries the rebuilt fee members: a repeat checks it again without reconciling.
+    await expect(bridge(request)).resolves.toEqual(first);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(readPreparedTransfers).toHaveBeenCalledTimes(2);
+    expect(readsOfNode()).toBe(reads + 2);
+    expect(effects()).toMatchObject({ signed: 1, broadcastCalls: 1 });
+
+    const misreporting = await restartedBridge({ reconcile: reconcileUnread({ networkFeeOs: "5" }), restartNumber: 3 });
+    await expect(misreporting.bridge(request)).rejects.toThrow("pay-dem: the reported fee differs from the debit the node record shows");
+  });
+
+  it.each([
+    { fees: { networkFeeOs: "5" }, error: "pay-dem: the reported fee differs from the debit the node record shows" },
+    { fees: { networkFeeOs: FEES.networkFeeOs, recordFeeOs: "7" },
+      error: "pay-dem: the reported declared fee differs from the one journalled with the prepared transfer" },
+  ])("after a restart a durable success reported with a wrong fee is refused and not remembered", async ({ fees, error }) => {
+    confirmedFee = DECLARED_FEE;
+    const request = requestFor("durable-wrong-fee");
+    await payAndRecord(request);
+    const reconcile = reconcileUnread(fees);
+    const { bridge } = await restartedBridge({ reconcile, restartNumber: 2 });
+
+    await expect(bridge(request)).rejects.toThrow(error);
+    await expect(bridge(request)).rejects.toThrow(error);
+    // Nothing was remembered, so the second call reconciled again.
+    expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+
+  it("after a restart a durable success reported with an unjournalled declared fee is returned and remembered without it", async () => {
+    const request = requestFor("durable-dropped-fee");
+    await payAndRecord(request);
+    expect(journal[0]).not.toHaveProperty("confirmedRecordFeeOs");
+    const reconcile = reconcileUnread({ networkFeeOs: FEES.networkFeeOs, recordFeeOs: "7" });
+    const { bridge, readPreparedTransfers } = await restartedBridge({ reconcile, restartNumber: 2 });
+
+    const recovered = await bridge(request);
+    expect(recovered).toMatchObject({ ok: true, networkFeeOs: FEES.networkFeeOs });
+    expect(recovered).not.toHaveProperty("recordFeeOs");
+    const repeated = await bridge(request);
+    expect(repeated).toEqual(recovered);
+    expect(repeated).not.toHaveProperty("recordFeeOs");
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(readPreparedTransfers).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { case: "shows no payer debit", alter: () => { editRecord = withoutPayerDebit; }, error: NO_PAYER_DEBIT },
+    { case: "is unreadable", alter: () => { demosSdk.getTxByHash.mockRejectedValue(new Error("record read refused")); },
+      error: "transaction record read failed" },
+  ])("after a restart a durable success is withheld when the node record $case", async ({ alter, error }) => {
+    const request = requestFor("durable-refused");
+    await payAndRecord(request);
+    alter();
+    const reconcile = reconcileUnread();
+    const { bridge, effects } = await restartedBridge({ reconcile, timing: SHORT_READS, restartNumber: 2 });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await expect(bridge(request)).rejects.toThrow(`pay-dem retained success is not confirmed by the node: ${error}`);
+    }
+    // Nothing was remembered, so the second attempt reconciled again.
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(effects()).toMatchObject({ signed: 1, broadcastCalls: 1 });
+  });
+
+  it("after a restart a bridge with no prepared-transfer reader withholds a durable success", async () => {
+    const request = requestFor("durable-no-reader");
+    await payAndRecord(request);
+    const { bridge, effects } = await restartedBridge({
+      reconcile: reconcileUnread(), readPreparedTransfers: null, restartNumber: 2,
+    });
+
+    await expect(bridge(request)).rejects.toThrow(
+      "pay-dem retained success cannot be confirmed without a prepared-transfer reader");
+    expect(effects()).toMatchObject({ signed: 1, broadcastCalls: 1 });
+  });
+
+  it("after a restart a durable permanent failure is returned without reading the job's record or the node", async () => {
+    recordFailedSends();
+    const request = requestFor("durable-failure");
+    const first = await payAndRecord(request);
+    expect(first).toMatchObject({ ok: false, errorClass: "permanent" });
+    const reads = readsOfNode();
+
+    const { bridge, readPreparedTransfers } = await restartedBridge({
+      reconcile: vi.fn<PayDemSettlementReconcile>(async () => failureReply(first)), restartNumber: 2,
+    });
+    await expect(bridge(request)).resolves.toEqual(first);
+    expect(readPreparedTransfers).not.toHaveBeenCalled();
+    expect(readsOfNode()).toBe(reads);
   });
 });

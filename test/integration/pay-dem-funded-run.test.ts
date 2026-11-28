@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { chmod, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,43 @@ import {
   type PayDemFundedPreparedTransfer,
   type PayDemFundedRunIntent,
 } from "./pay-dem-funded-run.js";
+
+// A confirmed native send read from node2: nine and a half DEM from PAYER to PAYEE,
+// one DEM of gas on top, so the payer's real debit is 10,500,000,000 OS.
+const node2 = JSON.parse(readFileSync(
+  new URL("../fixtures/demos-node2-records.json", import.meta.url),
+  "utf8",
+)) as { getTxByHash: Record<string, { response: Record<string, any> }> };
+const RECORD_HASH = "330dcf1dac0839ebc138d5e2a0db6db7b9567d769c8d4bd987b0d72d7d905918";
+const RECORD_PAYER = "c0a58599ceaeba18f9c450133631cce4c45f4dc7a59c8026331504da3a913c2a";
+const RECORD_PAYEE = "706b89f5e2d56498a90bc3a209842b0bd0e22ce06bb4df7c27805e655614e5f1";
+const RECORD_BLOCK = 498_447;
+
+function nodeRecord(change?: (record: Record<string, any>) => void): Record<string, any> {
+  const record = structuredClone(node2.getTxByHash[RECORD_HASH]!.response);
+  change?.(record);
+  return record;
+}
+
+/** A funded run whose journalled transfer is the node2 record's send. */
+async function journalledRun(maxTotalDebitOs = "10500000000") {
+  const input: PayDemFundedRunIntent = {
+    ...(await fixture()),
+    payer: RECORD_PAYER,
+    payee: RECORD_PAYEE,
+    amountOs: "9500000000",
+    maxTotalDebitOs,
+  };
+  const { marker } = await executePayDemFundedRun(input, async (_armed, journal) => {
+    await journal(preparedTransfer(input, {
+      txHash: RECORD_HASH,
+      nonce: 28,
+      confirmedTotalDebitOs: maxTotalDebitOs,
+      confirmedRecordFeeOs: "1000000000",
+    }));
+  });
+  return { input, marker };
+}
 
 const directories: string[] = [];
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -247,46 +285,140 @@ describe("pay-DEM funded-run adapter", () => {
   });
 
   it("requires exact included reconciliation facts", async () => {
-    const { marker } = await executePayDemFundedRun(await fixture(), async () => "ok");
+    const { marker } = await journalledRun();
+    const readNodeRecord = vi.fn(async () => nodeRecord());
     await expect(recordPayDemFundedRunOutcome(marker, {
       status: "included",
       txHash: "bad",
       blockNumber: 1,
-    })).rejects.toThrow(/outcome-tx-hash-invalid/);
+    }, readNodeRecord)).rejects.toThrow(/outcome-tx-hash-invalid/);
+    expect(readNodeRecord).not.toHaveBeenCalled();
     await expect(recordPayDemFundedRunOutcome(marker, {
       status: "included",
-      txHash: "ab".repeat(32),
-      blockNumber: 9,
-    })).resolves.toBeUndefined();
+      txHash: RECORD_HASH,
+      blockNumber: RECORD_BLOCK,
+    }, readNodeRecord)).resolves.toBeUndefined();
+    expect(readNodeRecord).toHaveBeenCalledWith(RECORD_HASH);
     const outcome = JSON.parse(await readFile(marker.outcomePath, "utf8"));
     expect(outcome).toMatchObject({
       state: "included",
-      details: { txHash: "ab".repeat(32), blockNumber: 9 },
+      details: { txHash: RECORD_HASH, blockNumber: RECORD_BLOCK },
     });
   });
 
+  it.each([
+    {
+      name: "a record whose balance edits show no payer debit",
+      change: (record: Record<string, any>) => {
+        record.content.gcr_edits = record.content.gcr_edits
+          .filter((edit: Record<string, any>) => edit.account !== `0x${RECORD_PAYER}` ||
+            edit.type === "nonce");
+      },
+      block: RECORD_BLOCK,
+    },
+    {
+      name: "a record for another block",
+      change: () => undefined,
+      block: RECORD_BLOCK + 1,
+    },
+    {
+      name: "a record that is not confirmed",
+      change: (record: Record<string, any>) => { record.status = "failed"; },
+      block: RECORD_BLOCK,
+    },
+  ])("does not record included for $name", async ({ change, block }) => {
+    const { marker } = await journalledRun();
+    await expect(recordPayDemFundedRunOutcome(marker, {
+      status: "included",
+      txHash: RECORD_HASH,
+      blockNumber: block,
+    }, async () => nodeRecord(change))).rejects.toThrow(/included-node-debit-missing/);
+    await expect(readFile(marker.outcomePath, "utf8")).rejects.toThrow(/ENOENT/);
+  });
+
+  it("does not record included when the node debit is above the authorised maximum", async () => {
+    const { marker } = await journalledRun("10499999999");
+    await expect(recordPayDemFundedRunOutcome(marker, {
+      status: "included",
+      txHash: RECORD_HASH,
+      blockNumber: RECORD_BLOCK,
+    }, async () => nodeRecord())).rejects.toThrow(/included-node-debit-missing/);
+    await expect(readFile(marker.outcomePath, "utf8")).rejects.toThrow(/ENOENT/);
+  });
+
+  it("does not record included for a hash other than the journalled transfer", async () => {
+    const { marker } = await journalledRun();
+    const readNodeRecord = vi.fn(async () => nodeRecord());
+    await expect(recordPayDemFundedRunOutcome(marker, {
+      status: "included",
+      txHash: "ab".repeat(32),
+      blockNumber: RECORD_BLOCK,
+    }, readNodeRecord)).rejects.toThrow(/included-tx-hash-mismatch/);
+    expect(readNodeRecord).not.toHaveBeenCalled();
+  });
+
+  it("does not record included when the node record cannot be read", async () => {
+    const { marker } = await journalledRun();
+    await expect(recordPayDemFundedRunOutcome(marker, {
+      status: "included",
+      txHash: RECORD_HASH,
+      blockNumber: RECORD_BLOCK,
+    }, async () => { throw new Error("node unreachable"); })).rejects.toThrow(/node unreachable/);
+    await expect(readFile(marker.outcomePath, "utf8")).rejects.toThrow(/ENOENT/);
+  });
+
   it("persists the original included transaction when nonce visibility fails", async () => {
+    const input: PayDemFundedRunIntent = {
+      ...(await fixture()),
+      payer: RECORD_PAYER,
+      payee: RECORD_PAYEE,
+      amountOs: "9500000000",
+      maxTotalDebitOs: "10500000000",
+    };
     let markerPath = "";
     let outcomePath = "";
     const catchUp = new PayDemIncludedNonceVisibilityError({
-      txHash: "cd".repeat(32),
-      blockNumber: 95563,
-      nonce: 35,
+      txHash: RECORD_HASH,
+      blockNumber: RECORD_BLOCK,
+      nonce: 28,
       cause: new Error("nonce projection delayed"),
     });
     expect(catchUp.category).toBe("permanent");
-    await expect(executePayDemFundedRun(await fixture(), async (marker) => {
+    await expect(executePayDemFundedRun(input, async (marker, journal) => {
       markerPath = marker.markerPath;
       outcomePath = marker.outcomePath;
+      await journal(preparedTransfer(input, {
+        txHash: RECORD_HASH,
+        nonce: 28,
+        confirmedTotalDebitOs: "10500000000",
+        confirmedRecordFeeOs: "1000000000",
+      }));
       throw catchUp;
-    })).rejects.toThrow(/effect-ambiguous-do-not-rerun/);
+    }, async () => nodeRecord())).rejects.toThrow(/effect-ambiguous-do-not-rerun/);
 
     expect(JSON.parse(await readFile(markerPath, "utf8"))).toMatchObject({
       state: "armed",
     });
     expect(JSON.parse(await readFile(outcomePath, "utf8"))).toMatchObject({
       state: "included",
-      details: { txHash: "cd".repeat(32), blockNumber: 95563 },
+      details: { txHash: RECORD_HASH, blockNumber: RECORD_BLOCK },
+    });
+  });
+
+  it("keeps a nonce-visibility transfer unresolved when no node debit can be read", async () => {
+    let outcomePath = "";
+    const catchUp = new PayDemIncludedNonceVisibilityError({
+      txHash: "cd".repeat(32),
+      blockNumber: 95563,
+      nonce: 35,
+    });
+    await expect(executePayDemFundedRun(await fixture(), async (marker) => {
+      outcomePath = marker.outcomePath;
+      throw catchUp;
+    })).rejects.toThrow(/effect-ambiguous-do-not-rerun/);
+    expect(JSON.parse(await readFile(outcomePath, "utf8"))).toMatchObject({
+      state: "unresolved",
+      details: { reason: "inclusion-not-observed", txHash: "cd".repeat(32) },
     });
   });
 

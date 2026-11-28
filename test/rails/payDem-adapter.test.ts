@@ -18,6 +18,7 @@ import {
   executePayDemFundedRun,
   readPayDemFundedPreparedTransfer,
 } from "../integration/pay-dem-funded-run.js";
+import { nativeSendEdits } from "../support/payDemEdits.js";
 
 const WALLET = `0x${"ab".repeat(32)}`;
 const RECIPIENT = `0x${"cd".repeat(32)}`;
@@ -272,6 +273,11 @@ describe("createPayDemRail nonce coordination", () => {
           "amount",
         ]);
       return { response: { hash: TX_HASH } };
+    });
+    // The executed record's edits show the payer's debit, unlike the wire-shape edit above.
+    sdk.getTxByHash.mockResolvedValue({
+      ...signed, status: "confirmed", blockNumber: 42,
+      content: { ...signed.content, nonce: "7", gcr_edits: nativeSendEdits({ payer: WALLET, payee: RECIPIENT, amount: "1" }) },
     });
     const rail = await createPayDemRail({
       rpc: "https://node.test",
@@ -1546,11 +1552,14 @@ describe("pay-dem books what the chain debits, not the record's declared fee (#6
     expect(sdk.broadcast).not.toHaveBeenCalled();
   });
 
-  it("keeps the uncapped path without fee accounting when the edits are absent", async () => {
+  it("an uncapped payment whose confirmed record has no balance edits is not settled", async () => {
     confirmWith(undefined);
     const result = await (await railWith()).settle({ recipient: RECIPIENT, amount: AMOUNT.toString() });
-    expect(result.ok).toBe(true);
+    expect(result).toMatchObject({
+      ok: false, message: "pay-dem execution was not established: the confirmed record's balance edits do not show the payer's debit",
+    });
+    expect(result).not.toHaveProperty("execution");
     expect(result).not.toHaveProperty("networkFeeOs");
-    expect(result).not.toHaveProperty("recordFeeOs");
+    expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
 });
