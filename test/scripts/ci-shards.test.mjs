@@ -8,8 +8,8 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  EVENTS, SHARDS, SPLIT_FILES, WEIGHTS, assign, assignUnits, checkPartition, checkPlan, clientDir, clientFiles, plan, sellerDir,
-  sellerFiles, splitTests,
+  EVENTS, SHARDS, SPLIT_FILES, TEST_WEIGHTS, WEIGHTS, assign, assignUnits, checkPartition, checkPlan, clientDir, clientFiles, plan,
+  sellerDir, sellerFiles, splitTests, staleKeys,
 } from "../../scripts/ci-shards.mjs";
 import { exactPattern, listTests, runSome } from "../../scripts/ci-test-names.mjs";
 
@@ -103,6 +103,24 @@ test("assignUnits puts every whole file and every test of a split file in exactl
   assert.deepEqual(checkPartition("client", files, split).failures.filter((f) => !/listed in SPLIT_FILES/.test(f)), []);
 });
 
+test("staleKeys names each weight whose file or test is gone, and no test that merely has no weight", () => {
+  const files = ["a.test.mjs", "new.test.mjs", "big.test.mjs"];
+  const split = { "big.test.mjs": ["t1", "t2 renamed"] };
+  const weights = { "a.test.mjs": 1, "gone.test.mjs": 2 };
+  const testWeights = { "big.test.mjs": { t1: 1, t2: 2 } };
+  assert.deepEqual(staleKeys("client", files, split, weights, testWeights), [
+    'client weight "gone.test.mjs": not a test file',
+    'client big.test.mjs test weight "t2": not a test of the file',
+  ]);
+  // new.test.mjs and "t2 renamed" have no weight, which is allowed; with the stale keys removed nothing is reported.
+  assert.deepEqual(staleKeys("client", files, split, { "a.test.mjs": 1 }, { "big.test.mjs": { t1: 1 } }), []);
+  assert.deepEqual(staleKeys("client", files, split, { "big.test.mjs": 9 }, {}), ['client weight "big.test.mjs": a split file has no whole-file weight']);
+});
+
+test("every TEST_WEIGHTS file is a split file", () => {
+  for (const file of Object.keys(TEST_WEIGHTS)) assert.ok(Object.values(SPLIT_FILES).flat().includes(file), file);
+});
+
 test("assign keeps its file-list shape and never splits a file", () => {
   const files = ["x.test.mjs", "y.test.mjs", "z.test.mjs", ...SPLIT_FILES.seller];
   const lists = assign("seller", files);
@@ -127,6 +145,7 @@ test("this checkout: the plan has every client shard on node 22 and the split co
   assert.deepEqual(Object.keys(split), SPLIT_FILES.client);
   for (const [file, names] of Object.entries(split)) assert.ok(names.length > 1, file);
   assert.deepEqual(checkPartition("client", files, split).failures, []);
+  assert.deepEqual(staleKeys("client", files, split), []);
   for (const file of SPLIT_FILES.client) assert.ok(!Object.hasOwn(WEIGHTS.client, file), `${file} has a whole-file weight`);
 });
 
@@ -143,6 +162,7 @@ test("this checkout: the plan has every seller shard on both legs and the split 
   for (const [file, names] of Object.entries(split)) assert.ok(names.length > 1, file);
   const { shards, failures } = checkPartition("seller", files, split);
   assert.deepEqual(failures, []);
+  assert.deepEqual(staleKeys("seller", files, split), []);
   for (const file of SPLIT_FILES.seller) {
     assert.ok(!Object.hasOwn(WEIGHTS.seller, file), `${file} has a whole-file weight`);
     assert.ok(shards.filter((list) => list.some((entry) => entry.file === file)).length > 1, `${file} is spread over shards`);
