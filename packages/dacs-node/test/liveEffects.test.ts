@@ -9,6 +9,7 @@ import {
   FIXED_PRICE_X402_STANDARD_REVISION,
   type FixedPriceX402EffectFence,
   type FixedPriceX402OrderRecord,
+  type FixedPriceX402TrackOperationResult,
   type FixedPriceX402TrackOperationInput,
 } from "@kynesyslabs/dacs/commerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -271,17 +272,80 @@ describe("durable live irreversible-effect track", () => {
       return { opened, execute, operation };
     }
 
+    it("replays matching projected evidence as final without changing the completed record", async () => {
+      const { opened, execute, operation } = await completedTrack(async () => ({
+        status: "completed" as const,
+        result: COMPLETED,
+      }));
+      const stored = opened.loadEffect("payment", EFFECT_ID);
+      execute.mockClear();
+
+      const outcome: FixedPriceX402TrackOperationResult =
+        await operation(operationInput());
+
+      expect(outcome).toEqual({
+        status: "final",
+        outcome: "success",
+        reference: COMPLETED.reference,
+        authenticationHash: COMPLETED.authenticationHash,
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(opened.loadEffect("payment", EFFECT_ID)).toEqual(stored);
+    });
+
+    it("retries reauthentication when a fresh completed observation cannot be projected", async () => {
+      const reauthenticate = vi.fn()
+        .mockResolvedValueOnce({
+          status: "completed" as const,
+          result: { ...COMPLETED, reference: "" },
+        })
+        .mockResolvedValueOnce({
+          status: "completed" as const,
+          result: COMPLETED,
+        });
+      const { opened, execute, operation } = await completedTrack(reauthenticate);
+      const stored = opened.loadEffect("payment", EFFECT_ID);
+      execute.mockClear();
+
+      const outcome: FixedPriceX402TrackOperationResult =
+        await operation(operationInput());
+
+      expect(outcome).toEqual({
+        status: "indeterminate",
+        reasonCode: "effect-reauthentication-unavailable",
+        retryAt: expect.any(Number),
+      });
+      expect(execute).not.toHaveBeenCalled();
+      expect(opened.loadEffect("payment", EFFECT_ID)).toEqual(stored);
+
+      const retriedOutcome: FixedPriceX402TrackOperationResult =
+        await operation(operationInput());
+
+      expect(retriedOutcome).toEqual({
+        status: "final",
+        outcome: "success",
+        reference: COMPLETED.reference,
+        authenticationHash: COMPLETED.authenticationHash,
+      });
+      expect(reauthenticate).toHaveBeenCalledTimes(2);
+      expect(execute).not.toHaveBeenCalled();
+      expect(opened.loadEffect("payment", EFFECT_ID)).toEqual(stored);
+    });
+
     it("does not report completion when the re-read finds a different transaction", async () => {
       const { opened, execute, operation } = await completedTrack(async () => ({
         status: "completed" as const,
         result: { ...COMPLETED, reference: "evm:payment:other" },
       }));
+      const stored = opened.loadEffect("payment", EFFECT_ID);
+      execute.mockClear();
 
       await expect(operation(operationInput())).resolves.toEqual({
         status: "operator-action",
         reasonCode: "effect-replay-result-mismatch",
       });
-      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute).not.toHaveBeenCalled();
+      expect(opened.loadEffect("payment", EFFECT_ID)).toEqual(stored);
       expect(opened.loadEffect("payment", EFFECT_ID)).toMatchObject({
         state: "completed",
       });
