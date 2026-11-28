@@ -8,7 +8,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import * as core from '@kynesyslabs/dacs';
-import { DACS_SELLER_HTTP_DOMAINS, TP1_APPROVED_IDENTITY_RECORD, WireError, bindTp1Profile } from '@kynesyslabs/dacs/wire';
+import { DACS_SELLER_HTTP_DOMAINS, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { T0, evidenceInput, inWalletPass, jsonResponse, privateDataDirectory, replyTo, runWalletChild, sellerApproval, sellerWalletWorld,
   spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
@@ -28,16 +28,15 @@ const { MONOTONIC_CLOCK, TEST_BINDING, TEST_PASS_SESSION, integrityRoleOf, readO
 const { createSellerCreatePass, isSellerCreatePass, lateSellerCreatePass } = await import('../src/devnet-demo/create-pass.mjs');
 const { signInPass, signRetainedInPass } = await import('../src/devnet-demo/wallet-signature-pass.mjs');
 const { createAnswerSigners } = await import('../src/dacs/answer-signers.mjs');
+const { createStopCheck } = await import('../src/kill-switch.mjs');
 const { createSellerAgentClient } = await import('../src/dacs/seller-http.mjs');
 const { createWireContext } = await import('../src/dacs/seller-wire-requests.mjs');
 const { orchestratorFixture } = await import('./helpers/vet-orchestrator-fixture.mjs');
 const { productionFixture } = await import('./helpers/vet-production-fixture.mjs');
 const { contextHostFixture } = await import('./helpers/host-context-client.mjs');
-const { JOB: protocolJob, seller: protocolSeller } = await import('./helpers/protocol-fixture.mjs');
-const { composedVetHost, composedVetHostProcess, vetRecordAnchor } = await import('./helpers/composed-vet-host.mjs');
+const { seller: protocolSeller } = await import('./helpers/protocol-fixture.mjs');
 const { default: Database } = await import('better-sqlite3');
 const { world: wireWorld, proposeJob, identityBody } = await import('./helpers/wire-routes-world.mjs');
-const { authorityReader } = await import('./helpers/wire-authority-fixture.mjs');
 const { SELLER_STATE_SIGNING_DOMAIN } = await import('../src/dacs/seller-durable-state.mjs');
 const { LOCAL: KEY_LOCAL, discoveryPayload, testBinding: keyTestBinding, wire: wireApi } = await import('./helpers/seller-key-fixture.mjs');
 const { TEST_CONNECTION } = await import('./helpers/wire-authority-fixture.mjs');
@@ -54,13 +53,10 @@ const { WRITE_FEE_CEILING_OS, createEffectBoundary } = await import('../src/dacs
 const { createEffectHistory } = await import('../src/dacs/effect-history.mjs');
 const { createDemDeliveryContext } = await import('../src/dacs/dem-delivery-context-consumer.mjs');
 const { anchorWriteMessage } = await import('../src/dacs/fixture-anchors.mjs');
+const { EFFECT_ANSWER, JOB_ID, LISTING_WALLET, PUBLISHED, evidenceAt, executeCounts, finalPauseSubcases, inventory, killedDirectory, passOver, railAuthority, settled, stoppingListing } = await import('./helpers/effect-path-controls.mjs');
 
-const JOB_ID = '01M5YKPJG0248H248H248H248H';
 const LISTING_ADDRESS = 'dacs1:listing:fixture-report:1';
 const PASS = Object.freeze({ operationClass: 'job-create', currentAuthorization: () => true });
-const railAuthority = () => ({ trustPhase: 'PA-1', trustPolicyAcceptsPA1: true, registry: { state: 'not-used', entries: [], definitions: [] },
-  inCodeDefinitions: [{ railId: 'demos-native:DEM', railVersion: 1, phaseHandler: 'pay-dem', governanceAnchoring: 'in-code', signatureValid: true }] });
-// The job lanes' publish inputs; the guard and the parameter check refuse before the artifact is read.
 const JOB_LANES = [
   ['commitment', { logicalAddress: `dacs3:commit:${JOB_ID}`, artifactKind: 'FinalityCommitmentRecord', artifact: {} }],
   ['delivery SettlementEvidence', { logicalAddress: `dacs4:evidence:${JOB_ID}`, artifactKind: 'SettlementEvidence', artifact: {} }],
@@ -168,7 +164,7 @@ test('a runCreate refusal after publish stored its intent makes no CREATE, and t
   assert.deepEqual(f.captured.map(({ transaction }) => transaction.content.nonce), [1], 'the retry asked the wallet once, from the nonce the refused attempt never used');
 });
 
-test('a runCreate refusal before a retained CREATE\'s resend records no recovery intent and sends nothing, so the one resend stays open for the next read', async () => {
+test('a runCreate stop refusal before a retained CREATE\'s resend leaves the read answering its readback, records no recovery intent and sends nothing, so the one resend stays open for the next read', async () => {
   const f = await anchorFixture({ signRpc: async () => 'TEST-rpc-auth' }), resends = [];
   f.source.binding = async () => ({ disposition: 'pending' });
   f.source.recoverStorageWrite = async ({ signedTransaction }) => { resends.push(signedTransaction.hash); return {}; };
@@ -182,7 +178,7 @@ test('a runCreate refusal before a retained CREATE\'s resend records no recovery
   const { input } = [...f.journal.rows.values()].find((row) => row.input);
   const resend = { resend: true, authorizeResend: () => true };
   f.controls.runCreate = refusingRunCreate;
-  await assert.rejects(f.open().read(input, resend), { code: 'seller_stopped' });
+  assert.equal(typeof (await f.open().read(input, resend)).status, 'string', 'the stopped read answers its readback');
   assert.deepEqual(resends, [], 'nothing was resent');
   assert.equal([...f.journal.rows.keys()].some((key) => key.startsWith('demo/recovery/')), false, 'no recovery intent was recorded');
   f.controls.runCreate = undefined;
@@ -504,13 +500,9 @@ for (const [label, change, refusal] of [
 
 // ---- The Listing, Vet and presentation signatures and the seller's answers through the boundary ----
 
-const LISTING_WALLET = Object.freeze({ claim: protocolSeller.claim, signBytes: protocolSeller.signBytes });
-const PUBLISHED = 'TEST_published';
 const historyOf = (directory) => createEffectHistory({ dataDirectory: directory });
 const listingLanes = (directory) => { try { return readdirSync(join(directory, 'effects')).filter((name) => name.startsWith('listing-signature-')).sort(); } catch { return []; } };
 const statesOf = async (directory, lane) => (await historyOf(directory).read(lane)).map((record) => record.state);
-const codesOf = (error) => { const codes = []; for (let link = error; link; link = link.cause ?? link.errors?.[0]) codes.push(link.code); return codes; };
-const settled = (promise) => promise.then((value) => ({ value }), (error) => ({ error, codes: codesOf(error) }));
 // Asserts that `promise` rejects with `code` somewhere in its cause chain (the Listing core wraps its callbacks' errors).
 const rejectsWith = async (promise, code, label) => {
   const { value, codes = [] } = await settled(promise);
@@ -523,18 +515,6 @@ function manualClock() {
   const timers = new Set();
   return { now: () => now, after(ms, callback) { const timer = { at: now + ms, callback }; timers.add(timer); return () => timers.delete(timer); },
     advance(ms) { now += ms; for (const timer of [...timers].sort((a, b) => a.at - b.at)) if (timer.at <= now && timers.delete(timer)) timer.callback(); } };
-}
-
-// A Listing publisher over `runCreate` whose anchor ends each publication at publish, after its signature; `sign` is the wallet's.
-function stoppingListing(runCreate, { now = T0, sign = (bytes) => LISTING_WALLET.signBytes(bytes) } = {}) {
-  const counts = { signs: 0, publishes: 0, signed: [] };
-  const anchor = { publish: async () => { counts.publishes++; throw Object.assign(new Error('TEST the publication ends at publish'), { code: PUBLISHED }); },
-    read: async () => ({ status: 'absent' }), verifyReceipt: async () => 'invalid' };
-  const publish = createDevnetDemoListingPublisher({ anchor, runCreate, scanOwnListings: async () => ({ status: 'ok', anchors: [] }), loadRailResolution: railAuthority,
-    sign: async (bytes, options) => { counts.signs++; counts.signed.push(Buffer.from(bytes)); return sign(bytes, options); } });
-  const draft = fixtureListing(LISTING_WALLET, { now });
-  delete draft.signature;
-  return { publish, draft, counts };
 }
 
 test('the Listing signature and the identity presentation are retained by signPass: each leaves one signed record with the signed bytes on its lane before the call returns, a second call for the same Listing returns those bytes with zero signer calls, a refusal after the signature keeps the signed record and adds signed-held, a signer that has not answered within 10 s on the test clock refuses eb_sign_timeout and retains nothing, and a signer that answers after the pass window but within its own 10 s is retained and refused stop_check_timeout with signed-held, after which the Listing retry reuses it with zero signer calls; two Listing drafts use two lanes; the Vet component signatures add no effect-history record', async (t) => {
@@ -676,7 +656,7 @@ test('createSellerAgent without readOnlyAnswerSigner, createWireContext with a s
   const bindings = [];
   const watched = { ...store, bind: (input) => { bindings.push(input); return store.bind(input); } };
   assert.throws(() => createWireContext({ binding, tp1Network: { connection: () => ({ ...TEST_CONNECTION }) }, signer: { claim: protocolSeller.claim, sign: protocolSeller.signBytes },
-    effectBoundary: w.effectBoundary, journal, store: watched, ready: () => true, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt }), TypeError);
+    effectBoundary: w.effectBoundary, journal, store: watched, ready: () => true, stopped: () => false, now: w.clock, agent: w.agent, requireDelegation: false, readCommitmentReceipt }), TypeError);
   assert.deepEqual(bindings, [], 'the wire context bound no store');
 
   const host = await contextHostFixture(t);
@@ -724,33 +704,7 @@ const REFUSED_RECORDS = [
   ['an approved-but-refused record', { ...TP1_APPROVED_IDENTITY_RECORD, refused: true }],
 ];
 const forgedBinding = (record) => ({ ...structuredClone(TEST_BINDING), recordDigest: core.sha256Hex(core.canonicalize(record)) });
-const EFFECT_ANSWER = Object.freeze({ request: { path: PATHS.proposals, jobId: JOB_ID }, status: 200, text: '{"disposition":"complete"}' });
 
-// Each seller inventory path of this composition over `pass` (`{ runCreate, effectBoundary, binding }`): `attempt()` runs the path once,
-// `signatures()` counts its cryptographic signer calls and `transmissions()` its wallet requests or POSTs.
-async function inventory(t, pass) {
-  const listing = stoppingListing(pass.runCreate);
-  const vet = await orchestratorFixture(t);
-  const provider = vet.provider({ runCreate: pass.runCreate });
-  const presentation = productionFixture();
-  t.after(() => presentation.base.close());
-  presentation.config.runCreate = pass.runCreate;
-  const answerSigns = { count: 0 };
-  const roles = { claim: protocolSeller.claim, sign: (bytes) => { answerSigns.count++; return protocolSeller.signBytes(bytes); }, readOnlyAnswerSigner: readOnlyRoleOf(protocolSeller) };
-  const answers = createAnswerSigners({ roles, effectBoundary: pass.effectBoundary, binding: pass.binding, local: () => ({ ...TEST_CONNECTION }) });
-  return [
-    { label: 'the Listing publication', attempt: () => settled(listing.publish(listing.draft)), signatures: () => listing.counts.signs, transmissions: () => listing.counts.publishes },
-    { label: 'the Vet component signatures through the provider\'s resolveBuyer', attempt: () => settled(provider.resolveBuyer(vet.input, { writable: () => true })),
-      signatures: () => vet.controls.signatures.length, transmissions: () => vet.controls.creates.length },
-    { label: 'the identity presentation', attempt: () => settled(presentation.run()), signatures: () => presentation.controls.signs, transmissions: () => presentation.local.writes.length },
-    { label: 'an effect-route answer', attempt: () => settled(answers.signAnswer(EFFECT_ANSWER, (signer) => signer.sign(Buffer.from('TEST-answer')))), signatures: () => answerSigns.count, transmissions: () => 0 },
-  ];
-}
-const passOver = ({ binding = TEST_BINDING, stopped = () => false } = {}) => {
-  const { effectBoundary } = testEffectBoundary({ binding, stopped });
-  return { effectBoundary, binding, runCreate: testRunCreate({ effectBoundary, stopped }).runCreate };
-};
-// The kit client's returned method over a counting fetch that answers 200.
 const countingClient = () => {
   const posts = { count: 0 };
   const client = createSellerAgentClient({ url: 'http://127.0.0.1:1', fetchImpl: async () => { posts.count++; return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }); } });
@@ -762,6 +716,7 @@ test('zero signatures and transmissions on every seller inventory path, returned
   const conditions = [
     ...REFUSED_RECORDS.map(([label, record]) => [label, () => passOver({ binding: forgedBinding(record) }), () => {}]),
     ['the stop flag set before the call', () => passOver({ stopped: () => true }), () => {}],
+    ['a KILL file present before the call', () => passOver({ stopped: createStopCheck(killedDirectory(t)) }), () => {}],
     ['a re-hold', () => passOver(), () => guard.setKitOperationGuardForTest('off')],
   ];
   for (const [condition, makePass, before] of conditions) {
@@ -802,14 +757,18 @@ async function paymentEvidenceRefusals(t) {
     assert.deepEqual({ asked: ledger.prepared.length, released: releasesOf(ledger, 'TEST-ledger-1') }, asked, `${condition}: approvals`);
     await world.wallet.close();
   }
-  let stopped = false;
-  const stopping = await walletSessionWorld(t);
-  const { session } = await stopping.finalize(() => stopped);
-  stopped = true;
-  const input = evidenceInput({ wallet: session });
-  for (const run of [() => evidenceAt(session.paymentEvidence, input), () => session.paymentEvidence.anchorEvidence(input)]) assert.ok((await settled(run())).error, 'the stop flag refuses');
-  assert.deepEqual({ signatures: signatures.length, asked: stopping.options.approve.retained.prepared.length, ...executeCounts(stopping.node) },
-    { signatures: 0, asked: 0, confirmTx: 0, broadcastTx: 0 }, 'with the stop flag set nothing is asked, signed or sent');
+  // The session's journal over each stop: the in-process flag, and the data directory's real KILL file read by the kit's check.
+  for (const stop of ['the stop flag', 'a KILL file']) {
+    let stopped = false;
+    const stopping = await walletSessionWorld(t);
+    const { session } = await stopping.finalize(stop === 'the stop flag' ? () => stopped : createStopCheck(stopping.directory));
+    if (stop === 'the stop flag') stopped = true;
+    else writeFileSync(join(stopping.directory, 'KILL'), '');
+    const input = evidenceInput({ wallet: session });
+    for (const run of [() => evidenceAt(session.paymentEvidence, input), () => session.paymentEvidence.anchorEvidence(input)]) assert.ok((await settled(run())).error, `${stop} refuses`);
+    assert.deepEqual({ signatures: signatures.length, asked: stopping.options.approve.retained.prepared.length, ...executeCounts(stopping.node) },
+      { signatures: 0, asked: 0, confirmTx: 0, broadcastTx: 0 }, `with ${stop} set nothing is asked, signed or sent`);
+  }
 }
 
 test('the approved record signs and transmits on every seller inventory path', async (t) => {
@@ -929,196 +888,8 @@ test('read-only and refusal answers are signed after the binding check only, thr
   });
 });
 
-// A pass whose authority reads and stop checks can each be paused at a chosen call: `gate.pause('authority' | 'stop', at)` holds that
-// call until `gate.resume()`; `gate.closed` makes the authority refuse and `gate.stop` makes the stop check answer true.
-async function pausablePass() {
-  const reader = authorityReader();
-  const gate = { calls: { authority: 0, stop: 0 }, at: null, held: null, closed: false, stop: false,
-    pause(kind, at) { this.calls = { authority: 0, stop: 0 }; this.at = { kind, at }; },
-    resume() { const held = this.held; this.held = null; held?.(); } };
-  const hold = async (kind) => { gate.calls[kind] += 1; if (gate.at?.kind === kind && gate.at.at === gate.calls[kind]) await new Promise((resume) => { gate.held = resume; }); };
-  const readAuthority = async (scope) => {
-    await hold('authority');
-    if (gate.closed) throw new WireError('tp1_participant_refused', 503, undefined, new Error('TEST authority closed'));
-    return reader(scope);
-  };
-  const binding = await bindTp1Profile({ record: TP1_APPROVED_IDENTITY_RECORD, local: { ...TEST_CONNECTION }, readAuthority });
-  const stopped = async () => { await hold('stop'); return gate.stop; };
-  const { effectBoundary } = testEffectBoundary({ binding, stopped });
-  return { gate, binding, effectBoundary, runCreate: testRunCreate({ effectBoundary }).runCreate };
-}
-
-// The paths whose final checks are paused outside the composed host: each `make(pass)` gives `{ attempt(), signatures(), onSign(hook), restart? }`.
-// The presentation runs over the production Vet fixture, the Listing over the isolated anchor with an issued runCreate, and the answer
-// signer over a boundary whose stop check can be paused (the host's own stop check is the process-wide stop flag, which a test cannot hold).
-const PAUSED_PATHS = [
-  ['the identity presentation', async (t, pass) => {
-    const p = productionFixture();
-    t.after(() => p.base.close());
-    p.config.runCreate = pass.runCreate;
-    const signBytes = p.config.wallet.signBytes;
-    let hook = null;
-    p.config.wallet.signBytes = (bytes, request) => { if (Buffer.from(bytes).toString().startsWith('dacs-bundle-presentation:v1:')) hook?.(bytes); return signBytes(bytes, request); };
-    return { attempt: () => settled(p.run()), signatures: () => p.controls.presentationSigns, onSign: (next) => { hook = next; } };
-  }],
-  ['the Listing signature', async (t, pass) => {
-    let hook = null;
-    const listing = stoppingListing(pass.runCreate, { sign: (bytes) => { hook?.(bytes); return LISTING_WALLET.signBytes(bytes); } });
-    return { attempt: () => settled(listing.publish(listing.draft)), signatures: () => listing.counts.signs, onSign: (next) => { hook = next; },
-      restart: () => settled(listing.publish(listing.draft)) };
-  }],
-  ['an effect-route answer', async (t, pass) => {
-    let hook = null, count = 0;
-    const roles = { claim: protocolSeller.claim, sign: (bytes) => { count++; hook?.(bytes); return protocolSeller.signBytes(bytes); }, readOnlyAnswerSigner: readOnlyRoleOf(protocolSeller) };
-    const answers = createAnswerSigners({ roles, effectBoundary: pass.effectBoundary, binding: pass.binding, local: () => ({ ...TEST_CONNECTION }) });
-    return { attempt: () => settled(answers.signAnswer(EFFECT_ANSWER, (signer) => signer.sign(Buffer.from('TEST-answer')))), signatures: () => count, onSign: (next) => { hook = next; } };
-  }],
-];
-
-// The composed host's context admission row for `jobId`: `contextRow` reads its state, `moveContextRow` rewrites its record as another
-// writer of the store would (a reclaimed attempt, or a compensation that advances its revision).
-const HOST_JOB = protocolJob, NEXT_HOST_JOB = '01J8N4YV7YVYQ4DB7M8T4C7W0B';
-const transportStore = (directory, options) => new Database(join(directory, 'transport', 'transport.sqlite'), options);
-const contextRow = (directory, jobId = HOST_JOB) => {
-  const db = transportStore(directory, { readonly: true });
-  try { return db.prepare('SELECT state FROM kit_context_admissions WHERE jobId = ?').get(jobId)?.state ?? null; } finally { db.close(); }
-};
-const moveContextRow = (directory, change, jobId = HOST_JOB) => {
-  const db = transportStore(directory);
-  try {
-    const next = change(JSON.parse(db.prepare('SELECT record FROM kit_context_admissions WHERE jobId = ?').get(jobId).record));
-    db.prepare('UPDATE kit_context_admissions SET state = ?, rev = ?, record = ? WHERE jobId = ?').run(next.state, next.rev, JSON.stringify(next), jobId);
-  } finally { db.close(); }
-};
-// Resolves once `gate` holds a call, and fails when the request ends first.
-const heldBefore = async (gate, request, name) => {
-  let ended = false;
-  void request.then(() => { ended = true; }, () => { ended = true; });
-  while (gate.held === null && !ended) await new Promise((resolve) => setImmediate(resolve));
-  assert.notEqual(gate.held, null, `${name}: paused at its final await`);
-};
-
-test('run the final pause-and-resume subcases at the real final authority and stop awaits through the composed host and the real seller routes: issuance and reclamation, rollback, closure and restart, each with its expected outcome and refusal cause; closed authority grants no signature or transmission, and the unchanged authorized control succeeds; the payment-evidence leg and the CREATE-lane matrix included', async (t) => {
-  // The composed host over the real Vet provider, its buyer through the real challenge and context routes. The control finds the final
-  // authority read and final stop check of the first Vet component signature's pass, and the final authority read of the context answer's.
-  const control = await composedVetHost(t), started = await control.start(), finals = { vet: null, answer: null };
-  control.gate.pause('none', 0);
-  control.hooks.onSign = () => { finals.vet ??= { ...control.gate.calls }; };
-  control.hooks.onEffect = () => { if (control.signatures.length === 2) finals.answer ??= { ...control.gate.calls }; };
-  const answered = await started.buyer.requestContext();
-  assert.deepEqual([answered.status, control.signatures.length], [200, 2], `the control signs both Vet records and answers: ${answered.text}`);
-  assert.ok(finals.vet.authority >= 1 && finals.vet.stop >= 1 && finals.answer.authority > finals.vet.authority, 'the control reached each signer after its checks');
-
-  for (const kind of ['authority', 'stop']) {
-    const subcases = [
-      ['the unchanged authorized control', null, null],
-      ['closure', (w) => { if (kind === 'authority') w.gate.closed = true; else w.gate.stop = true; }, kind === 'authority' ? 'tp1_participant_refused' : 'seller_stopped'],
-      ['issuance and reclamation', (w) => moveContextRow(w.dataDirectory, (row) => ({ ...row, attempt: row.attempt + 1 })), 'not-pending'],
-      ['rollback', (w) => moveContextRow(w.dataDirectory, (row) => ({ ...row, state: 'compensating', rev: row.rev + 1 })), 'not-pending'],
-    ];
-    for (const [subcase, change, code] of subcases) {
-      const name = `the Vet component signature through the composed host, final ${kind} await, ${subcase}`;
-      const w = await composedVetHost(t), { buyer } = await w.start();
-      w.gate.pause(kind, finals.vet[kind]);
-      const request = buyer.requestContext();
-      await heldBefore(w.gate, request, name);
-      change?.(w);
-      w.gate.resume();
-      const answer = await request;
-      if (change === null) {
-        assert.deepEqual([answer.status, w.signatures.length], [200, 2], `${name}: signs both Vet records and answers`);
-        continue;
-      }
-      // A closed authority grants no signature at all: the read-only role checks it too, so that refusal goes out unsigned.
-      const signedRefusal = !(subcase === 'closure' && kind === 'authority');
-      assert.deepEqual([answer.status >= 400, answer.signed, w.signatures.length], [true, signedRefusal, 0], `${name}: a refusal and no signature: ${answer.text}`);
-      assert.ok((await w.failedSteps()).includes(code), `${name}: the Vet step keeps ${code}, got ${await w.failedSteps()}`);
-    }
-
-    // Restart: the host process is killed at the final await; the host started again over its data directory and party Vet store fences the
-    // attempt at its startup sweep and signs nothing for it, and the next purchase signs each Vet record once.
-    const name = `the Vet component signature through the composed host, final ${kind} await, restart`;
-    const anchor = vetRecordAnchor(), w = await composedVetHost(t, { anchor });
-    await (await w.start()).host.close();
-    const killed = await composedVetHostProcess(t, { dataDirectory: w.dataDirectory, vetPath: w.vetPath, anchor, kind, at: finals.vet[kind] });
-    const ended = (await w.buyerFor(killed.host)).requestContext().then(() => null, (error) => error);
-    await killed.held;
-    await killed.kill();
-    assert.ok((await ended) instanceof Error, `${name}: the killed host sends no answer`);
-    assert.deepEqual([killed.signatures(), anchor.records.size, contextRow(w.dataDirectory)], [0, 0, 'running'], `${name}: the killed host signed and published nothing`);
-    const { buyer } = await w.start();
-    assert.deepEqual([contextRow(w.dataDirectory), w.signatures.length], ['compensating', 0], `${name}: the restarted host fences the attempt and signs nothing for it`);
-    const next = await buyer.requestContext(NEXT_HOST_JOB);
-    assert.deepEqual([next.status, w.signatures.length, new Set(w.signatures).size], [200, 2, 2], `${name}: the next purchase signs each Vet record once`);
-  }
-
-  // The context answer's own effect pass in the composed host, paused at its final authority read: the control answers with the effect
-  // role's signature; closed there, the answer is an unsigned refusal carrying the cause, and nothing signs it.
-  for (const [subcase, closed] of [['the unchanged authorized control', false], ['closure', true]]) {
-    const name = `the context answer through the composed host, final authority await, ${subcase}`;
-    const w = await composedVetHost(t), { buyer } = await w.start();
-    w.gate.pause('authority', finals.answer.authority);
-    const request = buyer.requestContext();
-    await heldBefore(w.gate, request, name);
-    const effectBefore = w.effectSigns();
-    w.gate.closed = closed;
-    w.gate.resume();
-    const answer = await request;
-    if (!closed) {
-      assert.deepEqual([answer.status, w.effectSigns() - effectBefore], [200, 1], `${name}: the effect role signs the answer`);
-      continue;
-    }
-    assert.deepEqual([answer.status >= 400, answer.signed, answer.body.error, w.effectSigns() - effectBefore], [true, false, 'tp1_participant_refused', 0], `${name}: ${answer.text}`);
-  }
-
-  // The paths that run outside the composed host (see PAUSED_PATHS).
-  for (const [label, make] of PAUSED_PATHS) {
-    // The control finds where the final authority read and stop check of the first signature's pass are: the last of each before the signer.
-    const probe = await pausablePass(), probed = await make(t, probe);
-    let finals = null;
-    probe.gate.pause('none', 0);
-    probed.onSign(() => { finals ??= { ...probe.gate.calls }; });
-    await probed.attempt();
-    assert.ok(finals !== null && finals.authority >= 1 && finals.stop >= 1, `${label}: the control reached its signer after its checks`);
-    for (const kind of ['authority', 'stop']) {
-      const subcases = [
-        ['the unchanged authorized control', null, null],
-        ['closure', (target, gate) => { if (kind === 'authority') gate.closed = true; else gate.stop = true; }, kind === 'authority' ? 'tp1_participant_refused' : 'seller_stopped'],
-        ['issuance and reclamation', 'reclaim', 'not-pending'],
-        ['rollback', 'rollback', 'not-pending'],
-        ['restart', 'restart', null],
-      ];
-      for (const [subcase, change, code] of subcases) {
-        const pass = await pausablePass(), target = await make(t, pass);
-        if (typeof change === 'string' && target[change] === undefined) continue;
-        pass.gate.pause(kind, finals[kind]);
-        const outcome = target.attempt();
-        for (let turn = 0; turn < 500 && pass.gate.held === null; turn++) await new Promise((resolve) => setImmediate(resolve));
-        assert.notEqual(pass.gate.held, null, `${label}, ${kind}, ${subcase}: paused at the final ${kind} await`);
-        const name = `${label}, final ${kind} await, ${subcase}`;
-        if (subcase === 'restart') {
-          // The paused process dies there; a new process over the same durable state signs the same signature at most once.
-          const restarted = await target.restart();
-          const signedAfterRestart = target.signatures();
-          pass.gate.stop = true;
-          pass.gate.resume();
-          await outcome;
-          assert.ok(signedAfterRestart <= 1 && target.signatures() === signedAfterRestart, `${name}: no second signature (${signedAfterRestart}, ${restarted.codes ?? 'answered'})`);
-          continue;
-        }
-        if (typeof change === 'string') target[change](); else change?.(target, pass.gate);
-        pass.gate.resume();
-        const result = await outcome;
-        if (change === null) {
-          assert.ok(target.signatures() >= 1, `${name}: signs`);
-          continue;
-        }
-        assert.equal(target.signatures(), 0, `${name}: no signature`);
-        assert.ok(result.codes?.includes(code) || JSON.stringify(result.value ?? {}).includes(code), `${name}: refused ${code}, got ${result.codes} ${JSON.stringify(result.value)}`);
-      }
-    }
-  }
-});
+test('run the final pause-and-resume subcases at the real final authority and stop awaits through the composed host and the real seller routes: issuance and reclamation, rollback, closure and restart, each with its expected outcome and refusal cause; closed authority grants no signature or transmission, and the unchanged authorized control succeeds; the payment-evidence leg and the CREATE-lane matrix included',
+  (t) => finalPauseSubcases(t, 'the stop flag'));
 
 // Runs `change(w)` at the boundary's stop read inside the dispatch pass of the world's next answer: after the answer is stored,
 // while the pass awaits its reads, and before its synchronous callback.
@@ -1181,9 +952,6 @@ test('an answer carrying the co-signature is withheld when the context session e
 
 // ---- The payment-evidence lane through the boundary ----
 
-// An authorized ensureEvidence of `journal` for `input`.
-const evidenceAt = (journal, input, authorize = () => true) => journal.ensureEvidence({ ...input, expectedJournalId: journal.journalId, authorize });
-const executeCounts = (node) => Object.fromEntries(['confirmTx', 'broadcastTx'].map((stage) => [stage, node.reads.filter((read) => read === stage).length]));
 const REFUSED_BROADCAST = () => jsonResponse({ result: 400, response: 'TEST-refused' });
 // Runs `call` while the node refuses every broadcast, so the CREATE it signs is kept and unsent.
 async function keptUnsent(node, call) {

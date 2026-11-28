@@ -87,7 +87,7 @@ import { createWireContext } from './dacs/seller-wire-requests.mjs';
 import { operatorBuyerAccessConfig } from './devnet-demo/buyer-access.mjs';
 import { DURABLE_SYNC } from './devnet-demo/durable-file.mjs';
 import { isSellerWalletSession } from './devnet-demo/seller-wallet-session.mjs';
-import { stopRequested } from './devnet-demo/stop-request.mjs';
+import { createStopCheck } from './kill-switch.mjs';
 import { acquireSellerStateLock } from './devnet-demo/seller-state-lock.mjs';
 import { assertKitOperationAdmitted } from './kit-operation-guard.mjs';
 import { isPrivateDirectory } from './private-directory.mjs';
@@ -301,6 +301,8 @@ function admitListener(listener, listing) {
 // constructed capability (it needs `recoverBuyer`, `resumableBuyer` and
 // `bindRetainedScope`) is refused with a TypeError before the lock, and a startup
 // sweep that cannot record a row it visited refuses startup with its AggregateError.
+// While `<dataDirectory>/KILL` exists (any entry, or one the host cannot inspect) every effect refuses `seller_stopped`;
+// signed reads, refusals and readback stay available, and close() drains as before.
 export async function startSellerHost(options) {
   assertKitOperationAdmitted('startSellerHost');
   if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('seller host options must be an object');
@@ -325,6 +327,8 @@ export async function startSellerHost(options) {
   if (!Number.isSafeInteger(maxReservationUnits) || maxReservationUnits < 1) throw new TypeError('maxReservationUnits must be a positive integer');
   if (typeof dataDirectory !== 'string' || !isAbsolute(dataDirectory)) throw new TypeError('dataDirectory must be an absolute path');
   if (!isPrivateDirectory(dataDirectory)) throw new TypeError('dataDirectory must be an existing private (mode 0700) directory owned by this user, given as its absolute real path');
+  // The process stop flag or `<dataDirectory>/KILL`, read again at every boundary that makes or admits an effect.
+  const isStopped = createStopCheck(dataDirectory);
   if ((observeDemosTransfer !== undefined && typeof observeDemosTransfer !== 'function') || typeof now !== 'function') throw new TypeError('now and any supplied observeDemosTransfer must be functions');
   // DACS-4 PC-7(b): the answers that let the agent sign the same evidence
   // again (`unsigned`) come only from the package's wallet journal,
@@ -366,7 +370,7 @@ export async function startSellerHost(options) {
     const generation = randomBytes(16).toString('hex');
     await assertKitDataFormat(dataDirectory, DURABLE_SYNC);
     // Stages four and five: the effect history, the host's one effect boundary and the finalized wallet session, under the lock.
-    const { effectBoundary } = await stages.finalize({ dataDirectory, stopped: stopRequested, stateLock: lock });
+    const { effectBoundary } = await stages.finalize({ dataDirectory, stopped: isStopped, stateLock: lock });
     const transport = join(dataDirectory, 'transport');
     const journalDirectory = join(dataDirectory, JOURNAL_DIRECTORY);
     if (!existsSync(join(dataDirectory, TRANSPORT_STORE_FILE))) assertJournalHoldsNoAccounting(journalDirectory);
@@ -375,7 +379,7 @@ export async function startSellerHost(options) {
     mkdirSync(transport, { recursive: true, mode: 0o700 });
     // Without an operator reader the host reads abandoned purchases itself; the reader is set once the admission records and the journal exist.
     let abandonedPurchaseState = () => null;
-    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: stopRequested,
+    const store = createSellerTransportStore({ path: join(dataDirectory, TRANSPORT_STORE_FILE), maxJobs, maxRecords, now, generation, stopped: isStopped,
       contextSessionState: contextSessionState ?? ((target) => abandonedPurchaseState(target)),
       wireOperationView: (target) => inspectWireOperation(journal, target), retainsUnfinishedWork: (target) => agent.retainsUnfinishedWork(target) });
     opened.push(() => store.close());
@@ -412,10 +416,10 @@ export async function startSellerHost(options) {
     // The seller takes new purchases until it stops or the reconciliation found a mismatch. A context row with unfinished cleanup keeps
     // its own hold and slot, so it needs no refusal of other buyers.
     const sellerReady = () => !stopping && reconciliation.ready;
-    // Stopped by the process stop flag or by this host's own close.
-    const hostStopped = () => stopping || stopRequested();
+    // Stopped by the process stop flag, by KILL or by this host's own close.
+    const hostStopped = () => stopping || isStopped();
     const admission = createContextAdmissionTransaction({ store, policy: NO_HOLD_POLICY, capacity, effectEvidence: vetAddressEvidence(artifact.anchor), inspectContextOutcome: contextOperationView(journal, sellerClaim),
-      completeWire: (effect, outcome) => completeWireEffect(journal, effect, outcome), now, ready: sellerReady, deadlines: { policyMs: CONTEXT_POLICY_DEADLINE_MS } });
+      completeWire: (effect, outcome) => completeWireEffect(journal, effect, outcome), now, ready: sellerReady, stopped: isStopped, deadlines: { policyMs: CONTEXT_POLICY_DEADLINE_MS } });
     admissionRecord = (jobId) => admission.admissionRecord(jobId);
     abandonedPurchaseState = createAbandonedPurchaseState({ admissionRecord: admission.admissionRecord, now, agreementDeadline: agent.retainedAgreementDeadline,
       operationState: ({ jobId, path }) => inspectWireOperation(journal, { jobId, seller: sellerClaim, path }).state,

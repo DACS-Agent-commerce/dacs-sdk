@@ -44,6 +44,7 @@ import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, demosSr2TxRef } f
 import { buildStorageProgramCreatePayload, deriveStorageAddress, MAX_STORAGE_ARTIFACT_BYTES } from '../dacs/wallet-transactions.mjs';
 import { addressForClaim, verifyDemosSignature } from '../dacs/demos-claims.mjs';
 import { assertKitOperationAdmitted, kitOperationAdmitted } from '../kit-operation-guard.mjs';
+import { readStopPredicate } from '../kill-switch.mjs';
 import {
   DEVNET_AGREEMENT_PROFILE,
   DEVNET_DEMO_ARTIFACT_KIND,
@@ -82,6 +83,8 @@ const RESEND_OPTION_REFUSED=Object.freeze({status:'rejected',reason:'the resend 
 const RESEND_UNAUTHORIZED=Object.freeze({status:'rejected',reason:'a resend needs the caller\'s authorization check (authorizeResend)'});
 // The recovery row of a resend the transport reported as never dispatched: its one resend is still unused.
 const UNSENT_RECOVERY_STAGE='unsent';
+// The codes a stop gives inside runCreate: the kit boundary and the pass (seller_stopped), the client boundary (writes_stopped).
+const STOP_REFUSALS=new Set(['seller_stopped','writes_stopped']);
 // The kit effect boundary's lane of every wallet CREATE and resend this anchor runs through runCreate.
 const SELLER_WALLET_LANE='seller-wallet';
 // The refusal of a read's resend options, or null when they are usable.
@@ -183,10 +186,14 @@ export function createDevnetDemoArtifactAnchor(options) {
 // its expected chain identity from them (see createDemosSr2Adapter).
 // options.runCreate: createSellerCreatePass's runCreate. Every wallet CREATE and the
 // one resend of a retained CREATE run inside it; a TypeError without it.
-function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,signer,buyerAccess=null,now=()=>Date.now(),vetMode:vetModeOption,binding,observeIdentity,runCreate},ports={}) {
+// options.stopped: the host's synchronous stop check (shutdown or KILL). While it
+// answers stopped, a read stays readback only and starts no resend; a TypeError without it.
+function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,signer,buyerAccess=null,now=()=>Date.now(),vetMode:vetModeOption,binding,observeIdentity,runCreate,stopped},ports={}) {
   const vetMode=sellerFulfilmentVetModeOf(vetModeOption);
   if(vetMode===null) throw new TypeError('unsupported Vet mode');
   if(typeof runCreate!=='function') throw new TypeError('runCreate from createSellerCreatePass is required');
+  if(typeof stopped!=='function') throw new TypeError('stopped, the host\'s stop check, is required');
+  const isStopped=()=>readStopPredicate(stopped).stopped;
   // Only the seller's own Listing has no purchase. Every other write, new or
   // retained, belongs to a job whose current buyer must be admitted first.
   const access=operatorBuyerAccessConfig(buyerAccess);
@@ -261,12 +268,13 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // A resend is off unless asked for, and then only after authorizeResend (the
   // caller's own check, asked in recoverExactRetainedCreate, under the recovery
   // lock, right before the resend is recorded) answers exactly true. Anything else sends nothing and
-  // records nothing; a throw from it reaches the caller with its cause.
+  // records nothing; a throw from it reaches the caller with its cause. While the host's
+  // stop check answers stopped, the read answers its readback and resends nothing.
   async function observeSource(hash,projection,writeProof,{resend=false,refused=false,authorizeResend,currentAuthorization=authorizeResend}={}) {
     if(resend&&typeof authorizeResend!=='function')fail('invalid','a resend needs the caller\'s authorization check');
     let observed=await sourceCapability.binding({phase:'readback',address:owner,hash,...(writeProof?{writeProof}:{})});
-    // While the kit's guard is off every read, resend-enabled lane reconcilers included, stays readback only.
-    if(resend && kitOperationAdmitted() && (observed.disposition==='pending'||refused&&observed.disposition==='absent') && signRpc && projection?.content?.type==='storageProgram') {
+    // While the kit's guard is off or the host is stopped, every read, resend-enabled lane reconcilers included, stays readback only.
+    if(resend && kitOperationAdmitted() && !isStopped() && (observed.disposition==='pending'||refused&&observed.disposition==='absent') && signRpc && projection?.content?.type==='storageProgram') {
       await recoverExactRetainedCreate({hash,signedTransaction:projection,authorizeResend,currentAuthorization});
       observed=await sourceCapability.binding({phase:'readback',address:owner,hash});
     }
@@ -279,6 +287,9 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
   // The resend runs in runCreate. Its current-authorization check (publish's own check, or for a read the caller's resend check)
   // is asked synchronously before each RPC-authentication signature and transmission; one that answers asynchronously refuses.
   // The intent is recorded inside that pass, so a refusal before it leaves the one resend unused.
+  // The host's stop is read again after the caller's check, with no await before runCreate, and a stop refusal from runCreate
+  // itself (seller_stopped or writes_stopped) ends the resend without a record: the read answers its readback. Any other
+  // runCreate error reaches the caller unchanged.
   async function recoverExactRetainedCreate({hash,signedTransaction,authorizeResend,currentAuthorization}) {
     const recoveryKey=`demo/recovery/${hash}`;
     await journal.withWalletLock(recoveryKey,async()=>{
@@ -291,10 +302,17 @@ function assembleArtifactAnchor({sourceCapability,journal,walletFactory,network,
       }
       await assertQualifiedDeployment(sourceCapability);
       if(await authorizeResend()!==true)return;
-      const answer=await runCreate({operationId:recoveryKey,lane:SELLER_WALLET_LANE,operationClass:'job-create',currentAuthorization},async({guardedSigner})=>{
-        await journal.put(recoveryKey,{stage:'intent',projectionHash});
-        return sourceCapability.recoverStorageWrite({signedTransaction,signRpc:guardedSigner(signRpc)});
-      });
+      if(isStopped())return;
+      let answer;
+      try {
+        answer=await runCreate({operationId:recoveryKey,lane:SELLER_WALLET_LANE,operationClass:'job-create',currentAuthorization},async({guardedSigner})=>{
+          await journal.put(recoveryKey,{stage:'intent',projectionHash});
+          return sourceCapability.recoverStorageWrite({signedTransaction,signRpc:guardedSigner(signRpc)});
+        });
+      } catch(error) {
+        if(STOP_REFUSALS.has(error?.code))return;
+        throw error;
+      }
       await journal.put(recoveryKey,{stage:answer?.resent===false?UNSENT_RECOVERY_STAGE:'issued',projectionHash});
     });
   }

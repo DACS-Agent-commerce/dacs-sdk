@@ -65,9 +65,34 @@ after(async () => {
 
 async function openSeller(events = []) {
   const approve = async () => { events.push('approval'); return true; };
-  const opened = await custody.openTestWalletCustody({ directory, role: 'seller', publicOrigin: ORIGIN, transactionTransport: TRANSPORT, approve });
+  const opened = await custody.openTestWalletCustody({ directory, role: 'seller', publicOrigin: ORIGIN, transactionTransport: TRANSPORT, approve, stopped: () => false });
   return opened.wallet;
 }
+
+// The adapter over a session stand-in that records the options it is constructed with, then refuses to open.
+const sessionStandIn = `
+const state = globalThis.${STATE_NAME};
+export const createDevnetAgreementWalletTransport = (transport) => transport;
+export function createSdkWalletSession(options) { state.sessionOptions.push(options); throw new Error('TEST session stand-in'); }
+`;
+async function adapterOverSessionStandIn() {
+  return privateModule(new URL('../src/devnet-demo/operator-custody.mjs', import.meta.url), [], (source) => source
+    .replace("'../../public/portal/embedded-wallet/sdk-provider.mjs'", quoted(dataUrl(sessionStandIn)))
+    .replace("'../wallet/demos-signature.mjs'", quoted(CLAIMS_URL.href))
+    .replace("'../../public/portal/embedded-wallet/demos-runtime.mjs'", quoted(dataUrl(demosRuntimeStandIn))));
+}
+
+test('the custody wallet with a transport needs the host stop check and hands that same function to its wallet session', async () => {
+  const adapter = await adapterOverSessionStandIn();
+  globalThis[STATE_NAME].sessionOptions = [];
+  const opening = { directory, role: 'seller', publicOrigin: ORIGIN, transactionTransport: TRANSPORT, approve: async () => true };
+  await assert.rejects(adapter.openTestWalletCustody(opening), { name: 'TypeError', message: 'stop_seam_invalid' });
+  assert.deepEqual(globalThis[STATE_NAME].sessionOptions, [], 'no session is constructed without the stop check');
+  const stopped = () => false;
+  await assert.rejects(adapter.openTestWalletCustody({ ...opening, stopped }), /TEST session stand-in/);
+  assert.equal(globalThis[STATE_NAME].sessionOptions.length, 1);
+  assert.equal(globalThis[STATE_NAME].sessionOptions[0].stopped, stopped, 'the session received the exact stop check');
+});
 const signMessage = { method: 'sign', params: ['TEST message'] };
 
 test('the custody wallet built with a transport tells callers it checks authorization right before signing', async () => {
@@ -83,6 +108,22 @@ test('a request whose authorize refuses after the operator approved it signs not
   assert.equal(answer.error.code, 'internal_error');
   assert.deepEqual(events, ['approval', 'authorization'], 'authorize ran once, after the approval');
   assert.equal(globalThis[STATE_NAME].signatures, before, 'nothing was signed');
+});
+
+test('an approved write whose broadcast a stop refused after the broadcast-started marker is settled unknown, and no record written after the marker releases its hold', async () => {
+  const settled = [];
+  const approve = Object.assign(async () => true, { settle: async (request, outcome) => { settled.push([request.id, outcome]); } });
+  const attempt = custody.createOperatorApprovalAttempt(approve);
+  const refused = { success: false, data: null, error: { code: 'writes_stopped' } };
+  for (const [id, records, outcome] of [['started', ['broadcast-started'], 'unknown'], ['later record', ['broadcast-started', 'signed-held'], 'unknown']]) {
+    const answer = await attempt.run(async () => {
+      await attempt.approve({ id });
+      for (const stage of records) attempt.issuing({ stage });
+      return refused;
+    });
+    assert.equal(answer, refused);
+    assert.deepEqual(settled.at(-1), [id, outcome]);
+  }
 });
 
 test('a request whose authorize allows it is signed', async () => {

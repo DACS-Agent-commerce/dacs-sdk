@@ -22,8 +22,8 @@ import { OPERATOR_CLOSING } from './operator-approval.mjs';
 import { createSellerNodeWallet } from './seller-node-wallet.mjs';
 
 const OPTIONS = Object.freeze(['endpoint', 'transportAuthority', 'fetchImpl', 'signer', 'loadKeyRecord', 'approve', 'approvalMode', 'journalMode', 'publications',
-  'diagnostics', 'clock', 'buyerAccess', 'participantImplementations', 'sessionOf']);
-const NODE_AUTHORITY_READER_INPUTS = Object.freeze(['owner', 'claim', 'chain', 'participantImplementations', 'sessionOf']);
+  'diagnostics', 'clock', 'buyerAccess', 'participantImplementations', 'sessionOf', 'trustedFinality']);
+const NODE_AUTHORITY_READER_INPUTS = Object.freeze(['owner', 'claim', 'chain', 'participantImplementations', 'sessionOf', 'trustedFinality']);
 const ANCHOR_METHODS = Object.freeze(['publish', 'read', 'readRetained', 'retainedSignedCreate', 'hasIntent', 'verifyReceipt']);
 const ARTIFACT_SOURCE = 'dacs-devnet-demo-native-artifacts/v1';
 // The kit host's one Vet mode (KIT_TP1_VET_MODE in host.mjs).
@@ -47,34 +47,39 @@ function checkOptions(options) {
   if (options === null || typeof options !== 'object') throw new TypeError('createSellerWalletSession options must be an object');
   const unknown = Object.keys(options).filter((name) => !OPTIONS.includes(name));
   if (unknown.length) throw new TypeError(`unknown createSellerWalletSession option: ${unknown.join(', ')}`);
-  const { signer, loadKeyRecord, publications, participantImplementations, sessionOf } = options;
+  const { signer, loadKeyRecord, publications, participantImplementations, sessionOf, trustedFinality } = options;
   if (typeof signer?.claim !== 'string' || typeof signer.sign !== 'function') throw new TypeError('signer must be { claim: string, sign: function }');
   if (typeof loadKeyRecord !== 'function') throw new TypeError('loadKeyRecord must be a function');
   if (typeof publications?.demoArtifactPublication?.authority !== 'string') throw new TypeError('publications.demoArtifactPublication.authority must be a string');
   if (participantImplementations !== undefined && typeof participantImplementations?.entriesFor !== 'function') throw new TypeError('participantImplementations must be { entriesFor: function }');
   if (sessionOf !== undefined && typeof sessionOf !== 'function') throw new TypeError('sessionOf must be a function');
+  if (trustedFinality !== undefined && (trustedFinality === null || typeof trustedFinality !== 'object' || Object.getPrototypeOf(trustedFinality) !== Object.prototype)) {
+    throw new TypeError('trustedFinality must be a plain object');
+  }
 }
 
 /**
  * Returns frozen `{ authority, connectionAuthority, sessionAdmission, readCommitmentReceipt, observePayment }` over a node
  * transport owner. The first two are the read-only pair createConnectionAuthorityReader builds (`claim` is the capability's claim
  * reader); they answer the connection scope only. The other three are createNodeChainReaders' over `claim`, the late-bound
- * `chain()` thunk, `participantImplementations` and `sessionOf`, each optional: a reader whose input is missing rejects
- * reader_input_missing. Building reads, signs and opens nothing.
- * Throws TypeError for an input other than these five, and the client's TypeError for a refused owner or claim.
+ * `chain()` thunk, `participantImplementations`, `sessionOf` and `trustedFinality`, each optional: a reader whose input is missing
+ * rejects reader_input_missing. Building reads, signs and opens nothing.
+ * Throws TypeError for an input other than these six, and the client's TypeError for a refused owner or claim.
  */
 export function createNodeAuthorityReader(inputs) {
   const extra = Object.keys(inputs ?? {}).filter((name) => !NODE_AUTHORITY_READER_INPUTS.includes(name));
   if (extra.length) throw new TypeError(`unknown createNodeAuthorityReader input: ${extra.join(', ')}`);
-  const { owner, claim, chain, participantImplementations, sessionOf } = inputs;
-  return Object.freeze({ ...createConnectionAuthorityReader({ owner, claim }), ...createNodeChainReaders({ claim, chain, participantImplementations, sessionOf }) });
+  const { owner, claim, chain, participantImplementations, sessionOf, trustedFinality } = inputs;
+  return Object.freeze({ ...createConnectionAuthorityReader({ owner, claim }),
+    ...createNodeChainReaders({ claim, chain, participantImplementations, sessionOf, trustedFinality }) });
 }
 
 // The one place the kit builds the artifact anchor over a finalized session, with the host's binding and connection reader.
-// Its wallet CREATEs and resends run through runCreate, the port's one pass over the host's effect boundary and this session.
-function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, binding, observeIdentity, runCreate }) {
+// Its wallet CREATEs and resends run through runCreate, the port's one pass over the host's effect boundary and this session;
+// `stopped`, the host's stop check, keeps a read under a stop to its readback.
+function composeSellerArtifactAnchor({ session, signer, buyerAccess, clock, binding, observeIdentity, runCreate, stopped }) {
   return createDevnetDemoArtifactAnchor({ sourceCapability: session.transport, journal: session.artifactJournal, walletFactory: session.walletFactory,
-    network: session.transport.pins.network, signer, buyerAccess, now: () => clock.now(), vetMode: VET_MODE, binding, observeIdentity, runCreate });
+    network: session.transport.pins.network, signer, buyerAccess, now: () => clock.now(), vetMode: VET_MODE, binding, observeIdentity, runCreate, stopped });
 }
 
 // The session's payment-evidence journal, which signs and sends only in runCreate passes and asks its approvals before them,
@@ -108,7 +113,9 @@ function withPaymentEvidence(finalized, { journal, nativePaymentEvidence, endApp
  * `loadKeyRecord()` (resolves fresh `dacs-seller-key/v1` bytes), `approve`, `approvalMode`, `journalMode`, `publications` and
  * `diagnostics` (passed to the seller Node wallet; see finalize for a `TP1-` label), `clock` (wall-clock milliseconds, `Date.now` by default),
  * `buyerAccess` (the anchor's, `null` by default), and the chain readers' optional host inputs `participantImplementations`
- * `{ entriesFor(claim, { sessionId, signal }) }` (the host's enrollment source) and `sessionOf(jobId)` (the seller's durable session view).
+ * `{ entriesFor(claim, { sessionId, signal }) }` (the host's enrollment source), `sessionOf(jobId)` (the seller's durable session view)
+ * and `trustedFinality` (a plain object: the operator's pinned finality checkpoint from the seller's configuration; without it the
+ * revocation reader asks the node for no storage proof or finalized head).
  * Returns a frozen port `{ authority, connectionAuthority, sessionAdmission, readCommitmentReceipt, observePayment, artifactAnchor, runCreate,
  * finalize(input), close() }`:
  * - `authority` is the read-only capability (no sign or send); its `claim()` throws wallet_session_not_finalized until finalize.
@@ -140,7 +147,7 @@ function withPaymentEvidence(finalized, { journal, nativePaymentEvidence, endApp
  * `endpoint` is a canonical root URL over https: the session signs and sends, and plain http carries no authentication, so a
  * plain-http root refuses transport_mismatch. Binding then refuses a node whose live chain is another before any key load or signature.
  * Throws KitOperationGuardError, TypeError naming a malformed option (a `participantImplementations` without `entriesFor`, a
- * `sessionOf` that is not a function, among others), or the client's transport_mismatch. `finalize` rejects with
+ * `sessionOf` that is not a function, a `trustedFinality` that is not a plain object, among others), or the client's transport_mismatch. `finalize` rejects with
  * KitOperationGuardError, wallet_session_finalize_once, wallet_session_closed (the wallet build's refusal as `cause` when it failed),
  * wallet_session_boundary_mismatch, the wire's tp1_* refusal (also the token admission's, before the key load), SellerKeyError(seller_key_format_invalid) for a key value that is not a
  * Uint8Array, the key loader's own error, the seller Node wallet's refusal (authority_unbound, or profile_not_admitted while purchase actions are held),
@@ -150,7 +157,7 @@ export function createSellerWalletSession(options) {
   assertKitOperationAdmitted('createSellerWalletSession');
   checkOptions(options);
   const { endpoint, transportAuthority, fetchImpl, signer, loadKeyRecord, approve, approvalMode, journalMode, publications, diagnostics,
-    clock = { now: () => Date.now() }, buyerAccess = null, participantImplementations, sessionOf } = options;
+    clock = { now: () => Date.now() }, buyerAccess = null, participantImplementations, sessionOf, trustedFinality } = options;
   const owner = createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl });
   let finalizeCalled = false, closed = false, closing = null, session = null, anchor = null, finalizedRunCreate = null, finalizedChain = null;
   // The finalized session the chain readers read through: wallet_session_closed after a close, wallet_session_not_finalized before finalize.
@@ -163,7 +170,7 @@ export function createSellerWalletSession(options) {
     if (closed) throw sessionClosed();
     if (anchor === null) throw notFinalized();
     return signer.claim;
-  }, chain, participantImplementations, sessionOf });
+  }, chain, participantImplementations, sessionOf, trustedFinality });
   // The anchor readback's observeIdentity({ signal, timeoutMs }): the chain identity of the connection decision, which the readback
   // compares with the binding, or undefined for a connection the reader cannot authenticate. An aborted signal refuses before the read;
   // the wait ends at the readback's remaining time, at most AUTHORITY_READ_TIMEOUT_MS. Any other read error is the reader's own.
@@ -243,7 +250,7 @@ export function createSellerWalletSession(options) {
         const finalized = sessionOver(wallet);
         const { runCreate } = createSellerCreatePass({ effectBoundary, session: finalized, stopped, feeCeilingOs, clock });
         evidence = composeSellerPaymentEvidence({ runCreate, wallet, dataDirectory, clock, binding, observeIdentity: observeConnectionIdentity });
-        const composedAnchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity, runCreate });
+        const composedAnchor = composeSellerArtifactAnchor({ session: finalized, signer, buyerAccess, clock, binding, observeIdentity: observeConnectionIdentity, runCreate, stopped });
         const composed = withPaymentEvidence(finalized, evidence);
         anchor = composedAnchor;
         finalizedRunCreate = runCreate;

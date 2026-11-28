@@ -70,7 +70,7 @@ async function firstProposalWorld(t, { clientPackage = false, timeoutMs } = {}) 
   const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
   const hostWire = createWireContext({ binding: wire.binding, tp1Network: { connection, readAuthority: authorityReader() }, signer: { ...sellerSigner, readOnlyAnswerSigner: readOnlyRoleOf(sellerSigner) },
     effectBoundary: testEffectBoundary({ binding: wire.binding, currentLocal: connection }).effectBoundary,
-    journal, store, ready: () => true, now: clock, agent, requireDelegation: false, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }),
+    journal, store, ready: () => true, stopped: () => false, now: clock, agent, requireDelegation: false, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }),
     readCommitmentReceipt: () => { throw new Error('TEST commitment read must not run'); } });
   const handler = createSellerHttpHandler(agent, { wire: hostWire });
   const client = (clientPackage ? fetchClient(createSellerHttpsClient) : signedBuyerClient)({ url: clientPackage ? FIXTURE_ENDPOINT : 'http://127.0.0.1:1', ...(timeoutMs === undefined ? {} : { timeoutMs }), authentication: {

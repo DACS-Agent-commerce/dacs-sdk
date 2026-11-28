@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add the approved record pins module shared by the node wallet session and the keyless Agreement transport",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/approved-record-pins.mjs",
+      "before": null,
+      "after": "71fcff3f6a7944291b5fd4bca18fbac0b9527dde"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-0631ee3f08a9.json",
+    "packages/dacs-client/src/wallet/approved-record-pins.mjs"
+  ]
+}

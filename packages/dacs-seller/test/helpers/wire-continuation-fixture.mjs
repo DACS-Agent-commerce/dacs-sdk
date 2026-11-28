@@ -73,7 +73,7 @@ export async function wireRouteFixture(t, { agent, listing, buyer, seller, store
   const { store: rawStore, capacity } = boundPurchaseOf(store);
   const reservations = createReservationCoordinator({ accounting: store.reservationAccounting, capacity, inspectOperation: (target) => inspectWireOperation(journal, target) });
   const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection: buyerWire.connection }, signer: { ...seller, readOnlyAnswerSigner: readOnlyRoleOf(seller) },
-    effectBoundary: testEffectBoundary({ binding: buyerWire.binding, currentLocal: buyerWire.connection }).effectBoundary, store, ready: () => true, now, agent, requireDelegation,
+    effectBoundary: testEffectBoundary({ binding: buyerWire.binding, currentLocal: buyerWire.connection }).effectBoundary, store, ready: () => true, stopped: () => false, now, agent, requireDelegation,
     journal, signedListing, readCommitmentReceipt, reservations, completion: createOrdinaryCompletionPort({ journal, store: rawStore, capacity }) });
   return { wire, buyerWire, createBuyer };
 }

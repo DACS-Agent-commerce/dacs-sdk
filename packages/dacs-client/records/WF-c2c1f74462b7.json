@@ -1,0 +1,27 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged manifest, wallet provider and Node wallet session after carrying the base up",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "ad93b3411d7fd2c065fe62e5f476b01b86625aaf",
+      "after": "ad93b3411d7fd2c065fe62e5f476b01b86625aaf"
+    },
+    {
+      "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "before": "f157603e558bf66199d2c903b758a297bd7a33cd",
+      "after": "f157603e558bf66199d2c903b758a297bd7a33cd"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/node-wallet-session.mjs",
+      "before": "2f775ca42e291ede190f6b14c26becbe473a8c9d",
+      "after": "2f775ca42e291ede190f6b14c26becbe473a8c9d"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-c2c1f74462b7.json"
+  ],
+  "note": "The base and this side each recorded the client manifest, the wallet provider and the Node wallet session. This record chooses the merged copies, which keep the base's changes (the host stop check in the wallet provider, and its manifest and session changes) and this side's own."
+}
