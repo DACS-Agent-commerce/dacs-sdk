@@ -167,6 +167,12 @@ describe("testnet wallet-spend authority settings", () => {
       "https://127.0.0.1:3199",
       "http://192.0.2.1:3199",
       "http://127.0.0.1",
+      "http://[::1]",
+      "http://127.0.0.1:",
+      "http://127.0.0.1:65536",
+      "http://127.0.0.1\\:80/..",
+      "http://127.0.0.1/?port=:80",
+      "http://127.0.0.1/#port=:80",
       "http://127.0.0.1:3199/x",
       "http://127.0.0.1:3199/?q=1",
       "http://127.0.0.1:3199/#part",
@@ -189,6 +195,25 @@ describe("testnet wallet-spend authority settings", () => {
       });
       expect(loaded.settings.listen).toEqual({ hostname, port: 3199 });
     }
+  });
+
+  it.each([
+    ["http://127.0.0.1:0", "127.0.0.1", 0],
+    ["http://127.0.0.1:1", "127.0.0.1", 1],
+    ["http://127.0.0.1:80", "127.0.0.1", 80],
+    ["http://127.0.0.1:080", "127.0.0.1", 80],
+    ["http://127.0.0.1:65535", "127.0.0.1", 65535],
+    ["http://[::1]:80", "::1", 80],
+    ["http://[::1]:080", "::1", 80],
+    ["http://localhost:80/", "localhost", 80],
+    ["http://127.3.2.1:80", "127.3.2.1", 80],
+  ] as const)("loads the explicit listen port in %s", async (url, hostname, port) => {
+    const { environment } = await fixture();
+    const loaded = await loadDacsWalletSpendTestnetAuthoritySettingsV1({
+      ...environment,
+      DACS_WALLET_AUTHORITY_URL: url,
+    });
+    expect(loaded.settings.listen).toEqual({ hostname, port });
   });
 
   it("refuses unsafe or malformed secrets without echoing them", async () => {
