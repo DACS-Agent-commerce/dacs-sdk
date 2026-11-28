@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "fix(client): count the delivery transport entry in the keystore export check",
+  "sha": "2b2487a2323123960743123a02abb3c80d8ff0ff",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+      "before": "5059c3b87c87881bbe800d8123dc03119e302791",
+      "after": "212d7ce451179f592e3e611de36b728c89e054bc"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/test/keystore-wallet-session.test.mjs"
+  ]
+}
