@@ -31,7 +31,7 @@ import { verifyDemosSignature, claimForAddress, decodeSignature } from '../signa
 import { attachIdentityPresentation, buildUnsignedIdentityBundle, verifyComponent } from './listing.mjs';
 import { createSellerHttpsClient, sellerEndpointOrigin, SELLER_REQUEST_POLICY, SellerRefusedError, SellerTlsUnusableError, SellerUnavailableError, sellerFailureCause, sellerFailureAttempt } from './seller-http.mjs';
 import { createSellerHttpsConnector } from './seller-https-connector.mjs';
-import { createDemosSr2WalletBridge, SR2_WALLET_KIND } from './demos-sr2-wallet-bridge.mjs';
+import { createDemosSr2WalletBridge, DemosSr2BridgeError, PAID_WRITE_NOT_ISSUED_CODES, SR2_WALLET_KIND } from './demos-sr2-wallet-bridge.mjs';
 import { DemosSr2Error } from './demos-sr2-adapter.mjs';
 import {
   agreementTerms,
@@ -1346,6 +1346,12 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
       && !boundTermsMismatch(current, retained.artifact) && contentHash(retained.artifact) === agreementHash;
     const bridgeError = (error) => ({ disposition: ['invalid', 'wrong-writer', 'conflict', 'hash-profile-held'].includes(error?.code) ? 'rejected' : 'indeterminate',
       reason: `wallet anchor: ${error?.code ?? 'unavailable'}: ${String(error?.message ?? error).slice(0, 180)}` });
+    // The bridge proves no wallet handoff was issued, so nothing was signed or sent: drop the retained intent, and the next
+    // submission passes the fee check and anchors with a fresh host approval instead of reading back a CREATE that never existed.
+    const dropUnissuedIntent = (error) => {
+      if (!(error instanceof DemosSr2BridgeError && PAID_WRITE_NOT_ISSUED_CODES.includes(error.code))) return;
+      current = save(current, { walletAnchor: null }, { event: 'protocol_wallet_anchor_not_issued', data: { logicalAddress, agreementHash, reason: error.code } });
+    };
     function nativeResult(result) {
       if (result.status !== ('native-read-visible')) return { disposition: result.status === 'rejected' ? 'rejected' : 'indeterminate', reason: result.code ?? 'native readback is unavailable' };
       return { disposition: 'present', value: { artifact: result.artifact, ref: { anchor: { kind: 'storage-program', locator: logicalAddress }, contentHash: result.receipt.contentHash }, anchorReceipt: result.receipt } };
@@ -1363,13 +1369,15 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
         let result;
         try { result = previous ? await walletBridgeForOperation.resume(expected) : await walletBridgeForOperation.anchor(expected); }
         catch (error) {
-          // In the pinned adapter this exact exception precedes any new
-          // plan/handoff/wallet request. Only our fresh, provably unsent intent
-          // can be discarded. Any pre-existing intent stays readback-only,
-          // including missing/issued/unknown handoffs and wallet rejections.
+          // In the pinned adapter `wallet-fenced` precedes any new
+          // plan/handoff/wallet request, so a fresh intent is discarded for it.
+          // A bridge code that proves no handoff was issued discards any intent.
+          // Every other pre-existing intent stays readback-only, including
+          // issued/unknown handoffs and wallet rejections.
           if (!previous && error instanceof DemosSr2Error && error.code === 'wallet-fenced') {
             current = save(current, { walletAnchor: null }, { event: 'protocol_wallet_anchor_not_issued', data: { logicalAddress, agreementHash, reason: 'wallet-fenced' } });
           }
+          dropUnissuedIntent(error);
           return bridgeError(error);
         }
         return result.status === ('native-read-visible') ? { disposition: 'submitted' } : { disposition: result.status === 'rejected' ? 'rejected' : 'indeterminate', reason: result.code ?? 'wallet CREATE outcome is unknown' };
@@ -1380,7 +1388,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
         if (!retained) return { disposition: 'absent', reason: 'this operation has not issued a wallet CREATE intent' };
         if (!sameRetainedScope(retained)) return { disposition: 'rejected', reason: 'retained wallet CREATE owner or Agreement scope changed' };
         try { return nativeResult(await walletBridgeForOperation.resume(retained)); }
-        catch (error) { return bridgeError(error); }
+        catch (error) { dropUnissuedIntent(error); return bridgeError(error); }
       },
       verifyAnchorReceipt: async ({ expectedWriter, ref, receipt }) => {
         const retained = retainedInput();

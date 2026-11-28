@@ -20,6 +20,7 @@ import { addressForClaim, verifyDemosSignature } from '../signatures.mjs';
 import { storageWriteRpcSigner } from '../devnet-demo/storage-write-recovery.mjs';
 import { OPERATOR_CLOSING } from '../devnet-demo/operator-approval.mjs';
 import { createWalletLaneView, walletLane, walletLaneKey } from '../wallet/wallet-lane.mjs';
+import { deepFreeze } from '../util/deep-freeze.mjs';
 import { createDemosSr2Adapter, demosSr2Contradiction, isDemosSr2Contradiction } from './demos-sr2-adapter.mjs';
 import { isDevnetAgreementTransport, isDevnetSettlementTransport, isDevnetDeliveryTransport, DEVNET_AGREEMENT_KIND, DEVNET_AGREEMENT_PROFILE, DEVNET_SETTLEMENT_KIND, DEVNET_DELIVERY_KIND, DEVNET_DELIVERY_POLICY } from '../wallet/devnet-native-transport.mjs';
 
@@ -31,9 +32,15 @@ const settlementPhaseIndex = 2;
 const exactKeys = (value, keys) => object(value) && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
 
 export class DemosSr2BridgeError extends Error {
-  constructor(code, message) { super(message); this.code = code; }
+  constructor(code, message, options) { super(message, options); this.code = code; }
 }
-const fail = (code, message) => { throw new DemosSr2BridgeError(code, message); };
+const fail = (code, message, options) => { throw new DemosSr2BridgeError(code, message, options); };
+
+/**
+ * The `anchor` and `resume` refusal codes that mean no wallet handoff was issued for the plan, so nothing was handed
+ * to the wallet, signed or sent. A caller may drop a retained intent on one of them and anchor afresh later.
+ */
+export const PAID_WRITE_NOT_ISSUED_CODES = Object.freeze(['paid-write-callback-required', 'paid-write-permit-required', 'handoff-not-issued']);
 
 // The seller-side SDK producer for this profile emits one exact pay-dem
 // success variant. SettlementEvidence has no artifactType, so its kind is
@@ -109,7 +116,15 @@ function snapshot(input) {
 // entries() -> [key,value][], withWalletLock(key,work). No RAM or filesystem
 // fallback is installed here. All entries contain only public transaction /
 // approval / receipt material; the wallet keeps its secret locally.
-export function createDemosSr2WalletBridge({ rpcUrl, network, journal, walletFactory, sourceCapability = null, signer, fetchImpl = globalThis.fetch, now = () => Date.now() }) {
+//
+// `obtainPaidWritePermit(request, { preparePaidWrite, authorizePaidWrite })` is the
+// host's paid-write callback. Before the handoff is issued, `anchor` hands it the
+// deeply frozen `{ method: 'sendTransaction', params: [createRequest] }` it will send
+// and the two paid-write members of the wallet view; it sends that object once with
+// `{ paidApproval: permit }`. A paid-approval view with no callback refuses
+// `paid-write-callback-required`; a callback that throws or returns no object refuses
+// `paid-write-permit-required` (its error is the cause). Both leave the plan prepared.
+export function createDemosSr2WalletBridge({ rpcUrl, network, journal, walletFactory, obtainPaidWritePermit, sourceCapability = null, signer, fetchImpl = globalThis.fetch, now = () => Date.now() }) {
   if (!isDevnetAgreementTransport(sourceCapability)) fail('profile-held','an opaque source Agreement capability is required');
   const profile = DEVNET_AGREEMENT_PROFILE;
   const mode = 'explicit-pinned-transport-single-node';
@@ -118,6 +133,7 @@ export function createDemosSr2WalletBridge({ rpcUrl, network, journal, walletFac
   if (!journal || ['get', 'put', 'entries', 'withWalletLock'].some((k) => typeof journal[k] !== 'function')) fail('journal-required', 'an explicit shared atomic journal is required');
   if (typeof walletFactory !== 'function') fail('wallet-required', 'an explicit packaged-wallet factory is required');
   if (typeof network !== 'string' || !/^[a-z0-9._-]{1,64}$/.test(network)) fail('invalid', 'an explicit fixture network label is required');
+  if (obtainPaidWritePermit !== undefined && typeof obtainPaidWritePermit !== 'function') fail('invalid', 'obtainPaidWritePermit must be a function when it is given');
   const adapterPrefix = 'sr2/adapter/';
   const lane = (address) => walletLane({ network, chainIdentity: sourceCapability.pins.chainIdentity, address });
   const laneKey = (address) => walletLaneKey(lane(address));
@@ -139,6 +155,7 @@ export function createDemosSr2WalletBridge({ rpcUrl, network, journal, walletFac
   const adapter = createDemosSr2Adapter({ rpcUrl, journal: adapterJournal, sourceCapability, fetchImpl, now });
   const wallet = walletFactory({ anchorJournal: walletJournal });
   if (!wallet || ['request', 'getPublicAccount', 'getWriteProfile'].some((k) => typeof wallet[k] !== 'function')) fail('wallet-required', 'the packaged wallet contract is unavailable');
+  const paidApprovalView = typeof wallet.preparePaidWrite === 'function' && typeof wallet.authorizePaidWrite === 'function';
 
   function owner(input) {
     const account = wallet.getPublicAccount();
@@ -212,6 +229,28 @@ export function createDemosSr2WalletBridge({ rpcUrl, network, journal, walletFac
     catch (error) { if (error?.code === 'invalid') return { refused: observationError(error) }; throw error; }
   }
 
+  const sendRequest = (input, kind, handoff) => ({ method: 'sendTransaction', params: [{ kind, profile, network, owner: input.writer,
+    artifactKind: input.artifactKind ?? input.artifact.artifactType, jobId: input.artifact.jobId, logicalAddress: input.logicalAddress,
+    contentHash: handoff.contentHash, envelopeHash: handoff.envelopeHash, transaction: handoff.unsignedTransaction }] });
+
+  async function permitFor(request) {
+    let permit;
+    const members = Object.freeze({ preparePaidWrite: wallet.preparePaidWrite, authorizePaidWrite: wallet.authorizePaidWrite });
+    try { permit = await obtainPaidWritePermit(request, members); } catch (cause) { fail('paid-write-permit-required', 'the host paid-write callback gave no permit', { cause }); }
+    if (permit === null || typeof permit !== 'object') fail('paid-write-permit-required', 'the host paid-write callback gave no permit');
+    return permit;
+  }
+
+  // The host approves a read-only preview while the plan is still prepared, so a refusal burns nothing. The handoff is
+  // issued only after that, and the previewed object is sent only when the issued handoff yields the same request.
+  async function sendWithPermit(input, kind, target) {
+    const request = deepFreeze(sendRequest(input, kind, await adapter.previewStorageAnchorHandoff(target)));
+    const permit = await permitFor(request);
+    const handoff = await adapter.takeStorageAnchorHandoff(target);
+    if (canonicalize(sendRequest(input, kind, handoff)) !== canonicalize(request)) fail('paid-write-request-changed', 'the issued handoff differs from the request the host approved');
+    return { handoff, answer: await wallet.request(request, { paidApproval: permit }) };
+  }
+
   async function anchor(raw) {
     const input = snapshot(raw);
     const kind=kindFor(input);
@@ -222,10 +261,14 @@ export function createDemosSr2WalletBridge({ rpcUrl, network, journal, walletFac
       // A retry only reconciles the retained record. It does not call request.
       try { return await finish(input, plan, address); } catch (error) { return observationError(error, plan); }
     }
-    const handoff = await adapter.takeStorageAnchorHandoff({ planId: plan.planId, walletAddress: address, network });
-    const request = { kind, profile, network, owner: input.writer, artifactKind: input.artifactKind ?? input.artifact.artifactType, jobId: input.artifact.jobId,
-      logicalAddress: input.logicalAddress, contentHash: handoff.contentHash, envelopeHash: handoff.envelopeHash, transaction: handoff.unsignedTransaction };
-    const answer = await wallet.request({ method: 'sendTransaction', params: [request] });
+    const target = { planId: plan.planId, walletAddress: address, network };
+    if (!obtainPaidWritePermit && paidApprovalView) fail('paid-write-callback-required', 'this wallet sends a paid write only with the host paid-write callback');
+    let handoff, answer;
+    if (obtainPaidWritePermit) ({ handoff, answer } = await sendWithPermit(input, kind, target));
+    else {
+      handoff = await adapter.takeStorageAnchorHandoff(target);
+      answer = await wallet.request(sendRequest(input, kind, handoff));
+    }
     if (!answer?.success) {
       // An unknown outcome remains unknown even when a fixture may have
       // applied it. An explicit later anchor/resume performs readback only.
@@ -242,7 +285,7 @@ export function createDemosSr2WalletBridge({ rpcUrl, network, journal, walletFac
     const address = owner(input);
     const { plan, refused } = await planned(input);
     if (refused) return refused;
-    if (plan.stage === 'prepared') fail('authorization-required', 'resume cannot issue a wallet handoff');
+    if (plan.stage === 'prepared') fail('handoff-not-issued', 'no wallet handoff was issued for this plan, and resume cannot issue one');
     try { return await finish(input, plan, address); } catch (error) { return observationError(error, plan); }
   }
 
