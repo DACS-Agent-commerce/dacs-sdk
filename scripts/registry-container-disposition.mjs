@@ -141,7 +141,7 @@ function auditAdvisories(audit) {
   return advisories;
 }
 
-const unevaluated = reason => new Error("advisory applicability unevaluated: " + reason);
+const unevaluated = (reason, options) => new Error("advisory applicability unevaluated: " + reason, options);
 
 // The exact versions each package name is installed at as a direct dependency
 // of the lock root, aliases resolved to the installed name, as the CI audit
@@ -175,7 +175,7 @@ function directVersions(lock) {
   let versions;
   try {
     versions = collectAuditVersions({ packages: { ...lock.packages, "": { dependencies } } }, { scope: "direct" });
-  } catch (error) { throw unevaluated(error.message); }
+  } catch (error) { throw unevaluated(error.message, { cause: error }); }
   // Every direct version is read here, whether or not the report names its package.
   const semver = npmModule("semver");
   for (const [name, installed] of Object.entries(versions)) {

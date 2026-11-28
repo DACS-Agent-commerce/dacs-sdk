@@ -47,6 +47,20 @@ function directLeaf(version: string, { field = "dependencies", alias }: { field?
 }
 
 describe("advisory applicability from the lock", () => {
+  it("preserves the original audit-version error as the unevaluated cause", () => {
+    const cause = new Error("cannot read the installed version");
+    const lock = { lockfileVersion: 3, packages: {
+      "": { dependencies: { leaf: "1.0.0" } },
+      "node_modules/leaf": { get version() { throw cause; } },
+    } };
+    let thrown: unknown;
+    try { registryAuditPolicy(auditReport({}), lock, baseline); }
+    catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe("advisory applicability unevaluated: " + cause.message);
+    expect((thrown as Error).cause).toBe(cause);
+  });
+
   it("does not apply a nested-only high advisory to the direct copy of the same package", () => {
     const { audit, lock } = captured("nested-only");
     expect(audit.vulnerabilities.leaf.isDirect).toBe(true);
