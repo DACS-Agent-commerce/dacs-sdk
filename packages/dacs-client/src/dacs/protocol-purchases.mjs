@@ -787,8 +787,10 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   const withAttempt = (protocol, entry) => [...(protocol?.attempts ?? []).slice(-9), entry];
   // `written: false` is set only where an Agreement-context consumer invoked no
   // provider, so no write can have been made; ops health trusts nothing else.
-  // The local TLS guard alone supplies `dispatched: false`; that describes
-  // this attempt and never resolves an earlier unknown write.
+  // A current attempt may report `dispatched: false` when a pre-dispatch TLS
+  // check rejects it, its deadline expires before sending, or the transport
+  // confirms that no request bytes were written. This describes only this
+  // attempt and never resolves an earlier write whose outcome is unknown.
   const recordedAttempt = (outcome, reason, written, causeCode, dispatched) => ({ outcome, ...(dispatched === false ? { dispatched } : {}), ...(sellerFailureCause(causeCode) ? { causeCode } : {}), ...(reason ? { reason: cutText(reason, 240) } : {}), ...(written === false ? { written } : {}) });
   // The purchase was cancelled or expired while this step's call was in flight,
   // so the attempt cannot be saved on it. Its event is still logged: a
@@ -1400,11 +1402,12 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
     return usesSellerSr2Commitment(anchored) ? continueSellerSr2Commitment(anchored) : anchored;
   }
 
-  // Opt-in only: the seller reads the buyer's native SR-2 Agreement itself and
-  // commits; the buyer trusts only its own readback of the finalized commitment
-  // (fixture substrate). Default operations stop at `seller-committed` and
-  // remain agreement_pending/payment held. Explicitly prepared native payment
-  // terms alone progress to the normal awaiting_approval path.
+  // For a purchase using native SR-2 Agreement commitment terms, request the
+  // seller commitment after Agreement anchoring and verify it through the
+  // buyer's own finalized-commitment readback. A verified result records
+  // `seller-committed`; native Agreement payment also advances it to
+  // `awaiting_approval`. Refused or unverified results follow their recorded
+  // outcome and do not authorize payment.
   async function continueSellerSr2Commitment(operation) {
     let current = operation, commitAnswer;
     try {
