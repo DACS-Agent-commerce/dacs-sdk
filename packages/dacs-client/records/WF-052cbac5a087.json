@@ -1,0 +1,10 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "chore(client): record the keystore delivery-entry count test record commit",
+  "kind": "commit-only",
+  "commitFiles": [
+    "packages/dacs-client/records/WF-052cbac5a087.json",
+    "packages/dacs-client/records/WF-d3d4b4e942b4.json"
+  ]
+}
