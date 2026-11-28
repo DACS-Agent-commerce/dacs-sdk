@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record the merged native transport and public API test after carrying the owner-ruled part up into the late-fix part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "afa7cde2633ab60bb2dfe856df9a2f3ed00f0dd3",
+      "after": "afa7cde2633ab60bb2dfe856df9a2f3ed00f0dd3"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "0149e1e32c2a63e95d6c9bed95f1d7664bd5a4b7",
+      "after": "0149e1e32c2a63e95d6c9bed95f1d7664bd5a4b7"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-3ef10c089173.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's changes together with the owner-ruled part's. No file other than this record changes."
+}

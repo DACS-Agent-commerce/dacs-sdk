@@ -49,6 +49,7 @@ import { createContextAttempt } from '../../src/dacs/seller-context-attempt.mjs'
 import { createAcceptedContinuation, createContextOutcomeRevalidation, createContinuationCheck } from '../../src/dacs/seller-context-continuation.mjs';
 import { resumeContext } from '../../src/dacs/seller-context-recovery.mjs';
 import { completedContextOutcome, contextOperationView, createSellerContextRecords, createSellerContextRoute } from '../../src/dacs/seller-context-route.mjs';
+import { createStopCheck } from '../../src/kill-switch.mjs';
 import { createSellerEffectRoutes } from '../../src/dacs/seller-effect-routes.mjs';
 import { createCompletedOutcomeReader, createOrdinaryCompletionPort, createSellerAgentClient } from '../../src/dacs/seller-http.mjs';
 import { createPlannedAgreementReader } from '../../src/dacs/seller-planned-agreement.mjs';
@@ -59,6 +60,7 @@ import { openWireRequest, wireAuthenticator } from '../../src/dacs/seller-wire-r
 import { createOperatorBuyerAccess } from '../../src/devnet-demo/buyer-access.mjs';
 import { currentAuthorizationFor, lateSellerCreatePass } from '../../src/devnet-demo/create-pass.mjs';
 import { createDevnetPurchasedReportProducer } from '../../src/devnet-demo/deliverable.mjs';
+import { createVerifiedDeploymentEvidenceReader } from '../../src/devnet-demo/deployment-qualification.mjs';
 import { createDevnetDemoListingPublisher } from '../../src/devnet-demo/listing.mjs';
 import { createDevnetDemoDeliveryCapability } from '../../src/devnet-demo/native-delivery.mjs';
 import { createConnectionAuthorityReader } from '../../src/devnet-demo/connection-authority.mjs';
@@ -100,6 +102,8 @@ export function capabilityBuilders(t) {
     ['src/devnet-demo/seller-wallet-session.mjs#createSellerWalletSession.finalize()', async (w) => (await w.session.finalize()).session],
     ['src/devnet-demo/seller-wallet-session.mjs#createNodeAuthorityReader', (w) => createNodeAuthorityReader({ owner: w.nodeWallet.owner, claim: () => seller.claim })],
     ['src/devnet-demo/connection-authority.mjs#createConnectionAuthorityReader', (w) => createConnectionAuthorityReader({ owner: w.nodeWallet.owner, claim: () => seller.claim })],
+    ['src/devnet-demo/deployment-qualification.mjs#createVerifiedDeploymentEvidenceReader', () => createVerifiedDeploymentEvidenceReader({ recordBytes: new Uint8Array(0),
+      evidenceMaxAgeMs: 2_592_000_000, clock: { now: never('clock.now') } })],
     ['src/devnet-demo/doctor-node.mjs#openDoctorNode', (w) => onClose(openDoctorNode({ rpcUrl: 'https://rpc.example.invalid/', sellerClaim: seller.claim, fetchImpl: w.nodeWallet.node.fetch }))],
     ['src/devnet-demo/listing.mjs#createDevnetDemoListingPublisher', () => createDevnetDemoListingPublisher({ anchor: { publish: async () => {}, read: async () => {}, verifyReceipt: async () => {} },
       sign: signer.sign, scanOwnListings: async () => ({ status: 'ok', anchors: [] }), loadRailResolution: async () => null, runCreate: testRunCreate().runCreate })],
@@ -124,6 +128,7 @@ export function capabilityBuilders(t) {
     ['src/dacs/seller-context-route.mjs#createWireSellerContextRoute', (w) => w.context.route],
     ['src/dacs/seller-context-route.mjs#createSellerContextRoute', (w) => createSellerContextRoute({ listing: w.context.listing, assertBuyerAccess: async () => true })],
     ['src/dacs/seller-context-route.mjs#createSellerContextRecords', (w) => createSellerContextRecords({ listing: w.context.listing, admission: () => null, contextOutcome: () => null })],
+    ['src/kill-switch.mjs#createStopCheck', () => createStopCheck('/TEST-missing-data-directory')],
     ['src/dacs/seller-context-route.mjs#contextOperationView', (w) => contextOperationView(w.context.wire.journal, seller.claim)],
     ['src/dacs/seller-context-route.mjs#completedContextOutcome', (w) => completedContextOutcome(w.context.wire.journal, seller.claim)],
     ['src/dacs/seller-context-recovery.mjs#resumeContext', (w) => resumeContext(w.provider, w.vet.input)],

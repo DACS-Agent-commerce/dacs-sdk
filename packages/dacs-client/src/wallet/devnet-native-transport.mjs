@@ -133,11 +133,13 @@ const isTestRunLabel = (value) => typeof value === 'string' && /^TEST-RUN-[A-Za-
 // A publication policy as the transport declares it: a frozen copy whose authority is its label. A token counts only for `binding`.
 const declaredPolicy = (policy, binding, isFixtureLabel, requirement) => Object.freeze(clone({ ...policy, authority: authorityLabel(policy.authority, binding, isFixtureLabel, requirement) }));
 // What the transport calls on the effect boundary (the required `boundary` option of the transport constructors).
-const BOUNDARY_METHODS = ['holdFence', 'withOperation', 'signPass', 'dispatchPass', 'signAuthentication'];
+export const BOUNDARY_METHODS = ['holdFence', 'withOperation', 'signPass', 'dispatchPass', 'signAuthentication'];
 // The lease's expiry timer fires this long after the lease expires, so a timer that fires early still finds it expired.
 const LEASE_EXPIRY_MARGIN_MS = 1;
 // The fee members of a confirmation's gas operation, each a canonical decimal OS string.
 const FEE_MEMBERS = ['network_fee', 'rpc_fee', 'additional_fee'];
+// The SDK debits 1 DEM of gas on every write, beside the fees its transaction signs.
+const SDK_GAS_OS = 1_000_000_000n;
 // The only own keys of a wallet nonce lane's scope.
 const NONCE_LANE_SCOPE_KEYS = ['owner', 'network', 'chainIdentity'];
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
@@ -166,6 +168,26 @@ export function registerHeldTransportFacade(facade, inner) {
   set.add(facade);
 }
 
+const pinnedFrom = (expected) => Object.freeze({ ...expected, chainIdentity:canonicalChainIdentity(expected.chainIdentity) });
+
+// The declaration a transport signs into its terms and the profile it publishes. Both are built here, so a transport and a
+// caller that only has the pins state byte-for-byte the same binding. `publications` holds the declared publication policies, if any.
+const transportDeclaration = (pinned, publications) => Object.freeze({ source:DEVNET_AGREEMENT_SOURCE,bindingVersion:'dacs-demos-network-binding/v1',bindingId:sha(JSON.stringify(['dacs-demos-network-binding/v1',...['network','chainIdentity','pinVersion','endpoint','transportAuthority'].map(k=>pinned?.[k])])),...pinned,...publications });
+function transportProfile({ pinned, publicOrigin, declaration, publications, agreement, settlement, delivery, demo }) {
+  return { profile:agreement?DEVNET_AGREEMENT_PROFILE:DEVNET_NATIVE_PROFILE,network:pinned.network,
+    rpcUrl:`${publicOrigin}${DEVNET_NATIVE_RPC_PATH}`,bindingUrl:`${publicOrigin}${DEVNET_NATIVE_BINDING_PATH}`,
+    ...(agreement?{transportBinding:declaration,agreementBroker:{enabled:true,kind:'explicit-pinned-source'},...publications}:{}),
+    capabilities:{ native:true,identity:false,publication:false,agreementCreate:agreement,settlementEvidenceCreate:settlement,deliverableCreate:delivery,demoArtifactCreate:demo },
+    evidenceMode:'explicit-pinned-transport-single-node',authority:pinned.transportAuthority,
+    limits:'source capability only; no default live authority, independent review, native purchase commitment or finality' };
+}
+
+/** Returns the public profile of a plain Agreement transport (no publication policy) pinned to `expected`, as that transport's own `profile(publicOrigin)` gives it. Pure: it opens nothing. */
+export function agreementProfileFor(expected, publicOrigin) {
+  const pinned = pinnedFrom(expected);
+  return transportProfile({ pinned, publicOrigin, declaration:transportDeclaration(pinned, {}), publications:{}, agreement:true, settlement:false, delivery:false, demo:false });
+}
+
 /** nativeWalletLaneKey(pins, address) returns the journal key of the native write lane every native write of `address` takes (effect-history.mjs). */
 export { nativeWalletLaneKey };
 
@@ -188,8 +210,8 @@ export { nativeWalletLaneKey };
 // The seller policy, if any, is asked after the acknowledgement is retained; its refusal
 // leaves the acknowledgement and nothing is broadcast.
 // The broadcast then carries that retained confirmation, byte for byte with its gas, as the
-// boundary's dispatch stage: its whole debit (the amount plus every fee, from the node's fee
-// view or else from the confirmed transaction) is checked against the fee ceiling first, and a
+// boundary's dispatch stage: its fees (the amount it sends is not counted; the SDK gas and the signed fees of the confirmed
+// transaction) are checked against the fee ceiling first, and a
 // refusal leaves `dispatch-withheld`. A refusal at the last check, after the lane record is written and
 // before the request, finishes the lane as `failed` (withheld): nothing was sent, and a new lease may confirm
 // and broadcast the same bytes. CREATE recovery holds the boundary's fence for the
@@ -332,7 +354,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // The protected binder validates the exact source-supplied HTTPS pin schema.
   // There is no observed-node pin admission or default fallback here.
   // The chain identity is canonicalised here once; every key, binding and comparison below uses this form.
-  const pinned = expected ? Object.freeze({ ...expected, chainIdentity:canonicalChainIdentity(expected.chainIdentity) }) : expected;
+  const pinned = expected ? pinnedFrom(expected) : expected;
   if (blockZeroErrorEnvelope !== null && blockZeroErrorEnvelope !== DEVNET_NODE2_BLOCK_ZERO_ERROR_ENVELOPE) throw new TypeError('the native block-zero error envelope policy is unsupported');
   if (blockZeroErrorEnvelope !== null && fallback === null) throw new TypeError('the native block-zero error envelope requires an explicit binder fallback');
   if (blockOneLayout !== null && blockOneLayout !== DEVNET_NODE2_BLOCK_LAYOUT) throw new TypeError('the native block-one layout policy is unsupported');
@@ -359,7 +381,8 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   // Keep the binder's established identity unchanged: the separate signed
   // publication declaration narrows what this capability may relay, but does
   // not invent a different observed network.
-  const declaration = agreement ? Object.freeze({ source:DEVNET_AGREEMENT_SOURCE,bindingVersion:'dacs-demos-network-binding/v1',bindingId:sha(JSON.stringify(['dacs-demos-network-binding/v1',...['network','chainIdentity','pinVersion','endpoint','transportAuthority'].map(k=>pinned?.[k])])),...pinned,...(publication?{settlementPublication:publication}:{}),...(deliveryDeclaration?{deliveryPublication:deliveryDeclaration}:{}),...(demoDeclaration?{demoArtifactPublication:demoDeclaration}:{}) }) : null;
+  const publications = { ...(publication?{settlementPublication:publication}:{}),...(deliveryDeclaration?{deliveryPublication:deliveryDeclaration}:{}),...(demoDeclaration?{demoArtifactPublication:demoDeclaration}:{}) };
+  const declaration = agreement ? transportDeclaration(pinned, publications) : null;
   const context = async () => {
     if (closed) fail('transport_closed', 'the native transport is closed');
     const c = await transportOwner.getContext();
@@ -785,9 +808,10 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   }
   // The signature lease's connection fence. With a boundary it is the boundary's hold on the
   // owner's fence: admission, stop, fee and binding are checked before the wait and again once
-  // it is held, and the lease's confirmation passes run inside the hold.
-  const acquireLeaseFence = async (address, operationId, transfer) => {
-    const hold = await boundary.holdFence({ operationId, lane:lane(address), kind:'native', paidWrite:true, debitOs:transfer?.amountOs ?? '0', pinVersion:pinned.pinVersion });
+  // it is held, and the lease's confirmation passes run inside the hold. No fee is known yet, and the amount sent is
+  // not a fee, so the hold checks no debit; the fees are checked at confirmation and at broadcast.
+  const acquireLeaseFence = async (address, operationId) => {
+    const hold = await boundary.holdFence({ operationId, lane:lane(address), kind:'native', paidWrite:true, debitOs:'0', pinVersion:pinned.pinVersion });
     try { return { hold, context:await context(), release:() => hold.release() }; }
     catch (error) { await hold.release().catch(() => {}); throw error; }
   };
@@ -891,7 +915,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   };
   // The boundary's operation for a lease's transaction: the lease's operation, on the sender's lane.
   const operationOf = (lease, tx) => ({ operationId:lease.operationId, lane:lane(tx.content.from), kind:tx.content.type === 'native' ? 'native' : 'create', paidWrite:true,
-    debitOs:tx.content.type === 'native' ? transferOf(tx.content)?.amountOs : '0', pinVersion:pinned.pinVersion });
+    debitOs:tx.content.type === 'native' ? signedFeesOs(tx.content.transaction_fee) : '0', pinVersion:pinned.pinVersion });
   // Runs `confirmOnce(bytes, final)` as the boundary's confirm stage inside the lease's hold: the signed
   // bytes, `confirm-started` before the node sees them, then `confirm-acknowledged` with the
   // node's answer and gas when `accepted()`, or `confirm-unknown` with the cause.
@@ -913,7 +937,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     const connection=lease.fence.context;
     await lease.fence.release();
     lease.operationId=earlier.operationId;
-    lease.fence=await acquireLeaseFence(lease.address,earlier.operationId,transferOf(tx.content));
+    lease.fence=await acquireLeaseFence(lease.address,earlier.operationId);
     if (!sameContext(lease.fence.context,connection)) fail('connection_changed','the connection changed before the signed bytes were confirmed');
   };
   // The artifact's records in the boundary's dispatch history, in commit order.
@@ -931,12 +955,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   };
   // A storage write's kept reference block for a caller, or nothing for a native transfer, which keeps none.
   const keptReferenceBlock = (row) => row.signedTransaction.content.type === 'storageProgram' ? { referenceBlock:row.storageWriteReferenceBlock ?? null } : {};
-  // The whole debit a signed transaction commits the sender to, in OS: the declared amount plus the three fees of its
-  // own signed `transaction_fee` (each a decimal OS string, or a whole-DEM number as an amount is read). The node's fee
-  // view never enters it. `null` when any fee cannot be read, which refuses the broadcast or the recovery resend.
-  const signedDebitOs = (declaredOs, transactionFee) => {
+  // The fees a signed transaction commits the sender to, in OS: the SDK's fixed gas charge plus the three fees of its
+  // own signed `transaction_fee` (each a decimal OS string, or a whole-DEM number as an amount is read). The amount it
+  // sends is not a fee and is not counted, and the node's fee view never enters it. `null` when any fee cannot be
+  // read, which refuses the broadcast or the recovery resend.
+  const signedFeesOs = (transactionFee) => {
     const fees = FEE_MEMBERS.map((member) => signedFeeOs(transactionFee?.[member]));
-    return canonicalDecimal(declaredOs) && fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), BigInt(declaredOs))) : null;
+    return fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), SDK_GAS_OS)) : null;
   };
   const signedFeeOs = (fee) => (canonicalDecimal(fee) ? fee : Number.isSafeInteger(fee) && fee >= 0 ? String(BigInt(fee) * 1_000_000_000n) : null);
   // Whether a confirmation's fee view is absent (`null`), or names each signed fee exactly as a canonical decimal OS string.
@@ -1217,7 +1242,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           };
           // The resend's fee ceiling reads the debit of the signed transaction it resends, as the broadcast's does;
           // a refusal there comes before the attempt is reserved, and nothing is sent.
-          const answer=await boundary.dispatchPass(signed,resendOnce,{ explicit:true,stage:'recovery-dispatch',confirmedDebitOs:signedDebitOs(signed.debitOs,tx.content.transaction_fee) });
+          const answer=await boundary.dispatchPass(signed,resendOnce,{ explicit:true,stage:'recovery-dispatch',confirmedDebitOs:signedFeesOs(tx.content.transaction_fee) });
           r={...r,storageWriteSubmission:classifyStorageWriteSubmission(answer,hash)};
           await retain(intent(hash),r); await retain(lane(address),r);
           return pending;
@@ -1230,12 +1255,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     }));
   }
   const implementation = {
-    profile(publicOrigin) { return { profile:agreement?DEVNET_AGREEMENT_PROFILE:DEVNET_NATIVE_PROFILE,network:pinned.network,
-      rpcUrl:`${publicOrigin}${DEVNET_NATIVE_RPC_PATH}`,bindingUrl:`${publicOrigin}${DEVNET_NATIVE_BINDING_PATH}`,
-      ...(agreement?{transportBinding:declaration,agreementBroker:{enabled:true,kind:'explicit-pinned-source'},...(publication?{settlementPublication:publication}:{}),...(deliveryDeclaration?{deliveryPublication:deliveryDeclaration}:{}),...(demoDeclaration?{demoArtifactPublication:demoDeclaration}:{})}:{}),
-      capabilities:{ native:true,identity:false,publication:false,agreementCreate:agreement,settlementEvidenceCreate:settlement,deliverableCreate:delivery,demoArtifactCreate:demo },
-      evidenceMode:'explicit-pinned-transport-single-node',authority:pinned.transportAuthority,
-      limits:'source capability only; no default live authority, independent review, native purchase commitment or finality' }; },
+    profile(publicOrigin) { return transportProfile({ pinned, publicOrigin, declaration, publications, agreement, settlement, delivery, demo }); },
     async binding(request) {
       const { phase,address }=request ?? {};
       if (!ADDRESS.test(address ?? '')) fail('invalid_params','the native wallet address is required');
@@ -1255,7 +1275,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         const transfer=declaredTransfer(request.transfer);
         if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
         // A seller job's pass names the job's own operation id; any other lease is its own operation.
-        const leaseId=randomBytes(16).toString('hex'), operationId=currentPassContext().operationId ?? leaseId, fence=await acquireLeaseFence(address,operationId,transfer);
+        const leaseId=randomBytes(16).toString('hex'), operationId=currentPassContext().operationId ?? leaseId, fence=await acquireLeaseFence(address,operationId);
         let l;
         try {
           if (!fence || typeof fence.release !== 'function' || !sameContext(await context(),fence.context)) fail('invalid_transport_owner','actual signature connection fence is unavailable');
@@ -1428,7 +1448,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             };
             // The wallet's broadcast is a fresh request of its own: a dispatch an earlier lease withheld before its send goes on.
             // The pass's authority is checked before the lane and intent are retained, so a job withdrawn by now leaves the lane free.
-            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ explicit:true,stage:'dispatch',confirmedDebitOs:signedDebitOs(artifact.debitOs,tx.content.transaction_fee),authorize:() => assertCurrentAuthorization(pass) }));
+            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ explicit:true,stage:'dispatch',confirmedDebitOs:signedFeesOs(tx.content.transaction_fee),authorize:() => assertCurrentAuthorization(pass) }));
           });
         });
         if (accepted?.result === 200) {
@@ -1544,7 +1564,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     ...(demo?{withWalletNonceLock:(scope,work)=>tracked(()=>withWalletNonceLock(scope,work))}:{}),
     ...(settlement?{recoverStorageWrite:(request)=>tracked(()=>recoverStorageWrite(request)),
       onStorageWriteResend(listener) { if(typeof listener!=='function')throw new TypeError('resend listener required');resendListeners.add(listener);return()=>resendListeners.delete(listener); }}:{}),
-    ...(agreement?{pins:pinned,transportBinding:declaration,journal,...(publication?{settlementPublication:publication}:{}),...(deliveryDeclaration?{deliveryPublication:deliveryDeclaration}:{}),...(demoDeclaration?{demoArtifactPublication:demoDeclaration}:{}),
+    ...(agreement?{pins:pinned,transportBinding:declaration,journal,...publications,
       inspectWalletNonceLane:(scope)=>tracked(()=>inspectWalletNonceLane(scope)),
       // What the source, in any process on this journal, has claimed of one
       // prepared transfer (payload: the unsigned transfer the plugin handed

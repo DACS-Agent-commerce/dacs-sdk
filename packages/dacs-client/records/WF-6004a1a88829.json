@@ -1,0 +1,49 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF compare only the network fee with the 18 DEM paid-write ceiling",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "abb44afff8044fe667048284a96be20c4a7e2a93",
+      "after": "f93f337e235d8f81e99a9d4d2ef94544c89e29d5"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "f224cdb5a3b5f7cd4925ea521ce0e1244a20c3bc",
+      "after": "bf9cf900127b797bbc980ddf70e89024d3f9ef44"
+    },
+    {
+      "path": "packages/dacs-client/src/public-admission.mjs",
+      "before": "471ab2dfa0a97477cb2afb1acfbd16b694ddf18d",
+      "after": "d4829d92b44f94b5e7dcf0927556fee1d2c7d88e"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "b6457decdc71921f309c9b43f60fcf0113a00697",
+      "after": "d2bbea9619255404748c4bedd6358fad51835925"
+    },
+    {
+      "path": "packages/dacs-client/test/fee-ceiling.test.mjs",
+      "before": "00fe64714de0fb4cc0cd157c92ff5468a9b03089",
+      "after": "832a767f753b86e97fcd409b068230cd1c55d5bc"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "8ed50e733139bf246206918c9c6543a465e8c7f2",
+      "after": "2608066424561eda84c983c78958b5fa8c019136"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-6004a1a88829.json",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/public-admission.mjs",
+    "packages/dacs-client/src/purchases.mjs",
+    "packages/dacs-client/test/fee-ceiling.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs"
+  ],
+  "note": "PAID_WRITE_FEE_CEILING_OS is 18000000000 OS (18 DEM). assertWithinFeeCeiling(feeCeilingOs, fee) and assertWriteWithinFeeCeiling(feeCeilingOs, chain) compare the full getTransactionFees() result alone with the ceiling; the price, the release amount and the Agreement CREATE storage reserve are no longer added. The buyer's balance and total-debit check in assertBuyerFunds is unchanged. Factory options, construction order and the write-fee-cap refusal are unchanged. No core file changes, so the hold pins are unchanged."
+}

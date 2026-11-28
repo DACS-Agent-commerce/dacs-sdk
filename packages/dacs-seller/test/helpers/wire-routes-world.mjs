@@ -182,7 +182,7 @@ export async function world(t, { maxJobs, maxRecords, maxNoncesPerBuyerPerWindow
     const reserveCoordinated = reservations.reserveCoordinated.bind(reservations);
     reservations.reserveCoordinated = (...args) => { state.readsAtReserve = state.authorityReads + 1; return reserveCoordinated(...args); };
     const completion = createOrdinaryCompletionPort({ journal, store, capacity });
-    const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerRoles, effectBoundary: answerBoundary, journal, store, ready: () => state.ready, now: clock, agent, requireDelegation: false,
+    const wire = createWireContext({ binding: buyerWire.binding, tp1Network: { connection, readAuthority: reader }, signer: sellerRoles, effectBoundary: answerBoundary, journal, store, ready: () => state.ready, stopped: () => false, now: clock, agent, requireDelegation: false,
       publicEndpoint: fixture?.listing.seller.publicEndpoint ?? FIXTURE_ENDPOINT, signedListing: fixture?.admittedListing, readCommitmentReceipt: fixture?.readCommitmentReceipt ?? receiptReader(), reservations, completion, ...handle.wireOverrides });
     Object.assign(handle, { store, capacity, wire, handler: createSellerHttpHandler(agent, { wire, commitOnSignature }) });
   };

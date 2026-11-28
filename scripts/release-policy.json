@@ -28,7 +28,7 @@
     {
       "name": "@kynesyslabs/dacs-client", "directory": "packages/dacs-client",
       "preparationBlockers": ["private package is not releasable"],
-      "preparationManifestSha256": "edb3b313a9e856bf83b49b50fb7680e9a07da77d6465e61cf1eb0bdb5686cd3e",
+      "preparationManifestSha256": "525f86f4feaf0cd1f66cb88f18586c438eb4f61aa9f7bbb22967d1af9aab7223",
       "preparationSnapshotBlockers": ["@kynesyslabs/dacs-client: release identity or publish policy is invalid"],
       "requiredExports": [".", "./wallet/durable-journal", "./substrate/demos", "./rpc-endpoint", "./purchase/wallet-bridge"],
       "allow": ["package.json", "README.md", "LICENSE", "src/**/*.mjs"]
@@ -36,10 +36,11 @@
     {
       "name": "@kynesyslabs/dacs-seller", "directory": "packages/dacs-seller",
       "preparationBlockers": ["private package is not releasable"],
-      "preparationManifestSha256": "f3733df0dbf9e97b6ef12c599ba752855928d10f830155b963acd34578ffc429",
+      "preparationManifestSha256": "eefa44774f47002bc05a67ac9ba381345b6ff2f91e54fbeadde7f4e3bf8a39c3",
       "preparationSnapshotBlockers": ["@kynesyslabs/dacs-seller: release identity or publish policy is invalid"],
       "requiredExports": ["."],
-      "allow": ["package.json", "README.md", "LICENSE", "bin/**/*.mjs", "src/**/*.mjs", "PROFILE.json", "ADMISSION.md", "SOURCES.md"]
+      "allow": ["package.json", "README.md", "LICENSE", "bin/**/*.mjs", "src/**/*.mjs", "PROFILE.json", "ADMISSION.md", "SOURCES.md",
+        "vectors/testnet-records/deployment-record.json", "vectors/testnet-records/deployment.sha256", "vectors/testnet-records/deployer-public-key.json"]
     },
     {
       "name": "create-dacs-agent", "directory": "packages/create-dacs-agent",

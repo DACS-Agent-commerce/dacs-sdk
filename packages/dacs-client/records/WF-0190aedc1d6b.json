@@ -1,0 +1,32 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client files after merging phase0-completion into the per-write network fee ceiling branch",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "49088fbfbbdcb6c796f2744188e8625176e9531a",
+      "after": "49088fbfbbdcb6c796f2744188e8625176e9531a"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "cf97c34bd438255212628ec9f359a0e01e031ab6",
+      "after": "cf97c34bd438255212628ec9f359a0e01e031ab6"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "383ba6c5be20d80fd7143ba4d65f6aa85e0d4480",
+      "after": "383ba6c5be20d80fd7143ba4d65f6aa85e0d4480"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "96de309f9bd745dd93eb8f08b0929f966a7dc395",
+      "after": "96de309f9bd745dd93eb8f08b0929f966a7dc395"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-0190aedc1d6b.json"
+  ],
+  "note": "Both sides changed these files; this record names the merged copy, which keeps both sides' changes. No file other than this record changes."
+}

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { canonicalize, compositeVerificationAddress, isAttestationRef, isCanonicalClaimReference, isCanonicalJobId, sameCanonicalClaimIdentity, sha256Hex } from '@kynesyslabs/dacs';
 import { DACS_SELLER_HTTP_PATHS as PATHS, isTp1WireProfile, wireOperationBinding, wireOperationId } from '@kynesyslabs/dacs/wire';
 import { assertKitOperationAdmitted } from '../kit-operation-guard.mjs';
+import { readStopPredicate } from '../kill-switch.mjs';
 import { boundedCall, isBoundedCallTimeout } from './bounded-call.mjs';
 import { ownsPurchaseCapacity } from './seller-purchase-capacity.mjs';
 import { SellerTransportError, pinValid, sellerStoreInternals } from './seller-transport-auth.mjs';
@@ -98,7 +99,7 @@ function contextOutcomeClass(row, outcome) {
  * `policy` is `createSellerContextAdmission`'s `{ reserve, release }`; `completeWire(effect, outcome)` is synchronous and completes only
  * the wire effect handle it is given; `capacity` is the purchase capacity `createPurchaseCapacity` built on this same store (anything else
  * is a TypeError): admission checks that a whole purchase fits, its allocation runs as the first acceptance hook, and a settlement or an abort
- * returns the allocation's slots in the same transaction (a validated context returns only its own); `now` and `ready` are synchronous;
+ * returns the allocation's slots in the same transaction (a validated context returns only its own); `now`, `ready` and `stopped` are synchronous;
  * `deadlines.policyMs` bounds the policy call.
  * `inspectContextOutcome(jobId)` is the wire's synchronous, read-only operation view; `effectEvidence(row)` resolves one `{ address, kind, cause? }` per
  * Vet sink address (C3; `no-intent`, `proven-unsigned`, `never-dispatched` and `retired` on both retained presenter addresses prove no effect,
@@ -113,7 +114,9 @@ function contextOutcomeClass(row, outcome) {
  * `compensate(jobId, trigger)` fences the row for trigger `a`, `b`, `c` (only from the delegation's expiry plus 30,000 ms) or `d`, then runs C2-C4 under the
  * job mutex; it settles a completed context outcome, aborts only on proof of no effect, settles with context outcome `none` on proof that an effect happened, and otherwise keeps the row `compensating` with its cause.
  * It throws TypeError for a job that is not canonical or a trigger that is not one of those four strings; for an unknown job it writes nothing.
- * `sweep({ startup })` is K1's sweep over every unfinished row (the ledger's startup closing first when `startup`). A startup sweep also ends every row
+ * `sweep({ startup })` is K1's sweep over every unfinished row (the ledger's startup closing first when `startup`). It visits a row only while
+ * `stopped()` answers false: a stopped sweep leaves the rows it did not visit as they were, and still runs the startup closing and the slot
+ * retirement, which grant no effect. A startup sweep also ends every row
  * still running, a direct request's included, as compensation trigger `a` does; a periodic sweep ends a delegated running row only by trigger `c`. It waits at most 10,000 ms for a
  * row's lease and 30,000 ms for its pass, records a row it could not finish on that row and goes on to the next; it rejects with an AggregateError
  * after visiting every row when it could not record one. A periodic sweep called while one runs answers that one; a startup sweep rejects with
@@ -123,11 +126,11 @@ function contextOutcomeClass(row, outcome) {
  * allotment fits, after the slot retirement admission runs first. `admissionRecord(jobId)` is the frozen read-only projection, or null.
  * Throws TypeError for an unusable option; operations reject with a SellerTransportError (guard errors keep their own class) that keeps its cause.
  */
-export function createContextAdmissionTransaction({ store, policy, capacity, effectEvidence, inspectContextOutcome, completeWire, now, ready, deadlines }) {
+export function createContextAdmissionTransaction({ store, policy, capacity, effectEvidence, inspectContextOutcome, completeWire, now, ready, stopped, deadlines }) {
   const { db, transaction, challenges, admissionCounts, limits, reserveAdmissionWithin, retireSlotsWithin } = sellerStoreInternals(store);
-  if (![policy?.reserve, policy?.release, effectEvidence, inspectContextOutcome, completeWire, now, ready].every((port) => typeof port === 'function')
+  if (![policy?.reserve, policy?.release, effectEvidence, inspectContextOutcome, completeWire, now, ready, stopped].every((port) => typeof port === 'function')
     || !Number.isSafeInteger(deadlines?.policyMs) || deadlines.policyMs <= 0 || !ownsPurchaseCapacity(store, capacity)) {
-    throw new TypeError('admission needs the store, its purchase capacity, policy, evidence, completion, clock, readiness and deadline ports');
+    throw new TypeError('admission needs the store, its purchase capacity, policy, evidence, completion, clock, readiness, stop and deadline ports');
   }
   const mutexes = new Map(), leases = new WeakMap(), acceptanceHooks = [];
   // The live-begin owners: the one `begin` per job between D2's commit and the end of its D3/D4 work, late policy settlement and failure
@@ -614,6 +617,8 @@ export function createContextAdmissionTransaction({ store, policy, capacity, eff
     const unfinished = db.prepare(`SELECT jobId FROM kit_context_admissions WHERE state IN ('intent', 'compensating', 'admitted', 'running') OR ${OPEN_CLEANUP}`).all();
     const faults = [];
     for (const { jobId } of unfinished) {
+      // Checked before each row: a stopped host leaves the rows it has not visited as they are, for a later unstopped sweep.
+      if (readStopPredicate(stopped).stopped) break;
       try { await sweepRow(jobId, startup); } catch (fault) { faults.push(fault); }
     }
     const time = now(); if (Number.isSafeInteger(time) && time >= 0) transaction(() => retireSlotsWithin(time));

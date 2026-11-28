@@ -17,6 +17,7 @@ import { sellerDiagnostic } from '../seller-diagnostics.mjs';
 import { parseSellerKeyRecord, runtimeSupported, SellerKeyError } from '../seller-key.mjs';
 import { boundedResolutionValue, isResolverDeadline, resolveWithDeadline } from '../util/bounded-resolution.mjs';
 import { OPERATOR_CLOSING, SELLER_ISSUANCE_JOURNALS } from './operator-approval.mjs';
+import { assertQualifiedDeployment } from './deployment-qualification.mjs';
 import { SELLER_STATE_LOCK_FILE } from './seller-state-lock.mjs';
 
 // The two client durable journals are the seller's issuance journals: the composition's own and the artifact anchor's.
@@ -44,9 +45,10 @@ function assertStateOwnership(dataDirectory, stateLock) {
 }
 
 // A mode outside its two values is refused, never read as the other one.
-function checkModes({ journalMode, approvalMode }) {
+function checkModes({ journalMode, approvalMode, readDeploymentEvidence }) {
   if (!JOURNAL_MODES.includes(journalMode)) throw new TypeError("journalMode must be 'create' or 'open'");
   if (!APPROVAL_MODES.includes(approvalMode)) throw new TypeError("approvalMode must be 'policy' or 'manual'");
+  if (typeof readDeploymentEvidence !== 'function') throw new TypeError('readDeploymentEvidence must be a function');
 }
 
 // The record's mnemonic as a detached UTF-8 copy, which the client zero-fills.
@@ -195,6 +197,16 @@ function kitGuardedAdapter(adapter) {
     broadcast: async (...args) => { assertKitOperationAdmitted('paymentEvidenceAdapter.broadcast'); return adapter.broadcast(...args); } });
 }
 
+// The effect gate's first step in every pass, over the composition's observer and transport (a call before it exists refuses).
+function qualificationStep({ admission, readDeploymentEvidence, clock = { now: () => Date.now() } }, compositionOf) {
+  return async ({ phase, signal }) => {
+    const composition = compositionOf();
+    if (composition === undefined) throw new OperationError('deployment_unqualified', 'the seller composition is not built yet', 'node_build_unavailable');
+    return assertQualifiedDeployment({ phase, signal, binding: admission.binding, currentLocal: admission.currentLocal, observer: composition.observer,
+      source: composition.transport, readDeploymentEvidence, clock });
+  };
+}
+
 async function composeWallet(options, opened) {
   const { admission, owner, dataDirectory, journalMode, stateLock, signer, keyRecord, approve, approvalMode, clock, publications, stopped, feeCeilingOs, diagnostics } = options;
   const stateOwnership = { directory: dataDirectory, held: () => stateLock.held() };
@@ -202,8 +214,10 @@ async function composeWallet(options, opened) {
   const compositionJournal = openJournal(dataDirectory, COMPOSITION_JOURNAL, journalMode, opened);
   const artifactJournal = openJournal(dataDirectory, ARTIFACT_JOURNAL, journalMode, opened);
   await releaseAbandonedJournalLocks({ journal: artifactJournal, stateOwnership });
-  const composition = await createNodeSellerComposition({ admission, owner, journal: issuingJournal(compositionJournal, approvalAttempt), key: mnemonicCopy(keyRecord),
-    approve: approvalAttempt.approve, clock, stopped, feeCeilingOs,
+  let composition;
+  const qualify = qualificationStep(options, () => composition);
+  composition = await createNodeSellerComposition({ admission, owner, journal: issuingJournal(compositionJournal, approvalAttempt), key: mnemonicCopy(keyRecord),
+    approve: approvalAttempt.approve, clock, stopped, feeCeilingOs, qualify,
     publications, approveConfirmedWrite: approvalMode === 'policy' ? approve.confirm : null, stateOwnership, paymentEvidenceApproval: approve.retained });
   opened.push(() => composition.close());
   const address = composition.wallet.getPublicAccount().address;
@@ -217,6 +231,7 @@ async function composeWallet(options, opened) {
     runInEffectPass: composition.runInEffectPass,
     artifactJournal,
     paymentEvidenceAdapter: kitGuardedAdapter(composition.paymentEvidenceAdapter),
+    qualify,
     readBalance: () => readBalanceOf(composition.transport, address),
     close: () => closeAll(opened),
   });
@@ -240,8 +255,10 @@ async function composeWallet(options, opened) {
  * at confirmTx or broadcastTx. Any answer but exactly `true` resolves `not-authorized` with nothing signed or sent, and the
  * accepted request is settled released. Only a sendTransaction may carry `authorize` (any other method resolves `not-authorized`
  * before approval), and a second argument that is not exactly `{ authorize: function }` rejects TypeError before approval.
+ * `readDeploymentEvidence({signal})` (required; a TypeError before anything opens) feeds `qualify({phase, signal})`, assertQualifiedDeployment
+ * over the composition's observer and transport, which the effect gate awaits first before each signature and confirmTx and broadcastTx.
  * Resolves `{address, walletFactory, sourceCapability, observer, effectPass, runInEffectPass, artifactJournal, paymentEvidenceAdapter,
- * readBalance(), close()}`; `effectPass` adds the current request's signing check last to every pass's `synchronousChecks`.
+ * qualify, readBalance(), close()}`; `effectPass` adds the current request's signing check last to every pass's `synchronousChecks`.
  * `paymentEvidenceAdapter` is the composition's payment-evidence adapter, whose four effect members check the kit operation guard
  * (kit_operation_guard_off) at each call.
  * `readBalance` resolves `{address, balanceOs}`. `close()` closes what this opened; the host keeps `owner`.

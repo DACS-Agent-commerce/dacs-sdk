@@ -1,0 +1,32 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client files after carrying base/main up into the fee ceiling part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "0c0549b68c479372c9ebbc13982c54a6ca8e10af",
+      "after": "0c0549b68c479372c9ebbc13982c54a6ca8e10af"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "a5dd2de9f1aee4d7fa4f313f95acfd9b0bc4911d",
+      "after": "a5dd2de9f1aee4d7fa4f313f95acfd9b0bc4911d"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "65d3fb9e658495db081be2ada8f37297deff5b16",
+      "after": "65d3fb9e658495db081be2ada8f37297deff5b16"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "302e775afa4f816edbd64117b9497d86cf989786",
+      "after": "302e775afa4f816edbd64117b9497d86cf989786"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-20afd9ba957a.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's network-fee-only 18 DEM ceiling together with the changes of the base."
+}

@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record the merged public API test after carrying the owner-ruled part up into the late-fix part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "a67d80118406713d59195b3dddbd8e219be503a5",
+      "after": "a67d80118406713d59195b3dddbd8e219be503a5"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-506ffb91415d.json"
+  ],
+  "note": "Both sides of the merge recorded this file, so their newest records disagree; this record chooses the copy that keeps the base's change."
+}

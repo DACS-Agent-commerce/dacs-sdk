@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF read the receipt-less state in the native host receipt test without an unused binding",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/seller-receipt-native-host.test.mjs",
+      "before": "c5e15aa0b58fe20b863ce89f5da7be647f7d9b09",
+      "after": "635fc12606efb7fcaae5cb18b9ae4fe5672fce7e"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-2cf367afd550.json",
+    "packages/dacs-client/test/seller-receipt-native-host.test.mjs"
+  ],
+  "note": "Test only. The receipt-less purchase state is a copy of the state with its sellerReceipt member deleted, so the test declares no unused binding and the lint step passes. The assertions are unchanged."
+}

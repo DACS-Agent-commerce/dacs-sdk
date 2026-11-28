@@ -1,0 +1,49 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF compare only the fees of a native send with the host fee ceiling",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "ecb27225f37583a4aeaf01972e6b71c7b0a4aba4",
+      "after": "fcaa4f7508b3814fece069cfb6bf3b9d90f0263e"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/effect-boundary.mjs",
+      "before": "e7b6bd961343393025d2e3b511f2f9543913d937",
+      "after": "9510bdba7d93bed22da1904552c657e7b3eaa85e"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/native-effect-world.mjs",
+      "before": "b7870b105f7f3c327bfd3187659591d80d12a751",
+      "after": "0d5cec5f0cc6c430234bbd2f2e6b92d88754bbde"
+    },
+    {
+      "path": "packages/dacs-client/test/native-confirmed-debit.test.mjs",
+      "before": "aff81cbf4c5831d24441debf6244ade1a15b59a2",
+      "after": "0943e80235d8d0c7676b07c23e729c42d6f54474"
+    },
+    {
+      "path": "packages/dacs-client/test/native-effect-paths.test.mjs",
+      "before": "0d17bb1488cd276e8593b796cc4ac72ab734cf35",
+      "after": "7951f16070493ea42d268db3b2f460c3eb2c35c8"
+    },
+    {
+      "path": "packages/dacs-client/test/native-withheld-reopen.test.mjs",
+      "before": "4ffdf1104a861f8445f918846089f4614e02ae2b",
+      "after": "587718469da493392aaf9a7fb66dbd8efce3a4f3"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-112a2b2e779b.json",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/src/wallet/effect-boundary.mjs",
+    "packages/dacs-client/test/helpers/native-effect-world.mjs",
+    "packages/dacs-client/test/native-confirmed-debit.test.mjs",
+    "packages/dacs-client/test/native-effect-paths.test.mjs",
+    "packages/dacs-client/test/native-withheld-reopen.test.mjs"
+  ],
+  "note": "The native transport compares only the signed network, rpc and additional fees of a send with the host fee ceiling, as the purchase service does: the amount the send pays is not counted. The signature lease checks no debit (no fee is known yet), the confirmation checks the fees of the transaction it confirms, and the broadcast and the recovery resend check the same fees. signedDebitOs becomes signedFeesOs. A storage CREATE declares no amount, so its check is unchanged. README sentences about the session's ceiling and the effect-boundary comment follow. The test world can open the Agreement transport and name a transfer on the lease."
+}

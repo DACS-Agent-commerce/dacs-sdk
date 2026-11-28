@@ -17,7 +17,7 @@ const store = createSellerTransportStore({ path: join(directory, 'transport.sqli
 const { db } = sellerStoreInternals(store);
 const capacity = createPurchaseCapacity({ store, now: port, sessionState: sellerStoreInternals(store).sessionState });
 const admission = createContextAdmissionTransaction({ store, capacity, policy: { reserve: port, release: port }, effectEvidence: port, inspectContextOutcome: port,
-  completeWire: port, now: port, ready: port, deadlines: { policyMs: 10000 } });
+  completeWire: port, now: port, ready: port, stopped: port, deadlines: { policyMs: 10000 } });
 const changes = () => db.prepare('SELECT total_changes() AS n').get().n;
 const before = changes();
 const begin = await refusalCode(() => admission.begin({}));
