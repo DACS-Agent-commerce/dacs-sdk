@@ -28,11 +28,16 @@ runInNewContext(source + `; globalThis.check = () => {
 assert.equal(context.check(), true);assert.equal(await context.anchorCheck(origin),'invalid_params');assert.equal(await context.anchorCheck('https://other.invalid'),'unsupported');
 assert.match(source, /devnetAgreementAnchorPlan\(request, address, transport, relayOrigin/);
 });
-test("an Agreement transport binding is accepted only with the exact https origin and a bare root path as its endpoint", async () => {
+const agreementDescriptor=(relayOrigin,endpoint)=>({profile:'devnet-agreement',network:'testnet',rpcUrl:relayOrigin+'/portal/api/devnet-native-wallet-rpc',bindingUrl:relayOrigin+'/portal/api/devnet-native-wallet-binding',transportBinding:{source:'devnet-agreement-transport/v1',bindingVersion:'dacs-demos-network-binding/v1',bindingId:'a'.repeat(64),network:'testnet',chainIdentity:'b'.repeat(64),pinVersion:'TEST-origin',endpoint,transportAuthority:'vector-authority'}});
+test("an Agreement transport binding is accepted only with an https root, with no credentials, path, query or fragment, as its endpoint", async () => {
 const {createDevnetAgreementWalletTransport}=await import('../src/public/portal/embedded-wallet/sdk-provider.mjs'); const relayOrigin='https://node-wallet.invalid';
-const descriptor=endpoint=>({profile:'devnet-agreement',network:'testnet',rpcUrl:relayOrigin+'/portal/api/devnet-native-wallet-rpc',bindingUrl:relayOrigin+'/portal/api/devnet-native-wallet-binding',transportBinding:{source:'devnet-agreement-transport/v1',bindingVersion:'dacs-demos-network-binding/v1',bindingId:'a'.repeat(64),network:'testnet',chainIdentity:'b'.repeat(64),pinVersion:'TEST-origin',endpoint,transportAuthority:'vector-authority'}});
+const descriptor=endpoint=>agreementDescriptor(relayOrigin,endpoint);
 assert.ok(createDevnetAgreementWalletTransport(descriptor('https://rpc.example.invalid/'),{relayOrigin}));
-for(const endpoint of ['https://rpc.example.invalid/rpc?token=x','https://rpc.example.invalid/rpc','https://rpc.example.invalid/?q=1','https://rpc.example.invalid/#f','https://user:pass@rpc.example.invalid/','https://rpc.example.invalid','http://rpc.example.invalid/',42,null]) assert.throws(()=>createDevnetAgreementWalletTransport(descriptor(endpoint),{relayOrigin}),{code:'held_for_review'},String(endpoint));
+for(const endpoint of ['https://rpc.example.invalid/rpc?token=x','https://rpc.example.invalid/rpc','https://rpc.example.invalid/?q=1','https://rpc.example.invalid/?','https://rpc.example.invalid/#f','https://rpc.example.invalid/#','https://user:pass@rpc.example.invalid/','https://@rpc.example.invalid/','https://rpc.example.invalid\\rpc/','https://rpc.example.invalid','https://',' https://rpc.example.invalid/','http://rpc.example.invalid/','http://RPC.example.invalid/',42,null]) assert.throws(()=>createDevnetAgreementWalletTransport(descriptor(endpoint),{relayOrigin}),{code:'held_for_review'},String(endpoint));
+});
+test("an Agreement transport binding accepts an https root whose host has capital letters and keeps the endpoint as written", async () => {
+const {createDevnetAgreementWalletTransport}=await import('../src/public/portal/embedded-wallet/sdk-provider.mjs'); const relayOrigin='https://node-wallet.invalid';
+for(const endpoint of ['https://RPC.Example.invalid/','https://rpc.example.INVALID/']){const transport=createDevnetAgreementWalletTransport(agreementDescriptor(relayOrigin,endpoint),{relayOrigin});assert.equal(transport.transportBinding.endpoint,endpoint);}
 });
 
 test("held, every write request rejects profile_not_admitted with signer 0 and node calls 0", async t => {

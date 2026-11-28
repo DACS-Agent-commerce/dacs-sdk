@@ -1,0 +1,23 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF accept an Agreement binding endpoint whose host has capital letters",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "before": "f157603e558bf66199d2c903b758a297bd7a33cd",
+      "after": "eddfea71006179862c0d9e595dafc6aa6129b3ec"
+    },
+    {
+      "path": "packages/dacs-client/test/node-wallet-session.test.mjs",
+      "before": "76de9e247e43f0e331e6946df1fecf8c6205917c",
+      "after": "075576468766f8cbaa0bfe892c8ee59daf3d0bba"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-029af1f6178d.json",
+    "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+    "packages/dacs-client/test/node-wallet-session.test.mjs"
+  ]
+}
