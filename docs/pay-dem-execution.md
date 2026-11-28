@@ -70,7 +70,7 @@ The bridge keeps no durable mark of that authentication, so every new process
 repeats it.
 
 For a request carrying `priorAttempts`, `payDemSettle` performs only this audit;
-it never calls the submit-capable idempotency claim, even if the rail log has
+it never calls the submit-capable idempotency claim, even if the settlement store has
 lost its record. The complete history must contain 1–256 entries for the same
 native hash and network. The reconciler receives the canonical retained hash in
 `context.txHash` and must bind it to the original journal's signed nonce and
@@ -111,7 +111,7 @@ malformed lookup data throws. The store validates the binding hash, parties and
 finality; the native bridge compares the retained hash against its in-process
 identity and the recorded outcome, then reads the log again after auditing
 execution. Different hashes, blocks or permanent proofs throw without returning
-a terminal failure or overwriting the rail log. An authenticated success cannot
+a terminal failure or overwriting the settlement store. An authenticated success cannot
 become a permanent failure for that same transaction. Same-key bridge calls are
 serialized so a slow submission cannot be overtaken by a conflicting audit;
 different keys remain independent. An empty log never grants another submission
