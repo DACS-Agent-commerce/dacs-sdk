@@ -1286,8 +1286,9 @@ export function extractPolicyFindings(readInput) {
 
 // Baseline Git, engine and image identities pin archive version and integrity;
 // engine ones also pin the required range. An SBOM rule elides the installed
-// and required versions after `invalid:`/`extraneous:` and after `required by`,
-// which npm prints from the tree, so a rule matches the same package pair.
+// version after `invalid:`/`extraneous:` and the dependent package's version
+// after `required by`, retaining any required range in the line, so a rule
+// matches the same package pair.
 // Only a plain version (no `@` or `:`) is elided. An alias pkgid,
 // `<name>@npm:<package>@<version>`, installs another package under the name,
 // so it stays in the rule and matches no recorded line.
