@@ -912,6 +912,8 @@ export function isListingDraft(v: unknown): v is ListingDraft {
   return isObj(v) && !("signature" in v) && isListingBody(v, true, true);
 }
 
+const LISTING_SIZE_LIMIT_OCTETS = 16_384;
+
 /**
  * DACS-1 §6.3.4 signed Listing envelope shape used by the ordered reader.
  * Runtime validity, cryptographic verification, revocation and authority reads
@@ -928,7 +930,11 @@ export function isListingEnvelope(v: unknown): v is ListingEnvelope {
     return false;
   }
   try {
-    return Buffer.byteLength(canonicalize(v), "utf8") <= 16_384; // LR-2 size cap.
+    // The size cap covers the canonical form without the top-level signature.
+    const unsigned = Object.fromEntries(
+      Object.entries(v).filter(([member]) => member !== "signature"),
+    );
+    return Buffer.byteLength(canonicalize(unsigned), "utf8") <= LISTING_SIZE_LIMIT_OCTETS;
   } catch {
     return false;
   }
