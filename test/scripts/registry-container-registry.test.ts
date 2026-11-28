@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -471,6 +471,51 @@ return 28`);
 
   it("classifies a registry that rejects every ping with a client error as functional", () => {
     expect(classifyWait(failingWait(`echo "curl: (22) The requested URL returned error: 403" >&2; return 22`))).toBe("functional");
+  });
+
+  it("uses curl stderr, not a reply-body line that looks like a curl error", () => {
+    const root = scratch();
+    const registryLog = join(root, "registry.log");
+    const result = runStages(`
+set -o pipefail
+http_json_curl=(--disable)
+curl() {
+  echo "curl: (63) Maximum file size exceeded" >&2
+  echo "curl: (7) text supplied by the response body"
+  return 63
+}
+sleep() { :; }
+docker() { echo "verdaccio container log"; }
+wait_for_registry`, { host_registry: "http://127.0.0.1:1", registry_container: "fixture",
+      registry_log: registryLog });
+    const log = readFileSync(registryLog, "utf8");
+    expect(result.status).toBe(63);
+    expect(log).toContain("curl: (63) Maximum file size exceeded");
+    expect(log).not.toContain("curl: (7) text supplied by the response body");
+    expect(classifyAcceptanceFailure({ stage: "registry-ready", exitCode: result.status,
+      read: (name: string) => name === "registry.log" ? log : undefined }).failureClass).toBe("functional");
+    expect(readdirSync(root).filter(name => name.startsWith("registry.log.curl-error."))).toEqual([]);
+  });
+
+  it("keeps the refusal and retry evidence when docker logs fails under pipefail", () => {
+    const root = scratch();
+    const registryLog = join(root, "registry.log");
+    const result = runStages(`
+set -o pipefail
+http_json_curl=(--disable)
+curl() { echo "${refused}" >&2; return 7; }
+sleep() { :; }
+docker() { echo "docker logs failed" >&2; return 9; }
+wait_for_registry`, { host_registry: "http://127.0.0.1:1", registry_container: "fixture",
+      registry_log: registryLog });
+    const log = readFileSync(registryLog, "utf8");
+    expect(result.status).toBe(7);
+    expect(log).toContain("docker logs failed");
+    expect(log).toContain(refused);
+    expect(log).toContain(retryLine);
+    expect(classifyAcceptanceFailure({ stage: "registry-ready", exitCode: result.status,
+      read: (name: string) => name === "registry.log" ? log : undefined }).failureClass).toBe("network");
+    expect(readdirSync(root).filter(name => name.startsWith("registry.log.curl-error."))).toEqual([]);
   });
 });
 

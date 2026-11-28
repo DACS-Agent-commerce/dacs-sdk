@@ -65,6 +65,7 @@ execute_out="$acceptance_root/exec-out"
 artifact_stage="$acceptance_root/artifacts"
 mkdir "$generated_root" "$sealed_root" "$measure_out" "$execute_out" "$artifact_stage"
 registry_log="$artifact_stage/registry.log"
+registry_ping_errors=""
 measure_evidence=(dependency-policy.json dependency-policy.exit-code npm-audit.json npm-audit.exit-code
   consumer-physical.cdx.json consumer-physical-sbom.err consumer-physical-sbom.exit-code consumer-lock.cdx.json
   consumer-lock-sbom.err consumer-lock-sbom.exit-code engine-strict.log engine-strict.exit-code engine-versions.json)
@@ -98,6 +99,8 @@ cleanup() {
   # A failed evidence write must not skip the Docker cleanup below or replace
   # the original exit status.
   set +e
+  rm -f -- "${registry_ping_errors:-}"
+  registry_ping_errors=""
   # A consumer container a deadline or signal left running stops before its
   # mounts are read or deleted.
   for phase in $consumer_phases; do
