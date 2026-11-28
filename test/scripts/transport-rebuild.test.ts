@@ -81,7 +81,7 @@ describe("raw-token admission", () => {
   // pause ends. Here the scanner's native search (RegExp.prototype.test) is
   // watched while it runs: a dense stretch pauses the search, and the plain run
   // after it must be searched again rather than checked byte by byte to the end.
-  it.each([0, 300])("resumes the native search after a dense stretch (chunk size %i, 0 = whole body)", size => {
+  it.each([0, 100, 300])("resumes the native search after a dense stretch (chunk size %i, 0 = whole body)", size => {
     const body = Buffer.from(JSON.stringify(["é".repeat(100) + "a".repeat(4096)]));
     const plainStart = body.indexOf("a");
     const chunks = size ? Array.from({ length: Math.ceil(body.length / size) }, (_, i) => body.subarray(i * size, (i + 1) * size)) : [body];
@@ -100,6 +100,8 @@ describe("raw-token admission", () => {
     }
     // The dense stretch is not searched at each of its 100 boundaries...
     expect(searchStarts.filter(at => at < plainStart).length).toBeLessThan(10);
+    // ...and a chunk boundary cannot restart the search inside the 512-byte pause.
+    expect(searchStarts[1]!).toBeGreaterThanOrEqual(searchStarts[0]! + 512);
     // ...and the search is used again on the plain run once the pause ends.
     expect(searchStarts.some(at => at >= plainStart)).toBe(true);
   });
