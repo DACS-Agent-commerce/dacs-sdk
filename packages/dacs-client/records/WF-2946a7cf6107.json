@@ -1,0 +1,23 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF compute namespace quotas in the journal integrity scan",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+      "before": "f4deb51120d4281d5d2544d0f1624ff6f206638f",
+      "after": "f2ff093aa8ad69b3735e5ef3264dff6071e137bd"
+    },
+    {
+      "path": "packages/dacs-client/test/durable-journal-owned-append.test.mjs",
+      "before": "b5cbd84decd4917bf1fbde2d64a0c64f8f9d2781",
+      "after": "eaaf0e7a71ba7bb79e1a0ad0948aa2844c23de32"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-2946a7cf6107.json",
+    "packages/dacs-client/src/wallet/durable-journal.mjs",
+    "packages/dacs-client/test/durable-journal-owned-append.test.mjs"
+  ]
+}
