@@ -675,10 +675,18 @@ describe("native DEM buyer payment track", () => {
     }
 
     it("reports completion when the node still shows the recorded transfer", async () => {
-      const reconcile = vi.fn(() => ({
-        status: "completed" as const,
-        settlement: SETTLEMENT,
-      }));
+      const replayFences: Parameters<
+        DacsPayDemBuyerPaymentTrackOptionsV1["reconcile"]
+      >[0]["fence"][] = [];
+      const reconcile = vi.fn((input: Parameters<
+        DacsPayDemBuyerPaymentTrackOptionsV1["reconcile"]
+      >[0]) => {
+        replayFences.push(input.fence);
+        return {
+          status: "completed" as const,
+          settlement: SETTLEMENT,
+        };
+      });
       const { replay, settle, publishNotice, walletReconcile } =
         await completedPayment(reconcile);
       const noticesBefore = publishNotice.mock.calls.length;
@@ -692,6 +700,19 @@ describe("native DEM buyer payment track", () => {
       expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({
         prepared: expect.objectContaining({ txHash: TX_HASH, nonce: 7 }),
       }));
+      await expect(replay()).resolves.toMatchObject({
+        status: "final",
+        outcome: "success",
+        reference: `demos:${TX_HASH}:42`,
+      });
+      expect(reconcile).toHaveBeenCalledTimes(2);
+      expect(replayFences).toHaveLength(2);
+      const replayFence = replayFences[1];
+      if (replayFence === undefined) throw new Error("second replay fence was not captured");
+      await expect(replayFence.checkpoint(
+        "payment",
+        { txHash: TX_HASH },
+      )).rejects.toMatchObject({ reasonCode: "effect-replay-read-only" });
       expect(settle).toHaveBeenCalledTimes(1);
       expect(publishNotice).toHaveBeenCalledTimes(noticesBefore);
       expect(walletReconcile).not.toHaveBeenCalled();
