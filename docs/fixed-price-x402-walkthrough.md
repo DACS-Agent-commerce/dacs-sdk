@@ -312,9 +312,10 @@ npm run dacs:down
 
 ## The record
 
-`record` observes the run as it is now and writes `<run>/record.json` (mode `0600`, replaced on a
-rerun). It also prints the record as one JSON line. It makes no Demos, EVM or payment write, and
-writes no readiness record or doctor report.
+`record` observes the run as it is now and writes `<run>/record.json` (mode `0600`). On a rerun, it
+removes the earlier record after validating the run directory and writes a replacement only if
+recording succeeds. It also prints the record as one JSON line. It makes no Demos, EVM or payment
+write, and writes no readiness record or doctor report.
 
 - **What it reads.** The public values in `project/.env`; the tarball hashes against the ones `init`
   saved; the EVM chain id again; and `/ready` of both services. With `--listing-ref` it also runs
@@ -341,10 +342,11 @@ writes no readiness record or doctor report.
 
   `fundedRun` reads `Funded run: UNRUN — <the two reasons>`.
 - **Exit codes.** `record` exits 0 once it has written a record, even when steps are `blocked` or
-  `unrun`. It exits 1 and writes no record when `init` has not run; when the chain is not Base
+  `unrun`. It exits 1 and writes no new record when `init` has not run; when the chain is not Base
   Sepolia; when a tarball no longer matches; when `project/.env` is missing or holds a bad public
   value; when the EVM RPC cannot be reached or does not answer with a chain id; or when the buy does
-  not finish or prints something other than a doctor report.
+  not finish or prints something other than a doctor report. Argument parsing and run-directory
+  validation happen before removal, so those errors can leave an earlier `record.json` in place.
 - **Before you share** `record.json`, read it. It holds public values. Both RPC hosts are masked as
   `custom`, except the Demos host when it is the default public one. **Never share** keys, phrases or tokens, `<run>/secrets`,
   `project/.env`, or `<run>/logs/*.log`, which hold raw output nobody has filtered.
