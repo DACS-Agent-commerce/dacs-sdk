@@ -287,7 +287,7 @@ test('binding readback snapshots its phase before the transport queues it', asyn
   assert.deepEqual(await w.journal().entries(), []);
 });
 
-test('the packed client subpath exposes the held createDevnetDeliveryTransport; while held, active rpc and recovery reject profile_not_admitted with node calls 0; missing admission or wrong SettlementEvidence or Deliverable policy and authority refuses before any write; the broad private source path remains unexported', async t => {
+test('the client delivery-transport subpath exposes the held createDevnetDeliveryTransport; while held, active rpc and recovery reject profile_not_admitted with node calls 0; missing admission or wrong SettlementEvidence or Deliverable policy and authority refuses before any write; the broad private source path remains unexported', async t => {
   const entry = await import('@kynesyslabs/dacs-client/wallet/devnet-delivery-transport');
   assert.deepEqual(Object.keys(entry), ['createDevnetDeliveryTransport']);
   const w = await seller(t, { held: true }), journal = w.journal();

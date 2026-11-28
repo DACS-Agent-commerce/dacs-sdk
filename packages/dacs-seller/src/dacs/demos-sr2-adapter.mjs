@@ -167,15 +167,17 @@ export function demosSr2TxRef(receipt) {
  * `canonicalNodeEndpoint` admits under the record's chain identity (https, or plain http only on the approved TP-1 testnet identity;
  * any other root is refused `offline-only` before a read), and `observeIdentity` as above. Its reads refuse an answer that carries
  * the simulation marker, an authenticated result carries `finality: 'not-established'`, and its receipts keep the Demos labels.
- * Throws TypeError for a `signatureChainId` option, or for a live or passive adapter without `observeIdentity` or a live one without
- * `binding`, and an error with code `tp1_identity_fixture` or `invalid-chain` when the source's pin is a fixture chain or disagrees
+ * Throws TypeError for a `signatureChainId` option, for a passive adapter without a `fetchImpl` function (it has no default), or for a
+ * live or passive adapter without `observeIdentity` or a live one without `binding`, and an error with code `tp1_identity_fixture` or `invalid-chain` when the source's pin is a fixture chain or disagrees
  * with `binding`. A passive adapter refuses `tp1_identity_fixture`, `tp1_identity_unapproved` or `offline-only` for its record or endpoint.
  */
-export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.fetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null, binding: boundProfile, observeIdentity, ownWriter, signatureChainId, identityRecord }) {
+export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl: suppliedFetch, timeoutMs = 10000, now = () => Date.now(), sourceCapability = null, binding: boundProfile, observeIdentity, ownWriter, signatureChainId, identityRecord }) {
   assertNoCallerSignatureDomain({ signatureChainId });
   const passive = sourceCapability === null && identityRecord !== undefined;
   if(sourceCapability !== null && (!isDevnetAgreementTransport(sourceCapability)||typeof sourceCapability.observeBinding!=='function')) reject('source-held','an opaque independently supplied Agreement transport is required');
   if((sourceCapability !== null || passive) && typeof observeIdentity !== 'function') throw new TypeError('a live or passive adapter needs observeIdentity');
+  if (passive && typeof suppliedFetch !== 'function') throw new TypeError('a passive adapter needs fetchImpl');
+  const fetchImpl = suppliedFetch ?? globalThis.fetch;
   const passiveIdentity = passive ? passiveExpectedIdentity(identityRecord) : null;
   if (passive && canonicalNodeEndpoint(rpcUrl, { chainIdentity: passiveIdentity }) === null) reject('offline-only', 'passive SR-2 requires a canonical approved endpoint');
   const endpoint = new URL(rpcUrl);

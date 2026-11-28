@@ -9,8 +9,8 @@ const PASSIVE_LISTING_READER_AUTHORITY = 'dacs-passive-listing-reader';
 
 /**
  * Opens one read-only connection to `endpoint` (a canonical root: https, or plain http only on the approved TP-1 testnet identity) and returns
- * frozen `{ readPublishedListing, close }`. `fetchImpl` defaults to the global `fetch`. Throws OperationError(transport_mismatch) for another endpoint or a `fetchImpl` that is
- * not a function, before any read.
+ * frozen `{ readPublishedListing, close }`. `fetchImpl` is required and has no default. Throws OperationError(transport_mismatch) for another endpoint or a `fetchImpl` that is
+ * missing or not a function, before any read.
  *
  * `readPublishedListing({ logicalAddress, writer, signedProjection, nativeAddress, signal })` first checks the node's chain against
  * the approved identity record, then reads the Listing CREATE of `writer` and authenticates it against the included transaction
@@ -20,12 +20,12 @@ const PASSIVE_LISTING_READER_AUTHORITY = 'dacs-passive-listing-reader';
  * on another chain), with `signal`'s reason once it is aborted, and with transport_closed after `close()`. Each reply is limited
  * to 1 MiB, each name-index page to 50 rows, and each read to one 10 s deadline. Nothing it reads is kept after the reader closes.
  */
-export function createPassiveListingReader({ endpoint, fetchImpl = globalThis.fetch } = {}) {
-  // The observer's identity reads go through the same marker check as the adapter's later reads, whether `fetchImpl` was
-  // supplied or is the global `fetch`. A `fetchImpl` that is not a function is passed on unchanged, so the owner refuses it.
+export function createPassiveListingReader({ endpoint, fetchImpl } = {}) {
+  // The observer's identity reads go through the same marker check as the adapter's later reads. A missing `fetchImpl`, or
+  // one that is not a function, becomes `null`, which the owner refuses (it would otherwise fall back to the global `fetch`).
   const readFetch = typeof fetchImpl === 'function'
     ? async (url, options) => { const response = await fetchImpl(url, options); await refuseSimulatedReply(response); return response; }
-    : fetchImpl;
+    : null;
   const owner = createNodeTransportOwner({ endpoint, transportAuthority: PASSIVE_LISTING_READER_AUTHORITY, fetchImpl: readFetch,
     chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
   const observer = createNodeObserver({ owner });

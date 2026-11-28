@@ -282,28 +282,18 @@ test('an identity reply carrying the simulation marker is refused before anythin
   assert.deepEqual((await plain.read()).listing, plain.published.listing);
 });
 
-test('a reader built without fetchImpl refuses a marked identity reply after only the identity read, and reads an unmarked node', async (t) => {
-  const original = globalThis.fetch;
+test('a reader or passive adapter built without a fetch function refuses before any read and never falls back to the global fetch', async (t) => {
+  const original = globalThis.fetch, reads = [];
   t.after(() => { globalThis.fetch = original; });
-  const held = publishedListing(), marked = scriptedNode(held);
-  marked.respond = ({ message, call }) => (message === 'getBlockByNumber' && call.data.blockNumber === 0
-    ? reply({ number: 0, status: 'confirmed', hash: CHAIN, content: {} }, { 'x-dacs-simulation': 'fixture' }) : undefined);
-  globalThis.fetch = marked.fetch;
-  const reader = createPassiveListingReader({ endpoint: HTTPS_ROOT });
-  t.after(() => reader.close());
-  const error = await refusal(reader.readPublishedListing({ logicalAddress: held.logicalAddress, writer: seller.claim,
-    signedProjection: held.projection, nativeAddress: held.native.storageAddress }));
-  assert.equal(error.code, 'indeterminate');
-  assert.ok(causes(error).some((cause) => /simulation marker/.test(cause.message)));
-  assert.deepEqual(marked.calls, ['getBlockByNumber'], 'nothing is read after the marked identity reply');
-
-  const published = publishedListing(), plain = scriptedNode(published);
-  globalThis.fetch = plain.fetch;
-  const open = createPassiveListingReader({ endpoint: HTTPS_ROOT });
-  t.after(() => open.close());
-  const result = await open.readPublishedListing({ logicalAddress: published.logicalAddress, writer: seller.claim,
-    signedProjection: published.projection, nativeAddress: published.native.storageAddress });
-  assert.deepEqual(result.listing, published.listing);
+  globalThis.fetch = async (url) => { reads.push(String(url)); assert.fail('the global fetch must not be used'); };
+  for (const endpoint of [HTTPS_ROOT, HTTP_ROOT]) {
+    assert.throws(() => createPassiveListingReader({ endpoint }), { code: 'transport_mismatch' }, endpoint);
+    assert.throws(() => createPassiveListingReader({ endpoint, fetchImpl: undefined }), { code: 'transport_mismatch' }, endpoint);
+    assert.throws(() => createPassiveListingReader({ endpoint, fetchImpl: null }), { code: 'transport_mismatch' }, endpoint);
+    assert.throws(() => passiveAdapter(scriptedNode(publishedListing()), { rpcUrl: endpoint, fetchImpl: undefined }), { name: 'TypeError', message: 'a passive adapter needs fetchImpl' }, endpoint);
+  }
+  assert.throws(() => passiveAdapter(scriptedNode(publishedListing()), { fetchImpl: 'TEST-not-a-function' }), { name: 'TypeError', message: 'a passive adapter needs fetchImpl' });
+  assert.deepEqual(reads, []);
 });
 
 test('an aborted signal refuses before any read, and an abort during the read starts no further read', async (t) => {
