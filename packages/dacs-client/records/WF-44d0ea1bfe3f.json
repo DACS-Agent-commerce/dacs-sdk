@@ -1,0 +1,48 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF the Agreement wallet bridge sends its CREATE only with the host paid-write permit, and the purchase drops an intent whose handoff was never issued",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+      "before": "9770963506da17e408f057af865fd5c23042c68e",
+      "after": "ca16f83fadfaf8b2b3718aa1caa1126ccac5d203"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+      "before": "25c4ca0823e26f15bdb283a04ede43d4a344a3a6",
+      "after": "a5cdb37420a0e1e34c40b068e7eb04267199bc5d"
+    },
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "5944d4ada1722ca0c44e7275ac26238e2de74a70",
+      "after": "4c20c6a80cad88e0cff68e19fa4ff38f3d7d9c7b"
+    },
+    {
+      "path": "packages/dacs-client/src/purchase/wallet-bridge.mjs",
+      "before": "a759ecacd8239ea5f51b9ea6afccbaed34f54c23",
+      "after": "0ae54b9b7e6894b0a924ea80d8f9e7a1b9c9305c"
+    },
+    {
+      "path": "packages/dacs-client/test/fee-ceiling.test.mjs",
+      "before": "832a767f753b86e97fcd409b068230cd1c55d5bc",
+      "after": "940a1169f387857a39032e4e4221010205b04d30"
+    },
+    {
+      "path": "packages/dacs-client/test/purchase-wallet-bridge.test.mjs",
+      "before": "e092bd706c1d0d4a805babb0be5f40893936b0fc",
+      "after": "371e07f5214324e37e1869bc664757f1b235405d"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/records/WF-44d0ea1bfe3f.json",
+    "packages/dacs-client/src/dacs/demos-sr2-adapter.mjs",
+    "packages/dacs-client/src/dacs/demos-sr2-wallet-bridge.mjs",
+    "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+    "packages/dacs-client/src/purchase/wallet-bridge.mjs",
+    "packages/dacs-client/test/fee-ceiling.test.mjs",
+    "packages/dacs-client/test/purchase-wallet-bridge.test.mjs"
+  ]
+}

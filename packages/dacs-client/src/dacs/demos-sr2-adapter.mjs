@@ -506,12 +506,14 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
 
   // Separate handoff for the frozen explicit wallet kind. The old skeleton
   // authorizer is unchanged; it never accepts SDK-added fields implicitly.
-  async function takeStorageAnchorHandoff({ planId, walletAddress, network }) {
+  // With `issue` false it is a read-only preview: the same checks and payload,
+  // nothing persisted, and the plan stays prepared.
+  async function storageAnchorHandoff({ planId, walletAddress, network }, issue) {
     if (typeof network !== 'string' || !/^[a-z0-9._-]{1,64}$/.test(network)) reject('invalid', 'an explicit fixture network label is required');
     const saved = await journal.get(planId);
     if (!saved || saved.scope !== scope) reject('invalid', 'unknown wallet plan');
     return journal.withWalletLock(walletKey(saved.writer), async () => {
-      const current = await journal.get(planId);
+      const current = clone(await journal.get(planId));
       if (walletAddress !== current.owner) reject('wrong-writer', 'handoff belongs to another wallet');
       if (current.stage !== 'prepared') reject('handoff-already-issued', 'this plan cannot issue another wallet handoff');
       await chainIdentity();
@@ -521,11 +523,15 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
       if(sourceCapability && network!==sourceCapability.pins.network) reject('invalid-chain','the CREATE network differs from the opaque source capability');
       current.payload.content.chainIdentity = expectedIdentity;
       current.authorizationProfile = 'embedded-storage-anchor-create';
-      current.stage = 'handoff-issued';
-      await persist(current);
+      if (issue) {
+        current.stage = 'handoff-issued';
+        await persist(current);
+      }
       return { ...descriptor(current), unsignedTransaction: clone(current.payload) };
     });
   }
+  const takeStorageAnchorHandoff = (request) => storageAnchorHandoff(request, true);
+  const previewStorageAnchorHandoff = (request) => storageAnchorHandoff(request, false);
 
   // The caller must supply the exact signed/approved envelope retained by the
   // injected wallet journal, not an RPC body or an untrusted hash pointer.
@@ -586,5 +592,5 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     });
   }
 
-  return { rpcOrigin: base, evidenceMode: DEMOS_SR2_EVIDENCE_MODE, planWrite, takeWalletHandoff, authorizeWrite, takeStorageAnchorHandoff, adoptWalletAuthorization, retireDeniedHandoff, read, recheck, write, verifyReceipt };
+  return { rpcOrigin: base, evidenceMode: DEMOS_SR2_EVIDENCE_MODE, planWrite, takeWalletHandoff, authorizeWrite, previewStorageAnchorHandoff, takeStorageAnchorHandoff, adoptWalletAuthorization, retireDeniedHandoff, read, recheck, write, verifyReceipt };
 }

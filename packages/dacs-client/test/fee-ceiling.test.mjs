@@ -298,12 +298,12 @@ test('a retained Agreement CREATE intent still resumes under a lowered ceiling a
   }
 });
 
-// The real bridge's `resume` refuses a plan that is still prepared with authorization-required, before any wallet request.
-test('a retained intent whose wallet plan is still prepared, under a lowered ceiling and with no fee reader, keeps the resume refusal authorization-required with no wallet request and no new intent', async (t) => {
-  const { calls, bridge } = recordingBridge(() => { throw new DemosSr2BridgeError('authorization-required', 'resume cannot issue a wallet handoff'); });
+// The real bridge's `resume` refuses a plan that is still prepared with handoff-not-issued, before any wallet request.
+test('a retained intent whose wallet plan is still prepared, under a lowered ceiling and with no fee reader, keeps the resume refusal handoff-not-issued with no wallet request and no new intent', async (t) => {
+  const { calls, bridge } = recordingBridge(() => { throw new DemosSr2BridgeError('handoff-not-issued', 'no wallet handoff was issued for this plan, and resume cannot issue one'); });
   const { error, anchorAnswer, newEvents } = await resumeRetainedIntent(t, { feeCeilingOs: '1', chain: {} }, bridge);
   assert.equal(error, undefined);
-  assert.match(anchorAnswer.reason, /^wallet anchor: authorization-required:/);
+  assert.match(anchorAnswer.reason, /^wallet anchor: handoff-not-issued:/);
   assert.deepEqual(calls, ['resume'], 'no anchor, so no wallet request');
   assert.doesNotMatch(newEvents, /protocol_wallet_anchor_intent/);
 });
