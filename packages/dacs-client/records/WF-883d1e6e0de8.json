@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF expect the read-only Listing entry in the node-wallet export list of the public API test",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "5e4e7fd1bf9c861921eee2da415111621c6ebc9f",
+      "after": "dacea29eb2bd01422d7786ee64217552969ecf9a"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-883d1e6e0de8.json",
+    "packages/dacs-client/test/public-api.test.mjs"
+  ]
+}
