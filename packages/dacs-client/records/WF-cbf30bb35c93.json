@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client entry point with the public identity bundle builder and the updated seller receipt reservation text",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "2cc118fe8e31d7a854ace61241a5401439e67fb0",
+      "after": "2cc118fe8e31d7a854ace61241a5401439e67fb0"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-cbf30bb35c93.json"
+  ],
+  "note": "Both sides of the merge recorded the client entry point; this record chooses the merged copy, which holds this side's public identity bundle builder and address normaliser exports and the base's updated seller receipt reservation text."
+}

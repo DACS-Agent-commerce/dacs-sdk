@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest and public API test after carrying the base up a second time into the wallet-free node part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "baabf6997086cb2c3cc5a68eb82a1ecff3dd1951",
+      "after": "baabf6997086cb2c3cc5a68eb82a1ecff3dd1951"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "75f01d68c8585c1f28cbca15334f57091b6f0222",
+      "after": "75f01d68c8585c1f28cbca15334f57091b6f0222"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-b9e51b003cf7.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's exports and the base's changes together."
+}

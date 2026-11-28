@@ -27,7 +27,7 @@ const DOCUMENTS = ['ADMISSION.md', 'LICENSE', 'PROFILE.json', 'README.md', 'SOUR
   ...['deployer-public-key.json', 'deployment-record.json', 'deployment.sha256'].map((name) => `vectors/testnet-records/${name}`)];
 const PUBLIC_API = ['SellerAgentError', 'agreementInput', 'attachIdentityPresentation', 'attachListingSignature', 'buildListingDraft', 'buildUnsignedIdentityBundle',
   'contributionVerifier', 'createDeliverableWalletJournal', 'createOperatorBuyerAccess', 'createPaymentEvidenceWalletJournal', 'createSellerAgentClient', 'createSellerAuthorityReader', 'createSellerContextRoute', 'createSellerHttpHandler',
-  'createSellerTransportStore', 'createSellerWalletSession', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'startSellerHost', 'validateListing'];
+  'createSellerTransportStore', 'createSellerWalletSession', 'createWireSellerContextRoute', 'listingPin', 'listingSigningMessage', 'openVerifiedEnrollmentReader', 'startSellerHost', 'validateListing'];
 // The seller's Node wallet suites.
 const NODE_WALLET_TESTS = ['node-wallet-approval.test.mjs', 'node-wallet-balance.test.mjs', 'node-wallet-composition.test.mjs', 'node-wallet-payment-evidence.test.mjs', 'node-wallet-sr2-bounds.test.mjs'];
 const INSTALLED_RUN_TIMEOUT_MS = 120000;

@@ -9,7 +9,7 @@ import { installPurchaseAdmissionHook, loadAdmissionDouble } from './helpers/pur
 installPurchaseAdmissionHook();
 const { setPurchaseAdmission } = await loadAdmissionDouble();
 const { createPurchaseService } = await import('../src/purchases.mjs');
-const { OFFLINE_AGREEMENT_MODE } = await import('../src/dacs/protocol-purchases.mjs');
+const { OFFLINE_AGREEMENT_MODE, readAnchorReservedWriteId } = await import('../src/dacs/protocol-purchases.mjs');
 const { createCoordinateStore } = await import('../src/dacs/wallet-transactions.mjs');
 const { OperationError } = await import('../src/client-errors.mjs');
 const { PURCHASE_STATE_SCHEMA } = await import('../src/purchase-state-schema.mjs');
@@ -34,7 +34,7 @@ function world(t, { generateJobId } = {}) {
     prepareTerms: () => ({ terms: { profile: 'TEST-profile' }, state: { stage: 'identity', attempts: [] } }) };
   const chain = { network: 'testnet', pinnedIdentity: chainIdentity,
     networkIdentity: async () => ({ identity: chainIdentity, mode: 'public-chain-read' }),
-    getAddressBalance: async () => 10n ** 15n, getTransactionFees: async () => 1n };
+    getAddressBalance: async () => 10n ** 15n, getTransactionFees: async () => 1n, getAddressNonce: async () => 0 };
   const verifier = { verify: async () => ({ transactable: true, anchor: { kind: 'storage-program', locator: 'TEST-locator' }, checks: [], contentHash: chainIdentity, price, payee, evidence: {}, listing: { seller: {} } }) };
   const options = { db, ops, coordinates: createCoordinateStore({ db }), store: { transaction, isUniqueViolation }, purposes: { APPROVE_PURCHASE: 'TEST-host-approval-purpose' },
     challenges: {}, chain, verifier, accounts: { listWallets: () => [{ address: wallet }] }, protocol,
@@ -106,6 +106,18 @@ test('one collision then success stores the second id', async (t) => {
   assert.deepEqual(w.generated, [FIRST, FIRST, SECOND]);
   assert.equal(operation.terms.protocol.jobId, SECOND);
   assert.deepEqual(w.rows().map((row) => row.job_id), [FIRST, SECOND]);
+});
+
+test('when the first job id is already taken, the saved anchor write carries the job id the purchase finally uses', async (t) => {
+  const w = world(t, { generateJobId: (n) => [FIRST, FIRST, SECOND][n] });
+  await w.prepare('TEST-key-1');
+  const { operation } = await w.prepare('TEST-key-2');
+  assert.deepEqual(w.generated, [FIRST, FIRST, SECOND]);
+  const row = w.db.prepare('SELECT job_id, state FROM operations WHERE id = ?').get(operation.id);
+  assert.equal(row.job_id, SECOND);
+  assert.equal(JSON.parse(row.state).protocol.anchorWrite.jobId, row.job_id);
+  const saved = w.ops.get('TEST-buyer', operation.id);
+  assert.equal(readAnchorReservedWriteId(saved), saved.state.protocol.anchorWrite.reservedWriteId);
 });
 
 test('three collisions fail closed and write nothing', async (t) => {

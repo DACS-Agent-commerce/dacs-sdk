@@ -58,6 +58,23 @@ test('through the real source readRpc, a requested 1 MiB limit admits 1 MiB and 
   assert.ok(await callers.readRpc(w, { maxBytes: 4 * MIB }));
 });
 
+test('the proof read allowlist rejects every other node method', { timeout: TEST_TIMEOUT_MS }, async t => {
+  const w = sourceReadWorld(t), storageAddresses = [`stor-${'7'.repeat(40)}`];
+  const sent = message => w.node.calls.filter(row => row.body?.params?.[0]?.message === message).length;
+  w.node.intercept = row => (['getStorageProof', 'getFinalizedHead'].includes(row.body?.params?.[0]?.message) ? jsonResponse(JSON.stringify(ok({ TEST: messageOf(row) }))) : undefined);
+  const proof = { method: 'nodeCall', params: [{ message: 'getStorageProof', data: { storageAddresses } }] }, head = { method: 'nodeCall', params: [{ message: 'getFinalizedHead' }] };
+  assert.deepEqual((await w.transport.readRpc('/', proof, { maxBytes: 64 * 1024 })).response, { TEST: 'getStorageProof' });
+  assert.deepEqual((await w.transport.readRpc('/', head, { maxBytes: 64 * 1024 })).response, { TEST: 'getFinalizedHead' });
+  assert.deepEqual([sent('getStorageProof'), sent('getFinalizedHead')], [1, 1], 'each permitted proof read reaches the node once');
+  const refused = [['/', { method: 'nodeCall', params: [{ message: 'getStorageProofs', data: { storageAddresses } }] }], ['/', { method: 'nodeCall', params: [{ message: 'getFinalizedHeads' }] }],
+    ['/', { method: 'nodeCall', params: [{ message: 'getPeerlist' }] }], ['/', { method: 'nodeCall', params: [{ message: 'setStorageProof', data: { storageAddresses } }] }],
+    ['/', { method: 'execute', params: [{ message: 'getStorageProof', data: { storageAddresses } }] }], [`/storage-program/${storageAddresses[0]}`, proof]];
+  for (const [path, body] of refused) {
+    await assert.rejects(w.transport.readRpc(path, body), error => error.code === 'readonly_only' && /bounded proof\/finality reads/.test(error.message), JSON.stringify(body));
+    assert.equal(sent(body.params[0].message), ['getStorageProof'].includes(body.params[0].message) ? 1 : 0, `${body.params[0].message} was never sent`);
+  }
+});
+
 test('observeBinding refuses a deadline that is not an integer from 1 to the transport timeout and runs with a smaller one', { timeout: TEST_TIMEOUT_MS }, async t => {
   const w = sourceReadWorld(t);
   for (const timeoutMs of [0, -1, 1.5, '5000', Number.NaN, null, DEFAULT_TRANSPORT_TIMEOUT_MS + 1]) {
