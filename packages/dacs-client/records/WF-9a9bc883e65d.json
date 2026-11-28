@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client native devnet transport and public API test after carrying the base up into the installed client part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "7dabeb48eb5f7dee02d49292c8203bd64bd2557f",
+      "after": "7dabeb48eb5f7dee02d49292c8203bd64bd2557f"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "b4374ca720e7d6cea9f1e92fc34900e29845d0f4",
+      "after": "b4374ca720e7d6cea9f1e92fc34900e29845d0f4"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-9a9bc883e65d.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's changes together with the base's. No file other than this record changes."
+}
