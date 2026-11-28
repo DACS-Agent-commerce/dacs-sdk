@@ -1,0 +1,32 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client manifest, entry point and tests after merging part 1 into the passive Listing reader part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "aadbcac37947d9305dfbe4f1d58edade8e9ee8fa",
+      "after": "aadbcac37947d9305dfbe4f1d58edade8e9ee8fa"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+      "before": "9f4895555ea84ef2653bce86eb5256ea6e878c1d",
+      "after": "9f4895555ea84ef2653bce86eb5256ea6e878c1d"
+    },
+    {
+      "path": "packages/dacs-client/test/package-contents.test.mjs",
+      "before": "19592e682617de55d23c8db4abaf8900badfbf9d",
+      "after": "19592e682617de55d23c8db4abaf8900badfbf9d"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "7b31ab6134510f3193b26d935bc851da800b3dab",
+      "after": "7b31ab6134510f3193b26d935bc851da800b3dab"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-48892cf8c7f0.json"
+  ],
+  "note": "Both sides of the merge recorded the client manifest and its entry-point tests, so their newest records disagree; this record chooses the merged copies, which list the public effect-history entry and the held delivery transport entry together. No file other than this record changes."
+}
