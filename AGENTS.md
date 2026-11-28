@@ -61,7 +61,7 @@ npm run conformance:sync
 npm run seller:test
 ```
 
-`packages/dacs-client` has no root script. Its own `test` script (package.json) runs `check-hold.mjs` and then every test file in the package:
+`packages/dacs-client` has no root script. Its own `test` script (package.json) runs every test file in the package:
 
 ```bash
 npm test --workspace @kynesyslabs/dacs-client

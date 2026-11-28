@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D22",
-  "registration": "D22: existing client delta lane",
-  "subject": "delta(client): D22 keep the scheme case-insensitive and require lowercase in claim references"
-}

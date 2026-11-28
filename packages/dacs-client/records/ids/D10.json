@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D10",
-  "registration": "D10: existing client delta lane",
-  "subject": "delta(client): D10 delete simulated engine profiles and update freeze pins"
-}

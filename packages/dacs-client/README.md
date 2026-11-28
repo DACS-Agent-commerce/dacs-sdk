@@ -44,7 +44,16 @@ It stores a `broadcast-accepted` stage as `sr2-readback-pending`, because only t
 Call `put` inside `withWalletLock`, which holds the journal's lock on that key and passes its opaque owner to `work(owner)`.
 Journal errors reach you unchanged. The native transfer lane is a separate lane.
 
-Delta records also check parent continuity against the newest ancestor records for each path, or the publication baseline when no earlier record exists. A later record cannot legitimize a stale merge, deletion or restoration. Divergent parallel records require an explicit record of the merge resolution; that choice then constrains descendant records. This README is the one package file whose changes need no delta record; Git history shows who changed it.
+## Before live use
+
+The package is not cleared for live purchases. These conditions came from the package hold and still apply:
+
+- Keep `private: true` and the reviewed public exports. Publishing needs the coordinated release-set admission described above.
+- Run `test/purchase-integrity.test.mjs`, `test/purchase-review-races.test.mjs` and `test/readback-review-decisions.test.mjs` against the host's deployed purchase store, not only this package's SQLite store. Cover both completion orders, same-hash terminal decisions, native supersession and restart. The store must give a synchronous, re-entrant, serializing transaction (`BEGIN IMMEDIATE` or equivalent) in which nested calls join the outer one.
+- Bind the approved, immutable DEC-16 testnet identity record. Refuse missing or fixture pins and non-approved identities before any effect, and rerun the zero-signature and zero-broadcast cases.
+- Finish the independent programme review.
+
+Where the package came from is in `SOURCES.md` in the SDK repository.
 
 ## Public API
 

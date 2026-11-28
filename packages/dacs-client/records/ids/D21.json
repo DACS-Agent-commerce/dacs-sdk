@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D21",
-  "registration": "D21: existing client delta lane",
-  "subject": "delta(client): D21 require canonical job IDs in the seller session delegation check"
-}
