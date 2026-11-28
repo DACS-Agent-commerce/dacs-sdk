@@ -9,7 +9,7 @@ const PASSIVE_LISTING_READER_AUTHORITY = 'dacs-passive-listing-reader';
 
 /**
  * Opens one read-only connection to `endpoint` (a canonical root: https, or plain http only on the approved TP-1 testnet identity) and returns
- * frozen `{ readPublishedListing, close }`. Throws OperationError(transport_mismatch) for another endpoint or a `fetchImpl` that is
+ * frozen `{ readPublishedListing, close }`. `fetchImpl` defaults to the global `fetch`. Throws OperationError(transport_mismatch) for another endpoint or a `fetchImpl` that is
  * not a function, before any read.
  *
  * `readPublishedListing({ logicalAddress, writer, signedProjection, nativeAddress, signal })` first checks the node's chain against
@@ -20,9 +20,9 @@ const PASSIVE_LISTING_READER_AUTHORITY = 'dacs-passive-listing-reader';
  * on another chain), with `signal`'s reason once it is aborted, and with transport_closed after `close()`. Each reply is limited
  * to 1 MiB, each name-index page to 50 rows, and each read to one 10 s deadline. Nothing it reads is kept after the reader closes.
  */
-export function createPassiveListingReader({ endpoint, fetchImpl } = {}) {
-  // The observer's identity reads go through the same marker check as the adapter's later reads. A `fetchImpl` that is not a
-  // function is passed on unchanged, so the owner refuses it.
+export function createPassiveListingReader({ endpoint, fetchImpl = globalThis.fetch } = {}) {
+  // The observer's identity reads go through the same marker check as the adapter's later reads, whether `fetchImpl` was
+  // supplied or is the global `fetch`. A `fetchImpl` that is not a function is passed on unchanged, so the owner refuses it.
   const readFetch = typeof fetchImpl === 'function'
     ? async (url, options) => { const response = await fetchImpl(url, options); await refuseSimulatedReply(response); return response; }
     : fetchImpl;

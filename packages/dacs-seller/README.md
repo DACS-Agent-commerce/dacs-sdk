@@ -1428,7 +1428,9 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   on another chain or an answer that carries the simulation marker), the
   signal's abort reason, and `transport_closed` after `close()`. Each reply is
   limited to 1 MiB, each name-index page to 50 rows and each read to 10 s. It
-  never writes, signs or recovers, and keeps nothing after it closes.
+  never writes, signs or recovers, and keeps nothing after it closes. `fetchImpl`
+  defaults to the global `fetch`; the simulation marker is refused on every
+  reply, including the identity reads, with either.
 - Not shipped: the operator's test wallet custody (`operator-custody.mjs`),
   journal-bound issuance (`seller-issuance.mjs`) and the wallet write batch
   (`seller-write-batch.mjs`).

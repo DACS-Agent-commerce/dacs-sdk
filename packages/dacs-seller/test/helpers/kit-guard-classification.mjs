@@ -30,7 +30,7 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/dacs/capability-authority.mjs': { effect: {}, pure: ['admitKitCapabilityAuthority'] },
   'src/dacs/dem-delivery-context-consumer.mjs': { effect: { createDemDeliveryContext: ['createDemDeliveryContext'] }, pure: ['demDeliveryContextConfig', 'demDeliveryContextHost', 'demDeliveryContextUsage', 'demDeliveryContextVetMode', 'isDemDeliveryContextAuthority', 'releaseDemDeliveryContext', 'resolveDemDeliverySellerContext'] },
   'src/dacs/demos-claims.mjs': { effect: {  }, pure: ['DemosClaimFormatError', 'addressForClaim', 'claimForAddress', 'decodeSignature', 'isCanonicalEd25519Signature', 'isSmallOrderPublicKey', 'normalizeDemosAddress', 'verifyDemosSignature'] },
-  'src/dacs/demos-sr2-adapter.mjs': { effect: {  }, pure: ['DemosSr2Error', 'createDemosSr2Adapter', 'createInMemoryDemosSr2Journal', 'demosSr2TxRef'] },
+  'src/dacs/demos-sr2-adapter.mjs': { effect: {  }, pure: ['DemosSr2Error', 'createDemosSr2Adapter', 'createInMemoryDemosSr2Journal', 'demosSr2TxRef', 'refuseSimulatedReply'] },
   'src/dacs/devnet-source.mjs': { effect: {  }, pure: ['isDevnetAgreementTransport', 'isDevnetDemoTransport', 'isDevnetSettlementTransport', 'isQualificationObserverSource'] },
   'src/dacs/effect-boundary.mjs': { effect: { createEffectBoundary: ['effectBoundary'] }, pure: ['effectBoundaryBinding', 'effectPassRemainingMs', 'jobPassContext'] },
   'src/dacs/effect-history.mjs': { effect: {  }, pure: ['createEffectHistory', 'initHistory'] },

@@ -282,6 +282,30 @@ test('an identity reply carrying the simulation marker is refused before anythin
   assert.deepEqual((await plain.read()).listing, plain.published.listing);
 });
 
+test('a reader built without fetchImpl refuses a marked identity reply after only the identity read, and reads an unmarked node', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => { globalThis.fetch = original; });
+  const held = publishedListing(), marked = scriptedNode(held);
+  marked.respond = ({ message, call }) => (message === 'getBlockByNumber' && call.data.blockNumber === 0
+    ? reply({ number: 0, status: 'confirmed', hash: CHAIN, content: {} }, { 'x-dacs-simulation': 'fixture' }) : undefined);
+  globalThis.fetch = marked.fetch;
+  const reader = createPassiveListingReader({ endpoint: HTTPS_ROOT });
+  t.after(() => reader.close());
+  const error = await refusal(reader.readPublishedListing({ logicalAddress: held.logicalAddress, writer: seller.claim,
+    signedProjection: held.projection, nativeAddress: held.native.storageAddress }));
+  assert.equal(error.code, 'indeterminate');
+  assert.ok(causes(error).some((cause) => /simulation marker/.test(cause.message)));
+  assert.deepEqual(marked.calls, ['getBlockByNumber'], 'nothing is read after the marked identity reply');
+
+  const published = publishedListing(), plain = scriptedNode(published);
+  globalThis.fetch = plain.fetch;
+  const open = createPassiveListingReader({ endpoint: HTTPS_ROOT });
+  t.after(() => open.close());
+  const result = await open.readPublishedListing({ logicalAddress: published.logicalAddress, writer: seller.claim,
+    signedProjection: published.projection, nativeAddress: published.native.storageAddress });
+  assert.deepEqual(result.listing, published.listing);
+});
+
 test('an aborted signal refuses before any read, and an abort during the read starts no further read', async (t) => {
   const before = readerWorld(t), stop = new AbortController(), reason = new Error('TEST caller stopped');
   stop.abort(reason);
