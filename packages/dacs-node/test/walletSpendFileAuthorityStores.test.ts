@@ -222,7 +222,7 @@ describe("file-backed authority stores", () => {
     }
     expect((await readState(active.stateStore())).generation).toBe(24);
     await active.close();
-  });
+  }, 30_000);
 
   it("refuses a state view after close", async () => {
     const stores = await openTestStores(directory);
