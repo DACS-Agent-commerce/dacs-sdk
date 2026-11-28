@@ -472,11 +472,6 @@
       "count": 1
     }
   },
-  "packages/dacs-seller/test/host-lifecycle.test.mjs": {
-    "no-unused-vars": {
-      "count": 3
-    }
-  },
   "packages/dacs-seller/test/payment-evidence-wallet-journal.test.mjs": {
     "no-unused-vars": {
       "count": 1

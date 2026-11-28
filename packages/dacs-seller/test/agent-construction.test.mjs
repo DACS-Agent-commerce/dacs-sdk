@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync,readdirSync,readlinkSync} from 'node:fs';
+import {closeSync,fstatSync,mkdtempSync,openSync,readdirSync,rmSync,statSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import * as core from '@kynesyslabs/dacs';
@@ -63,8 +63,25 @@ test('retained Listing admission rejects a substituted signature on restart',asy
 });
 test('failed Listing initialization closes every owned database handle',async t=>{
  const f=fixture(t),changed=structuredClone(f.listing);changed.signature.value='A'.repeat(86);const path=join(f.dir,'seller-state.sqlite');
- const descriptors=()=>readdirSync('/proc/self/fd').filter(fd=>{try{return readlinkSync('/proc/self/fd/'+fd)===path;}catch{return false;}}).length;
- const before=descriptors();for(let i=0;i<3;i++)await assert.rejects(f.open({listing:changed}));assert.equal(descriptors(),before);
+ const descriptorDirectory=process.platform==='linux'?'/proc/self/fd':'/dev/fd';
+ const openDescriptorCount=target=>{
+  const {dev,ino}=statSync(target);
+  return readdirSync(descriptorDirectory).filter(fd=>/^\d+$/.test(fd)).filter(fd=>{
+   try{const descriptor=fstatSync(Number(fd));return descriptor.dev===dev&&descriptor.ino===ino;}
+   catch(error){if(error.code==='EBADF')return false;throw error;}
+  }).length;
+ };
+ const valid=await f.open();valid.close();
+ const controlPath=join(f.dir,'unrelated-file');writeFileSync(controlPath,'TEST');
+ const before=openDescriptorCount(path),unrelated=openSync(controlPath,'r');
+ assert.equal(openDescriptorCount(path),before,'an unrelated open descriptor does not affect the database count');
+ const control=openSync(path,'r');
+ assert.equal(openDescriptorCount(path),before+1,'the descriptor count detects an actually open database file');
+ closeSync(control);
+ assert.equal(openDescriptorCount(path),before,'the descriptor count stops seeing the database after close');
+ closeSync(unrelated);
+ for(let i=0;i<3;i++)await assert.rejects(f.open({listing:changed}));
+ assert.equal(openDescriptorCount(path),before,'failed Listing initialization closes every database descriptor it opens');
 });
 test('an issued challenge survives a reopen of the ledger with every bound field',async t=>{
  const f=fixture(t),agent=await f.open(),issued=issue(f);agent.close();

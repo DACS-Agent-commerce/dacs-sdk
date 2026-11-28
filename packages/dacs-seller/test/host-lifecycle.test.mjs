@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs, {chmodSync} from 'node:fs';
+import {chmodSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {connect} from 'node:net';
 import {once} from 'node:events';
@@ -21,11 +21,12 @@ import {DACS_SELLER_DISCOVERY_PATH} from '@kynesyslabs/dacs/wire';
 import {FIXTURE_ENDPOINT,wireAuthentication,wireBuyer} from './helpers/wire-buyer.mjs';
 import {LISTING_AUTHORITY,fetchAsHost,proxyListener} from './helpers/listener-host.mjs';
 import {PROCESS_LEASE_ID,PROCESS_NAMESPACE} from '../src/dacs/process-lease.mjs';
+import {spyOnFsync} from './helpers/fsync-spy.mjs';
 const defer=()=>{let resolve;const promise=new Promise(r=>{resolve=r;});return{promise,resolve};};
 async function fixture(t,{wrap=agent=>agent,publicEndpoint=FIXTURE_ENDPOINT}={}){
  const f=await commitmentFixture(t,{vetMode:KIT_TP1_VET_MODE,publicEndpoint}),dataDirectory=await mkdtemp(join(tmpdir(),'TEST-host-lifecycle-'));
  // `vetMode` is an agent option: the host fixes it and takes no such option.
- const {durableDirectory,commitOnSignature,nativeArtifactAnchor,...config}=f.config;delete config.vetMode;
+ const config={...f.config};delete config.durableDirectory;delete config.commitOnSignature;const nativeArtifactAnchor=config.nativeArtifactAnchor;delete config.nativeArtifactAnchor;delete config.vetMode;
  delete config.challengeLedger; // the host builds its own ledger
  const api=await privateModule(new URL('../src/host.mjs',import.meta.url),['setTestWrapper','setTestKeepAliveTimeout','setTestReadbackTimeout'],source=>source.replace('const REQUIRED =', 'let testWrapper=agent=>agent; function setTestWrapper(value){const wrapped=new WeakMap();testWrapper=agent=>{if(!wrapped.has(agent))wrapped.set(agent,value(agent));return wrapped.get(agent);};}\nconst REQUIRED =').replace('now, agent, requireDelegation: false','now, agent: testWrapper(agent), requireDelegation: false').replace('createSellerHttpHandler(agent,','createSellerHttpHandler(testWrapper(agent),').replace('const TIMEOUTS =','let testKeepAliveTimeout=5000; function setTestKeepAliveTimeout(value){testKeepAliveTimeout=Number(value);}\nlet testReadbackTimeout=15000; function setTestReadbackTimeout(value){testReadbackTimeout=Number(value);}\nconst TIMEOUTS =').replace('keepAliveTimeout: TIMEOUTS.keepAliveTimeout','keepAliveTimeout: testKeepAliveTimeout').replace('timeoutMs: TIMEOUTS.requestTimeout','timeoutMs: testReadbackTimeout'));
  api.setTestWrapper(wrap);const options={...config,artifactAnchor:nativeArtifactAnchor,dataDirectory,...hostAuthority(),listener:proxyListener()},hosts=[];
@@ -75,7 +76,7 @@ test('a frozen startup failure is kept as the aggregate cause when cleanup also 
 });
 
 test('the host still refuses a native artifact capability without its readbacks',async t=>{
- const f=await fixture(t);const {readRetained:_removed,...anchor}=f.native;
+ const f=await fixture(t),anchor={...f.native};delete anchor.readRetained;
  await assert.rejects(f.start({artifactAnchor:anchor}),/native demo artifact capability is incomplete/);
  const host=await f.start();await host.close();
 });
@@ -268,15 +269,12 @@ test('host reports both literal loopback URLs',async t=>{
 });
 
 test('host makes newly created seller, transport and journal directories durable before listening',async t=>{
- const f=await fixture(t),handle=await fs.promises.open(f.dataDirectory,'r'),proto=Object.getPrototypeOf(handle),original=proto.sync,synced=[];
- await handle.close();
+ const f=await fixture(t),spy=spyOnFsync();let host;
  try{
-  proto.sync=async function(){try{synced.push(fs.realpathSync(`/proc/self/fd/${this.fd}`));}catch{}return original.call(this);};
-  const host=await f.start();
-  assert.ok(synced.includes(join(f.dataDirectory,'transport')),'the new transport directory entry is synced');
-  assert.ok(synced.includes(f.dataDirectory),'the new seller, transport and wire-journal directory entries are synced in dataDirectory');
-  await host.close();
- }finally{proto.sync=original;}
+  host=await f.start();
+  assert.ok(spy.synced.includes(join(f.dataDirectory,'transport')),'the new transport directory entry is synced');
+  assert.ok(spy.synced.includes(f.dataDirectory),'the new seller, transport and wire-journal directory entries are synced in dataDirectory');
+ }finally{try{await host?.close();}finally{spy.restore();}}
 });
 
 const lockOwner=(lease,pid,namespace)=>`${pid}:${lease}:${Date.now()}:${randomUUID()}${namespace?`:${namespace.ns}.${namespace.boot}.${namespace.start}`:''}`;
