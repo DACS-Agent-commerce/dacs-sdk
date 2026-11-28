@@ -99,6 +99,16 @@ export class DemosSr2Error extends Error {
 }
 const reject = (code, message, options) => { throw new DemosSr2Error(code, message, options); };
 
+/**
+ * Refuses (`indeterminate`) a node reply that carries the simulation marker and cancels its body, so a passive read never takes
+ * fixture evidence for a live answer. Resolves for a reply without the marker.
+ */
+export async function refuseSimulatedReply(response) {
+  if (!response.headers.has('x-dacs-simulation')) return;
+  await response.body?.cancel().catch(() => {});
+  reject('indeterminate', 'a passive SR-2 response must not carry the simulation marker');
+}
+
 // The chain identity of a passive adapter: `identityRecord.chainIdentity`, once the record is one the SDK approved (its canonical
 // digest is listed) and names no simulated fixture chain. A caller's record never extends the approved list.
 function passiveExpectedIdentity(identityRecord) {
@@ -218,9 +228,10 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
           const response = await fetchImpl(url, { ...options, signal: signal ? AbortSignal.any([signal, options.signal]) : options.signal });
           signal?.throwIfAborted();
           // Fixture replies must carry the simulation marker; a passive read refuses one, so fixture evidence never reads as live.
-          if (passive ? response.headers.has('x-dacs-simulation') : response.headers.get('x-dacs-simulation') !== 'fixture') {
+          if (passive) await refuseSimulatedReply(response);
+          else if (response.headers.get('x-dacs-simulation') !== 'fixture') {
             await response.body?.cancel().catch(() => {});
-            reject('indeterminate', passive ? 'a passive SR-2 response must not carry the simulation marker' : 'every SR-2 response must carry the simulation marker');
+            reject('indeterminate', 'every SR-2 response must carry the simulation marker');
           }
           return response;
         },

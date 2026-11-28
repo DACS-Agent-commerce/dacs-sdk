@@ -2,7 +2,7 @@
 // read back and authenticated. It opens no wallet, key, journal or anchor, signs nothing and recovers nothing.
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { createNodeObserver, createNodeTransportOwner } from '@kynesyslabs/dacs-client/node-wallet';
-import { createDemosSr2Adapter, createInMemoryDemosSr2Journal } from '../dacs/demos-sr2-adapter.mjs';
+import { createDemosSr2Adapter, createInMemoryDemosSr2Journal, refuseSimulatedReply } from '../dacs/demos-sr2-adapter.mjs';
 
 // The transport authority of the reader's own connection; it names that connection and binds nothing.
 const PASSIVE_LISTING_READER_AUTHORITY = 'dacs-passive-listing-reader';
@@ -21,7 +21,12 @@ const PASSIVE_LISTING_READER_AUTHORITY = 'dacs-passive-listing-reader';
  * to 1 MiB, each name-index page to 50 rows, and each read to one 10 s deadline. Nothing it reads is kept after the reader closes.
  */
 export function createPassiveListingReader({ endpoint, fetchImpl } = {}) {
-  const owner = createNodeTransportOwner({ endpoint, transportAuthority: PASSIVE_LISTING_READER_AUTHORITY, fetchImpl,
+  // The observer's identity reads go through the same marker check as the adapter's later reads. A `fetchImpl` that is not a
+  // function is passed on unchanged, so the owner refuses it.
+  const readFetch = typeof fetchImpl === 'function'
+    ? async (url, options) => { const response = await fetchImpl(url, options); await refuseSimulatedReply(response); return response; }
+    : fetchImpl;
+  const owner = createNodeTransportOwner({ endpoint, transportAuthority: PASSIVE_LISTING_READER_AUTHORITY, fetchImpl: readFetch,
     chainIdentity: TP1_APPROVED_IDENTITY_RECORD.chainIdentity });
   const observer = createNodeObserver({ owner });
   const adapter = createDemosSr2Adapter({ rpcUrl: endpoint, journal: createInMemoryDemosSr2Journal(), fetchImpl: owner.fetchImpl,

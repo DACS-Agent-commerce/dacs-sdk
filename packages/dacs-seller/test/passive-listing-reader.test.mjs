@@ -269,6 +269,19 @@ test('an answer carrying the simulation marker is refused as live evidence', asy
   assert.ok(!node.calls.includes('getTxByHash'), 'a marked answer is not used');
 });
 
+test('an identity reply carrying the simulation marker is refused before anything is read, and one without it passes', async (t) => {
+  const marked = readerWorld(t);
+  marked.node.respond = ({ message, call }) => (message === 'getBlockByNumber' && call.data.blockNumber === 0
+    ? reply({ number: 0, status: 'confirmed', hash: CHAIN, content: {} }, { 'x-dacs-simulation': 'fixture' }) : undefined);
+  const error = await refusal(marked.read());
+  assert.equal(error.code, 'indeterminate');
+  assert.ok(causes(error).some((cause) => /simulation marker/.test(cause.message)));
+  assert.deepEqual(marked.node.calls, ['getBlockByNumber'], 'nothing is read after the marked identity reply');
+
+  const plain = readerWorld(t);
+  assert.deepEqual((await plain.read()).listing, plain.published.listing);
+});
+
 test('an aborted signal refuses before any read, and an abort during the read starts no further read', async (t) => {
   const before = readerWorld(t), stop = new AbortController(), reason = new Error('TEST caller stopped');
   stop.abort(reason);
@@ -302,12 +315,14 @@ test('an approved testnet HTTP root and a canonical HTTPS root each reach the ob
 
 test('an HTTP root with a missing or wrong pinned chain identity at the direct owner, a non-root path, credentials, query, fragment, noncanonical spelling, or a redirect refuses before any read; HTTP without the approved pin is never admitted', async (t) => {
   for (const chainIdentity of [undefined, 'd'.repeat(64)]) {
-    assert.throws(() => createNodeTransportOwner({ endpoint: HTTP_ROOT, transportAuthority: 'TEST-direct-owner', fetchImpl: async () => assert.fail('no read'), chainIdentity }),
-      { code: 'transport_mismatch' }, String(chainIdentity));
+    for (const endpoint of [HTTP_ROOT, 'http://localhost:53550/']) {
+      assert.throws(() => createNodeTransportOwner({ endpoint, transportAuthority: 'TEST-direct-owner', fetchImpl: async () => assert.fail('no read'), chainIdentity }),
+        { code: 'transport_mismatch' }, `${endpoint} ${chainIdentity}`);
+    }
   }
   const node = scriptedNode(publishedListing());
   for (const endpoint of ['https://rpc.example.invalid/rpc', 'https://u:p@rpc.example.invalid/', 'https://rpc.example.invalid/?q=1', 'https://rpc.example.invalid/#f',
-    'https://RPC.example.invalid/', 'https://rpc.example.invalid', 'http://203.0.113.7:53550/rpc', 'http://localhost:53550/']) {
+    'https://RPC.example.invalid/', 'https://rpc.example.invalid', 'http://203.0.113.7:53550/rpc']) {
     assert.throws(() => createPassiveListingReader({ endpoint, fetchImpl: node.fetch }), { code: 'transport_mismatch' }, endpoint);
     assert.throws(() => passiveAdapter(node, { rpcUrl: endpoint }), { code: 'offline-only', message: 'passive SR-2 requires a canonical approved endpoint' }, endpoint);
   }
