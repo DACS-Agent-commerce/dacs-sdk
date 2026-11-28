@@ -121,8 +121,9 @@ or around a rail built without a journal (`allowUnjournaled: true`), throws on a
 repeat of a settled payment instead of returning the success. The same holds for
 every `settleFromRail` retry of a settled key, because `settleFromRail` builds a
 new bridge for each call. Nothing is paid again either way. One path does not
-get this check: a recovery request without history (`recoveryOnly: true`)
-that the store settles through its own `recover` returns the reconciled success
+get this check: a call that finds an unfinished payment whose lease has
+expired, including a recovery request without history (`recoveryOnly: true`),
+is settled by the store's own reconcile and returns the reconciled success
 without the journal read and node read.
 
 Repeated calls audit again without relying on an in-memory success cache. Once

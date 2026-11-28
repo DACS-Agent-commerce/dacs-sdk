@@ -98,8 +98,9 @@ cached success is reconciled before reuse. A success for a hash from recovery
 history, a repeat of a success the bridge remembers, and a durable success it
 re-authenticates after a restart each need the journal entry, read through
 `readPreparedTransfers`, and the bridge's own node read, showing the payer's
-debit, to agree. A recovery request without history that the store settles
-through its own `recover` does not get this check. An authoritative `null` proves only
+debit, to agree. A call that finds an unfinished payment whose lease has
+expired, including a recovery request without history, is settled by the
+store's own reconcile and does not get this check. An authoritative `null` proves only
 that no transfer has landed yet; it cannot revoke a possibly-live old process
 or signed transaction and does not authorize a new native transfer.
 Non-observation, absence without an independent replay fence, or an ambiguous

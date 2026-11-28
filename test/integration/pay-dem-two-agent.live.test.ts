@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createPayDemSellerObserver } from "../../src/index.js";
+import { readDemosTransactionRecord } from "../../src/rails/demosRpc.js";
 import { DemosAdapter } from "../../src/substrate/index.js";
 import {
   createPayDemFundedRail,
@@ -42,6 +43,7 @@ const missing = REQUIRED_ENV.filter((key) => !LIVE_ENV[key]);
 const MAX_TEST_TRANSFER_OS = 1_000_000_000n;
 const MAX_TEST_TOTAL_DEBIT_OS = 3_000_000_000n;
 const LIVE_TEST_TIMEOUT_MS = 360_000;
+const NODE_RECORD_TIMEOUT_MS = 30_000;
 
 function requireCondition(condition: unknown, code: string): asserts condition {
   if (!condition) throw new Error(`pay-dem-live:${code}`);
@@ -120,6 +122,8 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
     // facts immediately before its only broadcast. Neither record is removed,
     // including when settlement is ambiguous.
     requireCondition(LIVE_ENV.LIVE_PAY_DEM_CONFIRM === "1", "spend-not-confirmed");
+    const readNodeRecord = (hash: string) =>
+      readDemosTransactionRecord(rpc, hash, NODE_RECORD_TIMEOUT_MS, fetch);
     const { marker, result: settlement } = await executePayDemFundedRun(
       {
         directory: LIVE_ENV.LIVE_PAY_DEM_MARKER_DIR!,
@@ -149,6 +153,7 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
           network: "demos",
         });
       },
+      readNodeRecord,
     );
 
     // `ok:false` means only that inclusion was not observed. A hash-first
@@ -168,7 +173,7 @@ describe("guarded funded two-agent pay-DEM settlement", () => {
       status: "included",
       txHash: settlement.txHash,
       blockNumber: settlement.blockNumber,
-    });
+    }, readNodeRecord);
 
     const observer = createPayDemSellerObserver({ rpc });
     const first = await observer.observeDemosTransfer(settlement.txHash);

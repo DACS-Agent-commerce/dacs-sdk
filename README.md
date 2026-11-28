@@ -642,8 +642,9 @@ rail's read of the node finds that transaction `confirmed` at the reconciled
 block with balance edits that show the payer's debit. The same check applies to
 a repeat of a success the bridge remembers and to a durable success it
 re-authenticates after a restart. Without `readPreparedTransfers` it withholds
-every such success. A recovery request without history that the store settles
-through its own `recover` does not get this check. A
+every such success. A call that finds an unfinished payment whose lease has
+expired, including a recovery request without history, is settled by the
+store's own reconcile and does not get this check. A
 history that records a success while reconciliation reports a permanent failure
 leaves the payment unresolved (an error, not a failure result), so it is never
 paid again. Retained recovery also requires `readOutcome(key, binding)`

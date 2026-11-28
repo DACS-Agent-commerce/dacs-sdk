@@ -940,7 +940,7 @@ describe("a recovered pay-dem success needs the node record's debit", () => {
 describe("a durable pay-dem success found after a restart is checked before it is returned", () => {
   const payAndRecord = async (request: SettleRequest) => (await restartedBridge()).bridge(request);
   // The store path passes no hash; this reconciler reports the paid one and reads nothing else.
-  const reconcileUnread = (fees: { networkFeeOs?: string } = {}) => vi.fn<PayDemSettlementReconcile>(async (context) =>
+  const reconcileUnread = (fees: { networkFeeOs?: string; recordFeeOs?: string } = {}) => vi.fn<PayDemSettlementReconcile>(async (context) =>
     ({ ...(await reconcileWithoutReading({ ...context, txHash: journal[0]?.txHash })), ...fees }));
 
   it("after a restart a durable success is returned only after the job's record and the node confirm it", async () => {
@@ -950,14 +950,54 @@ describe("a durable pay-dem success found after a restart is checked before it i
     expect(first).toMatchObject({ ok: true, ...FEES });
     const reads = readsOfNode();
 
-    const { bridge, effects, readPreparedTransfers } = await restartedBridge({ reconcile: reconcileUnread(), restartNumber: 2 });
+    const reconcile = reconcileUnread();
+    const { bridge, effects, readPreparedTransfers } = await restartedBridge({ reconcile, restartNumber: 2 });
     await expect(bridge(request)).resolves.toEqual(first);
     expect(readPreparedTransfers).toHaveBeenCalledTimes(1);
     expect(readsOfNode()).toBe(reads + 1);
+    // The remembered result carries the rebuilt fee members: a repeat checks it again without reconciling.
+    await expect(bridge(request)).resolves.toEqual(first);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(readPreparedTransfers).toHaveBeenCalledTimes(2);
+    expect(readsOfNode()).toBe(reads + 2);
     expect(effects()).toMatchObject({ signed: 1, broadcastCalls: 1 });
 
     const misreporting = await restartedBridge({ reconcile: reconcileUnread({ networkFeeOs: "5" }), restartNumber: 3 });
     await expect(misreporting.bridge(request)).rejects.toThrow("pay-dem: the reported fee differs from the debit the node record shows");
+  });
+
+  it.each([
+    { fees: { networkFeeOs: "5" }, error: "pay-dem: the reported fee differs from the debit the node record shows" },
+    { fees: { networkFeeOs: FEES.networkFeeOs, recordFeeOs: "7" },
+      error: "pay-dem: the reported declared fee differs from the one journalled with the prepared transfer" },
+  ])("after a restart a durable success reported with a wrong fee is refused and not remembered", async ({ fees, error }) => {
+    confirmedFee = DECLARED_FEE;
+    const request = requestFor("durable-wrong-fee");
+    await payAndRecord(request);
+    const reconcile = reconcileUnread(fees);
+    const { bridge } = await restartedBridge({ reconcile, restartNumber: 2 });
+
+    await expect(bridge(request)).rejects.toThrow(error);
+    await expect(bridge(request)).rejects.toThrow(error);
+    // Nothing was remembered, so the second call reconciled again.
+    expect(reconcile).toHaveBeenCalledTimes(2);
+  });
+
+  it("after a restart a durable success reported with an unjournalled declared fee is returned and remembered without it", async () => {
+    const request = requestFor("durable-dropped-fee");
+    await payAndRecord(request);
+    expect(journal[0]).not.toHaveProperty("confirmedRecordFeeOs");
+    const reconcile = reconcileUnread({ networkFeeOs: FEES.networkFeeOs, recordFeeOs: "7" });
+    const { bridge, readPreparedTransfers } = await restartedBridge({ reconcile, restartNumber: 2 });
+
+    const recovered = await bridge(request);
+    expect(recovered).toMatchObject({ ok: true, networkFeeOs: FEES.networkFeeOs });
+    expect(recovered).not.toHaveProperty("recordFeeOs");
+    const repeated = await bridge(request);
+    expect(repeated).toEqual(recovered);
+    expect(repeated).not.toHaveProperty("recordFeeOs");
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(readPreparedTransfers).toHaveBeenCalledTimes(2);
   });
 
   it.each([

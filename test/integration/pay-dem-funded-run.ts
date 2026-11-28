@@ -4,6 +4,7 @@ import { types as nodeTypes } from "node:util";
 import {
   createPayDemRail,
   PayDemIncludedNonceVisibilityError,
+  payDemConfirmedTotalDebitOs,
   type PayDemPreparedTransfer,
   type PayDemRailConfig,
 } from "../../src/rails/payDem.js";
@@ -57,6 +58,9 @@ export interface PayDemFundedPreparedTransfer {
   confirmedRecordFeeOs: string;
   network: "demos";
 }
+
+/** Reads the node's transaction record (`getTxByHash`) for a hash. */
+export type PayDemNodeRecordReader = (txHash: string) => Promise<unknown>;
 
 export type PayDemPreparedTransferJournal = (
   prepared: Readonly<PayDemPreparedTransfer>,
@@ -239,6 +243,7 @@ export async function executePayDemFundedRun<T>(
     marker: Readonly<ArmedFundedRun>,
     journalPreparedTransfer: PayDemPreparedTransferJournal,
   ) => Promise<T>,
+  readNodeRecord?: PayDemNodeRecordReader,
 ): Promise<Readonly<{ marker: Readonly<ArmedFundedRun>; result: T }>> {
   const captured = captureIntent(input);
   return executeFundedRun({
@@ -264,29 +269,66 @@ export async function executePayDemFundedRun<T>(
       return await operation(marker, journalPreparedTransfer);
     } catch (error) {
       if (error instanceof PayDemIncludedNonceVisibilityError) {
-        await recordPayDemFundedRunOutcome(marker, error.blockNumber === undefined
-          ? {
-              status: "unresolved",
-              reason: "inclusion-not-observed",
-              txHash: error.txHash,
-            }
-          : {
-              status: "included",
-              txHash: error.txHash,
-              blockNumber: error.blockNumber,
-            });
+        // Without a block number or a node reader the debit cannot be read,
+        // so the transfer is kept as unresolved rather than recorded included.
+        if (error.blockNumber === undefined || readNodeRecord === undefined) {
+          await recordPayDemFundedRunOutcome(marker, {
+            status: "unresolved",
+            reason: "inclusion-not-observed",
+            txHash: error.txHash,
+          });
+        } else {
+          await recordPayDemFundedRunOutcome(marker, {
+            status: "included",
+            txHash: error.txHash,
+            blockNumber: error.blockNumber,
+          }, readNodeRecord);
+        }
       }
       throw error;
     }
   });
 }
 
-/** Validate pay-DEM reconciliation facts before recording the generic outcome. */
+/**
+ * Validate pay-DEM reconciliation facts before recording the generic outcome.
+ * `included` is recorded only after the node's own transaction record, read
+ * through `readNodeRecord`, shows the payer's debit for the journalled
+ * transfer, within its authorised maximum.
+ */
+export async function recordPayDemFundedRunOutcome(
+  marker: Readonly<ArmedFundedRun>,
+  outcome: Readonly<Extract<PayDemFundedRunOutcome, { status: "unresolved" }>>,
+): Promise<void>;
 export async function recordPayDemFundedRunOutcome(
   marker: Readonly<ArmedFundedRun>,
   outcome: Readonly<PayDemFundedRunOutcome>,
+  readNodeRecord: PayDemNodeRecordReader,
+): Promise<void>;
+export async function recordPayDemFundedRunOutcome(
+  marker: Readonly<ArmedFundedRun>,
+  outcome: Readonly<PayDemFundedRunOutcome>,
+  readNodeRecord?: PayDemNodeRecordReader,
 ): Promise<void> {
   const captured = captureOutcome(outcome);
+  if (captured.status === "included") {
+    if (readNodeRecord === undefined) throw new Error("pay-dem-live:included-node-reader-missing");
+    const prepared = await readPayDemFundedPreparedTransfer(marker);
+    if (prepared.txHash !== captured.txHash) {
+      throw new Error("pay-dem-live:included-tx-hash-mismatch");
+    }
+    const debitOs = payDemConfirmedTotalDebitOs(await readNodeRecord(captured.txHash), {
+      txHash: captured.txHash,
+      nonce: prepared.nonce,
+      blockNumber: captured.blockNumber,
+      payer: prepared.payer,
+      payee: prepared.payee,
+      amountOs: prepared.amountOs,
+    });
+    if (debitOs === null || BigInt(debitOs) > BigInt(prepared.maxTotalDebitOs)) {
+      throw new Error("pay-dem-live:included-node-debit-missing");
+    }
+  }
   await recordFundedRunOutcome(marker, {
     status: captured.status,
     details: captured.status === "included"
