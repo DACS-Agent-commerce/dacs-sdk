@@ -111,6 +111,16 @@ function reader(url: string, timeoutMs?: number) {
   });
 }
 
+function readerWithFetch(requestFetch: typeof fetch, timeoutMs?: number) {
+  return createDacsWalletSpendEvmReaderV1({
+    rpcUrl: "https://user:password@example.invalid/private-rpc-key",
+    policy: POLICY,
+    authorizationSearchFromBlock: 10_000,
+    fetch: requestFetch,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
+}
+
 function word(value: bigint | number): string {
   return `0x${value.toString(16).padStart(64, "0")}`;
 }
@@ -272,6 +282,58 @@ describe("wallet-spend EVM reader", () => {
     expect(error).toMatchObject({ message: "wallet-spend-evm-rpc-unavailable" });
     expect(String(error)).not.toContain("secret-path-key");
     expect((error as Error).cause).toBeInstanceOf(Error);
+  });
+
+  it("names a response body read failure as unavailable without exposing the RPC URL", async () => {
+    const bodyFailure = new TypeError("synthetic stream terminated");
+    const requestFetch: typeof fetch = async () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0",'));
+      },
+      pull(controller) {
+        controller.error(bodyFailure);
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
+    const error: unknown = await readerWithFetch(requestFetch).readBalance(balanceInput)
+      .then(() => undefined, (reason: unknown) => reason);
+    expect(error).toMatchObject({ message: "wallet-spend-evm-rpc-unavailable" });
+    expect((error as Error).cause).toBe(bodyFailure);
+    expect(String(error)).not.toContain("example.invalid");
+    expect(String(error)).not.toContain("private-rpc-key");
+    expect(String(error)).not.toContain("password");
+  });
+
+  it("keeps a response body stall within the RPC deadline", async () => {
+    let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const requestFetch: typeof fetch = async (_input, init) => {
+      const response = new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          bodyController = controller;
+          controller.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0",'));
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+      init?.signal?.addEventListener("abort", () => {
+        bodyController?.error(new DOMException("synthetic body abort", "AbortError"));
+      }, { once: true });
+      return response;
+    };
+
+    const error: unknown = await readerWithFetch(requestFetch, 20).readBalance(balanceInput)
+      .then(() => undefined, (reason: unknown) => reason);
+    expect(error).toMatchObject({ message: "wallet-spend-evm-rpc-deadline-exceeded" });
+    expect(String(error)).not.toContain("example.invalid");
+    expect(String(error)).not.toContain("private-rpc-key");
+  });
+
+  it("keeps invalid UTF-8 response bytes classified as an invalid answer", async () => {
+    const requestFetch: typeof fetch = async () => new Response(new Uint8Array([0xff]), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+    await expect(readerWithFetch(requestFetch).readBalance(balanceInput))
+      .rejects.toThrow("wallet-spend-evm-rpc-response-invalid");
   });
 
   it("refuses a balance outside the policy scope without a request", async () => {

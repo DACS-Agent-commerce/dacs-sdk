@@ -163,7 +163,12 @@ export function createDacsWalletSpendEvmReaderV1(input: Readonly<{
     const chunks: Uint8Array[] = [];
     let length = 0;
     for (;;) {
-      const chunk = await reader.read();
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        throw new Error("wallet-spend-evm-rpc-unavailable", { cause: error });
+      }
       if (chunk.done) break;
       length += chunk.value.byteLength;
       if (length > maximumBytes) {
