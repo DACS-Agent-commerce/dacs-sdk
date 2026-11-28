@@ -40,7 +40,7 @@ const executionAuthority = createPayDemExecutionAuthority();
 const railJournals = new WeakMap<object, boolean>();
 
 type RailExecutionRead =
-  | Readonly<{ state: "executed"; blockNumber: number }>
+  | Readonly<{ state: "executed"; blockNumber: number; totalDebitOs: bigint }>
   | Readonly<{ state: "failed" | "unproven"; reason: string }>;
 type RailExecutionReader = (
   txHash: string,
@@ -371,9 +371,9 @@ export interface DemosTransferResult {
   failureProof?: DemosFailedRecordProof;
   /** The block height the tx landed at — the §9.5.9 finality witness. */
   blockNumber?: number;
-  /** Confirmed transfer amount plus the fee the chain debits, in integer OS. */
+  /** Transfer amount plus the fee the chain debits, as the node's record of the execution shows it, in integer OS. */
   totalDebitOs?: string;
-  /** The fee the confirmed record declares (`transaction_fee`), in integer OS; sent with `totalDebitOs`. */
+  /** The fee the confirmed record declares (`transaction_fee`), in integer OS; sent only with `totalDebitOs`. */
   recordFeeOs?: string;
   message?: string;
 }
@@ -753,9 +753,10 @@ export async function payDemSettleCore(
         totalDebitOs > maxTotalDebitOs)) {
     throw new DacsError("pay-dem transfer result has invalid total debit accounting");
   }
-  // The record's declared fee travels with the real debit, never alone.
+  // The record's declared fee travels with the real debit, never alone. The
+  // debit can travel alone when no confirmation was read before the broadcast.
   const recordFeeOs = recordFeeProperty.value;
-  if ((recordFeeOs === undefined) !== (totalDebitOs === undefined) ||
+  if ((recordFeeOs !== undefined && totalDebitOs === undefined) ||
       (recordFeeOs !== undefined &&
         (typeof recordFeeOs !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(recordFeeOs)))) {
     throw new DacsError("pay-dem transfer result has invalid record fee accounting");
@@ -798,6 +799,7 @@ export async function payDemSettleCore(
       payee: recipient,
       // No finality / blockNumber: inclusion was not observed, so no bft-final
       // evidence is minted for a possibly-unincluded payment.
+      ...(typeof messageProperty.value === "string" ? { message: messageProperty.value } : {}),
     };
   }
 
@@ -814,9 +816,8 @@ export async function payDemSettleCore(
     txRefKind: "demos",
     // networkFeeOs is what the chain debits beyond the amount; recordFeeOs is
     // the fee the record declares, which can differ.
-    ...(totalDebitOs === undefined
-      ? {}
-      : { networkFeeOs: (totalDebitOs - amountOs).toString(), recordFeeOs: recordFeeOs as string }),
+    ...(totalDebitOs === undefined ? {} : { networkFeeOs: (totalDebitOs - amountOs).toString() }),
+    ...(typeof recordFeeOs === "string" ? { recordFeeOs } : {}),
     ...(typeof messageProperty.value === "string" ? { message: messageProperty.value } : {}),
   });
 }
@@ -910,12 +911,22 @@ export type PayDemRailResult = SettleResult & (
     ok: true;
     execution: "executed";
     /**
-     * Set when the payer's account nonce read timed out or was rejected before
-     * it reached the executed nonce. The payment is still final.
+     * Set when the debit the node record shows differs from the one confirmed
+     * before the broadcast (both figures are named; the settled fee is the
+     * node's), or when the payer's account nonce read timed out or was rejected
+     * before it reached the executed nonce. The payment is still final.
      */
     message?: string;
   }
-  | { ok: false; execution?: never }
+  | {
+    ok: false;
+    execution?: never;
+    /**
+     * Why execution was not established, when known: for example a node debit
+     * above the authorised maximum, naming the executed, maximum and confirmed figures.
+     */
+    message?: string;
+  }
 );
 
 export interface PayDemRail {
@@ -1454,6 +1465,23 @@ interface ConfirmedDebit {
   recordFeeOs: bigint;
 }
 
+/** Names the debit confirmed before the broadcast, when one was. */
+function confirmedDebitClause(confirmedTotalDebitOs: bigint | string | undefined): string {
+  return confirmedTotalDebitOs === undefined
+    ? ""
+    : `; the debit confirmed before the broadcast was ${confirmedTotalDebitOs} OS`;
+}
+
+/** Names the executed debit, the authorised maximum and the confirmed debit. */
+function debitAboveMaximum(
+  executedDebitOs: bigint,
+  maxTotalDebitOs: bigint | string,
+  confirmedTotalDebitOs: bigint | string | undefined,
+): string {
+  return `the executed debit ${executedDebitOs} OS exceeds the authorised maximum ${maxTotalDebitOs} OS` +
+    confirmedDebitClause(confirmedTotalDebitOs);
+}
+
 function confirmedDebitFromValidity(
   value: unknown,
   input: Readonly<{
@@ -1493,7 +1521,7 @@ function confirmedDebitFromValidity(
 }
 
 type ObservedDemosExecution =
-  | Readonly<{ state: "executed" }>
+  | Readonly<{ state: "executed"; totalDebitOs: bigint }>
   | Readonly<{ state: "failed" }>
   | Readonly<{ state: "indeterminate"; reason: string; cause?: unknown }>;
 
@@ -1544,8 +1572,10 @@ function transactionRecordWithinLimits(root: unknown): boolean {
  * can report `included` for a transaction the node recorded as `failed`, so read
  * the node's transaction record for the retained signed hash. Only a
  * `confirmed` record at the observed inclusion block whose body is exactly the
- * prepared transfer is execution. A `failed` record bound the same way is not
- * settled. A record that is missing, pending, unreadable or malformed, or that
+ * prepared transfer, and whose balance edits (`content.gcr_edits`) show the
+ * payer's debit, is execution; that debit is returned as `totalDebitOs`. The
+ * record's declared fee is not read. Such a record without the payer's debit is
+ * indeterminate at once. A `failed` record bound the same way is not settled. A record that is missing, pending, unreadable or malformed, or that
  * carries another hash, is polled again within the budget; a stalled read, or
  * a confirmed or failed record for the signed hash whose nonce, block or body
  * does not bind the prepared transfer, is indeterminate at once. Like the
@@ -1666,9 +1696,11 @@ export async function observeDemosExecutionByHash(
         if (performance.now() >= deadline) {
           return { state: "indeterminate", reason: "transaction record observation timed out" };
         }
-        return record.status === DEMOS_FAILED_RECORD_STATUS
-          ? { state: "failed" }
-          : { state: "executed" };
+        if (record.status === DEMOS_FAILED_RECORD_STATUS) return { state: "failed" };
+        const totalDebitOs = confirmedEditDebitOs(identity.transaction, expected.transfer);
+        return totalDebitOs === null
+          ? { state: "indeterminate", reason: "the confirmed record's balance edits do not show the payer's debit" }
+          : { state: "executed", totalDebitOs };
       } else {
         pending = "transaction record has no terminal execution status";
       }
@@ -1857,7 +1889,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
       return { state: "failed", reason: "the status index reports the transaction failed" };
     }
     const execution = await observeExecution(txHash, terminal.blockNumber, transfer);
-    if (execution.state === "executed") return { state: "executed", blockNumber: terminal.blockNumber };
+    if (execution.state === "executed") {
+      return { state: "executed", blockNumber: terminal.blockNumber, totalDebitOs: execution.totalDebitOs };
+    }
     return execution.state === "failed"
       ? { state: "failed", reason: "the transaction record reports it failed" }
       : { state: "unproven", reason: execution.reason };
@@ -2015,7 +2049,9 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         payee: canonicalPayee,
         amountOs: amountOs.toString(),
         denomination: postFork ? "os" : "dem",
-        network: network ?? "demos",
+        // The recovery context carries this payment's own label, which
+        // payDemSettleCore has already bound to the call.
+        network: recovery?.network ?? network ?? "demos",
         ...(effectiveMaxTotalDebitOs === undefined
           ? {}
           : { maxTotalDebitOs: effectiveMaxTotalDebitOs.toString() }),
@@ -2114,25 +2150,39 @@ export async function createPayDemRail(config: PayDemRailConfig): Promise<PayDem
         unreadExecutedNonces.delete(unreadNonceKey);
       }
 
+      // The node record is what executed. A debit above the authorised
+      // maximum is reported and left unresolved; it is never resent.
+      const executedDebitOs = execution.totalDebitOs;
+      const confirmedTotalDebitOs = confirmedDebitOs?.totalDebitOs;
+      if (effectiveMaxTotalDebitOs !== undefined && executedDebitOs > effectiveMaxTotalDebitOs) {
+        return {
+          ok: false,
+          state: "indeterminate",
+          hash: txHash,
+          message: "pay-dem execution was not established: " +
+            debitAboveMaximum(executedDebitOs, effectiveMaxTotalDebitOs, confirmedTotalDebitOs),
+        };
+      }
+      const messages = [
+        ...(confirmedTotalDebitOs === undefined || confirmedTotalDebitOs === executedDebitOs
+          ? []
+          : [`pay-dem: settled with the executed debit ${executedDebitOs} OS${confirmedDebitClause(confirmedTotalDebitOs)}`]),
+        ...(nonceRead.status === "fulfilled"
+          ? []
+          : [nonceRead.status === "timeout"
+            ? `pay-dem: account nonce read did not reach ${signedNonce} before nonceVisibilityTimeoutMs; payment is final`
+            : `pay-dem: account nonce read for ${signedNonce} was rejected; payment is final`]),
+      ];
+
       return executionAuthority.attest<DemosTransferResult>({
         ok: true,
         state: "included",
         execution: "executed",
         hash: txHash,
         blockNumber: terminal.blockNumber,
-        ...(confirmedDebitOs === null
-          ? {}
-          : {
-            totalDebitOs: confirmedDebitOs.totalDebitOs.toString(),
-            recordFeeOs: confirmedDebitOs.recordFeeOs.toString(),
-          }),
-        ...(nonceRead.status === "fulfilled"
-          ? {}
-          : {
-            message: nonceRead.status === "timeout"
-              ? `pay-dem: account nonce read did not reach ${signedNonce} before nonceVisibilityTimeoutMs; payment is final`
-              : `pay-dem: account nonce read for ${signedNonce} was rejected; payment is final`,
-          }),
+        totalDebitOs: executedDebitOs.toString(),
+        ...(confirmedDebitOs === null ? {} : { recordFeeOs: confirmedDebitOs.recordFeeOs.toString() }),
+        ...(messages.length === 0 ? {} : { message: messages.join("; ") }),
       });
     },
   };
@@ -2323,8 +2373,9 @@ function capturePayDemResult(
 
   return {
     ok: result.ok,
+    // The proof is a flat record. A frozen copy can be both kept and returned.
     ...(result.errorClass === "permanent" ? { errorClass: "permanent" as const,
-      failureProof: result.failureProof as DemosFailedRecordProof } : {}),
+      failureProof: Object.freeze({ ...(result.failureProof as DemosFailedRecordProof) }) } : {}),
     txHash,
     chainId: context.network,
     payer: context.payer,
@@ -2465,6 +2516,11 @@ function retainedPayDemHash(
   return retained === undefined ? undefined : { txHash: retained, claimedSuccess };
 }
 
+/** Canonical decimal OS text: no sign, prefix, whitespace or leading zero. */
+function isOsText(value: unknown): value is string {
+  return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value);
+}
+
 const PREPARED_TRANSFER_KEYS = new Set([
   "txHash", "nonce", "payer", "payee", "amountOs", "denomination", "network",
   "maxTotalDebitOs", "confirmedTotalDebitOs", "confirmedRecordFeeOs", "recovery",
@@ -2521,6 +2577,13 @@ function retainedPreparedTransfer(
       normalizedDemosAccount(found.payee) !== normalizedDemosAccount(context.payee)) {
     throw new DacsError("pay-dem prepared-transfer record does not bind the requested payer, payee and amount");
   }
+  const { maxTotalDebitOs, confirmedTotalDebitOs, confirmedRecordFeeOs } = found;
+  if ((maxTotalDebitOs !== undefined && !isOsText(maxTotalDebitOs)) ||
+      (confirmedRecordFeeOs !== undefined && (!isOsText(confirmedRecordFeeOs) || confirmedTotalDebitOs === undefined)) ||
+      (confirmedTotalDebitOs !== undefined &&
+        (!isOsText(confirmedTotalDebitOs) || BigInt(confirmedTotalDebitOs) < BigInt(context.amountOs)))) {
+    throw new DacsError("pay-dem: the journalled prepared transfer carries a malformed debit or fee field");
+  }
   const recovery = found.recovery as Readonly<PayDemSettlementRecoveryContext> | undefined;
   if (recovery === null || typeof recovery !== "object" ||
       Object.keys(recovery).length !== RECOVERY_CONTEXT_KEYS.length ||
@@ -2531,19 +2594,29 @@ function retainedPreparedTransfer(
   return found as unknown as PayDemPreparedTransfer;
 }
 
+/** The node's debit for a retained success, and the declared fee journalled before its broadcast. */
+interface RetainedDebit {
+  totalDebitOs: bigint;
+  recordFeeOs?: bigint;
+}
+
 /**
  * Withholds a retained success unless this job's prepared-transfer record and
- * a node read made by the SDK's own rail confirm it at the reconciled block.
- * The read uses the journal's nonce, payer, payee, amount and denomination,
- * never the reconciler's reply. Throws a `DacsError` at the first check that
- * fails (a rejected journal read propagates unchanged); writes nothing.
+ * a node read made by the SDK's own rail confirm it at the reconciled block,
+ * with the payer's debit in the record's balance edits. The read uses the
+ * journal's nonce, payer, payee, amount and denomination, never the
+ * reconciler's reply. A node debit that differs from the journalled confirmed
+ * one is accepted up to the journalled `maxTotalDebitOs`; above it the
+ * payment stays unresolved. Returns the node's debit and the journalled
+ * declared fee. Throws a `DacsError` at the first check that fails (a rejected
+ * journal read propagates unchanged); writes nothing.
  */
 async function bindRetainedSuccess(
   captured: SettleResult,
   context: Readonly<PayDemSettlementRecoveryContext>,
   readPreparedTransfers: ((settlementKey: string) => Promise<readonly PayDemPreparedTransfer[]>) | undefined,
   readExecution: RailExecutionReader | undefined,
-): Promise<void> {
+): Promise<RetainedDebit> {
   if (readPreparedTransfers === undefined) {
     throw new DacsError("pay-dem retained success cannot be confirmed without a prepared-transfer reader");
   }
@@ -2570,6 +2643,33 @@ async function bindRetainedSuccess(
   if (execution.blockNumber !== captured.blockNumber) {
     throw new DacsError("pay-dem: the node record block differs from the reconciled block");
   }
+  if (prepared.maxTotalDebitOs !== undefined && execution.totalDebitOs > BigInt(prepared.maxTotalDebitOs)) {
+    throw new DacsError(`pay-dem: ${debitAboveMaximum(execution.totalDebitOs, prepared.maxTotalDebitOs,
+      prepared.confirmedTotalDebitOs)}; the payment stays unresolved`);
+  }
+  return {
+    totalDebitOs: execution.totalDebitOs,
+    ...(prepared.confirmedRecordFeeOs === undefined ? {} : { recordFeeOs: BigInt(prepared.confirmedRecordFeeOs) }),
+  };
+}
+
+/**
+ * A retained success with its fees taken from what the SDK read:
+ * `networkFeeOs` is the node's debit minus the amount, and `recordFeeOs` is
+ * the declared fee journalled before the broadcast, or absent when none was.
+ * Throws a `DacsError` when the result reports a different figure.
+ */
+function rebuildRetainedFees(captured: SettleResult, bound: RetainedDebit, amountOs: string): SettleResult {
+  const networkFeeOs = (bound.totalDebitOs - BigInt(amountOs)).toString();
+  if (captured.networkFeeOs !== undefined && captured.networkFeeOs !== networkFeeOs) {
+    throw new DacsError("pay-dem: the reported fee differs from the debit the node record shows");
+  }
+  const recordFeeOs = bound.recordFeeOs?.toString();
+  if (recordFeeOs !== undefined && captured.recordFeeOs !== undefined && captured.recordFeeOs !== recordFeeOs) {
+    throw new DacsError("pay-dem: the reported declared fee differs from the one journalled with the prepared transfer");
+  }
+  const { recordFeeOs: _reportedRecordFeeOs, ...settlement } = captured;
+  return { ...settlement, networkFeeOs, ...(recordFeeOs === undefined ? {} : { recordFeeOs }) };
 }
 
 function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
@@ -2665,9 +2765,12 @@ export function payDemSettle(
     allowUnjournaled?: boolean;
     /**
      * Returns the entries the rail's `journalPreparedTransfer` stored for a
-     * settlement key. A request carrying `priorAttempts` gets a success only
-     * when one entry for the retained hash binds this job and the rail's own
-     * node read confirms it; without this reader every such success is withheld.
+     * settlement key. A request carrying `priorAttempts`, a repeat of a success
+     * this bridge remembers, and a durable success the bridge re-authenticates
+     * after a restart each get a success only when one entry for the hash binds
+     * this job and the rail's own node read confirms it with the payer's debit;
+     * without this reader every such success is withheld. A fresh payment does
+     * not need it.
      */
     readPreparedTransfers?: (settlementKey: string) => Promise<readonly PayDemPreparedTransfer[]>;
   },
@@ -2774,6 +2877,18 @@ export function payDemSettle(
         opts, "readPreparedTransfers", "pay-dem prepared-transfer reader",
       );
   const readExecution = railExecutionReaders.get(rail);
+  // A retained success is bound to the job's prepared-transfer record and the
+  // rail's own node read, and its fees are taken from them. A failure is not.
+  const authenticateRetained = async (
+    result: SettleResult,
+    context: Readonly<PayDemSettlementRecoveryContext>,
+  ): Promise<SettleResult> => result.ok
+    ? rebuildRetainedFees(
+      result,
+      await bindRetainedSuccess(result, context, readPreparedTransfers, readExecution),
+      context.amountOs,
+    )
+    : result;
   // An in-memory authority cache distinguishes a result produced or
   // reconciled by this exact bridge from a result returned immediately by an
   // injected durable store. After restart the cache is empty, so a cached
@@ -2988,9 +3103,9 @@ export function payDemSettle(
               "the payment stays unresolved and must not be paid again",
           );
         }
-        if (captured.ok) await bindRetainedSuccess(captured, context, readPreparedTransfers, readExecution);
-        authenticatedResults.set(key, { context, result: captured });
-        return publicPayDemResult(captured, expectedPayee);
+        const authenticated = await authenticateRetained(captured, context);
+        authenticatedResults.set(key, { context, result: authenticated });
+        return publicPayDemResult(authenticated, expectedPayee);
       }
       const submit = async (effectFence?: Readonly<SettlementEffectFence>) => {
         const submitted = await railSettle({
@@ -3064,8 +3179,18 @@ export function payDemSettle(
             "pay-dem durable outcome does not match the authoritative reconciled transaction",
           );
         }
-        authenticatedResults.set(key, { context, result: reconciled });
-        captured = reconciled;
+        captured = await authenticateRetained(reconciled, context);
+        authenticatedResults.set(key, { context, result: captured });
+      } else if (
+        priorAuthenticated !== undefined &&
+        captured.ok &&
+        sameRecoveryContext(priorAuthenticated.context, context) &&
+        samePayDemResult(priorAuthenticated.result, captured)
+      ) {
+        // A success remembered before this call is repeated only after the
+        // checks a retained success gets. A payment this call made is not.
+        captured = await authenticateRetained(captured, context);
+        authenticatedResults.set(key, { context, result: captured });
       }
       // The low-level native rail reports the exact on-chain address. The public
       // settlement seam must return the request-bound identifier verbatim so the

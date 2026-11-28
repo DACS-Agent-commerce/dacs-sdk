@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { observeDemosExecutionByHash } from "../../src/rails/payDem.js";
+import { nativeSendEdits } from "../support/payDemEdits.js";
 
 const WALLET = `0x${"ab".repeat(32)}`;
 const PAYEE_HEX = "cd".repeat(32);
@@ -11,6 +12,8 @@ const TX_HASH = "85".repeat(32);
 const NONCE = 9;
 const BLOCK = 480_877;
 const AMOUNT_OS = "9500000000";
+// The amount plus the 1 DEM gas burn the records' edits remove from the payer.
+const EXECUTED = { state: "executed", totalDebitOs: 10_500_000_000n };
 
 interface BroadcastTransaction {
   hash: string;
@@ -75,6 +78,7 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
           "native",
           { nativeOperation: "send", args: [PAYEE_HEX, AMOUNT_OS] },
         ],
+        gcr_edits: nativeSendEdits({ payer: WALLET, payee: RECIPIENT, amount: AMOUNT_OS }),
       },
       attrs: { reference_block: BLOCK - 1 },
     };
@@ -90,9 +94,28 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
   it("reports an executed record that matches the prepared transfer", async () => {
     const read = vi.fn(async () => executedRecord());
 
-    await expect(observe(read)).resolves.toEqual({ state: "executed" });
+    await expect(observe(read)).resolves.toEqual(EXECUTED);
     expect(read).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledWith(TX_HASH);
+  });
+
+  it("the execution observer answers executed only with the record's debit", async () => {
+    const withoutPayerDebit = executedRecord();
+    withoutPayerDebit.content.gcr_edits = nativeSendEdits({ payer: WALLET, payee: RECIPIENT, amount: AMOUNT_OS })
+      .filter((edit) => edit.operation !== "remove");
+    await expect(observe(async () => withoutPayerDebit)).resolves.toEqual({
+      state: "indeterminate", reason: "the confirmed record's balance edits do not show the payer's debit",
+    });
+
+    // The record's declared fee is not read: numbers or no fee at all still execute.
+    const numericFee = executedRecord();
+    numericFee.content.transaction_fee = { network_fee: 1_000_000_000, rpc_fee: 1_000_000_000, additional_fee: 0 };
+    await expect(observe(async () => numericFee)).resolves.toEqual(EXECUTED);
+    await expect(observe(async () => executedRecord())).resolves.toEqual(EXECUTED);
+
+    const failedWithoutEdits = { ...executedRecord(), status: "failed" };
+    delete failedWithoutEdits.content.gcr_edits;
+    await expect(observe(async () => failedWithoutEdits)).resolves.toEqual({ state: "failed" });
   });
 
   it("reports a failed record as failed", async () => {
@@ -192,7 +215,7 @@ describe("the execution observer tells failed from indeterminate (#338)", () => 
     const read = vi.fn()
       .mockResolvedValueOnce({ ...executedRecord(), hash: "86".repeat(32), status })
       .mockResolvedValueOnce(executedRecord());
-    await expect(observe(read)).resolves.toEqual({ state: "executed" });
+    await expect(observe(read)).resolves.toEqual(EXECUTED);
     expect(read).toHaveBeenCalledTimes(2);
   });
 
@@ -284,7 +307,7 @@ describe("the execution observer reads recorded node2 records (#338)", () => {
       read,
       { blockNumber: 498_447, transfer: transfer(28) },
       FAST,
-    ))).resolves.toEqual({ state: "executed" });
+    ))).resolves.toEqual(EXECUTED);
     expect(read).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledWith(CONFIRMED_HASH);
   });
