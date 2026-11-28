@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D33",
-  "registration": "D33: existing client delta lane",
-  "subject": "delta(client): D33 report a wallet-lock holder's falsy rejection as a failure"
-}

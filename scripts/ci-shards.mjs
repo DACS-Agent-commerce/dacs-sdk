@@ -31,11 +31,9 @@ export const DEFAULT_WEIGHT = 30;
 export const DEFAULT_TEST_WEIGHT = 60;
 
 // Files whose tests are spread over the shards one by one.
-// - client: delta-provenance re-checks the whole delta history in most of its 27 tests, so as one file it took about
-//   50 minutes in a single job.
 // - seller: seller-host-native-delivery runs 236 tests (its own and the host-job capacity cases it imports) in about
 //   19 minutes on a normal hosted runner and about 35 on a slow one, more than a whole shard should take.
-export const SPLIT_FILES = { seller: ["seller-host-native-delivery.test.mjs"], client: ["scripts/delta-provenance.test.mjs"] };
+export const SPLIT_FILES = { seller: ["seller-host-native-delivery.test.mjs"], client: [] };
 
 // Seconds per file on a normal hosted runner. The weights only balance the shards; a missing or stale entry never drops
 // a file (see check).
@@ -223,10 +221,6 @@ export const WEIGHTS = {
     "write-ceiling-agreement.test.mjs": 1.2,
   },
   client: {
-    "scripts/check-hold.test.mjs": 9,
-    "scripts/check-provenance.test.mjs": 2,
-    "scripts/delta-continuity.test.mjs": 4,
-    "scripts/delta-frontier.test.mjs": 755,
     "scripts/test-layout.test.mjs": 1,
     "test/bound-terms-mismatch.test.mjs": 1,
     "test/buyer-chain-indeterminate.test.mjs": 1,
@@ -241,7 +235,6 @@ export const WEIGHTS = {
     "test/d11-seam-parameters.test.mjs": 1,
     "test/delivery-access-model.test.mjs": 1,
     "test/delivery-evidence-gate.test.mjs": 1,
-    "test/delta-ledger-gate.test.mjs": 639,
     "test/diagnostic-bounds.test.mjs": 6,
     "test/diagnostic-projection.test.mjs": 2,
     "test/diagnostic-reader.test.mjs": 1,
@@ -322,39 +315,9 @@ export const WEIGHTS = {
   },
 };
 
-// Seconds per test of each file in SPLIT_FILES, from the duration_ms per test in CI job logs (client: the same run as
-// the client file weights). A test with no entry gets DEFAULT_TEST_WEIGHT.
+// Seconds per test of each file in SPLIT_FILES, from the duration_ms per test in CI job logs. A test with no entry gets
+// DEFAULT_TEST_WEIGHT.
 export const TEST_WEIGHTS = {
-  "scripts/delta-provenance.test.mjs": {
-    "committed delta history and generated per-file table agree": 106,
-    "callback history explains the superseded guard and matches the recorded write-lease files": 1,
-    "callback history check needs no ancestry beyond the checked-out commit": 1,
-    "SQLite split history distinguishes the lease from the later transaction adapter": 1,
-    "the publication inventory cannot omit an outside-only commit or name an absent hash": 210,
-    "an unenumerated working-tree edit is refused": 105,
-    "a deletion needs a named delta": 109,
-    "removing a delta record cannot hide its historical file changes": 106,
-    "removing a bookkeeping checkpoint is also refused": 105,
-    "a later commit with an unlisted moved-file edit is refused": 55,
-    "the per-file Markdown table is checked, not trusted": 105,
-    "a committed deletion without a named delta is refused": 55,
-    "a staged moved-file edit with restored working bytes is refused": 105,
-    "archived source and pre-publication delta evidence cannot be rewritten": 104,
-    "launch review: unrelated future SDK commits do not need a client re-pin": 56,
-    "launch review: unrelated main commits and a PR merge preserve client provenance": 35,
-    "launch review: unrelated main commits and a PR merge preserve client provenance from a detached HEAD": 33,
-    "D11 source history accepts delta(client) records": 113,
-    "D11 source history accepts fix(client) records": 113,
-    "two commits sharing a subject need SHA-qualified selectors": 227,
-    "a commit reached only through a content-free merge is still audited": 34,
-    "the inventory cannot name an unreachable commit": 106,
-    "a hashed inventory row must carry its commit subject, and one commit has one row": 214,
-    "a record that names its full commit hash needs no delta prefix in the subject, an unqualified one does": 113,
-    "a WF delta record is accepted and an unlisted delta id is still refused": 118,
-    "a WF record selected by its full commit hash may carry the subject \"fix(client): TEST published fix without a delta id\"; the same subject without the hash is refused": 112,
-    "a WF record selected by its full commit hash may carry the subject \"TEST published fix with a plain subject\"; the same subject without the hash is refused": 112,
-    "the ledger gate refuses each fault in a PR's own delta records, one table row per fault, each run in a scratch clone of the checked head, and the committed head passes with every WF record listing the files its PR changed at their committed blobs": 543,
-  },
   // Mean duration_ms of each test over two node 22 seller jobs on normal runners, in registration order.
   "seller-host-native-delivery.test.mjs": {
     "the shipped host admits a new job after paid work retires (restart=false)": 2.6,

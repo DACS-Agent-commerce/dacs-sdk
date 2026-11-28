@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D23",
-  "registration": "D23: existing client delta lane",
-  "subject": "delta(client): D23 add executable tests for the completion readiness inspector"
-}

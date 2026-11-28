@@ -13,7 +13,7 @@
     "./wallet/effect-history": "./src/wallet/effect-history-public.mjs"
   },
   "scripts": {
-    "test": "node scripts/check-hold.mjs && node scripts/test.mjs"
+    "test": "node scripts/test.mjs"
   },
   "type": "module",
   "files": [

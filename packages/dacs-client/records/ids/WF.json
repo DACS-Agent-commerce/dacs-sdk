@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "WF",
-  "registration": "WF: existing client delta lane",
-  "subject": "delta(client): WF P52a held admission wrapper, runtime floor and awaited protocol consumers"
-}
