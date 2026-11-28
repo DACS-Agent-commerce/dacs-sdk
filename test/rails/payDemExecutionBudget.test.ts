@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { observeDemosExecutionByHash } from "../../src/rails/payDem.js";
+import { nativeSendEdits } from "../support/payDemEdits.js";
 
 const hash = "ab".repeat(32);
 const payer = "11".repeat(32);
@@ -11,6 +12,7 @@ const options = { transactionRecordTimeoutMs: 10,
 const record = { hash, status: "confirmed", blockNumber: 42, content: {
   type: "native", from: payer, to: payee, nonce: "9", amount: "1",
   data: ["native", { nativeOperation: "send", args: [payee, "1"] }],
+  gcr_edits: nativeSendEdits({ payer, payee, amount: "1" }),
 } };
 
 describe("pay-dem execution record budget boundaries", () => {
@@ -68,7 +70,8 @@ describe("pay-dem execution record budget boundaries", () => {
       await vi.advanceTimersByTimeAsync(1);
       expect(outcome).toBeUndefined();
       await vi.advanceTimersByTimeAsync(9);
-      expect(outcome).toEqual(delay < 10 ? { state: "executed" } : {
+      // The edits remove the amount and a 1 DEM gas burn from the payer.
+      expect(outcome).toEqual(delay < 10 ? { state: "executed", totalDebitOs: 1_000_000_001n } : {
         state: "indeterminate", reason: "transaction record read timed out",
       });
       await pending;

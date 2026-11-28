@@ -126,6 +126,9 @@ const NOT_OK = {
   payer: WALLET,
   payee: PAYEE_HEX,
 };
+/** A not-ok result whose execution was not established, with the reason the rail reports. */
+const notEstablished = (reason: string) => ({ ...NOT_OK, message: `pay-dem execution was not established: ${reason}` });
+const NOT_INCLUDED = { ...NOT_OK, message: "pay-dem inclusion was not observed before the hash-first timeout" };
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -292,7 +295,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     })));
     vi.stubGlobal("fetch", fetchRecord);
     const payDem = await rail();
-    await expect(settle(payDem)).resolves.toEqual(NOT_OK);
+    await expect(settle(payDem)).resolves.toEqual(notEstablished("transaction record read failed"));
     expect(fetchRecord).toHaveBeenCalled();
     expect(cancel).toHaveBeenCalled();
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
@@ -320,7 +323,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     expect(signal?.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     await pending;
-    expect(outcome).toEqual(NOT_OK);
+    expect(outcome).toEqual(notEstablished("transaction record read timed out"));
     expect(signal?.aborted).toBe(true);
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
@@ -335,36 +338,39 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
 
     await expect(
       settle(payDem),
-    ).resolves.toEqual(NOT_OK);
+    ).resolves.toEqual(notEstablished("transaction record does not bind the signed nonce"));
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
     expect(sdk.waitForNonce).not.toHaveBeenCalled();
   });
 
+  const UNMATCHED = "transaction record does not match the prepared transfer";
+  const UNBOUND = "transaction record does not bind the signed nonce";
   it.each([
-    ["amount", (record: TransactionRecord) => {
+    ["amount", UNMATCHED, (record: TransactionRecord) => {
       record.content.amount = 1_000_000_000;
       record.content.data[1].args[1] = "1000000000";
     }],
-    ["payee", (record: TransactionRecord) => {
+    ["payee", UNMATCHED, (record: TransactionRecord) => {
       record.content.to = `0x${"ef".repeat(32)}`;
       record.content.data[1].args[0] = "ef".repeat(32);
     }],
-    ["nonce", (record: TransactionRecord) => {
+    ["nonce", UNBOUND, (record: TransactionRecord) => {
       record.content.nonce = String(NONCE + 1);
     }],
-    ["payer", (record: TransactionRecord) => {
+    ["payer", UNMATCHED, (record: TransactionRecord) => {
       record.content.from = `0x${"12".repeat(32)}`;
       record.content.from_ed25519_address = `0x${"12".repeat(32)}`;
     }],
-    ["inclusion block", (record: TransactionRecord) => {
+    ["inclusion block", "transaction record block does not match the observed inclusion", (record: TransactionRecord) => {
       record.blockNumber = BLOCK + 1;
     }],
-    ["body", (record: TransactionRecord) => {
+    ["body", UNBOUND, (record: TransactionRecord) => {
       (record as Record<string, unknown>).content = "not-a-transaction-body";
     }],
   ])("does not report an executed record with a mismatched %s as ok", async (
     _field,
+    reason,
     mutate,
   ) => {
     sdk.getTxByHash.mockImplementation(recordReturning(mutate));
@@ -372,7 +378,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
 
     await expect(
       settle(payDem),
-    ).resolves.toEqual(NOT_OK);
+    ).resolves.toEqual(notEstablished(reason));
     // A confirmed record that contradicts the prepared transfer will not
     // repair itself: no further reads and no further broadcast.
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
@@ -386,40 +392,42 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
 
     await expect(
       settle(payDem),
-    ).resolves.toEqual(NOT_OK);
+    ).resolves.toEqual(notEstablished("transaction record read timed out"));
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
     expect(sdk.waitForNonce).not.toHaveBeenCalled();
   });
 
+  const MISSING = "transaction record is missing or malformed";
+  const NOT_TERMINAL = "transaction record has no terminal execution status";
   it.each([
-    ["no record", async () => null],
-    ["a pending record", recordReturning((record) => {
+    ["no record", MISSING, async () => null],
+    ["a pending record", NOT_TERMINAL, recordReturning((record) => {
       record.status = "pending";
     })],
-    ["a record without a status", recordReturning((record) => {
+    ["a record without a status", NOT_TERMINAL, recordReturning((record) => {
       delete (record as Record<string, unknown>).status;
     })],
-    ["a record for another hash", recordReturning((record) => {
+    ["a record for another hash", MISSING, recordReturning((record) => {
       record.hash = "34".repeat(32);
     })],
-    ["a non-object record", async () => "Transaction not found"],
-    ["an array record", async () => [broadcastRecord()]],
-    ["a transport failure envelope", async () => ({
+    ["a non-object record", MISSING, async () => "Transaction not found"],
+    ["an array record", MISSING, async () => [broadcastRecord()]],
+    ["a transport failure envelope", MISSING, async () => ({
       result: 500,
       response: "connect ECONNREFUSED",
       require_reply: false,
     })],
-    ["a rejected read", async () => {
+    ["a rejected read", "transaction record read failed", async () => {
       throw new Error("socket hang up");
     }],
-  ])("is indeterminate when the budget ends with %s", async (_case, read) => {
+  ])("is indeterminate when the budget ends with %s", async (_case, reason, read) => {
     sdk.getTxByHash.mockImplementation(read);
     const payDem = await rail();
 
     await expect(
       settle(payDem),
-    ).resolves.toEqual(NOT_OK);
+    ).resolves.toEqual(notEstablished(reason));
     expect(sdk.getTxByHash.mock.calls.length).toBeGreaterThan(1);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
     expect(sdk.waitForNonce).not.toHaveBeenCalled();
@@ -463,7 +471,7 @@ describe("pay-dem reports ok only for an executed transfer (#338)", () => {
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(60);
     await vi.advanceTimersByTimeAsync(1);
     await pending;
-    expect(outcome).toEqual(NOT_OK);
+    expect(outcome).toEqual(notEstablished("transaction record is missing or malformed"));
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(60);
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
   });
@@ -536,7 +544,7 @@ describe("pay-dem node reads take time and are polled at the configured interval
 
     await expect(
       settle(payDem),
-    ).resolves.toEqual(NOT_OK);
+    ).resolves.toEqual(NOT_INCLUDED);
     expect(statusReads()).toBe(1);
     expect(sdk.getTxByHash).not.toHaveBeenCalled();
   });
@@ -550,7 +558,7 @@ describe("pay-dem node reads take time and are polled at the configured interval
 
     await expect(
       settle(payDem),
-    ).resolves.toEqual(NOT_OK);
+    ).resolves.toEqual(notEstablished("transaction record read timed out"));
     expect(sdk.getTxByHash).toHaveBeenCalledTimes(1);
     expect(sdk.waitForNonce).not.toHaveBeenCalled();
   });
@@ -567,7 +575,7 @@ describe("pay-dem node reads take time and are polled at the configured interval
 
     await expect(
       settle(payDem),
-    ).resolves.toEqual(NOT_OK);
+    ).resolves.toEqual(NOT_INCLUDED);
     expect(statusReads()).toBe(5);
     expect(sdk.getTxByHash).not.toHaveBeenCalled();
     expect(sdk.broadcast).toHaveBeenCalledTimes(1);
