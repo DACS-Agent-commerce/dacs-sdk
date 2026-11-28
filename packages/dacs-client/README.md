@@ -345,7 +345,7 @@ The seller composition's `transport.withWalletNonceLock({owner, network, chainId
 - It waits at most the journal's lock timeout (2 s by default) and then refuses `journal-busy`, before `work` runs. Nothing queues or retries.
 - It is taken before any effect pass and refuses `nonce_lane_order` inside one. A readback, recovery or leased broadcast that holds the connection fence and then meets a held lane refuses `journal-busy` after the same wait.
 - The lane is released when `work` settles, whatever its outcome. The call rejects with `work`'s own error, or with `journal-fenced` when the lock row was removed while `work` ran. Steps inside `work` that need the lane after that removal refuse `journal-fenced` before they send.
-- It reads nothing from the node, writes no journal record and signs nothing. `transport.close()` waits for it.
+- Admission reads connection authority once. The lane itself reads no nonce or transaction state from the node, writes no journal record and signs nothing. `transport.close()` waits for it.
 - It does not serialize writers of the same wallet that use another journal file.
 
 The entry also re-exports the boolean capability checks `isDevnetAgreementTransport`, `isDevnetSettlementTransport` and `isDevnetDemoTransport`, and the declarations `DEVNET_AGREEMENT_PROFILE`, `DEVNET_AGREEMENT_KIND`, `DEVNET_AGREEMENT_SOURCE`, `DEVNET_SETTLEMENT_KIND`, `DEVNET_SETTLEMENT_POLICY`, `DEVNET_DELIVERY_KIND`, `DEVNET_DELIVERY_POLICY`, `DEVNET_DEMO_ARTIFACT_KIND`, `DEVNET_DEMO_ARTIFACT_POLICY` and `DEVNET_DEMO_ARTIFACT_TYPES`. No raw transport constructor is exported.
