@@ -1,19 +1,4 @@
 {
-  "packages/dacs-client/scripts/check-provenance.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
-  "packages/dacs-client/scripts/check-provenance.test.mjs": {
-    "no-unused-vars": {
-      "count": 2
-    }
-  },
-  "packages/dacs-client/scripts/copy-verbatim.mjs": {
-    "no-unused-vars": {
-      "count": 1
-    }
-  },
   "packages/dacs-client/src/dacs/buyer-chain-readback.mjs": {
     "no-unused-vars": {
       "count": 4

@@ -82,7 +82,10 @@ export const EXPORT_CLASSIFICATION = Object.freeze({
   'src/devnet-demo/connection-authority.mjs': { effect: {}, pure: ['createConnectionAuthorityReader'] },
   'src/devnet-demo/create-pass.mjs': { effect: { createSellerCreatePass: ['effectBoundary'], lateSellerCreatePass: ['effectBoundary'] }, pure: ['currentAuthorizationFor', 'isSellerCreatePass'] },
   'src/devnet-demo/deliverable.mjs': { effect: {  }, pure: ['createDevnetPurchasedReportProducer', 'isDevnetPurchasedReport'] },
-  'src/devnet-demo/deployment-qualification.mjs': { effect: {  }, pure: ['assertQualifiedDeployment'] },
+  // Node qualification reads the host's deployment evidence, the packaged signed record and the node; it signs and sends nothing.
+  'src/devnet-demo/deployment-qualification.mjs': { effect: {  }, pure: ['assertQualifiedDeployment', 'assertReleaseQualification', 'createVerifiedDeploymentEvidenceReader',
+    'readPackagedDeploymentRecord', 'readQualificationObservation'] },
+  'src/devnet-demo/deployment-record-verifier.mjs': { effect: {  }, pure: ['deploymentEvidenceProblem', 'verifyDeploymentRecord'] },
   'src/devnet-demo/doctor-node.mjs': { effect: {}, pure: ['openDoctorNode', 'readSellerBalance'] },
   'src/devnet-demo/node-chain-readers.mjs': { effect: {}, pure: ['createNodeChainReaders', 'createReadOnlyDemosSr2Journal'] },
   'src/devnet-demo/durable-file.mjs': { effect: {  }, pure: ['publishFileExclusive', 'syncDirectory', 'syncFile'] },
@@ -152,8 +155,9 @@ const nodeWalletRow = (transport, extraPure = []) => ({ role: [],
   pure: ['close', 'readBalance', ...extraPure, ...prefixed('artifactJournal', LOCAL_JOURNAL), ...prefixed('observer', ['observe', 'provenance', 'readNodeInfo']), ...prefixed(transport, TRANSPORT_PASSIVE)] });
 // The wallet hands out the client's payment-evidence adapter, guarded at each effect call; the finalized session hands out instead
 // its own journal over the session's passes, the consumer anchoring through it, and endApprovalWaits, which only aborts a signal.
+// The wallet's qualify is the node qualification read the effect gate and the anchor's preflights run.
 const walletRow = () => {
-  const row = nodeWalletRow('sourceCapability');
+  const row = nodeWalletRow('sourceCapability', ['qualify']);
   return { ...row, effect: { ...row.effect, ...evidenceEffects('paymentEvidenceAdapter', 'paymentEvidenceAdapter.') }, pure: [...row.pure, ...prefixed('paymentEvidenceAdapter', EVIDENCE_READS)] };
 };
 const sessionRow = () => ({ ...nodeWalletRow('transport', ['acquireConnectionFence', 'endApprovalWaits']), as: { paymentEvidence: EVIDENCE_JOURNAL_KEY, nativePaymentEvidence: EVIDENCE_CONSUMER_KEY } });
@@ -186,6 +190,8 @@ export const RETURNED_CLASSIFICATION = Object.freeze({
   'src/dacs/seller-context-route.mjs#createSellerContextRoute': { role: [], effect: { challengeOnWire: ['issue'] }, pure: [] },
   'src/dacs/seller-context-route.mjs#createSellerContextRecords': { role: [], effect: {}, pure: ['completedScope', 'exactRequest', 'retainedBody'] },
   'src/kill-switch.mjs#createStopCheck': { role: [], effect: {}, pure: ['()'] },
+  // The production readDeploymentEvidence verifies the packaged record; it reads and signs nothing else.
+  'src/devnet-demo/deployment-qualification.mjs#createVerifiedDeploymentEvidenceReader': { role: [], effect: {}, pure: ['()'] },
   'src/dacs/seller-context-route.mjs#contextOperationView': { role: [], effect: {}, pure: ['()'] },
   'src/dacs/seller-context-route.mjs#completedContextOutcome': { role: [], effect: {}, pure: ['()'] },
   'src/dacs/seller-context-continuation.mjs#createContinuationCheck': { role: [], effect: {}, pure: ['()'] },

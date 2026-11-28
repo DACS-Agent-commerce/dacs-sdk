@@ -112,10 +112,10 @@ test('root exposes exactly the reviewed names', async () => {
   assert.deepEqual(Object.keys(await import('@kynesyslabs/dacs-client')).sort(), [...ROOT.functions, ...ROOT.classes, ...ROOT.values].sort());
 });
 
-test('the root exports the testnet per-write fee ceiling as the positive decimal OS amount string 50000000000', async () => {
+test('the root exports the testnet per-write fee ceiling as the positive decimal OS amount string 18000000000', async () => {
   const { PAID_WRITE_FEE_CEILING_OS } = await import('@kynesyslabs/dacs-client');
   assert.equal(typeof PAID_WRITE_FEE_CEILING_OS, 'string');
-  assert.equal(PAID_WRITE_FEE_CEILING_OS, '50000000000');
+  assert.equal(PAID_WRITE_FEE_CEILING_OS, '18000000000');
   assert.match(PAID_WRITE_FEE_CEILING_OS, /^[1-9][0-9]*$/);
 });
 

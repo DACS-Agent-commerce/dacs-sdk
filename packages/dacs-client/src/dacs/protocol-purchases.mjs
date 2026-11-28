@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { assertPurchaseActionsAdmitted } from './action-admission.mjs';
-import { purchaseActionsAdmitted, assertWriteWithinFeeCeiling, CREATE_STORAGE_RESERVE_OS } from '../public-admission.mjs';
+import { purchaseActionsAdmitted, assertWriteWithinFeeCeiling } from '../public-admission.mjs';
 import { bindHostStop, createHostStop, isHostStopRefusal } from '../host-stop.mjs';
 import { commitOnSignatureConfig } from './commit-on-signature.mjs';
 import { observeTransferReadOnly, readIssuedArtifacts, readIssuedWallet } from '../devnet-demo/issued-readback.mjs';
@@ -1305,9 +1305,9 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
   async function submitAgreementCore(operation, { agreementSignature, anchorSignature } = {}) {
     if (!available) throw unavailable();
     if (operation.status !== 'agreement_pending') throw new OperationError('invalid_state', `purchase is ${operation.status}`);
-    // Until a CREATE intent is retained this submission can issue the buyer's Agreement CREATE, a paid write whose debit
-    // is its network fee plus the storage reserve. A retained intent is only read back through the bridge's resume.
-    if (!operation.state.protocol.walletAnchor) await assertWriteWithinFeeCeiling(feeCeilingOs, CREATE_STORAGE_RESERVE_OS, chain);
+    // Until a CREATE intent is retained this submission can issue the buyer's Agreement CREATE, a paid write whose network
+    // fee must fit the host's ceiling. A retained intent is only read back through the bridge's resume.
+    if (!operation.state.protocol.walletAnchor) await assertWriteWithinFeeCeiling(feeCeilingOs, chain);
     let current = operation;
     const p = current.state.protocol;
     if (agreementSignature || anchorSignature) {
@@ -1947,7 +1947,7 @@ export function createProtocolPurchases({ db, ops, coordinates, dacsProtocol, fe
         const current = ops.get(operation.accountId, operation.id);
         if (current.state.protocol.nativePaymentLaneIssued) throw new OperationError('native_payment_already_issued', 'the wallet guard was delivered once; readback only, never resend');
         // The fee is read now, so the debit the wallet is about to sign is held within the receipt and the host's ceiling.
-        assertSellerReceiptReservation(current, await assertWriteWithinFeeCeiling(feeCeilingOs, current.terms.price.amountOs, chain));
+        assertSellerReceiptReservation(current, await assertWriteWithinFeeCeiling(feeCeilingOs, chain));
         const record = await nativePayment.readLane(current, key);
         // Consume before releasing this read to the packaged wallet. A lost
         // response or rejected/unknown wallet result never grants another send.

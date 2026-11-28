@@ -168,17 +168,6 @@ test('construction snapshots admission and the consumed key before its first awa
  assert.ok(replacement.some(value=>value!==0),'the replacement buffer was not consumed');replacement.fill(0);
 });
 
-test("the generated delta map locates every recorded transport and signing change", async () => {
-const { ledger, locations, table } = await import('../scripts/delta-map.mjs');
-const map = table();
-const record = ledger().changes.find(change => change.subject.startsWith('delta(client): WF P21a1bb '));
-for (const name of ['public/portal/embedded-wallet/sdk-provider.mjs', 'util/http.mjs', 'dacs/network-binding.mjs']) {
-  const path = `packages/dacs-client/src/${name}`;
-  assert.ok(record.files.some(file => file.path === path && file.before !== file.after), `${path} has a P21a1bb delta record`);
-  assert.ok(map.includes(locations(path)), `${path}: the map lists every edited line`);
-}
-});
-
 const TRANSACTION_SHAPED_HASH = 'ab'.repeat(32);
 const generalSign = (w, message) => w.session.wallet.request({ method: 'sign', params: [message] });
 const assertMismatch = result => { assert.equal(result.success, false, JSON.stringify(result)); assert.equal(result.error.code, 'payload_mismatch'); };

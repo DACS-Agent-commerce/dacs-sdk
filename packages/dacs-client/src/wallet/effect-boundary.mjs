@@ -34,7 +34,7 @@ const stageOf = (state) => STAGES.find((stage) => state.startsWith(`${stage}-`))
 const sendingStages = (stage) => (stage.startsWith('recovery-') ? ['recovery-dispatch'] : ['dispatch', 'recovery-dispatch']);
 const passKey = (state, passId) => `${stageOf(state)}:${passId}`;
 const failureCode = (cause) => ({ code: typeof cause?.code === 'string' ? cause.code : 'effect_failed' });
-// The operation as the fee check reads it: the whole debit of the confirmed transaction replaces the declared one when the caller has it.
+// The operation as the fee check reads it: the fees of the confirmed transaction replace the declared debit when the caller has it.
 const feeView = (operation, confirmedDebitOs) => (confirmedDebitOs === undefined ? operation : { ...operation, debitOs: confirmedDebitOs });
 const operationMetadata = (record) => Object.fromEntries(OPERATION_FIELDS.filter((field) => record[field] !== undefined).map((field) => [field, record[field]]));
 

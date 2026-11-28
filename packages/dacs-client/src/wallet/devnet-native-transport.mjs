@@ -138,6 +138,8 @@ export const BOUNDARY_METHODS = ['holdFence', 'withOperation', 'signPass', 'disp
 const LEASE_EXPIRY_MARGIN_MS = 1;
 // The fee members of a confirmation's gas operation, each a canonical decimal OS string.
 const FEE_MEMBERS = ['network_fee', 'rpc_fee', 'additional_fee'];
+// The SDK debits 1 DEM of gas on every write, beside the fees its transaction signs.
+const SDK_GAS_OS = 1_000_000_000n;
 // The only own keys of a wallet nonce lane's scope.
 const NONCE_LANE_SCOPE_KEYS = ['owner', 'network', 'chainIdentity'];
 const fail = (code, message) => { throw Object.assign(new Error(message), { code }); };
@@ -208,8 +210,8 @@ export { nativeWalletLaneKey };
 // The seller policy, if any, is asked after the acknowledgement is retained; its refusal
 // leaves the acknowledgement and nothing is broadcast.
 // The broadcast then carries that retained confirmation, byte for byte with its gas, as the
-// boundary's dispatch stage: its whole debit (the amount plus every fee, from the node's fee
-// view or else from the confirmed transaction) is checked against the fee ceiling first, and a
+// boundary's dispatch stage: its fees (the amount it sends is not counted; the SDK gas and the signed fees of the confirmed
+// transaction) are checked against the fee ceiling first, and a
 // refusal leaves `dispatch-withheld`. A refusal at the last check, after the lane record is written and
 // before the request, finishes the lane as `failed` (withheld): nothing was sent, and a new lease may confirm
 // and broadcast the same bytes. CREATE recovery holds the boundary's fence for the
@@ -806,9 +808,10 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   }
   // The signature lease's connection fence. With a boundary it is the boundary's hold on the
   // owner's fence: admission, stop, fee and binding are checked before the wait and again once
-  // it is held, and the lease's confirmation passes run inside the hold.
-  const acquireLeaseFence = async (address, operationId, transfer) => {
-    const hold = await boundary.holdFence({ operationId, lane:lane(address), kind:'native', paidWrite:true, debitOs:transfer?.amountOs ?? '0', pinVersion:pinned.pinVersion });
+  // it is held, and the lease's confirmation passes run inside the hold. No fee is known yet, and the amount sent is
+  // not a fee, so the hold checks no debit; the fees are checked at confirmation and at broadcast.
+  const acquireLeaseFence = async (address, operationId) => {
+    const hold = await boundary.holdFence({ operationId, lane:lane(address), kind:'native', paidWrite:true, debitOs:'0', pinVersion:pinned.pinVersion });
     try { return { hold, context:await context(), release:() => hold.release() }; }
     catch (error) { await hold.release().catch(() => {}); throw error; }
   };
@@ -912,7 +915,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   };
   // The boundary's operation for a lease's transaction: the lease's operation, on the sender's lane.
   const operationOf = (lease, tx) => ({ operationId:lease.operationId, lane:lane(tx.content.from), kind:tx.content.type === 'native' ? 'native' : 'create', paidWrite:true,
-    debitOs:tx.content.type === 'native' ? transferOf(tx.content)?.amountOs : '0', pinVersion:pinned.pinVersion });
+    debitOs:tx.content.type === 'native' ? signedFeesOs(tx.content.transaction_fee) : '0', pinVersion:pinned.pinVersion });
   // Runs `confirmOnce(bytes, final)` as the boundary's confirm stage inside the lease's hold: the signed
   // bytes, `confirm-started` before the node sees them, then `confirm-acknowledged` with the
   // node's answer and gas when `accepted()`, or `confirm-unknown` with the cause.
@@ -934,7 +937,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
     const connection=lease.fence.context;
     await lease.fence.release();
     lease.operationId=earlier.operationId;
-    lease.fence=await acquireLeaseFence(lease.address,earlier.operationId,transferOf(tx.content));
+    lease.fence=await acquireLeaseFence(lease.address,earlier.operationId);
     if (!sameContext(lease.fence.context,connection)) fail('connection_changed','the connection changed before the signed bytes were confirmed');
   };
   // The artifact's records in the boundary's dispatch history, in commit order.
@@ -952,12 +955,13 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
   };
   // A storage write's kept reference block for a caller, or nothing for a native transfer, which keeps none.
   const keptReferenceBlock = (row) => row.signedTransaction.content.type === 'storageProgram' ? { referenceBlock:row.storageWriteReferenceBlock ?? null } : {};
-  // The whole debit a signed transaction commits the sender to, in OS: the declared amount plus the three fees of its
-  // own signed `transaction_fee` (each a decimal OS string, or a whole-DEM number as an amount is read). The node's fee
-  // view never enters it. `null` when any fee cannot be read, which refuses the broadcast or the recovery resend.
-  const signedDebitOs = (declaredOs, transactionFee) => {
+  // The fees a signed transaction commits the sender to, in OS: the SDK's fixed gas charge plus the three fees of its
+  // own signed `transaction_fee` (each a decimal OS string, or a whole-DEM number as an amount is read). The amount it
+  // sends is not a fee and is not counted, and the node's fee view never enters it. `null` when any fee cannot be
+  // read, which refuses the broadcast or the recovery resend.
+  const signedFeesOs = (transactionFee) => {
     const fees = FEE_MEMBERS.map((member) => signedFeeOs(transactionFee?.[member]));
-    return canonicalDecimal(declaredOs) && fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), BigInt(declaredOs))) : null;
+    return fees.every(canonicalDecimal) ? String(fees.reduce((sum, fee) => sum + BigInt(fee), SDK_GAS_OS)) : null;
   };
   const signedFeeOs = (fee) => (canonicalDecimal(fee) ? fee : Number.isSafeInteger(fee) && fee >= 0 ? String(BigInt(fee) * 1_000_000_000n) : null);
   // Whether a confirmation's fee view is absent (`null`), or names each signed fee exactly as a canonical decimal OS string.
@@ -1238,7 +1242,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
           };
           // The resend's fee ceiling reads the debit of the signed transaction it resends, as the broadcast's does;
           // a refusal there comes before the attempt is reserved, and nothing is sent.
-          const answer=await boundary.dispatchPass(signed,resendOnce,{ explicit:true,stage:'recovery-dispatch',confirmedDebitOs:signedDebitOs(signed.debitOs,tx.content.transaction_fee) });
+          const answer=await boundary.dispatchPass(signed,resendOnce,{ explicit:true,stage:'recovery-dispatch',confirmedDebitOs:signedFeesOs(tx.content.transaction_fee) });
           r={...r,storageWriteSubmission:classifyStorageWriteSubmission(answer,hash)};
           await retain(intent(hash),r); await retain(lane(address),r);
           return pending;
@@ -1271,7 +1275,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
         const transfer=declaredTransfer(request.transfer);
         if (await cancelledTransfer(address,transfer)) await refuseCancelled(address,transfer,'signature');
         // A seller job's pass names the job's own operation id; any other lease is its own operation.
-        const leaseId=randomBytes(16).toString('hex'), operationId=currentPassContext().operationId ?? leaseId, fence=await acquireLeaseFence(address,operationId,transfer);
+        const leaseId=randomBytes(16).toString('hex'), operationId=currentPassContext().operationId ?? leaseId, fence=await acquireLeaseFence(address,operationId);
         let l;
         try {
           if (!fence || typeof fence.release !== 'function' || !sameContext(await context(),fence.context)) fail('invalid_transport_owner','actual signature connection fence is unavailable');
@@ -1444,7 +1448,7 @@ function constructTransport({ expected, transportOwner, journal, fallback = null
             };
             // The wallet's broadcast is a fresh request of its own: a dispatch an earlier lease withheld before its send goes on.
             // The pass's authority is checked before the lane and intent are retained, so a job withdrawn by now leaves the lane free.
-            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ explicit:true,stage:'dispatch',confirmedDebitOs:signedDebitOs(artifact.debitOs,tx.content.transaction_fee),authorize:() => assertCurrentAuthorization(pass) }));
+            return l.fence.hold.run(() => boundary.dispatchPass(artifact,dispatch,{ explicit:true,stage:'dispatch',confirmedDebitOs:signedFeesOs(tx.content.transaction_fee),authorize:() => assertCurrentAuthorization(pass) }));
           });
         });
         if (accepted?.result === 200) {

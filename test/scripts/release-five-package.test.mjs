@@ -8,7 +8,6 @@ import { basename, dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { prepare } from "../../scripts/release-checks.mjs";
-import { checkRecord } from "../../packages/dacs-client/scripts/check-hold.mjs";
 import { discoverTests } from "../../packages/dacs-client/scripts/test.mjs";
 import { CLIENT, CORE, FIVE, GENERATOR, HOST, PLANNED, SELLER, publish, publisherFixture } from "./fixtures/publisher-harness.mjs";
 
@@ -320,7 +319,7 @@ function coreTree({ dropExport, extraFile } = {}) {
 
 const preparationErrors = async (root) => (await prepare(root, join(root, "scratch"), () => {})).errors;
 
-test("the existing checks refuse an integrated phase-0 fixture with a missing or mismatching receipt item: a path outside the allow-list, a missing required export or a stale preparation snapshot fails 377's real exported preparation validation (the `release:dry-run` path), and a changed hold pin fails `check-hold.mjs`'s `checkRecord`; each refuses before OP-2 pinning and is repaired in phase 0", { timeout: 120_000 }, async () => {
+test("the existing checks refuse an integrated phase-0 fixture with a missing or mismatching receipt item: a path outside the allow-list, a missing required export or a stale preparation snapshot fails 377's real exported preparation validation (the `release:dry-run` path); each refuses before OP-2 pinning and is repaired in phase 0", { timeout: 120_000 }, async () => {
   assert.deepEqual((await preparationErrors(coreTree())).filter((error) => error.startsWith(`${CORE}:`)), []);
   assert.ok((await preparationErrors(coreTree({ extraFile: "internal-notes.txt" })))
     .includes(`${CORE}: outside allow-list: internal-notes.txt`));
@@ -333,12 +332,6 @@ test("the existing checks refuse an integrated phase-0 fixture with a missing or
     name: CLIENT, version: "0.1.0-alpha.0", private: true, files: ["src"], exports: { ".": "./src/index.mjs" },
   }));
   assert.ok((await preparationErrors(clientRoot)).includes(`${CLIENT}: release identity or publish policy is invalid`));
-  const hold = JSON.parse(readFileSync(join(repoRoot, "packages/dacs-client/HOLD.json"), "utf8"));
-  assert.deepEqual(checkRecord(hold), []);
-  assert.ok(Object.hasOwn(hold.step1Freeze.files, 'DELTA-LEDGER.json'));
-  assert.equal(Object.hasOwn(hold.step1Freeze.files, 'DELTA-MAP.md'), false);
-  hold.holds[0].files[0].heldBlob = "0".repeat(40);
-  assert.match(checkRecord(hold).join("\n"), /heldBlob/);
 });
 
 // ---- Every node:test file is selected by some command ----

@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D16",
-  "registration": "D16: existing client delta lane",
-  "subject": "delta(client): D16 admit wire bytes and hold purchases pending release authority"
-}

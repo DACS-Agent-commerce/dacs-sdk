@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D1",
-  "registration": "D1: existing client delta lane",
-  "subject": "delta(client): D1 cut plugin imports with typed seams and update freeze pins"
-}

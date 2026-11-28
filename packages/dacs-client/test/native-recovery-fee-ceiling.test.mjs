@@ -10,9 +10,9 @@ import { JOB_IDS } from './helpers/native-create-world.mjs';
 
 const sha = (value) => createHash('sha256').update(value).digest('hex');
 // The CREATE below is signed with a 1 DEM network fee and a 1 DEM rpc fee.
-const SIGNED_DEBIT_OS = '2000000000';
+const SIGNED_DEBIT_OS = '3000000000';
 
-// A CREATE signed with 2 DEM in fees, retained as a prior run left it once its broadcast was accepted, then recovered
+// A CREATE signed with 2 DEM in fees and the SDK's 1 DEM gas, retained as a prior run left it once its broadcast was accepted, then recovered
 // under `feeCeilingOs`.
 async function recovered(t, feeCeilingOs) {
   const c = await boundedCreateWorld(t, { feeCeilingOs });

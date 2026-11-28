@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D36",
-  "registration": "D36: existing client delta lane",
-  "subject": "delta(client): D36 keep a failed transaction-body read reported as chain unavailable"
-}

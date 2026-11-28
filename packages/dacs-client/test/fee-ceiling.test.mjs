@@ -11,16 +11,14 @@ beforeEach((t) => t.mock.method(Date, 'now', () => T0));
 const { compositionWorld, ACCOUNT_ID } = await import('./helpers/public-composition-world.mjs');
 const { sellerFlow } = await import('./helpers/stored-request-flows.mjs');
 const client = await import('../src/index.mjs');
-const { admitPublicFactory } = await import('../src/public-admission.mjs');
+const { admitPublicFactory, assertWithinFeeCeiling, assertWriteWithinFeeCeiling } = await import('../src/public-admission.mjs');
 const { createPurchaseService: createInternalPurchaseService } = await import('../src/purchases.mjs');
 const { DemosSr2BridgeError } = await import('../src/dacs/demos-sr2-wallet-bridge.mjs');
 const { claimForAddress } = await import('../src/signatures.mjs');
 
-// The composed price is 2.5 DEM and the chain double's fee is 1 OS.
-const PRICE_OS = '2500000000';
-const PRICE_PLUS_FEE_OS = '2500000001';
-const ONE_DEM_OS = '1000000000';
-const STORAGE_RESERVE_OS = '3000000000';
+// The composed price is 2.5 DEM, the cancel release is 1 DEM and the chain double's fee is 1 OS. A tiny ceiling is below both amounts, so a
+// write that passes it shows the check ignores the amount; the fee decides alone.
+const TINY_CEILING_OS = '2';
 const SLOT_HASH = 'e'.repeat(64);
 const OTHER_PAYEE = '0x' + '5'.repeat(64);
 const MALFORMED_CEILINGS = [undefined, null, '', '0', '-1', '1.5', '01', ' 1', '1e9', 50_000_000_000, 50_000_000_000n, {}];
@@ -46,6 +44,30 @@ async function admittedWorld(t, options) {
 }
 
 const handoffRequest = ({ operation, token }) => ({ operationId: operation.id, token });
+
+// A world whose chain double reports `fee` for every transaction.
+async function worldWithFee(t, fee, options) {
+  const world = await admittedWorld(t, options);
+  world.chain.getTransactionFees = async () => fee;
+  return world;
+}
+
+test('the exported ceiling passes a network fee of exactly 18 DEM and refuses one OS more, whatever the price', async () => {
+  const eighteenDemOs = 18_000_000_000n;
+  assert.equal(client.PAID_WRITE_FEE_CEILING_OS, eighteenDemOs.toString());
+  assert.doesNotThrow(() => assertWithinFeeCeiling(client.PAID_WRITE_FEE_CEILING_OS, eighteenDemOs));
+  assert.throws(() => assertWithinFeeCeiling(client.PAID_WRITE_FEE_CEILING_OS, eighteenDemOs + 1n), refusesWriteFee);
+  const chainWithFee = (fee) => ({ getTransactionFees: async () => fee });
+  await assertWriteWithinFeeCeiling(client.PAID_WRITE_FEE_CEILING_OS, chainWithFee(eighteenDemOs));
+  await assert.rejects(assertWriteWithinFeeCeiling(client.PAID_WRITE_FEE_CEILING_OS, chainWithFee(eighteenDemOs + 1n)), refusesWriteFee);
+});
+
+test('the fee check refuses a malformed ceiling, a fee that is not a non-negative bigint and an unreadable fee, keeping the read error as the cause', async () => {
+  for (const feeCeilingOs of MALFORMED_CEILINGS) assert.throws(() => assertWithinFeeCeiling(feeCeilingOs, 1n), refusesWriteFee, String(feeCeilingOs));
+  for (const fee of [undefined, null, 1, '1', -1n]) assert.throws(() => assertWithinFeeCeiling(TINY_CEILING_OS, fee), refusesWriteFee, String(fee));
+  const readError = new Error('TEST-fee-unavailable');
+  await assert.rejects(assertWriteWithinFeeCeiling(TINY_CEILING_OS, { getTransactionFees: async () => { throw readError; } }), (error) => refusesWriteFee(error) && error.cause === readError);
+});
 
 test('a public purchase factory without a valid per-write fee ceiling throws fee_ceiling_required before reading any store, after the admission, runtime, stop_seam_invalid and passive_only_invalid checks', async (t) => {
   const { reads, options } = await countedOptions();
@@ -104,46 +126,53 @@ test('a passiveOnly purchase composition without a fee ceiling constructs and it
   assert.doesNotThrow(() => world.protocol.supportsMode(operation));
 });
 
-test('a payment handoff whose price plus fee is over the ceiling refuses write-fee-cap with nothing saved, moved or offered; price plus fee equal to the ceiling proceeds', async (t) => {
-  for (const feeCeilingOs of [PRICE_OS, '1']) {
-    const world = await admittedWorld(t, { feeCeilingOs });
-    const purchase = world.seed({ status: 'approved', key: 'TEST-over', currentListing: true });
-    const before = world.rows();
-    await assert.rejects(world.service.prepareHandoff(handoffRequest(purchase)), refusesWriteFee, `ceiling ${feeCeilingOs}`);
-    assert.equal(world.rows(), before, 'no coordinates, transition or event');
-    assert.equal(world.coordinates.get(purchase.operation.id), null);
-    assert.equal(world.ops.get(ACCOUNT_ID, purchase.operation.id).status, 'approved');
-  }
-  const world = await admittedWorld(t, { feeCeilingOs: PRICE_PLUS_FEE_OS });
+test('a payment handoff whose network fee is over the ceiling refuses write-fee-cap with nothing saved, moved or offered', async (t) => {
+  const world = await worldWithFee(t, 3n, { feeCeilingOs: TINY_CEILING_OS });
+  const purchase = world.seed({ status: 'approved', key: 'TEST-over', currentListing: true });
+  const before = world.rows();
+  await assert.rejects(world.service.prepareHandoff(handoffRequest(purchase)), refusesWriteFee);
+  assert.equal(world.rows(), before, 'no coordinates, transition or event');
+  assert.equal(world.coordinates.get(purchase.operation.id), null);
+  assert.equal(world.ops.get(ACCOUNT_ID, purchase.operation.id).status, 'approved');
+});
+
+test('a payment handoff whose price is above the ceiling proceeds when the network fee is equal to the ceiling', async (t) => {
+  const world = await worldWithFee(t, 2n, { feeCeilingOs: TINY_CEILING_OS });
   const purchase = world.seed({ status: 'approved', key: 'TEST-equal', currentListing: true });
   const result = await world.service.prepareHandoff(handoffRequest(purchase));
   assert.ok(result.payload, 'the payment is offered');
   assert.equal(world.ops.get(ACCOUNT_ID, purchase.operation.id).status, 'payment_handoff');
 });
 
-test('a stored payment handoff re-offered under a ceiling below its amount plus fee refuses write-fee-cap and records no reissue', async (t) => {
-  const world = await admittedWorld(t, { feeCeilingOs: PRICE_OS });
+test('a stored payment handoff re-offered while the network fee is over the ceiling refuses write-fee-cap and records no reissue', async (t) => {
+  const world = await worldWithFee(t, 3n, { feeCeilingOs: TINY_CEILING_OS });
   const purchase = world.seed({ status: 'payment_handoff', key: 'TEST-reoffer', handoff: true });
   const before = world.rows();
   await assert.rejects(world.service.prepareHandoff(handoffRequest(purchase)), refusesWriteFee);
   assert.equal(world.rows(), before);
   assert.doesNotMatch(world.rows(), /handoff_reissued/);
-  const allowed = await admittedWorld(t, { feeCeilingOs: PRICE_PLUS_FEE_OS });
-  const reoffered = allowed.seed({ status: 'payment_handoff', key: 'TEST-reoffer-allowed', handoff: true });
-  assert.ok((await allowed.service.prepareHandoff(handoffRequest(reoffered))).payload);
-  assert.match(allowed.rows(), /handoff_reissued/);
 });
 
-test('a cancel whose release transfer plus fee is over the ceiling refuses write-fee-cap and leaves the purchase unchanged', async (t) => {
-  const world = await admittedWorld(t, { feeCeilingOs: ONE_DEM_OS });
+test('a stored payment handoff whose amount is above the ceiling is re-offered when the network fee is equal to the ceiling', async (t) => {
+  const world = await worldWithFee(t, 2n, { feeCeilingOs: TINY_CEILING_OS });
+  const purchase = world.seed({ status: 'payment_handoff', key: 'TEST-reoffer-allowed', handoff: true });
+  assert.ok((await world.service.prepareHandoff(handoffRequest(purchase))).payload);
+  assert.match(world.rows(), /handoff_reissued/);
+});
+
+test('a cancel whose network fee is over the ceiling refuses write-fee-cap and leaves the purchase unchanged', async (t) => {
+  const world = await worldWithFee(t, 3n, { feeCeilingOs: TINY_CEILING_OS });
   const purchase = world.seed({ status: 'payment_handoff', key: 'TEST-cancel', handoff: true });
   const before = world.rows();
   await assert.rejects(world.service.cancel({ accountId: ACCOUNT_ID, operationId: purchase.operation.id }), refusesWriteFee);
   assert.equal(world.rows(), before);
   assert.equal(world.ops.get(ACCOUNT_ID, purchase.operation.id).status, 'payment_handoff');
-  const allowed = await admittedWorld(t, { feeCeilingOs: '1000000001' });
-  const releasable = allowed.seed({ status: 'payment_handoff', key: 'TEST-cancel-allowed', handoff: true });
-  const result = await allowed.service.cancel({ accountId: ACCOUNT_ID, operationId: releasable.operation.id });
+});
+
+test('a cancel whose release transfer is above the ceiling offers the release when the network fee is equal to the ceiling', async (t) => {
+  const world = await worldWithFee(t, 2n, { feeCeilingOs: TINY_CEILING_OS });
+  const purchase = world.seed({ status: 'payment_handoff', key: 'TEST-cancel-allowed', handoff: true });
+  const result = await world.service.cancel({ accountId: ACCOUNT_ID, operationId: purchase.operation.id });
   assert.ok(result.release, 'the release transfer is offered');
   assert.equal(result.operation.status, 'payment_uncertain');
 });
@@ -163,21 +192,31 @@ test('a cancel whose nonce slot already holds the wallet\'s own other transactio
   assert.equal(result.release, undefined);
 });
 
-test('a listing priced over the ceiling is refused write-fee-cap at protocol start, before the Agreement write', async (t) => {
-  for (const feeCeilingOs of [PRICE_OS, STORAGE_RESERVE_OS]) {
-    const world = await admittedWorld(t, { feeCeilingOs });
-    const { operation } = await world.prepare();
-    const token = world.ops.handoffTokenFor(operation.id);
-    const before = world.rows();
-    const effects = () => [world.counters.sellerLookups, world.native.calls.length, world.native.writes.length];
-    const effectsBefore = effects();
-    await assert.rejects(world.service.agreementIdentity({ operationId: operation.id, token, address: world.wallet.address }), refusesWriteFee, `ceiling ${feeCeilingOs}`);
-    assert.equal(world.rows(), before);
-    assert.deepEqual(effects(), effectsBefore, 'no seller request or native call');
-    assert.equal(world.ops.get(ACCOUNT_ID, operation.id).state.protocol.planned, undefined, 'no Agreement plan');
-  }
+test('a network fee over the ceiling is refused write-fee-cap at protocol start, before the Agreement write', async (t) => {
+  const world = await worldWithFee(t, 3n, { feeCeilingOs: TINY_CEILING_OS });
+  const { operation } = await world.prepare();
+  const token = world.ops.handoffTokenFor(operation.id);
+  const before = world.rows();
+  const effects = () => [world.counters.sellerLookups, world.native.calls.length, world.native.writes.length];
+  const effectsBefore = effects();
+  await assert.rejects(world.service.agreementIdentity({ operationId: operation.id, token, address: world.wallet.address }), refusesWriteFee);
+  assert.equal(world.rows(), before);
+  assert.deepEqual(effects(), effectsBefore, 'no seller request or native call');
+  assert.equal(world.ops.get(ACCOUNT_ID, operation.id).state.protocol.planned, undefined, 'no Agreement plan');
+});
+
+test('a listing priced above the ceiling starts the protocol when the network fee is equal to the ceiling', async (t) => {
+  const world = await worldWithFee(t, 2n, { feeCeilingOs: TINY_CEILING_OS });
+  assert.ok((await world.preparedWithIdentity()).signature, 'the buyer is asked to sign');
+});
+
+test('the buyer balance check still refuses a protocol start whose price and fee exceed the buyer\'s funds, with a fee under the ceiling', async (t) => {
   const world = await admittedWorld(t);
-  assert.ok((await world.preparedWithIdentity()).signature, 'under the ceiling the buyer is asked to sign');
+  const { operation } = await world.prepare();
+  const token = world.ops.handoffTokenFor(operation.id);
+  world.chain.getAddressBalance = async () => 1n;
+  await assert.rejects(world.service.agreementIdentity({ operationId: operation.id, token, address: world.wallet.address }), (error) => error.code === 'buyer_balance_insufficient');
+  assert.equal(world.ops.get(ACCOUNT_ID, operation.id).state.protocol.planned, undefined, 'no Agreement plan');
 });
 
 // The buyer's Agreement submission through the real protocol factory; the seller proposal is the first request the exchange sends.
@@ -191,8 +230,8 @@ async function agreementSubmission(t, factoryOptions, { arrange = () => {}, conf
 const eventCount = (flow) => flow.p.db.prepare('SELECT count(*) AS n FROM operation_events').get().n;
 const failingFees = { getTransactionFees: async () => { throw new Error('TEST-fee-unavailable'); } };
 
-test('a buyer Agreement write whose fee plus storage reserve is over the ceiling refuses before signatures are saved, the seller is asked or a CREATE intent is kept; one at the ceiling proceeds; a missing or unreadable fee refuses', async (t) => {
-  for (const [label, factoryOptions] of [['over the ceiling', { chain: { getTransactionFees: async () => 2n }, feeCeilingOs: '3000000001' }],
+test('a buyer Agreement write whose network fee is over the ceiling refuses before signatures are saved, the seller is asked or a CREATE intent is kept; one at the ceiling proceeds; a missing or unreadable fee refuses', async (t) => {
+  for (const [label, factoryOptions] of [['over the ceiling', { chain: { getTransactionFees: async () => 3n }, feeCeilingOs: TINY_CEILING_OS }],
     ['no fee reader', { chain: {} }], ['unreadable fee', { chain: failingFees }]]) {
     const { error, flow, service } = await agreementSubmission(t, factoryOptions);
     assert.ok(refusesWriteFee(error), label);
@@ -204,15 +243,15 @@ test('a buyer Agreement write whose fee plus storage reserve is over the ceiling
     assert.equal(flow.p.get().state.protocol.walletAnchor, undefined, label);
     assert.deepEqual([flow.fetches.length, flow.w.state.signs.length], [0, 0], `${label}: no seller request`);
   }
-  const { error, flow } = await agreementSubmission(t, { feeCeilingOs: '3000000001' });
+  const { error, flow } = await agreementSubmission(t, { feeCeilingOs: TINY_CEILING_OS, chain: { getTransactionFees: async () => 2n } });
   assert.equal(error, undefined);
   assert.equal(flow.fetches.length, 1, 'the seller proposal is sent');
 });
 
-test('an Agreement write ceiling at or above the CREATE network fee but below the fee plus storage reserve refuses', async (t) => {
-  const { error, flow } = await agreementSubmission(t, { feeCeilingOs: STORAGE_RESERVE_OS, chain: { getTransactionFees: async () => 1n } });
-  assert.ok(refusesWriteFee(error));
-  assert.equal(flow.fetches.length, 0);
+test('an Agreement write ceiling at the CREATE network fee but far below the 3 DEM storage reserve proceeds', async (t) => {
+  const { error, flow } = await agreementSubmission(t, { feeCeilingOs: '1', chain: { getTransactionFees: async () => 1n } });
+  assert.equal(error, undefined);
+  assert.equal(flow.fetches.length, 1, 'the seller proposal is sent');
 });
 
 // The retained intent `anchorAgreement` expects for this purchase's Agreement.

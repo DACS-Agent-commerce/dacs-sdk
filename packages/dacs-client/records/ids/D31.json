@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D31",
-  "registration": "D31: existing client delta lane",
-  "subject": "delta(client): D31 pin the finality profile literal refusal"
-}

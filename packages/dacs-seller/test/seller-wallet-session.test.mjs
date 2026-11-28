@@ -11,7 +11,8 @@ import { entropyToMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { SELLER_FULFILMENT_VET_MODES } from '@kynesyslabs/dacs';
 import { agreementRequest } from '../../dacs-client/test/helpers/tp1-node-fixture.mjs';
-import { ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, T0, api, evidenceInput, finalization, jsonResponse, keyRecordBytes, ok, privateDataDirectory, replayNode, replyTo,
+import { shippedBuildEvidence } from './helpers/shipped-build-evidence.mjs';
+import { ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, ENDPOINT, T0, api, evidenceInput, finalization, jsonResponse, keyRecordBytes, ok, privateDataDirectory, replayNode, replyTo,
   sellerPublications, setPurchaseAdmission, spyTransactionSignatures } from './helpers/seller-node-wallet-world.mjs';
 import { allZero, createSellerWalletSession, portOptions, walletSessionWorld } from './helpers/seller-wallet-session-world.mjs';
 import { heldOperator, manualSellerApproval, PAYMENT_EVIDENCE_JOURNAL } from './helpers/payment-evidence-test-journals.mjs';
@@ -214,7 +215,9 @@ test('the finalized session\'s pass needs a live fence from its own owner: a rel
 
 test('after finalization the port\'s artifactAnchor is the anchor composed over the finalized session: its writer, authority, source and Vet mode are unchanged from before finalization and match the session\'s address and declared publication; a Listing publish whose signing check is not a function refuses not-authorized and one with a signing check or without refuses deployment_unqualified, and a job\'s retained read with the default buyer access refuses buyer_access_closed, each before any artifact read, storing no intent and signing and sending nothing', async (t) => {
   const signatures = await spyTransactionSignatures(t.mock);
-  const world = await walletSessionWorld(t);
+  // The host's deployment evidence names a commit no reviewed build has, so the publish preflight refuses.
+  const unreviewed = () => ({ ...shippedBuildEvidence({ endpoint: ENDPOINT, observedAt: T0 }), commit: 'c'.repeat(40) });
+  const world = await walletSessionWorld(t, { options: { readDeploymentEvidence: unreviewed } });
   const anchor = world.port.artifactAnchor;
   const before = staticsOf(anchor);
   assert.deepEqual(before, { source: 'dacs-devnet-demo-native-artifacts/v1', authority: sellerPublications().demoArtifactPublication.authority, writer: world.signer.claim,
@@ -396,6 +399,23 @@ test('a plain-http node root, even under the approved chain, is refused at const
   const valid = await portOptions(node, async () => { keyLoads += 1; return keyRecordBytes(); });
   assert.throws(() => createSellerWalletSession({ ...valid, endpoint: PLAIN_ENDPOINT }), { code: 'transport_mismatch' });
   assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
+});
+
+test('a node on another chain is refused at binding before any key load, and the failed binding closes the port and its transport owner', async (t) => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  t.after(() => setPurchaseAdmission('held'));
+  const node = replayNode();
+  node.reply = otherChain;
+  let keyLoads = 0, port;
+  const loadKeyRecord = async () => { keyLoads += 1; return keyRecordBytes(); };
+  const createPort = (options) => (port = createSellerWalletSession(options));
+  await assert.rejects(walletSessionWorld(t, { node, createPort, options: { loadKeyRecord } }), { code: 'tp1_connection_unverified' });
+  assert.ok(node.reads.includes('getBlockByNumber'), 'the node was read for its chain');
+  assert.deepEqual({ keyLoads, signatures: signatures.length }, { keyLoads: 0, signatures: 0 });
+  assert.ok(port, 'the world built the port');
+  await assert.rejects(port.artifactAnchor.read({}), { code: 'wallet_session_closed' }, 'the failed binding closed the port');
+  await assert.rejects(port.finalize({}), { code: 'wallet_session_closed' }, 'a closed port cannot be finalized');
+  await assert.rejects(Promise.resolve().then(() => port.authority.context()), { code: 'transport_closed' }, 'the failed binding closed the transport owner too');
 });
 
 test('finalize refuses a binding whose authority is no longer current with tp1_connection_unverified, and one whose authority read stalls with tp1_authority_timeout at 10,000 ms but not at 9,999 ms, each before the key is loaded or an issuance journal opens', async (t) => {
@@ -617,4 +637,48 @@ test('a signed CREATE kept unsent is not sent once the approval waits have ended
     assert.deepEqual(await keptOf(session), kept, 'the row is still the kept one');
     await session.close();
   }
+});
+
+// A CREATE through `session`'s walletFactory in one pass whose steps record their order in `order`; resolves the wallet's answer.
+async function orderedCreate(world, session, order) {
+  const wallet = session.walletFactory({ anchorJournal: session.artifactJournal });
+  const request = await agreementRequest({ session: { wallet }, node: world.node });
+  const lease = await session.acquireConnectionFence();
+  try {
+    const pass = session.effectPass({ fence: lease, deadline: T0 + PASS_WINDOW_MS, refreshAuthority() { order.push('refreshAuthority'); }, finalStop() { order.push('finalStop'); },
+      synchronousChecks: [], feeCeilingOs: finalization.feeCeilingOs, context: jobCreate() });
+    return await session.runInEffectPass(pass, () => wallet.request(request));
+  } finally { lease.release(); }
+}
+
+test('the session refuses a missing or non-function readDeploymentEvidence with a TypeError before it opens the connection, and its gate runs qualification first', async (t) => {
+  const node = replayNode();
+  const valid = await portOptions(node, async () => keyRecordBytes());
+  for (const [label, value] of [['missing', undefined], ['a record', shippedBuildEvidence({ endpoint: ENDPOINT, observedAt: T0 })], ['a string', 'TEST']]) {
+    const options = { ...valid, readDeploymentEvidence: value };
+    if (value === undefined) delete options.readDeploymentEvidence;
+    assert.throws(() => createSellerWalletSession(options), { name: 'TypeError', message: 'readDeploymentEvidence must be a function' }, label);
+  }
+  assert.equal(node.calls.length, 0, 'no connection read');
+  const order = [];
+  const world = await walletSessionWorld(t, { options: { readDeploymentEvidence: () => { order.push('qualify'); return shippedBuildEvidence({ endpoint: ENDPOINT, observedAt: T0 }); } } });
+  const { session } = await world.finalize();
+  assert.equal((await orderedCreate(world, session, order)).success, true);
+  assert.deepEqual(order.slice(0, 3), ['qualify', 'refreshAuthority', 'finalStop'], 'qualification is the first step of the signature\'s pass');
+  assert.deepEqual(order, Array(3).fill(['qualify', 'refreshAuthority', 'finalStop']).flat(), 'and of the confirmation\'s and the broadcast\'s');
+});
+
+test('the session with a readDeploymentEvidence function returning the bounded record opens, and a native write on it passes qualification on the shipped entry; the same option set without the function throws the TypeError before any connection', async (t) => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  let reads = 0;
+  const bytes = () => { reads += 1; return new TextEncoder().encode(JSON.stringify(shippedBuildEvidence({ endpoint: ENDPOINT, observedAt: T0 }))); };
+  const world = await walletSessionWorld(t, { options: { readDeploymentEvidence: bytes } });
+  const { session } = await world.finalize();
+  assert.equal((await orderedCreate(world, session, [])).success, true);
+  assert.deepEqual({ signatures: signatures.length, executes: world.executeStages(), reads }, { signatures: 1, executes: 2, reads: 3 });
+  const node = replayNode();
+  const options = await portOptions(node, async () => keyRecordBytes());
+  delete options.readDeploymentEvidence;
+  assert.throws(() => createSellerWalletSession(options), { name: 'TypeError', message: 'readDeploymentEvidence must be a function' });
+  assert.equal(node.calls.length, 0, 'no connection read');
 });

@@ -94,3 +94,9 @@ test('the sessionAdmission option states the exact PROFILE.json revision and tup
     assert.match(block, new RegExp(`${document.replace('-', '-')} ${version.replace('.', '\\.')}`), `the README states ${document} ${version}`);
   }
 });
+
+test('PROFILE.json keeps the profile unsupported with its production blockers listed, and no longer names deployment qualification as pending', () => {
+  assert.match(profile.qualification, /^unsupported /);
+  assert.doesNotMatch(profile.qualification, /deployment qualification/);
+  assert.ok(Array.isArray(profile.qualificationBlockers) && profile.qualificationBlockers.length > 0);
+});

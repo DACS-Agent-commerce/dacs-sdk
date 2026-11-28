@@ -9,6 +9,8 @@
 //   recovery:<n>   is killed at the n-th check of the state lock while the wallet is built (2: as the artifact journal's lock
 //                  rows are recovered, 3: as the composition journal's are).
 //   second-lock    tries to take the seller state lock and prints the refusal.
+//   qualify:<n>    anchors one payment evidence inside an effect pass and is killed inside the n-th node qualification read of its
+//                  gate passes (1: the signature's, 2: the confirmation's, 3: the broadcast's, after its durable intent).
 // Usage: node seller-node-wallet-child.mjs MODE DATA_DIRECTORY STATE_DIRECTORY JOURNAL_MODE
 import { mock } from 'node:test';
 import { writeFileSync } from 'node:fs';
@@ -57,9 +59,14 @@ if (mode === 'anchor:sent') {
   };
 }
 const options = await walletOptions({ connection, directory, stateLock, journalMode, approve: sellerApproval(approval) });
+if (action === 'qualify') {
+  const shipped = options.readDeploymentEvidence;
+  let qualifications = 0;
+  options.readDeploymentEvidence = input => (++qualifications === Number(cut) ? die() : shipped(input));
+}
 const wallet = await createSellerNodeWallet(options);
 const world = { owner: connection.owner, wallet, node, directory, options };
-if (action === 'anchor') await inWalletPass(world, () => journalOverAdapter(world).anchorEvidence(evidenceInput(world)));
+if (action === 'anchor' || action === 'qualify') await inWalletPass(world, () => journalOverAdapter(world).anchorEvidence(evidenceInput(world)));
 if (action === 'guarded') {
   const write = await preparedWrite(world);
   let calls = 0;

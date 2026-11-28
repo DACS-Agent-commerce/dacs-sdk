@@ -6,7 +6,6 @@ import {anchorFixture,signSdkCreate} from './helpers/anchor-isolated-fixture.mjs
 import {isProvenUnsignedAbsence} from '../src/dacs/native-dem-delivery-consumer.mjs';
 import {seller} from './helpers/protocol-fixture.mjs';
 import {fixtureListing} from './fixtures/listings.mjs';
-import {assertQualifiedDeployment} from '../src/devnet-demo/deployment-qualification.mjs';
 import {classifyStorageWriteSubmission,storageWriteAbsent,storageWriteConfirmationMatches,storageWriteAccountNonce,rpcEnvelope} from '../src/devnet-demo/storage-write-recovery.mjs';
 const JOBS=['01ARZ3NDEKTSV4RRFFQ69G5FAW','01ARZ3NDEKTSV4RRFFQ69G5FAX'];
 test('an observed source nonce fences stale RPC preparation, including a restarted anchor',async()=>{
@@ -24,18 +23,11 @@ test('different artifacts serialize nonce reservations and retain the floor acro
  assert.equal((await w.publish(w.open(),JOBS[1])).status,'indeterminate');assert.equal(w.captured[1].transaction.content.nonce,2);
  assert.deepEqual([...w.journal.rows.values()].find(r=>r.input?.artifact.jobId===JOBS[0]).signedTransaction,firstSigned);
 });
-test('dirty, unidentified, unverified or partially qualified deployments authorize no wallet request',async()=>{
- const w=await anchorFixture();
- for(const pin of [null,{...w.source.pins.deployment,dirty:true},{...w.source.pins.deployment,artifactSha256:null},{...w.source.pins.deployment,qualifiedOperations:['nonce']}]){
-  const source={...w.source,pins:{...w.source.pins,deployment:pin}};await assert.rejects(assertQualifiedDeployment(source),{code:'deployment_unqualified'});
- }
- w.source.verifyDeployment=async()=>false;await assert.rejects(w.publish(w.open(),JOBS[0]),{code:'deployment_unqualified'});assert.equal(w.captured.length,0);
-});
-test('a clean verified deployment at another source commit authorizes no native intent or wallet request',async()=>{
- const w=await anchorFixture();let verified=0;
- w.source.pins.deployment.commit='c'.repeat(40);w.source.verifyDeployment=async()=>{verified++;return true};
+test('a publish whose node qualification preflight refuses authorizes no native intent or wallet request',async()=>{
+ const w=await anchorFixture();const phases=[];
+ w.controls.qualify=async({phase})=>{phases.push(phase);throw Object.assign(new Error('TEST unqualified node build'),{code:'deployment_unqualified'});};
  await assert.rejects(w.publish(w.open(),JOBS[0]),{code:'deployment_unqualified'});
- assert.equal(verified,0);assert.equal(w.captured.length,0);assert.equal(w.journal.rows.size,0);
+ assert.deepEqual(phases,['publish']);assert.equal(w.captured.length,0);assert.equal(w.journal.rows.size,0);
 });
 test('relay acknowledgement is not transaction inclusion and unknown status does not prove absence',()=>{
  const hash='a'.repeat(64),relay={result:200,response:{message:'Transaction relayed to validators'},require_reply:false,extra:null};
@@ -166,11 +158,12 @@ test('retained readback never resends through an unqualified deployment; qualifi
  const signedTransaction=await signSdkCreate(row.transaction);
  await w.journal.put(key,{...row,stage:'issued',hash:signedTransaction.hash});
  await w.sourceJournal.put('original',{stage:'signed',hash:signedTransaction.hash,signedTransaction});
- w.source.pins.deployment.dirty=true;
+ const qualified=w.controls.qualify;
+ w.controls.qualify=async()=>{throw Object.assign(new Error('TEST unqualified node build'),{code:'deployment_unqualified'});};
  const retainedInput={logicalAddress:row.input.logicalAddress,artifactKind:row.input.artifactKind};
  await assert.rejects(w.open().readRetained(retainedInput,RESEND),{code:'deployment_unqualified'});
  assert.equal(resends.length,0);assert.equal(w.captured.length,1);
- w.source.pins.deployment.dirty=false;
+ w.controls.qualify=qualified;
  assert.equal((await w.open().readRetained(retainedInput,RESEND)).status,'indeterminate');
  for(let i=0;i<3;i++)await w.open().readRetained(retainedInput,RESEND);
  assert.deepEqual(resends,[signedTransaction],'at most one resend, including provider restart');assert.equal(w.captured.length,1,'recovery never asks the transaction wallet again');
@@ -430,9 +423,10 @@ test('NEW-D1b-preauth-projection',async()=>{
 test('NEW-D1b-final-effect-authorization',async()=>{
  const w=await pendingAcceptedWorld(),recoveryRows=()=>[...w.journal.rows].filter(([key])=>key.startsWith('demo/recovery/'));
  await w.journal.put(w.key,{...await w.journal.get(w.key),stage:'issued',hash:w.signed.hash});
- // The caller's authority is open until the awaited deployment check runs, and closed when that check is done.
+ // The caller's authority is open until the awaited qualification preflight runs, and closed when that check is done.
  let authorityOpen=true,asked=0;
- w.source.verifyDeployment=async()=>{authorityOpen=false;return true;};
+ const qualified=w.controls.qualify;
+ w.controls.qualify=async(input)=>{authorityOpen=false;return qualified(input);};
  const closing={resend:true,authorizeResend:async()=>{asked++;return authorityOpen;}};
  assert.equal((await w.open().readRetained(w.retainedInput,closing)).status,'indeterminate');
  assert.equal(asked,1,'the authority is asked once, after the awaited preparation');
@@ -440,7 +434,7 @@ test('NEW-D1b-final-effect-authorization',async()=>{
  assert.deepEqual(recoveryRows(),[],'no recovery intent was recorded');
  assert.deepEqual(await w.sourceJournal.get(`source/${JOBS[0]}`),w.signed,'the retained signed bytes are unchanged');
  // The same read with authority held through the end sends the exact retained bytes once.
- w.source.verifyDeployment=async()=>true;
+ w.controls.qualify=qualified;
  const open={resend:true,authorizeResend:async()=>true};
  for(let reads=0;reads<2;reads++)await w.open().readRetained(w.retainedInput,open);
  assert.deepEqual(w.resends,[w.signed.signedTransaction],'one resend of the exact original bytes');

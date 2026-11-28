@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D35",
-  "registration": "D35: existing client delta lane",
-  "subject": "delta(client): D35 re-apply the monotonic clock to the seller rate window and the wallet lane wait"
-}
