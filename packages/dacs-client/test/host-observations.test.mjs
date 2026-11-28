@@ -348,6 +348,9 @@ const rejectionCases = [
   ['long Error', new Error('TEST-long-'.repeat(100)), 'TEST-long-'.repeat(100).slice(0, 240)],
   ['null prototype', Object.create(null), 'chain reader failed'],
   ['message getter', Object.defineProperty({}, 'message', { get() { assert.fail('message getter called'); } }), 'chain reader failed'],
+  ['empty string', '', 'chain reader failed'], ['empty Error', new Error(''), 'chain reader failed'],
+  ['blank string', ' \n\t', 'chain reader failed'], ['padded Error', new Error(' TEST-reader-down '), ' TEST-reader-down '],
+  ['blank within the cap', ' '.repeat(240) + 'TEST-past-the-cap', 'chain reader failed'],
 ];
 for (const [label, failure, expected] of rejectionCases) {
   for (const route of ['domain', 'observation', 'closed-wallet']) {
@@ -360,6 +363,8 @@ for (const [label, failure, expected] of rejectionCases) {
       const result = await w.verify();
       assert.equal(result.verification.outcome, route === 'closed-wallet' ? 'readback_only' : 'chain_unavailable');
       assert.equal(route === 'domain' ? result.verification.reason : result.verification.observation.reason, expected);
+      if (route !== 'domain') assert.deepEqual(result.verification.observation, { status: 'unavailable', reason: expected });
+      if (route === 'observation') assert.deepEqual(w.coordinates.get(w.op.id).observation.observation, { status: 'unavailable', reason: expected });
       assert.equal(result.operation.status, 'broadcast_reported');
       assert.equal(w.consumed(), 0);
       if (route !== 'observation') assert.equal(w.snapshot(), before);

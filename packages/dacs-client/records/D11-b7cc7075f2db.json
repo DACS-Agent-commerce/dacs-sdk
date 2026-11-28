@@ -1,0 +1,23 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "D11",
+  "subject": "delta(client): D11 record the blank chain reader reason fix in the record layout and choose the merged blobs",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "214d743c2b568900f9a624d020edad9078df0f2e",
+      "after": "214d743c2b568900f9a624d020edad9078df0f2e"
+    },
+    {
+      "path": "packages/dacs-client/test/host-observations.test.mjs",
+      "before": "92da75eaa35e5a14dbed636b7d227e02ab8917f2",
+      "after": "92da75eaa35e5a14dbed636b7d227e02ab8917f2"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/D11-b7cc7075f2db.json",
+    "packages/dacs-client/records/D11-ec8e8cdebe88.json"
+  ],
+  "note": "The blank-reason fix and the base both changed purchases.mjs and the host observation test after their common ancestor, so the merge holds a copy of each that neither side recorded; this record chooses the merged copies, which carry the base's changes and the fix's errorText line and five rejection rows. The commit also records the fix's commit in the record layout. Record files are not core, so the controls stay unchanged."
+}
