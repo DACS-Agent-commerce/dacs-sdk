@@ -2670,8 +2670,10 @@ function rebuildRetainedFees(captured: SettleResult, bound: RetainedDebit, amoun
   if (recordFeeOs !== undefined && captured.recordFeeOs !== undefined && captured.recordFeeOs !== recordFeeOs) {
     throw new DacsError("pay-dem: the reported declared fee differs from the one journalled with the prepared transfer");
   }
-  const { recordFeeOs: _reportedRecordFeeOs, ...settlement } = captured;
-  return { ...settlement, networkFeeOs, ...(recordFeeOs === undefined ? {} : { recordFeeOs }) };
+  const rebuilt: SettleResult = { ...captured, networkFeeOs };
+  if (recordFeeOs === undefined) delete rebuilt.recordFeeOs;
+  else rebuilt.recordFeeOs = recordFeeOs;
+  return rebuilt;
 }
 
 function publicPayDemResult(result: SettleResult, payee: string): SettleResult {
