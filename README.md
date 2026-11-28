@@ -1214,8 +1214,8 @@ Registry/container acceptance writes evidence to the new directory passed to
 retain partial evidence in that directory. Power loss or SIGKILL can leave the
 reserved directory empty, and the temporary copies staged under the runner's
 temporary directory may not survive a reboot. Run on a host with Docker/Compose,
-curl 8.4+ and GNU mv. Create the parent first and choose a fresh output
-directory for each run:
+curl 8.4+, GNU mv, Node.js `^22.22.2 || ^24.15.0` and npm. Create the parent
+first and choose a fresh output directory for each run:
 
 ```sh
 mkdir -p registry-container-artifacts
@@ -1223,9 +1223,11 @@ review_parent=$(mktemp -d registry-container-artifacts/review.XXXXXX)
 npm run acceptance:registry-container -- --output-dir "$review_parent/evidence"
 ```
 
-The ignored `registry-container-artifacts/` path keeps evidence out of the Git
-worktree. A directory outside the repository also works; other in-repository
-paths appear as untracked files.
+The ignored `registry-container-artifacts/` path keeps evidence from becoming
+untracked package inputs. A directory outside the repository also works. Other
+nonignored in-repository output paths appear as untracked files and make
+`npm run package:verify` refuse packaging until those files are added, ignored
+or removed.
 Acceptance requires explicit completion and consistent policy outcomes. npm HTTP
 responses have byte and time limits. Commands wrapped with `run_bounded` have
 deadlines. Failed runs retain collected evidence, including structured
