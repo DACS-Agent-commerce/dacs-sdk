@@ -289,7 +289,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
     const owned = [];
     for (const address of addresses) {
       const native = await nativeRead(address);
-      if (native.programName !== programName) reject('invalid', 'name index and native program name differ');
+      if (native.programName !== programName) reject('invalid', 'name index and native program name differ; only SDK-derived program names are supported');
       if (native.owner !== owner) continue;
       if (!object(native.data) || !object(native.metadata)) reject('invalid', 'owned native record lacks DACS payload or metadata');
       if (native.metadata.logicalAddress !== logicalAddress) reject('invalid', 'native metadata names another logical address');

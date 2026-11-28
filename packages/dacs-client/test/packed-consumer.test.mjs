@@ -99,6 +99,18 @@ test('the installed ./substrate/demos entry exports one testnet-pinned reader th
   run(process.execPath, ['demos-reader.mjs'], app);
 });
 
+test('the installed root exports the Agreement CREATE storage reserve as a positive decimal OS string and the anchor write read as a function (packed archive in an empty directory)', t => {
+  const { app, run } = installPackedPair(t);
+  writeFileSync(join(app, 'anchor-exports.mjs'), `
+    import assert from 'node:assert/strict';
+    import { CREATE_STORAGE_RESERVE_OS, readAnchorReservedWriteId } from '@kynesyslabs/dacs-client';
+    assert.equal(typeof CREATE_STORAGE_RESERVE_OS, 'string');
+    assert.match(CREATE_STORAGE_RESERVE_OS, /^[1-9][0-9]*$/);
+    assert.equal(typeof readAnchorReservedWriteId, 'function');
+  `);
+  run(process.execPath, ['anchor-exports.mjs'], app);
+});
+
 test('a binding made through the consumer\'s own @kynesyslabs/dacs/wire import is accepted by the packed client (switched-copy archive)', t => {
   const { app, run } = installPackedPair(t, { clientDir: switchedCopy(t) });
   writeFileSync(join(app, 'identity.mjs'), `

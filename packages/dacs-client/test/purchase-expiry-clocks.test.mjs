@@ -26,7 +26,7 @@ function world(t, purchaseLimits = { maxUnpaidPerAccount: 1, maxUnpaidPerWallet:
   const price = { amount: '1', amountOs: '1000000000' };
   const chain = { network: 'testnet', pinnedIdentity: CHAIN,
     networkIdentity: async () => ({ identity: CHAIN, mode: 'public-chain-read' }),
-    getAddressBalance: async () => 10n ** 15n, getTransactionFees: async () => 1n };
+    getAddressBalance: async () => 10n ** 15n, getTransactionFees: async () => 1n, getAddressNonce: async () => 0 };
   const verifier = { verify: async () => ({ transactable: true, anchor: { kind: 'storage-program', locator: 'TEST-locator' }, checks: [], contentHash: CHAIN, price, payee: PAYEE, evidence: {}, listing: { seller: {} } }) };
   const protocol = { supportsMode: () => true, assertSellerAdmission: async () => {},
     prepareTerms: () => ({ terms: { profile: 'TEST-profile' }, state: { stage: 'identity', attempts: [] } }) };

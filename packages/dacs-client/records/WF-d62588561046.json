@@ -1,0 +1,22 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged client entry point and public API test after carrying the base into the installed client part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "1b09bb7188f04ae905a32d36104d8364a24dce21",
+      "after": "1b09bb7188f04ae905a32d36104d8364a24dce21"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "ae5a91f9bdfb54122658456da91e81ac613063a1",
+      "after": "ae5a91f9bdfb54122658456da91e81ac613063a1"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-d62588561046.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's identity bundle and address exports together with the base's buyer context route caller export. No file other than this record changes."
+}

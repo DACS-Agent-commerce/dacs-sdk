@@ -1,0 +1,159 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF add the passive stage reader and the checked wallet operation history",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/package.json",
+      "before": "40399430f4b4d3c88e5e8f6f3c19f70cf2e4765c",
+      "after": "14c65e54133522dddb4a82775d7aa07f6557f9d3"
+    },
+    {
+      "path": "packages/dacs-client/src/host/local-account.mjs",
+      "before": "6af8f2953258e0862716d432c04cb7d09b7ef3e0",
+      "after": "4c69e61440d65fee595e3a8c40df8ad34824445b"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "0db09247747cd81af021956e9ecdf8b8a07424e6",
+      "after": "050cd8f7f3d0874045e58d2f24e2ee9ac4410e23"
+    },
+    {
+      "path": "packages/dacs-client/src/passive-evidence-recorder.mjs",
+      "before": "ae5dd5a5cc9533cd97c165cf37b11763d419febb",
+      "after": "a6328f2fd38b13b3d58b5b6abeda3a047188c636"
+    },
+    {
+      "path": "packages/dacs-client/src/purchases.mjs",
+      "before": "5802ac46387b5ff32c82a0b8e2d9c308f233e699",
+      "after": "d6a5e27325019d60896d2f5d7984e0c353628a05"
+    },
+    {
+      "path": "packages/dacs-client/src/util/deep-freeze.mjs",
+      "before": null,
+      "after": "3a6c00276c5e85226a11a2f06fb4648a2e7498f9"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "ecb27225f37583a4aeaf01972e6b71c7b0a4aba4",
+      "after": "08fe3fa7ba24d0bfc450661a6603e19b1037ffa8"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/durable-journal.mjs",
+      "before": "f4deb51120d4281d5d2544d0f1624ff6f206638f",
+      "after": "6db9fcf48e0b2106581989004a855d5a7882a84c"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/effect-history-public.mjs",
+      "before": null,
+      "after": "48e5ca8fe19c42b809ec31609f46edd902a66720"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/effect-history.mjs",
+      "before": "bfab3132db6ef2ac403e424b54cb7680dd7910ed",
+      "after": "1ed2a80ab38d2d56b2baf940d71c5566dd9384a9"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/journal-identity.mjs",
+      "before": null,
+      "after": "a94f3eb42186448c475feae1b3658e256e34b3ae"
+    },
+    {
+      "path": "packages/dacs-client/src/wallet/native-dispatch-history.mjs",
+      "before": "cbee1cbd84251e5dcf3cb5a876f9587df5c4e4b6",
+      "after": "305074c51dde1bad08deb34ab814d838d1d8628b"
+    },
+    {
+      "path": "packages/dacs-client/test/checked-operation-history.test.mjs",
+      "before": null,
+      "after": "53d7334cd9f53878b1d410a6f08f6d9fd2075e88"
+    },
+    {
+      "path": "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+      "before": "a5cde3f38d4eb60e24adb3751a567848a09ddc15",
+      "after": "402f73bde19e841196b7ad49ec8f52db08885dca"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+      "before": "b988852023e7ab6077e3eb3c95fd85981571d62d",
+      "after": "3f19d988b72e78b24bbc06ca21fd8f4ada9dfaf5"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/passive-native-world.mjs",
+      "before": "7a201173426c23e579b9d59b6cb6cfcb17dcdace",
+      "after": "052730446613689e63205f818d6859cdc2708357"
+    },
+    {
+      "path": "packages/dacs-client/test/helpers/public-composition-world.mjs",
+      "before": "737521a887eee983da64419b0209bc4fa126b340",
+      "after": "77e374ecfa2dee0d708479a0cb3436751af1568f"
+    },
+    {
+      "path": "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+      "before": "05831b834e6f2f7fe8eb3e11906ea811083c155f",
+      "after": "3a7f28c597379844eac47fe7f321792b54ffbd93"
+    },
+    {
+      "path": "packages/dacs-client/test/native-payment-lane-read.test.mjs",
+      "before": "130d83959cae47630594fa9dbcf0195a3bd3f29d",
+      "after": "300de45a8a9407070963c7872142cb04699332ea"
+    },
+    {
+      "path": "packages/dacs-client/test/package-contents.test.mjs",
+      "before": "8824b36b990a9d5000aa8e493d649bb2ae2fa9d5",
+      "after": "6113dfb585e09aca6836e83ede25ee1bb703d7a2"
+    },
+    {
+      "path": "packages/dacs-client/test/passive-stage-verifier.test.mjs",
+      "before": null,
+      "after": "1c54e490d06c481e65a07b7cafbfb57256cb4a27"
+    },
+    {
+      "path": "packages/dacs-client/test/public-admission.test.mjs",
+      "before": "6385f92d0bb0926f46857d0f1fdf58b299f99c43",
+      "after": "040acc0ddcd498e60489b688892971fc56073a4c"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "167fe6bca7723887ea528f90044f0c3f211a338b",
+      "after": "d36646b3a45d2c8bc6f86919b0af9da1ce765438"
+    },
+    {
+      "path": "packages/dacs-client/test/stop-seam.test.mjs",
+      "before": "8c41bf88eafafa9fa17eb5d5171982f903cdd062",
+      "after": "c6c00955f5a13eacd5f9bd70c9a4d1379c3306e3"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/HOLD.json",
+    "packages/dacs-client/README.md",
+    "packages/dacs-client/package.json",
+    "packages/dacs-client/records/WF-66a39c83001f.json",
+    "packages/dacs-client/scripts/check-hold.mjs",
+    "packages/dacs-client/src/host/local-account.mjs",
+    "packages/dacs-client/src/index.mjs",
+    "packages/dacs-client/src/passive-evidence-recorder.mjs",
+    "packages/dacs-client/src/purchases.mjs",
+    "packages/dacs-client/src/util/deep-freeze.mjs",
+    "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+    "packages/dacs-client/src/wallet/durable-journal.mjs",
+    "packages/dacs-client/src/wallet/effect-history-public.mjs",
+    "packages/dacs-client/src/wallet/effect-history.mjs",
+    "packages/dacs-client/src/wallet/journal-identity.mjs",
+    "packages/dacs-client/src/wallet/native-dispatch-history.mjs",
+    "packages/dacs-client/test/checked-operation-history.test.mjs",
+    "packages/dacs-client/test/d11-purchase-actions.test.mjs",
+    "packages/dacs-client/test/helpers/entry-point-closure.mjs",
+    "packages/dacs-client/test/helpers/passive-native-world.mjs",
+    "packages/dacs-client/test/helpers/public-composition-world.mjs",
+    "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+    "packages/dacs-client/test/native-payment-lane-read.test.mjs",
+    "packages/dacs-client/test/package-contents.test.mjs",
+    "packages/dacs-client/test/passive-stage-verifier.test.mjs",
+    "packages/dacs-client/test/public-admission.test.mjs",
+    "packages/dacs-client/test/public-api.test.mjs",
+    "packages/dacs-client/test/stop-seam.test.mjs",
+    "scripts/release-policy.json"
+  ]
+}

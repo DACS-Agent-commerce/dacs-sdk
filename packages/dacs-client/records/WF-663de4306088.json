@@ -1,0 +1,18 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF count the history entry among the client exports in the keystore session test",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/keystore-wallet-session.test.mjs",
+      "before": "3a7f28c597379844eac47fe7f321792b54ffbd93",
+      "after": "5059c3b87c87881bbe800d8123dc03119e302791"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-663de4306088.json",
+    "packages/dacs-client/test/keystore-wallet-session.test.mjs"
+  ],
+  "note": "The client manifest now lists eight entries: the base's node wallet entry and this part's wallet history entry."
+}

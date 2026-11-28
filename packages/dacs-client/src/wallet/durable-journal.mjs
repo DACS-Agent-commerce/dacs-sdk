@@ -25,6 +25,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import { classifyHolder, formatHolderInstance, HolderLeaseError, OS_IDENTITY, PROCESS_LEASE_ID, takeLease } from './holder-incarnation.mjs';
+import { registerDurableJournal } from './journal-identity.mjs';
 
 export const DURABLE_WALLET_JOURNAL_FORMAT = 'dacs-durable-wallet-journal';
 export const DURABLE_WALLET_JOURNAL_VERSION = 1;
@@ -343,5 +344,7 @@ export function openDurableWalletJournal({ path, mode, expectedJournalId, lockTi
     db.close();
   }
 
-  return { journalId, instance, path, get, put, entries, withWalletLock, appendUnderLock, withOwnedOrAcquiredLane, inspectLocks, releaseAbandonedLock, close };
+  const journal = { journalId, instance, path, get, put, entries, withWalletLock, appendUnderLock, withOwnedOrAcquiredLane, inspectLocks, releaseAbandonedLock, close };
+  registerDurableJournal(journal, { maxKeyBytes });
+  return journal;
 }

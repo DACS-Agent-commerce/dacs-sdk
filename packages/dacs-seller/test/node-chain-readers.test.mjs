@@ -4,8 +4,9 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { api, finalization, jsonResponse, ok, T0 } from './helpers/seller-node-wallet-world.mjs';
-import { canonicalize, compositeVerificationAddress, contentHash, encodeAddressSegment, sha256Hex, signComponentArtifact } from '@kynesyslabs/dacs';
+import { join } from 'node:path';
+import { api, finalization, jsonResponse, ok, privateDataDirectory, T0 } from './helpers/seller-node-wallet-world.mjs';
+import { canonicalize, compositeVerificationAddress, contentHash, encodeAddressSegment, sha256Hex } from '@kynesyslabs/dacs';
 import { TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 
 const { walletSessionWorld, LISTING_PIN } = await import('./helpers/seller-wallet-session-world.mjs');
@@ -19,8 +20,11 @@ const { createDemosSr2Adapter } = await import('../src/dacs/demos-sr2-adapter.mj
 const { agreementTerms } = await import('../src/dacs/purchase-protocol.mjs');
 const { isBoundedCallTimeout } = await import('../src/dacs/bounded-call.mjs');
 const { createSellerWalletSession } = await import('../src/devnet-demo/seller-wallet-session.mjs');
-const { REPLY_LIMIT_CODE, SELLER_PROFILE, listingRevocationProblem, sessionAdmissionConfig, sessionAdmissionProblem } = await import('../src/dacs/session-admission.mjs');
+const { REPLY_LIMIT_CODE, SELLER_PROFILE, sessionAdmissionConfig, sessionAdmissionProblem } = await import('../src/dacs/session-admission.mjs');
+const { markerWorld } = await import('./helpers/revocation-marker-world.mjs');
 const { sellerRecordsPurchaseResolver } = await import('../src/devnet-demo/seller-purchase-source.mjs');
+const { composeSellerApproval, createExactOperatorApproval } = await import('../src/devnet-demo/operator-approval.mjs');
+const { artifactAuthority, confirmationFor, deliveredHashFor, requestFor, sourceBinding } = await import('./helpers/d5-policy-fixtures.mjs');
 const { commitmentReceiptTime } = await import('../../../dist/wire/commitment.js');
 
 const CHAIN = TP1_APPROVED_IDENTITY_RECORD.chainIdentity;
@@ -34,11 +38,12 @@ const fx = await protocolFixture();
 const TERMS = agreementTerms(fx.agreement), AGREEMENT_HASH = contentHash(fx.agreement);
 const TX = 'ab'.repeat(32), BLOCK = 77, COMMITTED_AT = NOW - 60_000;
 const unpaidSession = (patch = {}) => ({ jobId: fx.agreement.jobId, agreement: fx.agreement, agreementHash: AGREEMENT_HASH, buyerBundle: fx.buyerBundle,
-  commitment: { committedAt: COMMITTED_AT }, ...patch });
+  commitment: { committedAt: COMMITTED_AT }, settlementBound: false, ...patch });
 const paidSession = (patch = {}, settlementIdentity = { txHash: TX, blockNumber: BLOCK }) => unpaidSession({ nativeEvidenceWork: { txHash: TX, intake: { settlementIdentity } }, ...patch });
 const transfer = (patch = {}) => ({ status: 'included', execution: 'executed', txHash: TX, payer: buyer.address, payee: TERMS.payee, amountOs: TERMS.price.amountOs,
   blockNumber: BLOCK, includedAt: NOW, ...patch });
 const paymentQuery = (observedAt = NOW - 5) => ({ jobId: fx.agreement.jobId, agreementHash: AGREEMENT_HASH, agreement: fx.agreement, observedAt, fresh: true });
+const demString = (os) => `${os / 1_000_000_000n}${os % 1_000_000_000n ? `.${(os % 1_000_000_000n).toString().padStart(9, '0').replace(/0+$/, '')}` : ''}`;
 const LIMITS = Object.freeze({ timeoutMs: 10_000, maxBytes: 1024 });
 const admitQuery = (patch = {}) => ({ jobId: JOB, buyer: buyer.claim, buyerBundleHash: 'd'.repeat(64), sessionNonce: 'TEST-nonce', seller: seller.claim,
   listingPin: LISTING_PIN, profile: structuredClone(SELLER_PROFILE), ...patch });
@@ -89,27 +94,6 @@ const transferNode = (transferFacts) => (row) => {
 };
 const NODE_TRANSFER = { txHash: TX, payer: buyer.address, payee: TERMS.payee, amountOs: TERMS.price.amountOs, blockNumber: BLOCK, includedAt: NOW / 1000 };
 
-// A seller wallet world whose source serves the seller's signed revocation marker for the fixture Listing at its marker address,
-// changed by `change(fixture)`; with `storageMiss` the node answers every native storage read 404.
-async function markerWorld(t, { change = () => {}, storageMiss = false } = {}) {
-  const world = await sellerWalletWorld(t), source = world.wallet.sourceCapability;
-  const listingPin = { listingId: fx.listing.listingId, version: fx.listing.listingVersion, contentHash: contentHash(fx.listing) };
-  const marker = await signComponentArtifact({ listingId: listingPin.listingId, listingVersion: listingPin.version, listingContentHash: listingPin.contentHash, revokedAt: NOW - 1,
-    reason: 'TEST withdrawn' }, 'dacs-revocation:v1:', { algorithm: 'ed25519', signer: seller.claim, sign: seller.signBytes });
-  const logicalAddress = `dacs1-revoked:${encodeAddressSegment(seller.claim)}:${listingPin.listingId}:v${listingPin.version}`;
-  const f = readbackFixture({ logicalAddress, artifact: marker, artifactKind: 'RevocationMarker' });
-  resign(f, (content) => { content.network = source.pins.network; content.chainIdentity = source.pins.chainIdentity; content.data[1].metadata.networkBinding = structuredClone(source.transportBinding); });
-  change(f);
-  world.fixture = f; world.listingPin = listingPin; world.marker = marker; world.logicalAddress = logicalAddress;
-  const served = registeredSource(world, { fixture: f });
-  const readRpc = !storageMiss ? served.readRpc
-    : async (path, body, options) => { if (path.startsWith('/storage-program/')) throw Object.assign(new Error('TEST storage program not found'), { status: 404 }); return served.readRpc(path, body, options); };
-  world.readers = ({ pins, binding = world.admission.binding } = {}) => createNodeChainReaders({ claim: () => seller.claim, chain: () => Object.freeze({ anchor: null,
-    transport: registeredSource(world, { readRpc, ...(pins ? { pins: Object.freeze({ ...source.pins, ...pins }) } : {}) }), binding, observeIdentity: productionObserveIdentity(world),
-    clock: { now: () => NOW } }) });
-  world.coreCheck = (readers) => listingRevocationProblem(readers.sessionAdmission, { listing: fx.listing, listingPin, jobId: JOB, now: () => NOW });
-  return world;
-}
 const UNAVAILABLE = (readFailureReason) => [{ kind: 'catalog', status: 'active', readStatus: 'unavailable', readFailureReason }];
 
 test('the three chain readers reject wallet_session_not_finalized before finalize and wallet_session_closed after close with no read made, and a reader built without a chain thunk rejects reader_input_missing', async (t) => {
@@ -167,20 +151,33 @@ test('a chain read waits behind a held connection fence inside its deadline and 
 });
 
 test('an after-payment write approved by the policy calls the port\'s real observePayment from stillAuthorizedToSign and the confirmation approval while its own signature lease holds the connection fence; an executed matching transfer answers verified before the deadline and no second fence is acquired', async (t) => {
-  const sessionOf = () => paidSession();
+  const SOURCE = { ...sourceBinding }, listingPin = { listingId: fx.agreement.listingRef.listingId, version: fx.agreement.listingRef.version, contentHash: fx.agreement.listingRef.contentHash };
+  const sessionOf = () => paidSession({ agreementSignedProjection: { content: { network: SOURCE.network, chainIdentity: SOURCE.chainIdentity, data: ['storageProgram', { metadata: { networkBinding: SOURCE } }] } } });
   const world = await finalizedPort(t, { participantImplementations: enrollment(), sessionOf });
   world.node.reply = transferNode(NODE_TRANSFER);
-  const resolve = sellerRecordsPurchaseResolver({ sessionOf, buyerAccess: () => ({ allowsWallet: () => true }), now: () => T0, observePayment: world.port.observePayment });
+  const resolvePurchase = sellerRecordsPurchaseResolver({ sessionOf, buyerAccess: () => ({ allowsWallet: () => true }), now: () => T0, observePayment: world.port.observePayment });
+  const policy = { address: seller.address, seller: seller.claim, sourceBinding: SOURCE, artifactAuthority, listingPin: () => listingPin, resolvePurchase, paymentPhaseIndex: () => 2, deliveryPhaseIndex: () => 3, deliveredPayloadHash: deliveredHashFor };
+  const approval = createExactOperatorApproval({ maxTotalOs: '50000000000', evidencePath: join(privateDataDirectory(t), 'approvals.jsonl'), now: () => T0,
+    sellerApproval: { mode: 'policy', maxWriteTotalOs: '4000000000' }, policy });
+  t.after(() => approval.stop());
+  const retained = composeSellerApproval({ mode: 'policy', policy: approval, manual: () => assert.fail('the operator was asked') }).retained;
+  const payment = requestFor({ artifactKind: 'SettlementEvidence', phase: 'pay-dem', job: fx.agreement.jobId, walletAddress: seller.address, writer: seller.claim, sourceBinding: SOURCE,
+    artifact: { signature: { algorithm: 'ed25519', signer: seller.claim, value: 'A'.repeat(86) }, paymentTxRefs: [{ kind: 'demos', txHash: TX, blockNumber: BLOCK }], paymentAmount: { amount: demString(BigInt(TERMS.price.amountOs)), currency: 'DEM' } } });
+  // A read that waits for the pass's own fence would wait for its 10 s deadline; the pass must finish well inside it.
+  const withinPass = (work) => Promise.race([work, new Promise((_, fail) => setTimeout(() => fail(new Error('a second connection fence is waited for')), 3000).unref())]);
   const lease = await world.session.acquireConnectionFence();
   try {
     const handle = world.session.effectPass({ fence: lease, deadline: T0 + 5_000, refreshAuthority() {}, finalStop() {}, synchronousChecks: [], feeCeilingOs: finalization.feeCeilingOs,
       context: api.passContext({ operationClass: 'payment-evidence', currentAuthorization: () => true }) });
-    for (const caller of ['stillAuthorizedToSign', 'confirmation approval']) {
-      const projection = await world.session.runInEffectPass(handle, () => resolve(fx.agreement.jobId));
-      assert.deepEqual({ paymentObserved: projection.paymentObserved, paymentTxRef: projection.paymentTxRef }, { paymentObserved: true, paymentTxRef: { kind: 'demos', txHash: TX, blockNumber: BLOCK } }, caller);
-    }
+    // The signing check (stillAuthorizedToSign at the end of the sign gate), then the confirmation approval's own stillAuthorizedToSign.
+    const prepared = await withinPass(world.session.runInEffectPass(handle, () => retained.prepare(payment)));
+    assert.equal(typeof prepared.ledgerId, 'string', 'the policy authorized the signature: a verified matching transfer left no refusal');
+    const observed = () => world.node.reads.filter((read) => read === 'getTxByHash').length, afterSigning = observed();
+    assert.ok(afterSigning >= 2, 'the approval decision and the signing check each observed the transfer');
+    const binding = { ledgerId: prepared.ledgerId, requestText: prepared.requestText, ...(prepared.token ? { token: prepared.token } : {}) };
+    assert.equal(await withinPass(world.session.runInEffectPass(handle, () => retained.confirm(binding, confirmationFor(payment, { executed: true })))), true, 'the confirmation approval was accepted');
+    assert.ok(observed() > afterSigning, 'the confirmation approval observed the transfer again');
   } finally { lease.release(); }
-  assert.equal(world.node.reads.filter((read) => read === 'getTxByHash').length >= 2, true, 'the transfer is observed on each call');
 });
 
 test('a second call reads again: nothing is cached across calls, and a restarted port reads from its own new session', async () => {
@@ -529,6 +526,28 @@ test('with no payment or settlement reference visible in the durable session, an
     assert.equal((await refusalOf(readers.observePayment(paymentQuery(), LIMITS))).code, 'payment_unverified', String(identity));
   }
   assert.equal((await refusalOf(world.readers({ sessionOf: undefined }).observePayment(paymentQuery(), LIMITS))).code, 'reader_input_missing');
+});
+
+test('a session without a payment reference whose settlementBound is true, missing, null or a string rejects payment_unverified and reads neither the chain identity nor the transfer', async () => {
+  const world = scriptedChain(), readers = world.readers();
+  const missing = unpaidSession();
+  delete missing.settlementBound;
+  for (const session of [unpaidSession({ settlementBound: true }), missing, unpaidSession({ settlementBound: null }), unpaidSession({ settlementBound: 'false' })]) {
+    world.session = session;
+    const refused = await refusalOf(readers.observePayment(paymentQuery(), LIMITS));
+    assert.deepEqual([refused.code, refused.message], ['payment_unverified', 'a settlement is bound to the job without its payment reference']);
+  }
+  assert.deepEqual([world.count('observeIdentity'), world.count('observeTransfer')], [0, 0]);
+});
+
+test('a session with a retained payment reference answers verified whether settlementBound is true or missing', async () => {
+  const world = scriptedChain(), readers = world.readers();
+  const missing = paidSession();
+  delete missing.settlementBound;
+  for (const session of [paidSession({ settlementBound: true }), missing]) {
+    world.session = session;
+    assert.equal((await readers.observePayment(paymentQuery(), LIMITS)).disposition, 'verified');
+  }
 });
 
 test('a session with payment, paymentWork, settlementCredit indeterminate or another visible settlement reference but no nativeEvidenceWork rejects payment_unverified rather than answering absent; a throwing sessionOf keeps its seller_state_unverified cause', async () => {

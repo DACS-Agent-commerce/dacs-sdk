@@ -192,7 +192,8 @@ const host = await startSellerHost({
                          // must be walletSession.artifactAnchor, or the host refuses with a TypeError
   participantImplementations, // { entriesFor(claim) -> [{ claim, profile, modules, evidence, revoked }] }: the
                          // independently approved enrollment of each buyer, read on every request; a buyer
-                         // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch
+                         // without exactly one current, unrevoked entry is refused tp1_participant_profile_mismatch;
+                         // openVerifiedEnrollmentReader(...) is the node-signed source (below)
   reconcilePaymentEvidence: journal.reconcilePaymentEvidence, // the same journal's own answer for an evidence
                          // anchor ('unsigned' | 'rebroadcast' | 'pending'); the agent checks the pair when it is built
   resumeDeliverableCreate: deliveryJournal.resume, // optional (below); nativeDemDelivery is then
@@ -311,7 +312,8 @@ parts the host composes, for operators who compose their own:
 `createSellerContextRoute`,
 `createWireSellerContextRoute` (the context step on the wire),
 `createSellerAuthorityReader` (the host's TP-1 authority reader),
-`createSellerWalletSession` (the host's production `walletSession` port) and the buyer
+`createSellerWalletSession` (the host's production `walletSession` port),
+`openVerifiedEnrollmentReader` (a node-signed enrollment source) and the buyer
 side `createSellerAgentClient`. The host
 answers every route through the wire, under the wire domain with a TP-1
 profile in each request, and refuses a request signed under the transport's
@@ -336,7 +338,7 @@ The package root exports `startSellerHost`, `createOperatorBuyerAccess`,
 `createDeliverableWalletJournal`,
 `createSellerHttpHandler`, `createSellerAgentClient`,
 `createSellerContextRoute`, `createWireSellerContextRoute`,
-`createSellerTransportStore`, `createSellerAuthorityReader` and `createSellerWalletSession`. The kit's other modules are reachable by
+`createSellerTransportStore`, `createSellerAuthorityReader`, `createSellerWalletSession` and `openVerifiedEnrollmentReader`. The kit's other modules are reachable by
 path (`@kynesyslabs/dacs-seller/src/...`); they are not a stable API.
 
 `deliverableProducer` is called repeatedly during preparation, verification and
@@ -814,6 +816,7 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   OS strings after it), must not be above 50 DEM, and a fee that cannot be
   summed exactly is refused. Below the ceiling the fee is not compared with any
   expected amount.
+
   Anything else is refused (`wallet_sign_invalid`), and nothing is kept or
   sent. A kept CREATE whose whole debit is above the ceiling is never
   broadcast again, and until the operator clears it (below)
@@ -905,6 +908,12 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   10 s by default) or answers anything else never supersedes it. Timeouts and malformed
   replies stay held. A complete name/native-address miss can ask only the
   retained owning journal; the miss alone never authorizes a send.
+
+  SR-2 readback and the core Demos write-evidence checks support only the
+  program name returned by `logicalToStorageProgramName(logicalAddress)`.
+  For a correctly signed CREATE using another native program name:
+  A read supplied with an exact native address, a signed projection, or an address the journal retained is refused (`invalid`) with `only SDK-derived program names are supported`. A read with none of these returns `indeterminate` with `name-index visibility does not establish authenticated absence`. `createNativePaymentEvidenceConsumer().readEvidence` answers `disposition: 'indeterminate'` in both cases; its `reason` carries the naming message when a signed projection is given.
+
 - It never uses the simulated fixture substrate. Native Agreement readback and
   native artifact publication are required together, and the agent refuses a
   fixture fallback (`fixture_substrate_disabled`). `createSellerAgent` takes
@@ -1258,7 +1267,7 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `wire` context (`createWireContext`, from
   `@kynesyslabs/dacs-seller/src/dacs/seller-wire-requests.mjs`) carries the host's
   `stopped` predicate. Every handler needs it, with or without a context route:
-  without it the wire context and the handler refuse construction. No Agreement exists yet and the wire journal is never
+  without it the handler refuses construction. No Agreement exists yet and the wire journal is never
   written. The seller refuses in this order: the body (64 KiB, one JSON value, no duplicate
   members or lossy numbers: `body_too_large`, `bad_json`; unsigned, like the envelope's
   refusals); the envelope (the wire's refusals); the signed path (`peer_request_mismatch`) and
@@ -1311,12 +1320,13 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   TypeError before the connection opens) it passes unchanged to
   `createSellerNodeWallet`, a wall `clock` (`Date.now` by default) and the
   anchor's `buyerAccess` (`null` by default, which refuses every job's write
-  and read with `buyer_access_closed`), and two optional inputs of its chain readers:
-  `participantImplementations` (`{ entriesFor }`, the host's enrollment source) and
-  `sessionOf(jobId)` (the seller's durable session view); any other option, or one of
-  these two of another type, is a TypeError. The
+  and read with `buyer_access_closed`), and three optional inputs of its chain readers:
+  `participantImplementations` (`{ entriesFor }`, the host's enrollment source),
+  `sessionOf(jobId)` (the seller's durable session view; `observePayment` answers `absent` only for a view with `settlementBound: false`, which the seller's own `durableSessionOf` carries) and `trustedFinality` (a plain
+  object, the operator's pinned finality checkpoint); any other option, or one of
+  these three of another type, is a TypeError. The
   `endpoint` is an https root (plain http refuses `transport_mismatch`). Its readers come from
-  `createNodeAuthorityReader({ owner, claim, chain, participantImplementations, sessionOf })`:
+  `createNodeAuthorityReader({ owner, claim, chain, participantImplementations, sessionOf, trustedFinality })`:
   the read-only connection pair and three chain readers the host passes on, `sessionAdmission`,
   `readCommitmentReceipt` and `observePayment`. They read through the finalized session on every
   call and keep nothing: before finalization they refuse `wallet_session_not_finalized`, after a
@@ -1324,7 +1334,11 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `sessionAdmission` reads seller-owned Vet records and receipts back through the bound artifact
   anchor, and reads the Listing's revocation marker through a read-only SR-2 adapter; a marker
   read that cannot be authenticated, or a missing marker, is unavailable, so admission refuses
-  `session_admission_unavailable`. `observePayment` answers `verified` only for the retained
+  `session_admission_unavailable`. With `trustedFinality`, an authenticated marker's storage
+  address is also asked for its storage proof and the node for its finalized head, each reply at
+  most 64 KiB and both within 1.5 seconds. The reader does not verify the replies, and they change
+  nothing: a revoked marker still refuses and a missing one stays unavailable. Without `trustedFinality`
+  neither read is sent. `observePayment` answers `verified` only for the retained
   payment transfer observed again on this call, `absent` only when the session records no payment
   and the connection reads as the bound chain, and otherwise refuses `payment_unverified`.
   A buyer with more than one enrollment entry for this seller and Listing, for example a revoked
@@ -1375,6 +1389,23 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   The provider's `resolveBuyer`, `recoverBuyer` and `resolveSeller` and each
   method of the kit client `createSellerAgentClient` check the kit operation
   guard at each call.
+- `openVerifiedEnrollmentReader` (`src/devnet-demo/seller-enrollment-reader.mjs`,
+  a root export) is a `participantImplementations` source that the operator's node
+  signs. It takes the node connection (`endpoint`, `transportAuthority`,
+  `fetchImpl`), the seller `claim`, the Listing's full `listingPin`, the required
+  `trustedNode` pin `{chainIdentity, publicKey}` (the node's 32-byte Ed25519 key in
+  43 base64url characters, no default) and an optional `clock`. Each
+  `entriesFor(participantClaim, {sessionId, signal})` call sends the node method
+  `getParticipantEnrollmentProof` with a fresh nonce. It checks the chain identity
+  before and after, reads the signed block, and returns every entry the pinned key
+  signed for that request, revoked ones included. A signed complete empty set
+  returns `[]`. Calls run one at a time, each inside its own 10 s deadline, and the reply is
+  limited to 1 MiB, 16 entries, 1,024 members per list and 32 levels. Refusals are
+  `OperationError`s with the original error as `cause`:
+  `enrollment_unverified`, `enrollment_invalid`, `enrollment_timeout`,
+  `enrollment_too_large`, `enrollment_connection_changed` (also after `close()`)
+  and `enrollment_unavailable`. No reviewed node build serves the node method, so
+  a live read refuses `enrollment_unavailable`.
 - Each job read calls the seller reader's `readParticipantEvidence({ claim, sessionId, signal })`, which reads
   `participantImplementations.entriesFor(claim, { sessionId, signal })` for a buyer the job relates to this seller
   and Listing, before the connection; the stages abort `signal` when the read ends or times out.

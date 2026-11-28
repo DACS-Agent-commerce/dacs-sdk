@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF the node-wallet export test lists the keyless exports and the base subpaths of the client manifest",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "db39024079176cf61b324506a8fac247c1d78546",
+      "after": "0812d248c80eabdd6b61cf4a839d64d0b3df8634"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-5426aeb7b1f9.json",
+    "packages/dacs-client/test/public-api.test.mjs"
+  ]
+}

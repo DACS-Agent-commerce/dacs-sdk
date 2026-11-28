@@ -148,6 +148,19 @@ Both records require verified, established `finalized` receipts on every answer.
 Checkpoints reuse retained signatures; unknown signing outcomes stay held.
 The seller writes and signs both Vet records as orchestrator (known testnet gap G3); the buyer-written Vet arrives in N1.
 
+A buyer's enrollment can come from `openVerifiedEnrollmentReader`, which
+accepts only answers signed by the node key the operator pins. Its result is
+every signed entry for the buyer, revoked ones included, or `[]` for a signed
+complete empty set. Each call reads the node again with a fresh nonce; nothing
+is cached. A failed read never becomes an empty list. It rejects with an
+`enrollment_*` refusal: a bad signature, another signer, nonce, claim, Listing
+pin, chain or block, a malformed or oversized answer, a timeout, a changed
+connection, a closed reader or an unavailable node. When the session admission
+reads it on a first presentation, that rejection becomes
+`session_admission_unavailable` (503) with the enrollment refusal as its cause.
+No presentation is accepted, and no purchase step signs or sends anything.
+enrollment-host.test.mjs covers this path.
+
 Buyer-side seller requirements are not a capability of this route: an extra
 request scope field is refused. The seller is evaluated against that empty
 requirement, independently of the Listing's buyer requirement, during initial
@@ -247,7 +260,11 @@ The port's chain readers refuse `wallet_session_not_finalized` before finalizati
 without the option they read (`participantImplementations` for `admit`, `sessionOf` for `observePayment`). A failed admission read refuses
 `session_admission_unavailable`. The Listing's revocation marker is read from the chain, and no read can prove that a marker is absent: a missing
 or unauthenticated marker is unavailable and refuses `session_admission_unavailable`, so an unrevoked Listing is not admitted until revocation
-absence can be proven. `observePayment` refuses `payment_unverified` whenever it cannot prove the payment verified or absent.
+absence can be proven. A name-index search or a 404 is never taken as absence. With the operator's pinned finality checkpoint
+(`trustedFinality`), the reader also asks the node for the storage proof of an authenticated marker's address and for its finalized head,
+through the bound connection, each reply at most 64 KiB and both within 1.5 seconds; it verifies neither, so no proof reply can admit a Listing. Without
+the pin, or on a node without the proof method, neither read admits anything either: a missing marker refuses 503, and a revoked marker
+that reads back and verifies refuses 409. `observePayment` refuses `payment_unverified` whenever it cannot prove the payment verified or absent.
 
 Run the seller checks from the repository root after building the core:
 
