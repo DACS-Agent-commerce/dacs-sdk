@@ -355,11 +355,16 @@ const INSTALL_LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall"];
 const MODULE_FILE_EXTENSIONS = [".js", ".json", ".node"];
 const MAX_LISTED_DIFFERENCES = 20;
 
+function parseJsonFile(text, path) {
+  try { return JSON.parse(text); }
+  catch (error) { throw new Error(`cannot parse ${path}: ${error.message}`, { cause: error }); }
+}
+
 // The release candidates in `releaseSet`, as `{ name, integrity, version,
 // files }`: each packed tarball must be the one release-provenance.json
 // records for `version` before either is compared with the consumer's lock.
 function releaseCandidates(releaseSet, version) {
-  const provenance = JSON.parse(readFileSync(join(releaseSet, "release-provenance.json"), "utf8"));
+  const provenance = parseJsonFile(readFileSync(join(releaseSet, "release-provenance.json"), "utf8"), join(releaseSet, "release-provenance.json"));
   if (provenance?.version !== version) throw new Error(`release-provenance.json is not for version ${version}`);
   const candidates = CANDIDATE_NAMES.map(name => {
     const bytes = readFileSync(join(releaseSet, `${name.slice(1).replace("/", "-")}-${version}.tgz`));
@@ -878,8 +883,8 @@ function writeDependencyPolicyReport({ projectPath, registry, report, releaseSet
   const npmText = bytes => bytes.toString("utf8").replace(/^\uFEFF/, "");
   const manifestBytes = readFileSync(join(project, "package.json"));
   const manifestText = npmText(manifestBytes);
-  const manifest = JSON.parse(manifestText);
-  const lock = JSON.parse(npmText(readFileSync(join(project, "package-lock.json"))));
+  const manifest = parseJsonFile(manifestText, join(project, "package.json"));
+  const lock = parseJsonFile(npmText(readFileSync(join(project, "package-lock.json"))), join(project, "package-lock.json"));
   const missing = DUAL_RAIL_DEPENDENCIES.filter(name => typeof manifest.dependencies?.[name] !== "string");
   if (missing.length) throw new Error("dual-rail consumer is missing " + missing.join(", "));
   const candidates = releaseCandidates(releaseSet, version);
