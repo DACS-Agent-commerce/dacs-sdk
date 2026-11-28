@@ -7,6 +7,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { ARTIFACT_JOURNAL, COMPOSITION_JOURNAL, ENDPOINT, FIXTURE_MNEMONIC, T0, keyRecordBytes, privateDataDirectory, replayNode, sellerApproval,
   sellerPublications, setPurchaseAdmission } from './seller-node-wallet-world.mjs';
+import { shippedEvidenceReader } from './shipped-build-evidence.mjs';
 
 const { createSellerWalletSession } = await import('../../src/devnet-demo/seller-wallet-session.mjs');
 const { openSellerStages } = await import('../../src/dacs/host-stages.mjs');
@@ -35,12 +36,13 @@ export async function mnemonicSigner(mnemonic = FIXTURE_MNEMONIC) {
 export const allZero = (value) => (value instanceof ArrayBuffer ? new Uint8Array(value) : new Uint8Array(value.buffer, value.byteOffset, value.byteLength)).every((byte) => byte === 0);
 
 /**
- * The port's options over `node` with the fixture key: `loadKeyRecord` is the given one. `overrides` replace any option; a key set to
- * `undefined` is left out.
+ * The port's options over `node` with the fixture key: `loadKeyRecord` is the given one, and the deployment evidence is the reviewed
+ * build's for the port's endpoint, observed now on the options' clock. `overrides` replace any option; a key set to `undefined` is left out.
  */
 export async function portOptions(node, loadKeyRecord, overrides = {}) {
+  const clock = overrides.clock ?? { now: () => T0 };
   const options = { endpoint: ENDPOINT, transportAuthority: NODE_AUTHORITY, fetchImpl: node.fetch, signer: await mnemonicSigner(), loadKeyRecord, approve: sellerApproval(),
-    approvalMode: 'policy', journalMode: 'create', publications: sellerPublications(), clock: { now: () => T0 }, ...overrides };
+    approvalMode: 'policy', journalMode: 'create', publications: sellerPublications(), clock, readDeploymentEvidence: shippedEvidenceReader({ endpoint: ENDPOINT, clock }), ...overrides };
   for (const [name, value] of Object.entries(options)) if (value === undefined) delete options[name];
   return options;
 }

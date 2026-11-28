@@ -955,8 +955,12 @@ function proofHandle(context, proofUrl) {
 // `paidApprovalCheck(request)`, when given, is asked first at each write approval: true means the host approved this exact write before it was
 // entered, undefined sends the request to `approve` as usual, and a throw refuses it. With it, a native send or CREATE approval request also
 // carries its `nonceSource` and `observedNonce`, as the paid-write preview shows them.
-export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, paidApprovalCheck, transactionTransport, validateMnemonic, anchorJournal, relayOrigin, nodeEndpoint, bindingRelay, stamp = () => Date.now(), recordCause } = {}) {
+// `stopped()`, when given, is the host's synchronous stop check. It is read right before each confirm, before a storage CREATE's
+// `broadcast-started` marker and before each broadcast: true refuses `writes_stopped`, a throw `stop_check_failed` and any
+// non-boolean `stop_check_invalid`, so nothing more is sent. A non-function is a TypeError (`stop_seam_invalid`).
+export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, paidApprovalCheck, transactionTransport, validateMnemonic, anchorJournal, relayOrigin, nodeEndpoint, bindingRelay, stamp = () => Date.now(), recordCause, stopped } = {}) {
   if (typeof DemosCtor !== 'function') throw new TypeError('createSdkWalletSession requires the Demos SDK class as DemosCtor');
+  if (stopped !== undefined && typeof stopped !== 'function') throw new TypeError('stop_seam_invalid');
   const transport = readTransport(transactionTransport, relayOrigin, nodeEndpoint);
   // Explicit caller-owned atomic journal. RAM implementations are offline
   // evidence only; production persistence/recovery is a separate integration.
@@ -1103,11 +1107,22 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, pai
     if (answer !== true) throw new EmbeddedWalletError('user_rejected', 'the request was not approved; nothing was signed');
   }
 
+  // The host's stop check, read synchronously outside any SDK error folding, so a stop stays its own refusal.
+  function assertProviderStopOpen() {
+    if (stopped === undefined) return;
+    let answer;
+    try { answer = stopped(); } catch (error) { throw new EmbeddedWalletError('stop_check_failed', 'the host\'s stop check failed; nothing more was sent', { cause: error }); }
+    if (typeof answer?.then === 'function') Promise.resolve(answer).then(undefined, () => {});
+    if (typeof answer !== 'boolean') throw new EmbeddedWalletError('stop_check_invalid', 'the host\'s stop check gave no valid answer; nothing more was sent');
+    if (answer) throw new EmbeddedWalletError('writes_stopped', 'the host has stopped writes; nothing more was sent');
+  }
+
   // SDK confirm (node validation; nothing is executed). A thrown "[Confirm]"
   // error or a validated valid:false answer is the node's refusal; anything
   // else (a failure, or an answer this session cannot use) is indeterminate.
   async function confirmed(run, started) {
     let validity;
+    assertProviderStopOpen();
     try {
       validity = await run();
     } catch (error) {
@@ -1130,6 +1145,7 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, pai
     const hash = validity.response.data.transaction.hash.toLowerCase().replace(/^0x/, '');
     let res;
     let cause;
+    assertProviderStopOpen();
     try {
       res = await demos.broadcast(validity);
       cause = failureOf(res);
@@ -1285,6 +1301,8 @@ export function createSdkWalletSession({ DemosCtor, IdentitiesCtor, approve, pai
       }
       if(transport.devnetAgreement){if(JSON.stringify(data.transaction)!==JSON.stringify(signed))throw unmatchedConfirmation('the confirmed CREATE bytes differ from the original signed bytes');await sourcePhase({phase:'broadcast',leaseId:lease.leaseId,hash:signed.hash});}
       stillCurrent(started);
+      // A stop seen during confirmation refuses here, before the issued marker, so the nonce lane stays usable.
+      assertProviderStopOpen();
       // A failed/ambiguous persistence operation prevents sending. Preserve
       // the issued lane even when the broadcast answer is lost or refused.
       const issued = { lane, stage: 'broadcast-started', nonce: plan.nonce, hash: signed.hash, signedTransaction: structuredClone(signed), approved: { ...structuredClone(plan), storageFeeOs: plan.storageFeeOs.toString() } };

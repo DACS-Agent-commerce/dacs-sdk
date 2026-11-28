@@ -7,7 +7,8 @@ import { createPrivateKey, sign } from 'node:crypto';
 import { installNoEgress } from '../../dacs-client/test/helpers/no-egress.mjs';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { api, evidenceInput, finalization, FIXTURE_MNEMONIC, inWalletPass, jsonResponse, ok, outcomes, preparedWrite, privateDataDirectory, replayNode, replyTo,
+import { shippedBuildEvidence } from './helpers/shipped-build-evidence.mjs';
+import { api, ENDPOINT, evidenceInput, finalization, FIXTURE_MNEMONIC, inWalletPass, jsonResponse, ok, outcomes, preparedWrite, privateDataDirectory, replayNode, replyTo,
   restartedWorld, runWalletChild, settlingApproval, settlingWorld, spyTransactionSignatures, T0, writesOf } from './helpers/seller-node-wallet-world.mjs';
 import { journalOverAdapter } from './helpers/payment-evidence-test-journals.mjs';
 
@@ -43,7 +44,7 @@ async function fixtureSigner() {
  * A seller wallet world whose approval double logs each sendTransaction it is asked, into `events`, with the node reads so far.
  * `answer(request)` (true by default) is the approver's answer once `gate` resolves.
  */
-async function loggedWorld(t, { gate = async () => {}, answer = () => true } = {}) {
+async function loggedWorld(t, { gate = async () => {}, answer = () => true, ...options } = {}) {
   const events = [];
   const logged = async request => {
     if (request.method === SEND) events.push({ step: 'approval', reads: world.node.reads.length });
@@ -52,7 +53,7 @@ async function loggedWorld(t, { gate = async () => {}, answer = () => true } = {
   const base = settlingApproval({ gate: logged });
   const approve = async request => (answer(request) === true ? base(request) : logged(request).then(() => false));
   Object.assign(approve, { accepted: base.accepted, settled: base.settled, confirm: base.confirm, retained: base.retained, settle: base.settle });
-  const world = await settlingWorld(t, { approve });
+  const world = await settlingWorld(t, { approve, ...options });
   world.events = events;
   return world;
 }
@@ -184,7 +185,7 @@ async function listingAnchor(world) {
   const { sourceCapability } = world.wallet, signer = await fixtureSigner();
   const anchor = createDevnetDemoArtifactAnchor({ sourceCapability, binding: world.admission.binding, observeIdentity: productionObserveIdentity(world),
     journal: world.wallet.artifactJournal, walletFactory: world.wallet.walletFactory, network: sourceCapability.pins.network, signer: { claim: signer.claim },
-    runCreate: () => assert.fail('no CREATE reaches runCreate here') });
+    runCreate: () => assert.fail('no CREATE reaches runCreate here'), stopped: () => false, qualify: world.wallet.qualify });
   return { anchor, listing: fixtureListing(signer, { now: T0 }) };
 }
 
@@ -200,9 +201,10 @@ async function assertPublishRefused(world, signatures, publish, code, authorityR
   assert.deepEqual(world.wallet.sourceCapability.journal.inspectLocks(), [], 'no transport journal lock');
 }
 
-test('an artifact anchor over the composed wallet takes a Listing publish with authorizeSigning past its signing-check gate and onto the wallet nonce lane: it refuses deployment_unqualified before the deployment pin, as the same publish without the check does, after exactly one connection-authority read, with no node read, journal entry, signature or lock row left', async t => {
+test('an artifact anchor over the composed wallet takes a Listing publish with authorizeSigning past its signing-check gate and onto the wallet nonce lane: it refuses deployment_unqualified at the node qualification preflight, as the same publish without the check does, after exactly one connection-authority read, with no node read, journal entry, signature or lock row left', async t => {
   const signatures = await spyTransactionSignatures(t.mock);
-  const world = await loggedWorld(t);
+  // The host's deployment evidence names a commit no reviewed build has, so the publish preflight refuses before any node read.
+  const world = await loggedWorld(t, { readDeploymentEvidence: () => ({ ...shippedBuildEvidence({ endpoint: ENDPOINT, observedAt: T0 }), commit: 'c'.repeat(40) }) });
   const { anchor, listing } = await listingAnchor(world);
   const publish = extra => () => anchor.publish({ logicalAddress: LISTING_ADDRESS, artifact: listing, artifactKind: 'Listing', operationClass: 'job-create',
     currentAuthorization: () => true, ...extra });

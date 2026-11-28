@@ -8,10 +8,16 @@ const SPY_QUERY = '?anchor-spy';
 /** The options of every anchor the spied wallet-session module composed, in order. */
 export const anchorOptions = [];
 
-/** The real anchor over `options`, after recording them. */
+/**
+ * `anchorSubstitute.build(options)`, while set, is called with the options a composition passed and returns the anchor the
+ * composition gets in place of the real one; with it null the real anchor is built.
+ */
+export const anchorSubstitute = { build: null };
+
+/** The anchor over `options`, after recording them: the substitute's while one is set, otherwise the real one. */
 export function createDevnetDemoArtifactAnchor(options) {
   anchorOptions.push(options);
-  return createRealAnchor(options);
+  return anchorSubstitute.build ? anchorSubstitute.build(options) : createRealAnchor(options);
 }
 
 let spiedModule = null;

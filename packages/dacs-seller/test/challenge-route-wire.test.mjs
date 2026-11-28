@@ -545,7 +545,9 @@ test('challenge-last-slot-winner-restart', async (t) => {
 
 test('a wire challenge without the host stop predicate refuses construction', async (t) => {
   const w = await challengeWorld(t);
-  assert.throws(() => createSellerHttpHandler(w.agent, { context: w.route, wire: w.makeWire({ stopped: undefined }) }), { name: 'TypeError', message: /stop predicate/ });
+  assert.throws(() => createSellerHttpHandler(w.agent, { context: w.route, wire: w.makeWire({ stopped: undefined }) }), { name: 'TypeError', message: /wire\.stopped/ });
+  // Every handler needs it, with or without the challenge route.
+  assert.throws(() => createSellerHttpHandler(w.agent, { wire: w.makeWire({ stopped: undefined }) }), { name: 'TypeError', message: /wire\.stopped/ });
 });
 
 test('the challenge route is built from a Listing and buyer access alone, and refuses a missing buyer access or a known-job port that is not a function', async (t) => {

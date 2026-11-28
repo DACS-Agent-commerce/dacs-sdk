@@ -14,6 +14,8 @@ const DIAGNOSTIC_CODES = new Set([
   // The refusals of the effect pass a Vet signature runs in, which a failed Vet step keeps.
   'kit_operation_guard_off', 'seller_stopped', 'stop_check_failed', 'stop_check_invalid', 'stop_check_timeout', 'tp1_participant_refused', 'tp1_authority_timeout',
   'tp1_local_binding_changed', 'tp1_fence_timeout', 'context_admission_closed', 'effect_pass_invalid', 'eb_sign_timeout',
+  // A change in what the KILL check observed (kill-switch.mjs).
+  'seller_stop_observed',
 ]);
 const CONTEXT_VALUES = Object.freeze({
   role: ['buyer', 'seller'],
@@ -21,6 +23,8 @@ const CONTEXT_VALUES = Object.freeze({
   operation: ['release', 'deletion'],
   category: ['transient', 'permanent', 'counterparty', 'substrate'],
   writerCause: ['conflict', 'binding-changed', 'denied', 'rejected', 'indeterminate', 'invalid', 'closed', 'not-pending', 'capacity', 'busy', 'failed'],
+  stopCause: ['kill-present', 'kill-unreadable', 'data-directory-not-directory', 'data-directory-unreadable'],
+  fsCode: ['EACCES', 'EPERM', 'EIO', 'ELOOP', 'ENAMETOOLONG', 'ENOTDIR', 'ENOENT', 'other'],
 });
 
 /**

@@ -159,6 +159,7 @@ function replayAnswer(row, input) {
  * Its unavailable-state errors propagate at issuance; reclamation treats them as unknown and retains the row.
  * `admissionCounts({ jobId })` returns `{ contextRecords, starts, buyerStarts(buyer) }`
  * over durable rows (`jobId` is the job being issued for, so a count may leave out a record that job already holds). `ready()` and `stopped()` are synchronous booleans; anything else fails closed.
+ * `stopped()` is read again inside the issue and attempt transactions, before any write.
  * Entries: `issue(request, challengeScopeHash, authorization)` returns
  * `{ sessionNonce, expiresAt }` or throws SellerTransportError (a guard refusal keeps its own class);
  * `authorization.assertStillLive()` is the route's final synchronous request and delegation expiry check;
@@ -371,6 +372,8 @@ export function createSellerChallengeLedger({ db, transaction, now, generation, 
     if (row === null) return refused('context_challenge_mismatch');
     if (row.state !== 'issued') return replayAnswer(row, input);
     if (ready() !== true) return refused('seller_not_ready', 503);
+    // The stop is read again here, inside the transaction, so a stop that appeared after the route's check writes nothing.
+    if (stopped() !== false) return refused('seller_stopped', 503);
     if (input.path === 'proposal') return refused('context_challenge_mismatch');
     const code = firstAttemptRefusal(row, input, time);
     if (code !== null) {

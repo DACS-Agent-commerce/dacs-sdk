@@ -281,24 +281,21 @@ blocked by unresolved custody/issuance dependencies and the supersession restart
 vector (`wallet_journal_conflict`). This stack has no complete seller-suite pass.
 Use focused affected files during development; CI runs the complete seller set.
 
-Native publication requires `pins.deployment` at a supported node source commit,
-`61b8e75aa8db5e408c49e1c3a89db4d673f45578` or
-`e6af8f4023fa4e77f482503dae97f1ca00834bf9` (`QUALIFIED_NODE_COMMITS` and the fee,
-nonce, broadcast and confirmation profile in deployment-qualification.mjs), a clean build marker,
-an artifact SHA-256, and qualification of fee, nonce, broadcast and confirmation
-operations. The trusted source capability must independently
-verify that exact pin through `verifyDeployment`. No live artifact is currently
-supplied by this package; absent or dirty deployment evidence refuses before
-intent creation or a wallet request.
+Native publication requires a qualified serving node build (`deployment-qualification.mjs`): the
+evidence the wallet's required `readDeploymentEvidence({ signal })` answers (eight keys, from `dirty`
+to `observedAt`) must match a reviewed `QUALIFIED_NODE_BUILDS` entry, the bound endpoint and chain, the
+four write operations and the age bound, and the node's `getNetworkInfo` version must be the entry's.
+A refusal is `deployment_unqualified` with `node_build_unverified`, `_drift`, `_unavailable` or `_timeout`.
 
 Native CREATE preparation requires the source capability's
 `withWalletNonceLock({owner, network, chainIdentity}, work)`. The source must hold
 one durable atomic lane across nonce reads, reservations and wallet outcomes for
 **every** writer of that wallet, including writers with separate journals. A
 source without this capability refuses new CREATEs with `nonce_lane_unavailable`.
-This package supplies no wallet nonce lane and no deployment qualification
-for this contract; the operator's wallet must. Retained recovery rechecks deployment
-qualification and permits at most one unchanged resend per original transaction;
+This package supplies no wallet nonce lane for this contract; the operator's wallet must.
+It supplies the reviewed-build check (`QUALIFIED_NODE_BUILDS`, `readDeploymentEvidence`,
+the wallet's `qualify`), which retained recovery runs as a preflight and again in the
+effect gate, and permits at most one unchanged resend per original transaction;
 an uncertain resend remains held for authenticated readback.
 Definitively rejected CREATEs remain rejected during retained reads and retries,
 including after restart, and are never resent. Their nonce may be used by a

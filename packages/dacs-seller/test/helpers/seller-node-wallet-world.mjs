@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bindTp1Profile, TP1_APPROVED_IDENTITY_RECORD } from '@kynesyslabs/dacs/wire';
 import { agreementRequest, api, finalization, mnemonicBytes, ok, scriptedNode, setPurchaseAdmission, T0 } from '../../../dacs-client/test/helpers/tp1-node-fixture.mjs';
+import { RECORDED_REVIEWED_BUILD, shippedEvidenceReader } from './shipped-build-evidence.mjs';
 
 const { createAuthorityFixture } = await import('../../../dacs-client/test/fixtures/tp1-authority-reader.mjs');
 const { recordingApproval } = await import('../../../dacs-client/test/helpers/payment-evidence-approval-double.mjs');
@@ -59,8 +60,18 @@ const answer = value => new Response(JSON.stringify(value), { headers: { 'conten
 const confirmation = tx => ok({ data: { valid: true, reference_block: 1, message: 'TEST-valid', gas_operation: null, transaction: tx },
   signature: { type: 'ed25519', data: `0x${'5'.repeat(128)}` }, rpc_public_key: { type: 'ed25519', data: `0x${'6'.repeat(64)}` } });
 
+// The client's scripted node answers getNetworkInfo without a build; the serving node also reports the reviewed build's version.
+// An answer that already carries nodeVersion (a test's own reply) is left as it is.
+async function withReviewedVersion(init, response) {
+  if (JSON.parse(init?.body ?? 'null')?.params?.[0]?.message !== 'getNetworkInfo') return response;
+  const reply = await response.clone().json().catch(() => null);
+  if (reply?.result !== 200 || reply.response?.nodeVersion !== undefined) return response;
+  return answer({ ...reply, response: { ...reply.response, nodeVersion: { version: RECORDED_REVIEWED_BUILD.reportedVersion } } });
+}
+
 /**
- * The client's scripted node, answering confirmTx as the serving node does and applying each broadcast. `node.reply(row)`, when
+ * The client's scripted node, answering confirmTx as the serving node does and applying each broadcast, and getNetworkInfo with
+ * the reviewed build's `nodeVersion`. `node.reply(row)`, when
  * set, answers a request first (a Response, or a promise of one); `node.reads` lists each nodeCall message and execute stage in order.
  * With `stateFile`, the chain (nonce, applied transactions, confirmations and broadcasts) is read from it first and written to it
  * after each confirmation, broadcast and application, so a process killed at any request leaves what it sent.
@@ -77,7 +88,7 @@ export function replayNode(stateFile) {
   // The scripted node calls intercept in the same step as fetch, so the signal recorded here is that request's.
   const fetch = node.fetch;
   let signal;
-  node.fetch = (url, init) => { signal = init?.signal; return fetch(url, init); };
+  node.fetch = async (url, init) => { signal = init?.signal; return withReviewedVersion(init, await fetch(url, init)); };
   node.intercept = async row => {
     row.signal = signal;
     const call = row.body?.params[0];
@@ -176,10 +187,14 @@ export function sellerApproval(retained = recordingApproval()) {
   return approve;
 }
 
-/** The options of a first start over `connection` in `directory`, holding `stateLock`; `overrides` replace any of them. */
+/**
+ * The options of a first start over `connection` in `directory`, holding `stateLock`; `overrides` replace any of them. The
+ * deployment evidence is the reviewed build's for the binding's endpoint, observed now on the options' clock.
+ */
 export async function walletOptions({ connection, directory, stateLock, ...overrides }) {
-  return { admission: connection.admission, owner: connection.owner, dataDirectory: directory, journalMode: 'create', stateLock, signer: { claim: await fixtureClaim() },
+  const options = { admission: connection.admission, owner: connection.owner, dataDirectory: directory, journalMode: 'create', stateLock, signer: { claim: await fixtureClaim() },
     keyRecord: keyRecordBytes(), approve: sellerApproval(), approvalMode: 'policy', clock: { now: () => T0 }, publications: sellerPublications(), ...finalization, ...overrides };
+  return { readDeploymentEvidence: shippedEvidenceReader({ endpoint: connection.admission.binding.local.endpoint, clock: options.clock }), ...options };
 }
 
 /**

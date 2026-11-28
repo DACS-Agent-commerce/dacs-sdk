@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildNativeTransferPayload } from '../../src/dacs/wallet-transactions.mjs';
-import { createDevnetNativeTransport, nativeWalletLaneKey } from '../../src/wallet/devnet-native-transport.mjs';
+import { createDevnetAgreementTransport, createDevnetNativeTransport, nativeWalletLaneKey } from '../../src/wallet/devnet-native-transport.mjs';
 import { openDurableWalletJournal } from '../../src/wallet/durable-journal.mjs';
 import { createEffectFence } from '../../src/wallet/effect-fence.mjs';
 import { createEffectHistory } from '../../src/wallet/effect-history.mjs';
@@ -94,10 +94,11 @@ export function nativeWorld(t, { bound } = {}) {
     world.boundary = createEffectBoundary({ binding: bound.binding, currentLocal: bound.currentLocal, stopped: async () => world.stopped, feeCeilingOs: world.feeCeilingOs,
       history: world.history, fence: world.effectFence, clock: world.clock });
   };
-  const open = (pins, extra = {}) => {
+  // `agreement` opens the Agreement transport, which keeps the transfer a lease names.
+  const open = (pins, extra = {}, { agreement = false } = {}) => {
     owner = firstComeOwner(fence, gate);
     if (bound) buildBoundary();
-    transport = createDevnetNativeTransport({ expected: { ...PINS, ...(bound ? { pinVersion: bound.binding.profile.pinVersion } : {}), ...pins }, journal, fetchImpl: node.fetch, inclusionWaitMs: 0, inclusionPollMs: 1, sleep: async () => {},
+    transport = (agreement ? createDevnetAgreementTransport : createDevnetNativeTransport)({ expected: { ...PINS, ...(bound ? { pinVersion: bound.binding.profile.pinVersion } : {}), ...pins }, journal, fetchImpl: node.fetch, inclusionWaitMs: 0, inclusionPollMs: 1, sleep: async () => {},
       boundary: bound ? world.boundary : writingBoundary({ owner, journal }), ...extra, transportOwner: owner });
     return transport;
   };
@@ -122,7 +123,7 @@ export function nativeWorld(t, { bound } = {}) {
     journalEntries: async () => await journal.entries(),
     plant: (key, record) => journal.put(key, record),
     bind: async (who = address) => (await transport.binding({ phase: 'bind', address: who })).binding,
-    signature: (binding, who = address) => transport.binding({ phase: 'signature', address: who, binding }),
+    signature: (binding, who = address, transfer = undefined) => transport.binding({ phase: 'signature', address: who, binding, ...(transfer ? { transfer } : {}) }),
     lease: async () => { const binding = await world.bind(); return { ...await world.signature(binding), binding }; },
     release: leaseId => transport.binding({ phase: 'release', address, leaseId }),
     confirm: tx => transport.rpc({ method: 'execute', params: [{ extra: 'confirmTx', data: tx }] }, auth()),

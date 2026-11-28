@@ -1,24 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ARTIFACT_SEPARATORS, FINALITY_COMMITMENT_SEPARATOR, signComponentArtifact, contentHash } from '@kynesyslabs/dacs';
-import { assertQualifiedDeployment, QUALIFIED_NODE_COMMITS } from '../src/devnet-demo/deployment-qualification.mjs';
 import { createDevnetDemoArtifactAnchor } from '../src/devnet-demo/artifact-anchor.mjs';
 import { classifyStorageWriteSubmission, storageWriteAbsent, storageWriteAccountNonce, storageWriteConfirmationMatches, storageWriteIdentityMatches, storageWriteRpcSigner } from '../src/devnet-demo/storage-write-recovery.mjs';
 import { privateModule } from './helpers/private-module.mjs';
 import { fixtureListing } from './fixtures/listings.mjs';
 import { seller, buyer, JOB, NOW } from './helpers/protocol-fixture.mjs';
-const pin = { dirty: false, commit: QUALIFIED_NODE_COMMITS[0], artifactSha256: 'a'.repeat(64), qualifiedOperations: ['fee','nonce','broadcast','confirmation'] };
+import { ENDPOINT, jsonResponse, ok, replayNode, replyTo, T0 } from './helpers/seller-node-wallet-world.mjs';
+import { EVIDENCE_MAX_AGE_MS, qualificationInputs } from './helpers/qualification-inputs.mjs';
+import { shippedBuildEvidence } from './helpers/shipped-build-evidence.mjs';
+const { assertQualifiedDeployment } = await import('../src/devnet-demo/deployment-qualification.mjs');
 const rpc = (result, response, extra = null) => ({ result, response, extra, require_reply: false });
 
-test('qualified deployment requires exact operation list, artifact and verifier', async () => {
-  assert.deepEqual(QUALIFIED_NODE_COMMITS, ['61b8e75aa8db5e408c49e1c3a89db4d673f45578', 'e6af8f4023fa4e77f482503dae97f1ca00834bf9']);
-  for (const commit of QUALIFIED_NODE_COMMITS) {
-    const listed = { ...pin, commit };
-    await assertQualifiedDeployment({ pins: { deployment: listed }, verifyDeployment: async value => { assert.deepEqual(value, listed); return true; } });
-    for (const qualifiedOperations of ['not-fee not-nonce not-broadcast not-confirmation', {}, ['fee','nonce','broadcast'], null]) await assert.rejects(assertQualifiedDeployment({ pins: { deployment: { ...listed, qualifiedOperations } }, verifyDeployment: async () => true }), e => e.code === 'deployment_unqualified');
-    for (const change of [{ dirty: true }, { artifactSha256: 'bad' }, { commit: 'b'.repeat(40) }, { commit: commit.slice(0, 7) }]) await assert.rejects(assertQualifiedDeployment({ pins: { deployment: { ...listed, ...change } }, verifyDeployment: async () => true }), e => e.code === 'deployment_unqualified');
-    await assert.rejects(assertQualifiedDeployment({ pins: { deployment: listed }, verifyDeployment: async () => false }), e => e.code === 'deployment_unqualified');
+test('qualified deployment requires a reviewed build entry, verified current evidence, the exact operation list and a current build answer', async (t) => {
+  const node = replayNode(), { inputs } = await qualificationInputs(t, { node });
+  assert.equal(await assertQualifiedDeployment({ phase: 'preflight', ...inputs }), inputs.currentLocal().connectionId, 'the reviewed build qualifies on its connection');
+  const evidence = shippedBuildEvidence({ endpoint: ENDPOINT, observedAt: T0 });
+  for (const [label, change] of [['an unreviewed commit', { commit: 'b'.repeat(40) }], ['another artifact', { artifactSha256: 'a'.repeat(64) }],
+    ['stale evidence', { observedAt: T0 - EVIDENCE_MAX_AGE_MS - 1 }], ['a missing operation', { qualifiedOperations: ['fee', 'nonce', 'broadcast'] }],
+    ['an extra operation', { qualifiedOperations: ['fee', 'nonce', 'broadcast', 'confirmation', 'TEST-extra'] }], ['malformed evidence', { commit: 'TEST' }]]) {
+    await assert.rejects(assertQualifiedDeployment({ phase: 'preflight', ...inputs, readDeploymentEvidence: () => ({ ...evidence, ...change }) }),
+      { code: 'deployment_unqualified', details: 'node_build_unverified' }, label);
   }
+  replyTo(node, 'getNetworkInfo', () => jsonResponse(ok({ chainId: 1, nodeVersion: { version: 'TEST-0.0.1' } })));
+  await assert.rejects(assertQualifiedDeployment({ phase: 'preflight', ...inputs }), { code: 'deployment_unqualified', details: 'node_build_drift' }, 'the node reports another build');
 });
 test('factory refuses an unconstructed capability before injected effects', () => {
   let calls=0; const effect=()=>{calls++;throw new Error('TEST effect');};
