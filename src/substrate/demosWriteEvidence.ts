@@ -69,10 +69,14 @@ function protocolWriterControlsDemosAddress(
 
 function parseCanonicalJson(value: string, label: string): unknown {
   let parsed: unknown;
+  let canonical: string;
   try {
     parsed = JSON.parse(value) as unknown;
-    if (canonicalize(parsed) !== value) throw new Error();
-  } catch {
+    canonical = canonicalize(parsed);
+  } catch (cause) {
+    throw new DacsError(`${label} is not canonical JSON`, { cause });
+  }
+  if (canonical !== value) {
     throw new DacsError(`${label} is not canonical JSON`);
   }
   return parsed;

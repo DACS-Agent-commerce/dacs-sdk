@@ -294,6 +294,48 @@ describe("Demos portable write evidence", () => {
   });
 });
 
+describe("Demos write evidence JSON diagnostics", () => {
+  const thrownBy = (candidate: DemosWriteEvidence): unknown => {
+    try {
+      assertDemosWriteEvidence(candidate);
+    } catch (error) {
+      return error;
+    }
+    throw new Error("Expected Demos write evidence validation to fail");
+  };
+
+  it("preserves JSON parser and canonicalizer errors as causes", () => {
+    const invalidJson = thrownBy({ ...evidence, signedTransaction: "{" });
+    expect(invalidJson).toBeInstanceOf(DacsError);
+    expect(invalidJson).toMatchObject({ message: "Demos signed transaction evidence is not canonical JSON" });
+    expect((invalidJson as DacsError).cause).toBeInstanceOf(SyntaxError);
+
+    const invalidCanonicalValue = thrownBy({
+      ...evidence,
+      signedTransaction: "{\"value\":\"\\ud800\"}",
+    });
+    expect(invalidCanonicalValue).toBeInstanceOf(DacsError);
+    expect((invalidCanonicalValue as DacsError).cause).toMatchObject({ code: "canonical.unicode_invalid" });
+  });
+
+  it("does not attach a fabricated cause to valid but noncanonical JSON", () => {
+    const noncanonical = thrownBy({
+      ...evidence,
+      signedTransaction: '{ "hash": "tx-abc" }',
+    });
+    expect(noncanonical).toBeInstanceOf(DacsError);
+    expect(noncanonical).toMatchObject({ message: "Demos signed transaction evidence is not canonical JSON" });
+    expect((noncanonical as DacsError).cause).toBeUndefined();
+  });
+
+  it("preserves finality proof parsing errors as causes", () => {
+    const invalidFinality = thrownBy({ ...evidence, finalityProof: "{" });
+    expect(invalidFinality).toBeInstanceOf(DacsError);
+    expect(invalidFinality).toMatchObject({ message: "Demos finality evidence is not canonical JSON" });
+    expect((invalidFinality as DacsError).cause).toBeInstanceOf(SyntaxError);
+  });
+});
+
 describe("Demos write evidence that is not final", () => {
   const portableInput = (candidate: DemosWriteEvidence) => ({
     logicalAddress: "dacs:test:v1",
