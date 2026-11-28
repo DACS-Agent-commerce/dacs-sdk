@@ -38,9 +38,9 @@ if (hold.status !== 0) {
       result = spawnSync(process.execPath, ["--test", "--test-concurrency=1", file], { cwd: packageDir, encoding: "utf8", maxBuffer: 16 << 20, env });
     } else {
       console.log(`[client-tests] ${file}: ${given.length} of its ${split[file].length} tests in this shard`);
-      ({ result, wrong } = runSome(file, split[file], given, { cwd: packageDir, env, args: ["--test-concurrency=1"] }));
+      ({ result, wrong } = await runSome(file, split[file], given, { cwd: packageDir, env, args: ["--test-concurrency=1"] }));
     }
-    process.stdout.write(result.stdout ?? ""); process.stderr.write(result.stderr ?? "");
+    if (given === null) { process.stdout.write(result.stdout ?? ""); process.stderr.write(result.stderr ?? ""); }
     const count = /^# tests (\d+)$/m.exec(result.stdout ?? "");
     // Node counts a file with no test() calls as one successful file subtest.
     const fileOnly = (result.stdout ?? "").split("\n").some((line) => line === `# Subtest: ${file}` || line === `# Subtest: ${join(packageDir, file)}`);

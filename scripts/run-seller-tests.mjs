@@ -31,8 +31,7 @@ else{
   if(whole.length>0&&runWhole(whole)!==0)failed=true;
   for(const{file,tests:given}of parts){
     console.log(`[seller-tests] ${file}: ${given.length} of its ${split[file].length} tests in this shard`);
-    const{result,wrong}=runSome('packages/dacs-seller/test/'+file,split[file],given,{cwd:root,env:{...childEnv,NODE_OPTIONS:nodeOptions},args:['--experimental-vm-modules','--test-concurrency=1']});
-    process.stdout.write(result.stdout??'');process.stderr.write(result.stderr??'');
+    const{result,wrong}=await runSome('packages/dacs-seller/test/'+file,split[file],given,{cwd:root,env:{...childEnv,NODE_OPTIONS:nodeOptions},args:['--experimental-vm-modules','--test-concurrency=1']});
     if(result.error||result.status!==0||wrong){console.error(`[seller-tests] FAIL ${file}: ${result.error?.message??wrong??`exit ${result.status}`}`);failed=true;}
     else console.log(`[seller-tests] ${file}: ran exactly its ${given.length} tests`);
   }
