@@ -289,37 +289,25 @@ test('an aborted signal refuses before any read, and an abort during the read st
   assert.ok(during.node.calls.at(-1).startsWith('GET '), 'the storage read is the last one started');
 });
 
-test('an approved testnet HTTP root and a canonical HTTPS root each reach the observer and Listing readback; the public reader obtains the HTTP chain pin from the approved record', async (t) => {
-  for (const endpoint of [HTTP_ROOT, HTTPS_ROOT]) {
-    const { published, node, read } = readerWorld(t, { endpoint });
-    assert.deepEqual((await read()).listing, published.listing, endpoint);
-    assert.equal(node.calls[0], 'getBlockByNumber', endpoint);
-    assert.ok(node.calls.includes(`GET /storage-program/${published.native.storageAddress}`), endpoint);
-    assert.deepEqual([...new Set(node.requests.map(({ origin }) => `${origin}/`))], [endpoint]);
-    assert.deepEqual([...new Set(node.requests.map(({ redirect }) => redirect))], ['error'], 'every read refuses a redirect');
-  }
+test('a canonical HTTPS root reaches the observer and Listing readback', async (t) => {
+  const { published, node, read } = readerWorld(t, { endpoint: HTTPS_ROOT });
+  assert.deepEqual((await read()).listing, published.listing);
+  assert.equal(node.calls[0], 'getBlockByNumber');
+  assert.ok(node.calls.includes(`GET /storage-program/${published.native.storageAddress}`));
+  assert.deepEqual([...new Set(node.requests.map(({ origin }) => `${origin}/`))], [HTTPS_ROOT]);
+  assert.deepEqual([...new Set(node.requests.map(({ redirect }) => redirect))], ['error'], 'every read refuses a redirect');
 });
 
-test('an HTTP root with a missing or wrong pinned chain identity at the direct owner, a non-root path, credentials, query, fragment, noncanonical spelling, or a redirect refuses before any read; HTTP without the approved pin is never admitted', async (t) => {
-  for (const chainIdentity of [undefined, 'd'.repeat(64)]) {
-    assert.throws(() => createNodeTransportOwner({ endpoint: HTTP_ROOT, transportAuthority: 'TEST-direct-owner', fetchImpl: async () => assert.fail('no read'), chainIdentity }),
-      { code: 'transport_mismatch' }, String(chainIdentity));
-  }
+test('an endpoint that is not a canonical HTTPS root (plain http, even under the approved chain pin, a non-root path, credentials, query, fragment, noncanonical spelling) or a redirect refuses before any read', async (t) => {
+  assert.throws(() => createNodeTransportOwner({ endpoint: HTTP_ROOT, transportAuthority: 'TEST-direct-owner', fetchImpl: async () => assert.fail('no read') }),
+    { code: 'transport_mismatch' });
   const node = scriptedNode(publishedListing());
   for (const endpoint of ['https://rpc.example.invalid/rpc', 'https://u:p@rpc.example.invalid/', 'https://rpc.example.invalid/?q=1', 'https://rpc.example.invalid/#f',
-    'https://RPC.example.invalid/', 'https://rpc.example.invalid', 'http://203.0.113.7:53550/rpc']) {
+    'https://RPC.example.invalid/', 'https://rpc.example.invalid', HTTP_ROOT, 'http://203.0.113.7:53550/rpc', 'http://localhost:53550/']) {
     assert.throws(() => createPassiveListingReader({ endpoint, fetchImpl: node.fetch }), { code: 'transport_mismatch' }, endpoint);
-    assert.throws(() => passiveAdapter(node, { rpcUrl: endpoint }), { code: 'offline-only', message: 'passive SR-2 requires a canonical approved endpoint' }, endpoint);
+    assert.throws(() => passiveAdapter(node, { rpcUrl: endpoint }), { code: 'offline-only', message: 'passive SR-2 requires a canonical HTTPS root endpoint' }, endpoint);
   }
   assert.throws(() => createPassiveListingReader({ endpoint: HTTPS_ROOT, fetchImpl: 'TEST-not-a-function' }), { code: 'transport_mismatch' });
-  assert.deepEqual(node.calls, []);
-
-  // The passive adapter admits plain http only under the approved identity record; any other record refuses before the endpoint is judged.
-  assert.doesNotThrow(() => passiveAdapter(node, { rpcUrl: HTTP_ROOT }));
-  for (const [identityRecord, code] of [[{ ...RECORD, chainIdentity: 'd'.repeat(64) }, 'tp1_identity_unapproved'],
-    [{ ...RECORD, chainIdentity: TP1_REFUSED_FIXTURE_CHAIN_IDENTITIES[0] }, 'tp1_identity_fixture'], [null, 'tp1_identity_unapproved']]) {
-    assert.throws(() => passiveAdapter(node, { rpcUrl: HTTP_ROOT, identityRecord }), { code }, String(identityRecord?.chainIdentity));
-  }
   assert.deepEqual(node.calls, []);
 
   const redirected = readerWorld(t);
