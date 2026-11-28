@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
-import {createHash} from 'node:crypto';
-import {readFileSync, readdirSync} from 'node:fs';
+import {existsSync, readFileSync, readdirSync} from 'node:fs';
 import {dirname, join} from 'node:path';
 import {pathToFileURL, fileURLToPath} from 'node:url';
 import {test} from 'node:test';
@@ -17,20 +15,11 @@ test('launch review: npm test discovers every executable package test',async()=>
   assert.deepEqual(discoverTests(pkg),expected);
   assert.ok(expected.includes('scripts/test-layout.test.mjs'));
   assert.ok(expected.includes('test/purchase-integrity.test.mjs'));
-  assert.equal(readJson(join(pkg,'package.json')).scripts.test,'node scripts/check-hold.mjs && node scripts/test.mjs');
+  assert.equal(readJson(join(pkg,'package.json')).scripts.test,'node scripts/test.mjs');
 });
-test('historical tests are labelled text with exact snapshot bytes, outside executable discovery',()=>{
-  const {baseline,files:archive}=readJson(join(pkg,'evidence/source-tests/INDEX.json'));
-  assert.equal(baseline,'aac03055bdbeabc7c0771642d99f0c4baf7e3de9');
-  assert.ok(archive.length>0);
-  for(const row of archive){
-    assert.ok(row.path.startsWith('evidence/source-tests/')&&row.path.endsWith('.txt'));
-    const bytes=readFileSync(join(pkg,row.path));
-    const old=execFileSync('git',['--no-replace-objects','-C',sdk,'show',baseline+':packages/dacs-client/'+row.original]);
-    assert.deepEqual(bytes,old,row.original);
-    assert.equal(createHash('sha1').update(`blob ${bytes.length}\0`).update(bytes).digest('hex'),row.blob);
-  }
-  assert.deepEqual(files(join(pkg,'evidence/source-tests')).filter(f=>f.endsWith('.txt')).sort(),archive.map(r=>r.path.slice('evidence/source-tests/'.length)).sort());
+test('the package carries no copied-source records or pin files',()=>{
+  for(const name of ['records','HOLD.json','evidence','DELTA-LEDGER.json','DELTA-COMMITS.json','PROVENANCE.json'])
+    assert.equal(existsSync(join(pkg,name)),false,`packages/dacs-client/${name} must not exist`);
 });
 
 test('the test runner refuses empty and failing files and accepts a registered passing test',async t=>{

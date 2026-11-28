@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D15",
-  "registration": "D15: existing client delta lane",
-  "subject": "delta(client): D15 fence retained purchase pointers and port authenticated readback corrections; update freeze pins"
-}

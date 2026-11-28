@@ -1,7 +1,6 @@
 import { canonicalize } from '@kynesyslabs/dacs';
 import { assertTp1Binding } from '@kynesyslabs/dacs/wire';
 import { OperationError } from './client-errors.mjs';
-import { OS_INTEGER } from './dacs/chain.mjs';
 import { PURCHASE_ADMISSION } from './dacs/purchase-admission-state.mjs';
 import { bindHostStop, createHostStop, isHostStopRefusal } from './host-stop.mjs';
 
@@ -20,31 +19,30 @@ export const POSITIVE_OS_AMOUNT = /^[1-9][0-9]*$/;
 export const CREATE_STORAGE_RESERVE_OS = '3000000000';
 
 /**
- * assertWithinFeeCeiling(feeCeilingOs, amountOs, fee) returns undefined when one paid write's declared debit, `amountOs` (decimal OS text) plus
- * the network `fee` (a non-negative bigint), is at most `feeCeilingOs`; a debit equal to the ceiling passes. It throws OperationError(write-fee-cap),
- * as the wallet's effect boundary does, when the debit is over the ceiling, and also when the ceiling is not a positive OS amount, the amount is not
- * decimal OS text or the fee is not a non-negative bigint.
+ * assertWithinFeeCeiling(feeCeilingOs, fee) returns undefined when the network `fee` of one paid write (a non-negative bigint) is at most
+ * `feeCeilingOs`; a fee equal to the ceiling passes. The amount the write pays is not part of the comparison. It throws
+ * OperationError(write-fee-cap), as the wallet's effect boundary does, when the fee is over the ceiling, and also when the ceiling is not a
+ * positive OS amount or the fee is not a non-negative bigint.
  */
-export function assertWithinFeeCeiling(feeCeilingOs, amountOs, fee) {
-  if (typeof feeCeilingOs !== 'string' || !POSITIVE_OS_AMOUNT.test(feeCeilingOs) || typeof amountOs !== 'string' || !OS_INTEGER.test(amountOs)
-    || typeof fee !== 'bigint' || fee < 0n || BigInt(amountOs) + fee > BigInt(feeCeilingOs)) {
+export function assertWithinFeeCeiling(feeCeilingOs, fee) {
+  if (typeof feeCeilingOs !== 'string' || !POSITIVE_OS_AMOUNT.test(feeCeilingOs) || typeof fee !== 'bigint' || fee < 0n || fee > BigInt(feeCeilingOs)) {
     throw new OperationError('write-fee-cap', 'effect refused: write-fee-cap');
   }
 }
 
 /**
- * assertWriteWithinFeeCeiling(feeCeilingOs, amountOs, chain) reads the network fee once with `chain.getTransactionFees()` and applies
+ * assertWriteWithinFeeCeiling(feeCeilingOs, chain) reads the network fee once with `chain.getTransactionFees()` and applies
  * assertWithinFeeCeiling, then returns the fee it read (a bigint, in OS). A fee that cannot be read refuses OperationError(write-fee-cap)
  * with the read's error as its cause.
  */
-export async function assertWriteWithinFeeCeiling(feeCeilingOs, amountOs, chain) {
+export async function assertWriteWithinFeeCeiling(feeCeilingOs, chain) {
   let fee;
   try {
     fee = await chain.getTransactionFees();
   } catch (error) {
     throw new OperationError('write-fee-cap', 'effect refused: write-fee-cap', undefined, { cause: error });
   }
-  assertWithinFeeCeiling(feeCeilingOs, amountOs, fee);
+  assertWithinFeeCeiling(feeCeilingOs, fee);
   return fee;
 }
 

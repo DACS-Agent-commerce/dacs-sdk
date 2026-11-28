@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D40",
-  "registration": "D40: existing client delta lane",
-  "subject": "delta(client): D40 refuse ill-formed UTF-16 portal ids and tokens"
-}

@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D74",
-  "registration": "D74: existing client delta lane",
-  "subject": "delta(client): D74 read a held plan step's seller Vet record writes back on a purchase recheck"
-}

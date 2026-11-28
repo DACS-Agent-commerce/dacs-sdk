@@ -1,6 +1,0 @@
-{
-  "schema": "dacs-client-delta-id/v1",
-  "delta": "D24",
-  "registration": "D24: existing client delta lane",
-  "subject": "delta(client): D24 use a monotonic clock for in-process waits"
-}

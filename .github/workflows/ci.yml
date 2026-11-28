@@ -129,8 +129,8 @@ jobs:
           DACS_SELLER_TEST_SHARD: ${{ matrix.shard }}
         run: npm run seller:test
 
-      # The package's own `npm test` (check-hold, then every test file once), split into shards.
-      - name: Check held client snapshot and native authorization contracts
+      # The package's own `npm test` (every test file once), split into shards.
+      - name: Check client package and native authorization contracts
         if: matrix.suite == 'client'
         env:
           DACS_CLIENT_TEST_SHARD: ${{ matrix.shard }}

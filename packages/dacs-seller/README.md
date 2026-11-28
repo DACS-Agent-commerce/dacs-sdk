@@ -1325,7 +1325,7 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `sessionOf(jobId)` (the seller's durable session view; `observePayment` answers `absent` only for a view with `settlementBound: false`, which the seller's own `durableSessionOf` carries) and `trustedFinality` (a plain
   object, the operator's pinned finality checkpoint); any other option, or one of
   these three of another type, is a TypeError. The
-  `endpoint` is an https root (plain http refuses `transport_mismatch`). Its readers come from
+  `endpoint` is a canonical root over https, or over plain http only for the approved TP-1 testnet chain identity; any other root refuses `transport_mismatch`. Its readers come from
   `createNodeAuthorityReader({ owner, claim, chain, participantImplementations, sessionOf, trustedFinality })`:
   the read-only connection pair and three chain readers the host passes on, `sessionAdmission`,
   `readCommitmentReceipt` and `observePayment`. They read through the finalized session on every

@@ -15,6 +15,8 @@ const { createReopenGrants } = await import('../src/wallet/withheld-reopen-grant
 
 const gas = (network, rpc) => ({ fees: { network_fee: network, rpc_fee: rpc, additional_fee: '0' } });
 const GAS = gas('1000000000', '1000000000');
+// The fees of a signed TEST transfer: the 1 DEM network fee and 1 DEM rpc fee of GAS, plus the SDK's 1 DEM gas. Its amount is not counted against the ceiling.
+const SIGNED_FEES_OS = '3000000000';
 const STOP = { change: w => { w.stopped = true; }, cause: 'writes_stopped' };
 const REHOLD = { change: () => setPurchaseAdmission('held'), cause: 'profile_not_admitted' };
 const states = records => records.map(record => record.state);
@@ -87,7 +89,7 @@ async function seeded(t, { confirmed = true, withheld = true, rows = true } = {}
     await w.confirm(tx);
     await w.release(lease.leaseId);
   } else {
-    await w.boundary.signPass({ operationId: 'TEST-operation', lane: laneKey(w), kind: 'native', paidWrite: true, debitOs: '2500000000', pinVersion: w.bound.binding.profile.pinVersion },
+    await w.boundary.signPass({ operationId: 'TEST-operation', lane: laneKey(w), kind: 'native', paidWrite: true, debitOs: SIGNED_FEES_OS, pinVersion: w.bound.binding.profile.pinVersion },
       async () => Buffer.from(JSON.stringify(tx)));
   }
   await plant(w, tx, 'p1', 'dispatch-started');
@@ -252,7 +254,7 @@ test('a reopen restores the retained confirmation byte for byte, gas included, a
     assert.equal(canonicalize(w.node.applied.get(tx.hash)), canonicalize(restored.confirmation.response.data.transaction));
     assert.deepEqual(restored.gasOperation, GAS);
     const over = await seeded(t);
-    over.w.feeCeilingOs = '4499999999';
+    over.w.feeCeilingOs = String(BigInt(SIGNED_FEES_OS) - 1n);
     const low = await restart(over.w);
     await assert.rejects(reopen(low, over.tx), code('write-fee-cap'));
     assert.deepEqual(low.node.broadcasts, []);
