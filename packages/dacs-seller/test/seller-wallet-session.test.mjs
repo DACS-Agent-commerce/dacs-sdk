@@ -37,6 +37,7 @@ const PASS_WINDOW_MS = 10_000;
 const AUTHORITY_DEADLINE_MS = 10_000;
 const JOB_ID = '01M5YKPJG0248H248H248H248H';
 const OTHER_CHAIN = 'd'.repeat(64);
+const HTTP_ROOT = 'http://rpc.example.invalid/';
 const SECOND_MNEMONIC = entropyToMnemonic(new Uint8Array(32).fill(4), wordlist);
 const BOUNDARY_CLOCK = Object.freeze({ now: () => 0, after: () => () => {} });
 // The only node reads the stage-one capability sends: the binding check's.
@@ -389,6 +390,35 @@ test('createSellerWalletSession refuses an endpoint that is not a canonical root
     assert.throws(() => createSellerWalletSession({ ...valid, ...changes }), { code: 'transport_mismatch' }, JSON.stringify(changes));
   }
   assert.deepEqual({ calls: node.calls.length, keyLoads }, { calls: 0, keyLoads: 0 });
+});
+
+test('the port opens its node connection over the approved testnet plain http root, binds and finalizes', async (t) => {
+  const node = replayNode();
+  const origins = new Set();
+  const fetchOverHttp = node.fetch;
+  node.fetch = (url, init) => { origins.add(new URL(String(url)).origin); return fetchOverHttp(url, init); };
+  const world = await walletSessionWorld(t, { node, options: { endpoint: HTTP_ROOT } });
+  assert.ok(node.reads.length > 0, 'the host\'s reader bound through the port\'s connection reader');
+  assert.deepEqual([...origins], [new URL(HTTP_ROOT).origin]);
+  const { session } = await world.finalize();
+  assert.deepEqual(Object.keys(session).sort(), [...SESSION_MEMBERS].sort());
+});
+
+test('a plain http root whose node is another chain is refused at binding before any key load', async (t) => {
+  const signatures = await spyTransactionSignatures(t.mock);
+  t.after(() => setPurchaseAdmission('held'));
+  const node = replayNode();
+  node.reply = otherChain;
+  let keyLoads = 0, port;
+  const loadKeyRecord = async () => { keyLoads += 1; return keyRecordBytes(); };
+  const createPort = (options) => (port = createSellerWalletSession(options));
+  await assert.rejects(walletSessionWorld(t, { node, createPort, options: { endpoint: HTTP_ROOT, loadKeyRecord } }), { code: 'tp1_connection_unverified' });
+  assert.ok(node.reads.includes('getBlockByNumber'), 'the node was read for its chain');
+  assert.deepEqual({ keyLoads, signatures: signatures.length }, { keyLoads: 0, signatures: 0 });
+  assert.ok(port, 'the world built the port');
+  await assert.rejects(port.artifactAnchor.read({}), { code: 'wallet_session_closed' }, 'the failed binding closed the port');
+  await assert.rejects(port.finalize({}), { code: 'wallet_session_closed' }, 'a closed port cannot be finalized');
+  await assert.rejects(Promise.resolve().then(() => port.authority.context()), { code: 'transport_closed' }, 'the failed binding closed the transport owner too');
 });
 
 test('finalize refuses a binding whose authority is no longer current with tp1_connection_unverified, and one whose authority read stalls with tp1_authority_timeout at 10,000 ms but not at 9,999 ms, each before the key is loaded or an issuance journal opens', async (t) => {
