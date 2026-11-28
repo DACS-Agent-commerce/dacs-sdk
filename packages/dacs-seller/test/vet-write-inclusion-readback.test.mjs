@@ -117,7 +117,7 @@ test('readBackRecords reads a retained Vet record back with nothing signed or se
   assert.equal((await p.readBackRecords({ jobId: JOB, buyer: BUYER.claim })).disposition, 'present', 'both records read back');
 });
 
-test('a restart between the two Vet record readbacks leaves both retained records unchanged, and the next readback answers as an uninterrupted one', async (t) => {
+test('an injected stop before the second Vet readback and an in-process party-store reopen preserve both records and the uninterrupted answer', async (t) => {
   const f = await orchestratorFixture(t, { real: true, disk: true, signRpc: async () => 'TEST rpc authentication' });
   const recoveries = [];
   f.native.source.recoverStorageWrite = async ({ signedTransaction }) => { recoveries.push(signedTransaction.hash); return { resent: false }; };
@@ -130,9 +130,9 @@ test('a restart between the two Vet record readbacks leaves both retained record
   const readBefore = [];
   f.controls.onRead = (logicalAddress) => {
     readBefore.push(logicalAddress);
-    if (logicalAddress === address(SELLER)) throw new Error('TEST process stopped before the second readback');
+    if (logicalAddress === address(SELLER)) throw new Error('TEST injected stop before the second readback');
   };
-  await assert.rejects(f.provider().readBackRecords({ jobId: JOB, buyer: BUYER.claim }), /TEST process stopped/);
+  await assert.rejects(f.provider().readBackRecords({ jobId: JOB, buyer: BUYER.claim }), /TEST injected stop/);
   f.controls.onRead = undefined;
   assert.ok(readBefore.includes(address(BUYER)), 'the first record was read back before the stop');
   assert.deepEqual(await retained(), before, 'the stop changed no retained record');
