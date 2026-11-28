@@ -153,8 +153,9 @@ export function demosSr2TxRef(receipt) {
  * `ownWriter` every record is held to the exact binding.
  *
  * With an `identityRecord` and no `sourceCapability` the adapter is passive: it reads a published record over a node it neither
- * writes to nor recovers through. `identityRecord` must be an SDK-approved TP-1 identity record, `rpcUrl` a canonical https root
- * (any other endpoint is refused `offline-only` before a read), and `observeIdentity` as above. Its reads refuse an answer that carries
+ * writes to nor recovers through. `identityRecord` must be an SDK-approved TP-1 identity record, `rpcUrl` a canonical root that
+ * `canonicalNodeEndpoint` admits under the record's chain identity (https, or plain http only on the approved TP-1 testnet identity;
+ * any other root is refused `offline-only` before a read), and `observeIdentity` as above. Its reads refuse an answer that carries
  * the simulation marker, an authenticated result carries `finality: 'not-established'`, and its receipts keep the Demos labels.
  * Throws TypeError for a `signatureChainId` option, or for a live or passive adapter without `observeIdentity` or a live one without
  * `binding`, and an error with code `tp1_identity_fixture` or `invalid-chain` when the source's pin is a fixture chain or disagrees
@@ -166,7 +167,7 @@ export function createDemosSr2Adapter({ rpcUrl, journal, fetchImpl = globalThis.
   if(sourceCapability !== null && (!isDevnetAgreementTransport(sourceCapability)||typeof sourceCapability.observeBinding!=='function')) reject('source-held','an opaque independently supplied Agreement transport is required');
   if((sourceCapability !== null || passive) && typeof observeIdentity !== 'function') throw new TypeError('a live or passive adapter needs observeIdentity');
   const passiveIdentity = passive ? passiveExpectedIdentity(identityRecord) : null;
-  if (passive && canonicalNodeEndpoint(rpcUrl) === null) reject('offline-only', 'passive SR-2 requires a canonical HTTPS root endpoint');
+  if (passive && canonicalNodeEndpoint(rpcUrl, { chainIdentity: passiveIdentity }) === null) reject('offline-only', 'passive SR-2 requires a canonical approved endpoint');
   const endpoint = new URL(rpcUrl);
   if (!passive && (sourceCapability ? rpcUrl !== sourceCapability.pins.endpoint : (endpoint.protocol !== 'http:' || !LITERAL_LOOPBACK.has(endpoint.hostname) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== '/'))) {
     reject('offline-only', 'Demos SR-2 requires a literal HTTP loopback root endpoint');

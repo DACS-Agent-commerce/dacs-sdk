@@ -1416,8 +1416,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   65,536 bytes and 10,000 ms. Neither opens a wallet, key or journal.
 - `createPassiveListingReader({ endpoint, fetchImpl })`
   (`src/devnet-demo/passive-listing-reader.mjs`) opens one read-only connection
-  (a canonical https root; any other endpoint refuses `transport_mismatch`
-  before a read) and returns `{ readPublishedListing, close() }`. `readPublishedListing({ logicalAddress,
+  (a canonical root: https, or plain http only on the approved TP-1 testnet
+  identity) and returns `{ readPublishedListing, close() }`. `readPublishedListing({ logicalAddress,
   writer, signedProjection, nativeAddress, signal })` checks the node's chain
   against the approved identity record, then reads the writer's Listing CREATE
   and authenticates it against the included transaction and the signed
