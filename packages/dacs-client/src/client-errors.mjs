@@ -1,4 +1,4 @@
-import { canonicalize, sha256Hex } from '@kynesyslabs/dacs';
+import { canonicalize, sha256Hex } from '@kynesyslabs/dacs/canonical';
 export class OperationError extends Error {
   constructor(code, message, details, options) { super(message, options); this.name = 'OperationError'; this.code = code; this.details = details; }
 }

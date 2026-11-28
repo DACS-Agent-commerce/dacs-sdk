@@ -96,14 +96,29 @@ test('the public seller client refuses every REFUSED process.version with runtim
   }
 });
 
+const workflow = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+const stepStart = (name) => {
+  const start = workflow.indexOf(`- name: ${name}`);
+  assert.ok(start >= 0, name);
+  return start;
+};
+// The text of the CI step called `name`, up to the next step.
+const step = (name) => {
+  const start = stepStart(name);
+  const next = workflow.indexOf('\n      - ', start + 1);
+  return workflow.slice(start, next < 0 ? undefined : next);
+};
+
+test('CI runs the packed read-only Listing test on Node 20.19.0 between the Node 20.19.0 and 22.13.0 setups', () => {
+  const name = 'Package smoke (read-only Listing verifies on Node 20.19.0)';
+  const smoke = step(name);
+  assert.match(smoke, /\n\s+if: matrix\.node-version == '22'\n/);
+  assert.match(smoke, /\n\s+run: DACS_READ_ONLY_NODE20=1 node --test packages\/dacs-client\/test\/read-only-listing-packed\.test\.mjs\n?$/);
+  assert.ok(stepStart('Use Node 20.19.0 for the buyer refusal check') < stepStart(name), 'the step runs after Node 20.19.0 is set up');
+  assert.ok(stepStart(name) < stepStart('Use Node 22.13.0 for the buyer refusal check'), 'the step runs before Node 22.13.0 is set up');
+});
+
 test('CI asserts the packed refusal on Node 20.19.0 and 22.13.0 and constructs each packed factory at the engine floor', () => {
-  const workflow = readFileSync(new URL('../../../.github/workflows/ci.yml', import.meta.url), 'utf8');
-  const step = (name) => {
-    const start = workflow.indexOf(`- name: ${name}`);
-    assert.ok(start >= 0, name);
-    const next = workflow.indexOf('\n      - ', start + 1);
-    return workflow.slice(start, next < 0 ? undefined : next);
-  };
   const smoke = step('Package smoke (buyer root)');
   assert.doesNotMatch(smoke, /\n\s+if:/, 'the packed-root smoke runs on both build-test legs');
   assert.match(smoke, /canonicalize/);

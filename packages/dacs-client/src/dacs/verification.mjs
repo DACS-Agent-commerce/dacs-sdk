@@ -4,7 +4,10 @@ import { createImmutableReadbacks } from '../util/immutable-readbacks.mjs';
 // reported explicitly so the model (and user) can see exactly what held.
 import { canonicalize, contentHash, validateListing, purchaseSupport, SDK_PROVENANCE } from './listing.mjs';
 import { addressForClaim } from '../signatures.mjs';
-import { normalizeCatalogObservedAt, DIRECTORY_CONTRACT_CODES } from './directory.mjs';
+import { DIRECTORY_CONTRACT_CODES } from './directory.mjs';
+import { checkCatalogObservation } from './listing-read-only.mjs';
+
+export { checkCatalogObservation } from './listing-read-only.mjs';
 
 export class NotConfiguredError extends Error {
   constructor(dependency) {
@@ -12,14 +15,6 @@ export class NotConfiguredError extends Error {
     this.code = 'not_configured';
     this.dependency = dependency;
   }
-}
-
-const CATALOG_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-export function checkCatalogObservation(value, checkedAt) {
-  const observedAt = normalizeCatalogObservedAt(value);
-  const fresh = observedAt !== undefined && observedAt <= checkedAt && checkedAt - observedAt <= CATALOG_MAX_AGE_MS;
-  return { observedAt, fresh };
 }
 
 // cacheImmutable: within one purchase, a transactable Listing's chain bytes

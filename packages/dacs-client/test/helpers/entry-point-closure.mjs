@@ -31,6 +31,7 @@ export function entryPointClosure() {
   visit('src/rpc-endpoint.mjs');
   visit('src/purchase/wallet-bridge.mjs');
   visit('src/wallet/effect-history-public.mjs');
+  visit('src/listing/read-only-verifier.mjs');
   for (const path of PACKED_UNREACHED_MODULES) files.add(path);
   return [...files].sort();
 }

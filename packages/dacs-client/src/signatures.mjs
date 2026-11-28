@@ -9,30 +9,12 @@
 //    UTF-8 bytes of message (no prefix, no pre-hash) and returns hex (optionally
 //    0x-prefixed, sometimes doubled "0x0x") or base64url of the 64-byte signature.
 import { publicKeyFromRaw, ed25519Verify } from '@kynesyslabs/dacs';
+import { WalletFormatError, normalizeDemosAddress } from './dacs/read-only-address.mjs';
 
-const HEX64 = /^[0-9a-f]{64}$/;
-
-export class WalletFormatError extends Error {}
-
-export function normalizeDemosAddress(value) {
-  if (typeof value !== 'string') throw new WalletFormatError('wallet address must be a string');
-  const trimmed = value.trim();
-  const hex = trimmed.replace(/^0x/i, '');
-  if (!HEX64.test(hex.toLowerCase()) || hex.length !== 64) {
-    throw new WalletFormatError('wallet address must be 0x followed by 64 hex characters (an Ed25519 public key)');
-  }
-  return `0x${hex.toLowerCase()}`;
-}
+export { WalletFormatError, normalizeDemosAddress, addressForClaim } from './dacs/read-only-address.mjs';
 
 export function claimForAddress(address) {
   return `did:demos:agent:${normalizeDemosAddress(address).slice(2)}`;
-}
-
-export function addressForClaim(claim) {
-  // Only the leading "did" scheme is read case-insensitively; the method, "agent" and the key stay case-sensitive.
-  const match = /^[dD][iI][dD]:demos:agent:([0-9a-f]{64})$/.exec(String(claim));
-  if (!match) throw new WalletFormatError('claim must be did:demos:agent:<64 lowercase hex>');
-  return `0x${match[1]}`;
 }
 
 export function decodeSignature(value) {

@@ -2,7 +2,7 @@ import { types as nodeTypes } from "node:util";
 
 import { snapshotCanonicalJsonRead } from "../canonical/snapshot.js";
 import { readBoundedDemosJson } from "../rails/demosRpc.js";
-import { normalizeDemosNativeAddress } from "../rails/payDem.js";
+import { normalizeDemosNativeAddress } from "../rails/demosAddress.js";
 import type { DemosTransferObservation } from "./paymentIntake.js";
 
 const TX_HASH_RE = /^(?:0[xX])?([0-9a-fA-F]{64})$/;

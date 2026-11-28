@@ -266,6 +266,14 @@ jobs:
           test "$(node --version)" = v20.19.0
           node scripts/verify-packed-entry-imports.mjs
 
+      - name: Packed Listing validation and pinned chain reader load on Node 20.19.0 without signing modules
+        if: matrix.node-version == '22'
+        run: DACS_READ_ONLY_NODE20=1 node --test packages/dacs-client/test/read-only-listing-graph.test.mjs
+
+      - name: Package smoke (read-only Listing verifies on Node 20.19.0)
+        if: matrix.node-version == '22'
+        run: DACS_READ_ONLY_NODE20=1 node --test packages/dacs-client/test/read-only-listing-packed.test.mjs
+
       - name: Package smoke (buyer purchase factories refuse Node 20 with runtime_unsupported)
         if: matrix.node-version == '22'
         run: |

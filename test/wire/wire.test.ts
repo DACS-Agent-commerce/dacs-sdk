@@ -312,7 +312,7 @@ describe("import closure", () => {
     // runs, and the pure modules it loads: its pricing, RFQ and pay-alternative (APR-3) checks. None does I/O; the
     // built-in list above is unchanged.
     const modules = [...seen].map((href) => href.replace(/^.*\/src\//, ""));
-    const allowed = /^(?:artifacts|canonical|crypto|identity|wire)\/[A-Za-z0-9]+\.ts$|^wire\/node-endpoint\.ts$|^internal\/(?:deepFreeze|arrayBufferView)\.ts$|^negotiate\/(?:jobId|commitment|fixedPrice|rfq|channel)\.ts$|^rails\/payAlternative\.ts$|^errors\.ts$/;
+    const allowed = /^(?:artifacts|canonical|crypto|identity|wire)\/[A-Za-z0-9]+\.ts$|^wire\/node-endpoint\.ts$|^internal\/(?:deepFreeze|arrayBufferView|isRecord)\.ts$|^negotiate\/(?:jobId|commitment|fixedPrice|rfq|channel)\.ts$|^rails\/payAlternative\.ts$|^errors\.ts$/;
     expect(modules.filter((module) => !allowed.test(module))).toEqual([]);
     for (const module of ["wire/index.ts", "wire/journal.ts", "wire/commitment.ts", "canonical/rawJson.ts", "artifacts/validators.ts", "negotiate/jobId.ts", "negotiate/commitment.ts"]) {
       expect(modules, module).toContain(module);
@@ -327,7 +327,7 @@ describe("package export", () => {
     const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
     expect(pkg.exports["./wire"]).toEqual({ types: "./dist/wire/index.d.ts", import: "./dist/wire/index.js" });
     expect(pkg.exports["./wire/node-endpoint"]).toEqual({ types: "./dist/wire/node-endpoint.d.ts", import: "./dist/wire/node-endpoint.js" });
-    expect(Object.keys(pkg.exports)).toEqual([".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire", "./wire/node-endpoint", "./write-attempt-guard"]);
+    expect(Object.keys(pkg.exports)).toEqual([".", "./canonical", "./crypto", "./artifacts", "./identity", "./discovery", "./negotiate", "./rails", "./seller", "./commerce", "./registry", "./cli", "./substrate", "./wire", "./wire/node-endpoint", "./listing/read-only", "./seller/pay-dem-observer", "./write-attempt-guard"]);
   });
 
   it("ships no approval injection: approval.ts holds only the frozen approval list, and only profile.ts reads it", () => {

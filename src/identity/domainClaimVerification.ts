@@ -1,6 +1,6 @@
 import { isDeepStrictEqual, types as nodeTypes } from "node:util";
 
-import { ed25519Verify, publicKeyFromRaw } from "../crypto/index.js";
+import { ed25519Verify, publicKeyFromRaw } from "../crypto/ed25519Verify.js";
 import {
   canonicalizeNativeDomainHostname,
   isCanonicalDomainHostname,

@@ -12,12 +12,12 @@ The SDK takes an agent through five steps: identify, vet, negotiate, settle and 
 | **apps** | `cli/`, `bin/` | The `dacs` command-line tool. |
 | **api** | `commerce/`, `agent/Agent.ts`, `agent/index.ts`, `index.ts` | The entry points users call: the fixed-price coordinators and `createAgent`. |
 | **adapters** | `filesystem/`, `substrate/` (except the port), `wire/`, every `*Fs.ts` file | Code that touches disk, the Demos network or HTTP: file-backed stores, the Demos adapter, the seller HTTP wire format. |
-| **protocol** | `identity/`, `discovery/`, `negotiate/`, `rails/`, `registry/`, `agent/`, `seller/` | The rules of each step: vetting, negotiation, payment on each rail, delivery, bundles and reputation. |
+| **protocol** | `identity/`, `discovery/`, `negotiate/`, `rails/`, `registry/`, `agent/`, `seller/`, `listing/` | The rules of each step: vetting, negotiation, payment on each rail, delivery, bundles and reputation. |
 | **ports** | `substrate/SubstrateAdapter.ts` | Interfaces the protocol code calls and the adapters implement. |
 | **model** | `artifacts/` | The DACS records: their types, validators and signatures. |
 | **kernel** | `errors.ts`, `version.ts`, `internal/`, `canonical/`, `crypto/` | Errors, canonical JSON and hashing, decimals, signing, and small shared helpers. |
 
-Inside a layer, the folders also have a fixed order, so that two folders never depend on each other. The full order, lowest first, is in [`tools/lint/layers.json`](./tools/lint/layers.json). For example, inside **protocol** the order is `identity`, `discovery`, `negotiate`, `rails`, `registry`, `agent`, `seller`: `rails` may import `negotiate`, but `negotiate` may not import `rails`.
+Inside a layer, the folders also have a fixed order, so that two folders never depend on each other. The full order, lowest first, is in [`tools/lint/layers.json`](./tools/lint/layers.json). For example, inside **protocol** the order is `identity`, `discovery`, `negotiate`, `rails`, `registry`, `agent`, `seller`, `listing`: `rails` may import `negotiate`, but `negotiate` may not import `rails`.
 
 The workspace packages under `packages/` sit on top of all of this. Their source imports the SDK by its package name (`@kynesyslabs/dacs` and its subpaths), never by a path into `src/`.
 

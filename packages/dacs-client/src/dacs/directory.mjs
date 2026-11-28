@@ -12,14 +12,17 @@
 // `transactionReadiness` is `{disposition: "unassessed", reason}` and
 // `catalogObservedAt` is an integer. A row that does not match is refused,
 // never repaired, and no legacy field is read in its place.
-import { encodeAddressSegment, isRevocationBinding } from '@kynesyslabs/dacs';
+import { encodeAddressSegment } from '@kynesyslabs/dacs/canonical';
+import { isRevocationBinding } from '@kynesyslabs/dacs/listing/read-only';
 import { fetchBoundedJson, OutboundError } from '../util/http.mjs';
 import { SIMULATION_HEADER, isRecord } from './chain.mjs';
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const LOCATOR = /^stor-[0-9a-f]{40}$/;
-const LISTING_ID = /^(?!\.+$)[A-Za-z0-9._~-]{1,128}$/;
-const CLAIM = /^did:demos:agent:[0-9a-f]{64}$/;
+/** A Listing id the Directory accepts: 1 to 128 URL-safe characters, not only dots. */
+export const LISTING_ID = /^(?!\.+$)[A-Za-z0-9._~-]{1,128}$/;
+/** A canonical seller claim: did:demos:agent: and 64 lowercase hex. */
+export const CLAIM = /^did:demos:agent:[0-9a-f]{64}$/;
 const CURSOR = /^\d{1,9}$/;
 
 const MIN_PAGE_LIMIT = 1;
@@ -174,7 +177,12 @@ function summaryOf(raw) {
 const sameCoordinates = (raw, { listingId, version, seller }) =>
   isRecord(raw) && raw.listingId === listingId && raw.version === version && raw.seller?.primaryClaim === seller;
 
-export function createDirectoryClient({ origin, timeoutMs = 8000, maxBytes = 1_000_000, fetchImpl = globalThis.fetch }) {
+/**
+ * A Directory client for `origin`. `maxBytes` bounds a listings page and
+ * `detailMaxBytes` a Listing detail, both after decompression; `timeoutMs`
+ * bounds each request.
+ */
+export function createDirectoryClient({ origin, timeoutMs = 8000, maxBytes = 1_000_000, detailMaxBytes = 64 * 1024, fetchImpl = globalThis.fetch }) {
   let simulated = false;
   const observingFetch = async (input, init) => {
     const response = await fetchImpl(input, init);
@@ -252,7 +260,7 @@ export function createDirectoryClient({ origin, timeoutMs = 8000, maxBytes = 1_0
       throw new OutboundError('invalid', 'listing coordinates are malformed');
     }
     const params = new URLSearchParams({ seller });
-    const body = await get(`/api/dacs/listings/${encodeURIComponent(listingId)}/${version}?${params}`, 64 * 1024);
+    const body = await get(`/api/dacs/listings/${encodeURIComponent(listingId)}/${version}?${params}`, detailMaxBytes);
     if (!body || typeof body !== 'object' || Array.isArray(body)) throw new OutboundError('invalid', 'directory listing detail is malformed');
     return body;
   }

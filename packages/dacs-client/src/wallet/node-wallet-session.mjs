@@ -164,7 +164,8 @@ function readCanonicalRoot(endpoint, chainIdentity) {
  * and is granted at once; its `release` frees nothing. `fetchImpl` reaches only the endpoint origin and refuses redirects.
  * `chainIdentity` is the chain identity the caller pins for this connection, if any. Throws OperationError(transport_mismatch) for an endpoint
  * `canonicalNodeEndpoint` refuses under it (a canonical root over https, or over plain http only when it is the approved TP-1 chain identity)
- * or an authority that is not a plain token. After `close()`,
+ * or an authority that is not a plain token. An owner over plain http serves reads only (the observer and the authority capability):
+ * the sessions below refuse it with transport_mismatch before any key or signature. After `close()`,
  * `currentLocal`, `getContext`, `fetchImpl` and `acquireConnectionFence` throw transport_closed and queued waiters are rejected.
  */
 export function createNodeTransportOwner({ endpoint, transportAuthority, fetchImpl = globalThis.fetch, chainIdentity } = {}) {
@@ -680,6 +681,7 @@ async function composeStages({ owner, journal, key, identityRecord, listings, pu
   try {
     const authority = createNodeAuthorityCapability({ owner, claim: () => walletClaim ?? fail('session_not_finalized') });
     const readAuthority = createAuthorityReader({ authority, identityRecord, claim: authority.claim, listings, purchases, participantImplementations });
+    if (new URL(owner.currentLocal().endpoint).protocol !== 'https:') fail('transport_mismatch'); // a plain-http reply carries no authentication
     const binding = await bindTp1Profile({ record: identityRecord, local: owner.currentLocal(), readAuthority });
     const composition = await buildNodeComposition({ ...session, owner, journal, key, admission: { binding, currentLocal: owner.currentLocal } }, false, requirePass);
     try { walletClaim = claimForAddress(composition.wallet.getPublicAccount().address); }
@@ -714,6 +716,7 @@ async function buildNodeComposition(options, seller, requirePass = false) {
     if (seller && !PAYMENT_EVIDENCE_APPROVAL_MEMBERS.every(name => typeof paymentEvidenceApproval?.[name] === 'function')) fail('invalid_params');
     const { Demos, validateMnemonic } = await loadNodeDemos();
     const expected = readExpectedPins(admission.binding, owner);
+    if (new URL(expected.endpoint).protocol !== 'https:') fail('transport_mismatch');
     const effectBoundary = finalizeEffectBoundary({ owner, journal, admission, stopped, feeCeilingOs });
     const attempts = new AsyncLocalStorage(), selectedJournal = new AsyncLocalStorage();
     const gate = createEffectGate({ owner, expectedLocal: admission.binding.local, clock, qualify, passRequired: seller || requirePass, jobContextRequired: seller });
@@ -737,18 +740,18 @@ async function buildNodeComposition(options, seller, requirePass = false) {
         demoArtifactPublication: publications?.demoArtifactPublication,
         ...(approveConfirmedWrite === null ? {} : { approveConfirmedWrite: routeConfirmedWrite(approveConfirmedWrite, () => sellerAddress) }) })
       : createDevnetAgreementTransport(transportOptions);
-    const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN, nodeEndpoint: canonicalNodeEndpoint });
+    const transactionTransport = createDevnetAgreementWalletTransport(transport.profile(NODE_WALLET_RELAY_ORIGIN), { relayOrigin: NODE_WALLET_RELAY_ORIGIN });
     const anchorJournal = Object.fromEntries(['get', 'put', 'withWalletLock'].map(name => [name, (...args) => (selectedJournal.getStore() ?? journal)[name](...args)]));
     // The keystore's paid writes are checked against the host's one-use approval at the wallet's approval step and before the inner signature.
     const paidChecks = requirePass ? { approvedContent: (content, debit) => paidApproval.signedContentCheck(content, debit), paidApprovalCheck: callback => paidApproval.approvalCheck(callback) } : {};
     const NodeDemos = nodeDemosClass(Demos, { transport, rpcUrl: transactionTransport.rpcUrl, stamps, attempts, gate, boundary: effectBoundary, pinVersion: expected.pinVersion, approvedContent: paidChecks.approvedContent });
     session = createSdkWalletSession({ DemosCtor: NodeDemos, approve, paidApprovalCheck: paidChecks.paidApprovalCheck, transactionTransport,
-      validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, nodeEndpoint: canonicalNodeEndpoint, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity), recordCause });
+      validateMnemonic, anchorJournal, relayOrigin: NODE_WALLET_RELAY_ORIGIN, bindingRelay: createBindingRelay(transport), stamp: identity => stamps.next(identity), recordCause });
     const mnemonic = decodeMnemonic(keyCopy);
     await session.importMnemonic(mnemonic);
     // Routing identity outlives signing custody, which passive wallet.lock() clears.
     if (seller) sellerAddress = session.getPublicAccount().address;
-    paidApproval = requirePass ? createPaidApproval({ session, transport, transactionTransport, relayOrigin: NODE_WALLET_RELAY_ORIGIN, nodeEndpoint: canonicalNodeEndpoint, feeCeilingOs, projectPaidWrite, EmbeddedWalletError }) : null;
+    paidApproval = requirePass ? createPaidApproval({ session, transport, transactionTransport, relayOrigin: NODE_WALLET_RELAY_ORIGIN, feeCeilingOs, projectPaidWrite, EmbeddedWalletError }) : null;
     const walletFactory = ({ anchorJournal: selected = journal } = {}) => admitPublicFactory(() => {
       const send = request => selectedJournal.run(selected, () => session.request(request));
       return { request: send, ...paidApproval?.viewFor(selected, send), ...Object.fromEntries(PASSIVE_METHODS.map(name => [name, (...args) => session[name](...args)])) };
