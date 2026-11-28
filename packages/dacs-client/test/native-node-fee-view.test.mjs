@@ -11,8 +11,8 @@ import { transferRefusal } from '../src/wallet/devnet-native-transport.mjs';
 
 const states = records => records.map(record => record.state);
 const fees = (network, rpc, additional) => ({ fees: { network_fee: network, rpc_fee: rpc, additional_fee: additional } });
-// A signed TEST transfer pays a 1 DEM network fee and a 1 DEM rpc fee on top of its amount.
-const AMOUNT_OS = '2500000000', WHOLE_DEBIT_OS = '4500000000';
+// A signed TEST transfer pays a 1 DEM network fee, a 1 DEM rpc fee and the SDK's 1 DEM gas on top of its amount.
+const AMOUNT_OS = '2500000000', FEES_OS = '3000000000', WHOLE_DEBIT_OS = '5500000000';
 
 // Confirms one transfer of AMOUNT_OS under `feeCeilingOs` with a node that answers with the fee view `gas`, then broadcasts it.
 async function confirmedSend(t, feeCeilingOs, gas) {
@@ -26,8 +26,8 @@ async function confirmedSend(t, feeCeilingOs, gas) {
   return { w, tx, outcome: await w.broadcast(confirmation).then(answer => ({ answer }), error => ({ error })) };
 }
 
-test('a zero fee view for a transfer signed with 2 DEM in fees, under a ceiling of its amount, is refused as not sent and nothing is dispatched or broadcast', async t => {
-  const { w, tx, outcome } = await confirmedSend(t, AMOUNT_OS, fees('0', '0', '0'));
+test('a zero fee view for a transfer signed with 2 DEM in fees, under a ceiling of its fees, is refused as not sent and nothing is dispatched or broadcast', async t => {
+  const { w, tx, outcome } = await confirmedSend(t, FEES_OS, fees('0', '0', '0'));
   assert.equal(outcome.error?.code, 'fee_view_mismatch', JSON.stringify(outcome.answer));
   assert.equal(transferRefusal(outcome.error)?.[0], 409, 'relays answer the refusal as not sent');
   assert.deepEqual(w.node.broadcasts, []);

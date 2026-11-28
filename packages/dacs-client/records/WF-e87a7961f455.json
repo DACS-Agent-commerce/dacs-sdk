@@ -1,0 +1,17 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF record the merged native transport after carrying the base up into the late-fix part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/wallet/devnet-native-transport.mjs",
+      "before": "d5064f6cf6a97c39ea1e1287a124b943e806b3b4",
+      "after": "d5064f6cf6a97c39ea1e1287a124b943e806b3b4"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-e87a7961f455.json"
+  ],
+  "note": "Both sides recorded this file, so their newest records disagree; this record chooses the merged copy, which keeps the base's source-read change and this part's fee calculation."
+}
