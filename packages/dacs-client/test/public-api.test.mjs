@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { bindFixture } from './fixtures/tp1-authority-reader.mjs';
 import { installPackedPair } from './helpers/packed-install.mjs';
+import { runFreshChild } from './helpers/fresh-node-child.mjs';
 import { openDatabase } from './helpers/purchase-integrity-database.mjs';
 import { createOperationStore } from './helpers/purchase-integrity-operations.mjs';
 function declaresPublicContract(source, line) {
@@ -39,23 +40,24 @@ const ROOT = {
     'deliveryEvidenceAddress', 'sellerFailureCause', 'usesNativePaymentEvidence', 'isOperatorContextAuthority',
     'demDeliveryContextUsage', 'isDemDeliveryContextAuthority',
     'rpcAuthRefusal', 'transferRefusal', 'sellerSessionTransitionState', 'createPurchaseReadbackCache',
-    'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'fundingHelpSentence',
+    'canonicalize', 'contentHash', 'normalizeDemAmount', 'logicalListingAddress', 'verifyComponent', 'buildUnsignedIdentityBundle', 'normalizeDemosAddress', 'fundingHelpSentence',
     'createDemDeliveryContext', 'createDemDeliveryContextRouteCaller', 'createNativeDemDeliveryCapability', 'createNativePaymentEvidenceConsumer', 'createSourceDemoSellerTransport', 'createSellerSessionKeys',
     'createDevnetNativeCommitmentCapability', 'isOfflineWalletAgreement', 'deriveStorageAddress', 'createDemosNetworkBinder', 'assertNodeRpcEndpoint', 'createAuthorityReader', 'createPublicSellerClient',
-    'createPurchaseOperations', 'isPurchaseOperationId', 'createPurchaseChallenges', 'purchaseApprovalChallengeText', 'createLocalPurchaseAccount',
+    'createPurchaseOperations', 'isPurchaseOperationId', 'createPurchaseChallenges', 'purchaseApprovalChallengeText', 'createLocalPurchaseAccount', 'readAnchorReservedWriteId',
     'verifyDealPassive', 'withCheckedOperationHistory'],
   classes: ['NotConfiguredError', 'OutboundError', 'OperationError', 'NotWiredError', 'StaleProtocolCheck',
     'SellerRefusedError', 'SellerUnavailableError', 'SellerTlsUnusableError', 'DemosSr2BridgeError', 'DemosSr2Error', 'NetworkBindingError', 'BuyerChainReadbackUnsupported', 'WalletFormatError'],
   values: ['PURCHASE_STATE_SCHEMA', 'PURCHASE_STATUS_HELP', 'DEM_DECIMAL', 'OS_INTEGER', 'vetNotPerformedRef', 'AGREEMENT_CONTEXT_SOURCE', 'DEM_DELIVERY_CONTEXT_SOURCE',
     'SR2_WALLET_KIND', 'DEVNET_AGREEMENT_KIND', 'DEVNET_AGREEMENT_PROFILE', 'DEVNET_NATIVE_BINDING_PATH', 'DEVNET_NATIVE_RPC_PATH', 'SDK_PROVENANCE',
-    'OFFLINE_AGREEMENT_MODE', 'DEVNET_NATIVE_COMMITMENT_MARKER', 'PAID_WRITE_FEE_CEILING_OS'],
+    'OFFLINE_AGREEMENT_MODE', 'DEVNET_NATIVE_COMMITMENT_MARKER', 'PAID_WRITE_FEE_CEILING_OS', 'CREATE_STORAGE_RESERVE_OS'],
 };
 const GUIDANCE_NAMES = ['purchaseNext', 'PURCHASE_STATUS_HELP', 'protocolView'];
 const modules = {
   "purchase-state-schema.mjs": "PURCHASE_STATE_SCHEMA",
   "seams/purchase-store-not-wired.mjs": "createSqlitePurchaseStore",
   "purchases.mjs": "createPurchaseService purchaseNext PURCHASE_STATUS_HELP networkIdentityLabel",
-  "dacs/protocol-purchases.mjs": "createProtocolPurchases protocolView usesAgreementContext usesNativeDemDelivery StaleProtocolCheck OFFLINE_AGREEMENT_MODE isOfflineWalletAgreement",
+  "dacs/protocol-purchases.mjs": "createProtocolPurchases protocolView usesAgreementContext usesNativeDemDelivery StaleProtocolCheck OFFLINE_AGREEMENT_MODE isOfflineWalletAgreement readAnchorReservedWriteId",
+  "public-admission.mjs": "CREATE_STORAGE_RESERVE_OS",
   "dacs/delivery-deadline-watch.mjs": "createDeliveryDeadlineWatch",
   "dacs/wallet-transactions.mjs": "createCoordinateStore deriveStorageAddress",
   "dacs/directory.mjs": "createDirectoryClient",
@@ -75,13 +77,13 @@ const modules = {
   "dacs/seller-session-lifecycle.mjs": "sellerSessionTransitionState",
   "util/purchase-readback-cache.mjs": "createPurchaseReadbackCache",
   "util/http.mjs": "OutboundError",
-  "dacs/listing.mjs": "canonicalize contentHash normalizeDemAmount SDK_PROVENANCE logicalListingAddress verifyComponent",
+  "dacs/listing.mjs": "canonicalize contentHash normalizeDemAmount SDK_PROVENANCE logicalListingAddress verifyComponent buildUnsignedIdentityBundle",
   "dacs/demos-sr2-adapter.mjs": "DemosSr2Error",
   "dacs/network-binding.mjs": "NetworkBindingError createDemosNetworkBinder assertNodeRpcEndpoint",
   "wallet/authority-reader.mjs": "createAuthorityReader",
   "dacs/buyer-chain-readback.mjs": "BuyerChainReadbackUnsupported",
   "client-errors.mjs": "OperationError NotWiredError",
-  "signatures.mjs": "WalletFormatError",
+  "signatures.mjs": "WalletFormatError normalizeDemosAddress",
   "buyer-funding.mjs": "fundingHelpSentence",
   "host/purchase-ops.mjs": "createPurchaseOperations",
   "util/ids.mjs": "isPurchaseOperationId",
@@ -356,12 +358,24 @@ test('the README documents the admission option and each construction and call r
   }
 });
 
-test("node-wallet subpath exports exactly its reviewed names; the root import loads neither SQLite nor demosdk", async () => {
+test("node-wallet publicly exports the keyless transport and pure Agreement profile without adding a package subpath or loading demosdk", async t => {
  const manifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
  assert.equal(manifest.exports['./node-wallet'],'./src/wallet/node-wallet-session.mjs');
+ assert.deepEqual(Object.keys(manifest.exports),['.','./wallet/durable-journal','./node-wallet','./substrate/demos','./purchase/evidence-recorder','./rpc-endpoint','./purchase/wallet-bridge','./wallet/effect-history']);
  const api=await import('../src/wallet/node-wallet-session.mjs');
+ const published=await import('@kynesyslabs/dacs-client/node-wallet');
+ assert.equal(published.createKeylessAgreementTransport,api.createKeylessAgreementTransport);
+ assert.equal(published.keylessAgreementProfile,api.keylessAgreementProfile);
+ const child=runFreshChild(t,`
+  import {writeFileSync} from 'node:fs';import {registerHooks} from 'node:module';
+  let demosdkImports=0;registerHooks({resolve(specifier,context,next){if(/demosdk|demos-loader|demos-quiet-hooks/.test(specifier))demosdkImports++;return next(specifier,context);}});
+  const published=await import(process.argv[2]);
+  writeFileSync('result.json',JSON.stringify({names:['createKeylessAgreementTransport','keylessAgreementProfile'].map(name=>typeof published[name]),demosdkImports}));
+ `,[import.meta.resolve('@kynesyslabs/dacs-client/node-wallet')]);
+ assert.equal(child.status,0,child.stderr);
+ assert.deepEqual(child.result,{names:['function','function'],demosdkImports:0});
  assert.deepEqual(Object.keys(api).sort(),['createNodeObserver','createNodeTransportOwner','createNodeWalletSession','createRpcStampSource','createNodeAuthorityCapability','composeNodeWalletSession','openKeystoreWalletSession',
-   'createHeldTransportFacade','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','capabilityAuthorityLabel','readNodeAddressBalance','createQualificationObserverSource','isQualificationObserverSource','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport','releaseAbandonedJournalLocks','passContext','fetchBoundedNodeJson','listsWithin',
+   'createHeldTransportFacade','createKeylessAgreementTransport','keylessAgreementProfile','createNodeSellerComposition','admitTp1Authority','tp1AuthorityLabel','authorityLabelOf','isTp1AuthorityToken','capabilityAuthorityLabel','readNodeAddressBalance','createQualificationObserverSource','isQualificationObserverSource','isDevnetAgreementTransport','isDevnetSettlementTransport','isDevnetDemoTransport','releaseAbandonedJournalLocks','passContext','fetchBoundedNodeJson','listsWithin',
    'DEVNET_AGREEMENT_PROFILE','DEVNET_AGREEMENT_KIND','DEVNET_AGREEMENT_SOURCE','DEVNET_SETTLEMENT_KIND','DEVNET_SETTLEMENT_POLICY',
    'DEVNET_DELIVERY_KIND','DEVNET_DELIVERY_POLICY','DEVNET_DEMO_ARTIFACT_KIND','DEVNET_DEMO_ARTIFACT_POLICY','DEVNET_DEMO_ARTIFACT_TYPES'].sort());
 });

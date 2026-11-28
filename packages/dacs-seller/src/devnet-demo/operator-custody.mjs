@@ -257,7 +257,10 @@ export async function bootstrapTestWalletCustody({directory,publicOrigin}){
 // inProcessRelay(address), optional, returns {run(work)}: every request of
 // this wallet runs inside it (the operator seller's in-process source relay).
 // The role's record is synced before a signer is returned; a failed sync throws.
-export async function openTestWalletCustody({directory,role,publicOrigin,transactionTransport,anchorJournal,approve,inProcessRelay=null}){
+// stopped(), required with a transactionTransport, is the host's stop check (createStopCheck): the wallet reads it before each
+// confirm and broadcast. Without it a transport is a TypeError (stop_seam_invalid), before any file is read.
+export async function openTestWalletCustody({directory,role,publicOrigin,transactionTransport,anchorJournal,approve,inProcessRelay=null,stopped}){
+  if(transactionTransport&&typeof stopped!=='function')throw new TypeError('stop_seam_invalid');
   role=checkRole(role);directory=await privateDirectory(directory);const path=join(directory,FILES[role]);await exactPrivateFile(path);
   const walletRuntime=await runtime(publicOrigin);
   const record=await readWalletRecord(path,role,walletRuntime);
@@ -285,7 +288,7 @@ export async function openTestWalletCustody({directory,role,publicOrigin,transac
       },
       withWalletLock:(key,work)=>route().withWalletLock(key,work),
     }:undefined;
-    session=createSdkWalletSession({DemosCtor:approvalAttempt.guardSigning(Demos),IdentitiesCtor:Identities,validateMnemonic,transactionTransport:createDevnetAgreementWalletTransport(transactionTransport),anchorJournal:routedJournal,approve:approvalAttempt.approve});
+    session=createSdkWalletSession({DemosCtor:approvalAttempt.guardSigning(Demos),IdentitiesCtor:Identities,validateMnemonic,transactionTransport:createDevnetAgreementWalletTransport(transactionTransport),anchorJournal:routedJournal,approve:approvalAttempt.approve,stopped});
     await session.importMnemonic(mnemonic);if(session.getPublicAccount()?.address!==address)throw new Error(`${role} packaged wallet address differs from custody`);
     const facade=(selectedJournal)=>Object.freeze({
       getPublicAccount:()=>session.getPublicAccount(),

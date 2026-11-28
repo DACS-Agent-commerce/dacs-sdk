@@ -127,7 +127,8 @@ function admitAnswerText(text) {
  * through), `completion` (the completion port that ends the attempts it issued), `readCommitmentReceipt` and `requireDelegation` are
  * values. `admitPresentation(input)` is the agent's first admission of a presentation (its Listing revocation check and profile
  * admission), which the context route's validation calls; it is `null` for an agent without one. `stopped()` is the host's stop
- * check, which the challenge route (`context` with `wire`) requires: it is `null` when none is given. `bindPlannedAgreementReader(reader)` is how
+ * check, which every handler requires: the effect routes and the challenge route refuse `seller_stopped` while it answers true. It is
+ * `null` when none is given (a handler built over that context refuses construction), and a TypeError for anything but a function. `bindPlannedAgreementReader(reader)` is how
  * the context route gives the context one reader of a job's planned Agreement (once; a TypeError for a second or a non-function; it returns the reader), and
  * `plannedAgreementOf(jobId)` calls it, or answers null while none is bound. `publicEndpoint` is the origin
  * the handler's discovery document names; it is `null` when none is given, and then no discovery document is served. `bootstrap` is the

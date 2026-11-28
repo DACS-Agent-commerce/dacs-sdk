@@ -1,0 +1,30 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "sha": "d736b1273ddfd3793348ec1fcfb491403afc106d",
+  "subject": "fix(seller): keep the wallet's broadcast-started marker for readback when a stop refuses its broadcast, and test KILL through the port's own artifact anchor",
+  "kind": "change",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+      "before": "a92e1d85105ab66c90bc8b33adb6ecc0c9fe8f2c",
+      "after": "7ea0d93aec807b793352f9ce934ddbf974b81323"
+    },
+    {
+      "path": "packages/dacs-client/test/embedded-wallet-kill-span.test.mjs",
+      "before": "cb87b2b6284cfa9e1cb05a5769f44c67196ccf1c",
+      "after": "2139ced206b061343b7693cc5990a36e6e02e291"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/src/public/portal/embedded-wallet/sdk-provider.mjs",
+    "packages/dacs-client/test/embedded-wallet-kill-span.test.mjs",
+    "packages/dacs-seller/src/devnet-demo/operator-custody.mjs",
+    "packages/dacs-seller/src/devnet-demo/seller-node-wallet.mjs",
+    "packages/dacs-seller/test/artifact-lane-recovery.test.mjs",
+    "packages/dacs-seller/test/helpers/artifact-anchor-spy.mjs",
+    "packages/dacs-seller/test/node-wallet-approval.test.mjs",
+    "packages/dacs-seller/test/operator-custody-guarded-request.test.mjs",
+    "packages/dacs-seller/test/seller-kill-boundaries.test.mjs"
+  ]
+}

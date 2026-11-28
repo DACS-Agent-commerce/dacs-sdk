@@ -1,0 +1,27 @@
+{
+  "schema": "dacs-client-delta-record/v1",
+  "delta": "WF",
+  "subject": "delta(client): WF choose the merged protocol purchases, client entry point and public API test after carrying the installed client part into the buyer context route caller part",
+  "kind": "resolution",
+  "files": [
+    {
+      "path": "packages/dacs-client/src/dacs/protocol-purchases.mjs",
+      "before": "0646ebb133e480b770a85fb295cf18005a044b0d",
+      "after": "0646ebb133e480b770a85fb295cf18005a044b0d"
+    },
+    {
+      "path": "packages/dacs-client/src/index.mjs",
+      "before": "450472a642cfddb6074b24b1db39aa9eb9434525",
+      "after": "450472a642cfddb6074b24b1db39aa9eb9434525"
+    },
+    {
+      "path": "packages/dacs-client/test/public-api.test.mjs",
+      "before": "913fed4d4fc70edb7bf7f076ba1372648098012b",
+      "after": "913fed4d4fc70edb7bf7f076ba1372648098012b"
+    }
+  ],
+  "commitFiles": [
+    "packages/dacs-client/records/WF-054ec9ed8004.json"
+  ],
+  "note": "Both sides of the merge recorded these files, so their newest records disagree; this record chooses the merged copies, which keep this part's buyer context route caller and seller receipt changes together with the installed client part's changes. No file other than this record changes."
+}

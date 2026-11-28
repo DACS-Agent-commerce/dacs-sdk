@@ -59,7 +59,7 @@ function world(t, config = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'TEST-context-admission-'));
   const path = join(directory, 'transport.sqlite'), holds = new Set();
   const calls = { validation: 0, reserve: 0, release: 0, effective: 0, wire: 0, vet: 0, complete: [], evidence: [] };
-  const control = { clock: T0, ready: true, beforeReserve: null, releaseFault: null, generation: 0, reserved: [], evidence: null, inspect: null, killed: false, unavailable: null };
+  const control = { clock: T0, ready: true, stopped: false, beforeReserve: null, releaseFault: null, generation: 0, reserved: [], evidence: null, inspect: null, killed: false, unavailable: null };
   const options = { maxContextRecords: 20, contextStartLimits: { maxStartsPerHour: 12, maxStartsPerBuyerPerHour: 5 }, ...config };
   const defaultPolicy = {
     async reserve(request) { calls.reserve++; control.reserved.push(request); holds.add(request.hold); return control.beforeReserve ? control.beforeReserve() : null; },
@@ -93,7 +93,7 @@ function world(t, config = {}) {
     admission = createContextAdmissionTransaction({ store, policy: options.policy ?? defaultPolicy, capacity,
       effectEvidence: async record => { calls.evidence.push(record.vetAddresses); return control.evidence ? control.evidence(record) : evidenceOf(record, 'no-intent'); },
       inspectContextOutcome: jobId => (control.inspect ? control.inspect(jobId) : publishedView(jobId)), completeWire: options.completeWire ?? doubleCompleteWire,
-      now: () => control.clock, ready: () => options.ready?.() ?? control.ready, deadlines: { policyMs: POLICY_MS } });
+      now: () => control.clock, ready: () => options.ready?.() ?? control.ready, stopped: () => control.stopped, deadlines: { policyMs: POLICY_MS } });
   }
   reopen();
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -644,6 +644,26 @@ for (const state of ['admitted', 'running']) {
       assert.equal(w.calls.release, 1, 'repeated cleanup releases the same hold once');
     });
   }
+}
+
+for (const startup of [false, true]) {
+  test(`a ${startup ? 'startup' : 'periodic'} sweep while the host is stopped visits no unfinished row; the next unstopped sweep ends it`, async t => {
+    const w = world(t), p = w.prepare();
+    p.input.delegationExpiresAt = null;
+    await w.admission.begin(p.input);
+    const held = w.row(p.input.jobId).holdId, occupied = w.capacity.capacityReport().allotted;
+    w.control.clock += DIRECT_LIFETIME_MS;
+    w.control.stopped = true;
+    if (startup) w.reopen();
+    const before = w.row(p.input.jobId);
+    await w.admission.sweep({ startup });
+    assert.deepEqual(w.row(p.input.jobId), before, 'the row keeps its state, hold and slot');
+    assert.deepEqual([w.holds.has(held), w.capacity.capacityReport().allotted, w.calls.evidence.length], [true, occupied, 0]);
+    w.control.stopped = false;
+    await w.admission.sweep({ startup: false });
+    assert.equal(w.row(p.input.jobId).state, 'aborted');
+    assert.deepEqual([w.holds.has(held), w.capacity.capacityReport().allotted], [false, 0]);
+  });
 }
 
 test('a stale direct admission keeps uncertain effects compensating until fresh evidence proves no effect', async t => {
