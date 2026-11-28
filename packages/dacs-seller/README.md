@@ -691,9 +691,8 @@ protects it from one client. Put a proxy with a per-client limiter in front of t
   `operationClass` and `currentAuthorization` for every artifact kind. The
   operator's approval of a write runs inside that pass, so a manual approval
   must finish within the pass's deadline, 10 seconds at most: a slower
-  `APPROVE` answers `tp1_authority_timeout` and nothing is signed. Moving the
-  approval outside the pass is planned. The kit's own fee and approval-hold
-  checks run only when the caller passes `debitOs` or `approvalRef`; the
+  `APPROVE` answers `tp1_authority_timeout` and nothing is signed. The kit's own fee and
+  approval-hold checks run only when the caller passes `debitOs` or `approvalRef`; the
   seller's anchor passes neither, so the session pass's fee ceiling is the
   fee check that applies to these CREATEs. An operator-supplied anchor must
   enforce the contract itself.
