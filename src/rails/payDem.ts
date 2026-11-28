@@ -1576,7 +1576,8 @@ function transactionRecordWithinLimits(root: unknown): boolean {
  * prepared transfer, and whose balance edits (`content.gcr_edits`) show the
  * payer's debit, is execution; that debit is returned as `totalDebitOs`. The
  * record's declared fee is not read. Such a record without the payer's debit is
- * indeterminate at once. A `failed` record bound the same way is not settled. A record that is missing, pending, unreadable or malformed, or that
+ * indeterminate at once. A `failed` record bound the same way is not settled.
+ * A record that is missing, pending, unreadable or malformed, or that
  * carries another hash, is polled again within the budget; a stalled read, or
  * a confirmed or failed record for the signed hash whose nonce, block or body
  * does not bind the prepared transfer, is indeterminate at once. Like the
